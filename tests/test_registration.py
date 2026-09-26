@@ -1,4 +1,4 @@
-"""FR-G10/G11 第一轮验收：算术人机验证 + 邮箱验证码 + 创始码注册。
+"""FR-G10/G11 第一轮验收：图片人机验证 + 邮箱验证码 + 创始码注册。
 
 覆盖单事务注册、邀请码一次性核销、验证码尝试上限和签发权限。
 """
@@ -15,14 +15,6 @@ from webapp import app as app_module
 from webapp.captcha import issue as issue_captcha
 from webapp.login_guard import LoginGuard, RateLimiter
 from webapp.storage import Store
-
-
-def _solve(question: str) -> str:
-    """解析并计算算术验证题（测试用；题面形如 '17 + 26 = ?'）。"""
-    expr = question.split("=")[0].strip().replace("\u2212", "-")
-    left, op, right = expr.split()
-    value = int(left) + int(right) if op == "+" else int(left) - int(right)
-    return str(value)
 
 
 class RegistrationTests(unittest.TestCase):
@@ -72,10 +64,10 @@ class RegistrationTests(unittest.TestCase):
         return result.json()
 
     def _start(self, client: TestClient, email: str) -> object:
-        captcha = issue_captcha()
+        captcha = issue_captcha("AB2D")  # 测试钩子：注入固定明文；答案故意用小写，覆盖大小写不敏感
         return client.post("/api/auth/email/start", json={
             "email": email, "captcha_id": captcha["captcha_id"],
-            "captcha_answer": _solve(captcha["question"])})
+            "captcha_answer": "ab2d"})
 
     def _code_from_last_mail(self) -> str:
         self.assertTrue(self.sent, "应当已发送验证邮件")
@@ -215,6 +207,43 @@ class RegistrationTests(unittest.TestCase):
             "email": "owner@example.com", "code": self._code_from_last_mail(),
             "invite_code": self._invite_code_for("owner@example.com"), "password": "short"})
         self.assertEqual(weak.status_code, 422)
+
+    def test_unbound_invite_any_email_can_register(self):
+        """创始码只捆机构名（不绑邮箱）：任意邮箱凭码 + 邮箱验证码即可注册。
+
+        安全性由「码一次性 + 注册侧邮箱验证码」双因子兜底；台账须能看见注册人。
+        """
+        self._setup_platform_admin()
+        admin = self._admin_client()
+        result = admin.post("/api/invites", json={"org_name": "松山湖大学"})
+        self.assertEqual(result.status_code, 200, result.text)
+        invite = result.json()
+        self.assertEqual(invite["bound_email"], "")  # 不绑邮箱
+        self.assertEqual(invite["seats"], 1)  # 默认 1 席
+
+        client = self._client()
+        self._start(client, "dean@example.edu")
+        done = client.post("/api/register/complete", json={
+            "email": "dean@example.edu", "code": self._code_from_last_mail(),
+            "invite_code": invite["code"], "password": "founder-pass-2026"})
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertEqual(done.json()["user"]["role"], "org_admin")
+
+        # 一码一位：第二个邮箱再来 → 已被使用
+        self._start(self._client(), "late@example.edu")
+        reuse = self._client().post("/api/register/complete", json={
+            "email": "late@example.edu", "code": self._code_from_last_mail(),
+            "invite_code": invite["code"], "password": "founder-pass-2026"})
+        self.assertEqual(reuse.status_code, 422)
+        self.assertIn("已被使用", reuse.json()["detail"])
+
+        # 台账：平台管理员能看见谁注册了
+        ledger = admin.get("/api/invites")
+        self.assertEqual(ledger.status_code, 200)
+        row = next(r for r in ledger.json() if r["org_name"] == "松山湖大学")
+        self.assertEqual(row["redeemed_email"], "dean@example.edu")
+        self.assertTrue(row["redeemed_by"])
+        self.assertTrue(row["redeemed_at"])
 
     def test_register_code_rate_limited(self):
         self._setup_platform_admin()

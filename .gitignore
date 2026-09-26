@@ -57,3 +57,6 @@ backups/
 
 docs/04*
 docs/06*
+
+# ---- 工具本地产物 ----
+.mimosa/

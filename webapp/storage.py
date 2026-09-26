@@ -20,6 +20,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 from contextlib import contextmanager
+from webapp import classroom
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
@@ -240,12 +241,39 @@ class Store:
                     summary_json TEXT NOT NULL, audited_at TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_audits_org ON audits(org_id, audited_at DESC);
+                CREATE TABLE IF NOT EXISTS audit_report_versions (
+                    audit_id TEXT NOT NULL REFERENCES audits(id), version INTEGER NOT NULL,
+                    html TEXT NOT NULL, html_sha256 TEXT NOT NULL,
+                    manifest_json TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
+                    content_sha256 TEXT NOT NULL, created_by TEXT NOT NULL REFERENCES users(id),
+                    created_at TEXT NOT NULL, pdf_bytes BLOB, pdf_sha256 TEXT, pdf_created_at TEXT,
+                    PRIMARY KEY(audit_id,version), UNIQUE(audit_id,content_sha256)
+                );
+                CREATE TABLE IF NOT EXISTS org_reports (
+                    id TEXT PRIMARY KEY, org_id TEXT NOT NULL,
+                    created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL, snapshot_sha256 TEXT NOT NULL,
+                    html TEXT NOT NULL, html_sha256 TEXT NOT NULL,
+                    pdf_bytes BLOB, pdf_sha256 TEXT, pdf_created_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_org_reports_org ON org_reports(org_id,created_at DESC);
+                CREATE TABLE IF NOT EXISTS report_protections (
+                    id TEXT PRIMARY KEY,org_id TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('audit','org')),
+                    audit_id TEXT,version INTEGER,org_report_id TEXT REFERENCES org_reports(id),
+                    FOREIGN KEY(audit_id,version) REFERENCES audit_report_versions(audit_id,version),
+                    CHECK((kind='audit' AND audit_id IS NOT NULL AND version IS NOT NULL AND org_report_id IS NULL)
+                       OR (kind='org' AND org_report_id IS NOT NULL AND audit_id IS NULL AND version IS NULL))
+                );
                 CREATE TABLE IF NOT EXISTS assignments (
                     id TEXT PRIMARY KEY, org_id TEXT NOT NULL, title TEXT NOT NULL,
                     audit_id TEXT NOT NULL REFERENCES audits(id), created_by TEXT NOT NULL REFERENCES users(id),
                     target_student_id TEXT REFERENCES users(id), weights_json TEXT NOT NULL,
                     false_positive_penalty REAL NOT NULL, published INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS generated_exercises (
+                    audit_id TEXT PRIMARY KEY REFERENCES audits(id),org_id TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,metadata_sha256 TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS submissions (
                     id TEXT PRIMARY KEY, assignment_id TEXT NOT NULL REFERENCES assignments(id),
@@ -390,6 +418,7 @@ class Store:
                 raise RuntimeError("现有数据库含多个平台管理员，需人工确认归并后才能安装唯一约束；未自动删除账号。")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_platform_admin "
                        "ON users(role) WHERE role='platform_admin'")
+            classroom.migrate(db)
 
     def has_users(self) -> bool:
         with self.connect() as db:
@@ -544,18 +573,21 @@ class Store:
         return self._with_email(dict(row)) if row else None
 
     def create_invite_code(self, creator: dict[str, Any], org_name: str, seats: int,
-                           bound_email: str, expires_days: int = INVITE_CODE_DAYS) -> dict[str, Any]:
-        """平台管理员签发一次性创始码。明文只在此刻返回一次。"""
+                           bound_email: str = "", expires_days: int = INVITE_CODE_DAYS) -> dict[str, Any]:
+        """平台管理员签发一次性创始码。明文只在此刻返回一次。
+
+        创始码只与机构名称捆绑（不绑邮箱）：一码一位、私聊交付；注册时
+        仍须通过邮箱验证码核验，构成「码 + 邮箱验证」双因子。bound_email
+        留空即不绑定（保留参数以兼容旧码）。
+        """
         if creator.get("role") != "platform_admin":
             raise ValueError("只有平台管理员可以签发创始码")
         org_name = (org_name or "").strip()
-        address = _validate_email(bound_email)
         if not org_name:
             raise ValueError("机构名称不能为空")
         if not isinstance(seats, int) or not 1 <= seats <= 200:
             raise ValueError("席位须为 1–200 的整数")
-        if not address:
-            raise ValueError("必须绑定机构负责人的邮箱")
+        address = _validate_email(bound_email) if (bound_email or "").strip() else ""
         code = _generate_invite_code(12)
         expires = (datetime.now(UTC) + timedelta(days=expires_days)).isoformat(timespec="seconds")
         with self.connect() as db:
@@ -573,9 +605,10 @@ class Store:
         """平台管理员查看创始码（不含明文）。"""
         with self.connect() as db:
             rows = db.execute(
-                """SELECT token_hash,org_name,seats,bound_email,expires_at,redeemed_by,
-                          redeemed_at,revoked,created_at
-                   FROM invite_codes ORDER BY created_at DESC"""
+                """SELECT i.token_hash,i.org_name,i.seats,i.bound_email,i.expires_at,i.redeemed_by,
+                          i.redeemed_at,i.revoked,i.created_at,u.email AS redeemed_email
+                   FROM invite_codes i LEFT JOIN users u ON u.id=i.redeemed_by
+                   ORDER BY i.created_at DESC"""
             ).fetchall()
         return [dict(row) for row in rows]
 
@@ -633,7 +666,7 @@ class Store:
                         error = "邀请码已被使用。"
                     elif invite["expires_at"] < now:
                         error = "邀请码已过期，请联系平台管理员重新签发。"
-                    elif _normalize_email(invite["bound_email"]) != address:
+                    elif invite["bound_email"] and _normalize_email(invite["bound_email"]) != address:
                         error = "该创始码绑定的是其他邮箱，请使用绑定的邮箱注册。"
                     elif db.execute("SELECT 1 FROM users WHERE email=?", (address,)).fetchone():
                         error = "该邮箱已注册，请直接登录。"  # 一个邮箱 = 一个账号 = 一个机构（5.8.3）
@@ -1011,7 +1044,8 @@ class Store:
                                (key, member["email"], created, created, _json(payload)))
 
     def save_audit(self, audit_id: str, user: dict[str, Any], client_id: str | None,
-                   dataset: Dataset, findings: list[Finding], summary: dict[str, Any], audited_at: str) -> None:
+                   dataset: Dataset, findings: list[Finding], summary: dict[str, Any], audited_at: str,
+                   report_snapshot: dict | None = None, exercise_metadata: dict | None = None) -> None:
         with self.connect() as db:
             db.execute(
                 "INSERT INTO audits VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1021,6 +1055,257 @@ class Store:
                  _json(summary), audited_at),
             )
             self._enqueue_audit_notifications(db, user["org_id"], client_id, audit_id, findings, audited_at)
+            if report_snapshot is not None:
+                self._insert_report_version(db, audit_id, user, report_snapshot)
+            if exercise_metadata is not None:
+                from webapp.report_archive import canonical, digest
+                if (user["role"] != "teacher" or exercise_metadata.get("standard_answer") != sorted(f.rule.id for f in findings if f.hit)
+                        or exercise_metadata.get("requested_rule_id") not in exercise_metadata["standard_answer"]):
+                    raise ValueError("出题记录与冻结审计答案不一致。")
+                encoded = canonical(exercise_metadata)
+                db.execute("INSERT INTO generated_exercises VALUES (?,?,?,?)",
+                           (audit_id,user["org_id"],encoded,digest(encoded.encode())))
+
+    def get_generated_exercise(self, audit_id, user):
+        if user["role"] != "teacher":
+            raise PermissionError("仅教师可读出题参数与标准答案。")
+        return self._generated_exercise(audit_id, user["org_id"])
+
+    def has_generated_exercise(self, audit_id, org_id):
+        with self.connect() as db:
+            return db.execute("SELECT 1 FROM generated_exercises WHERE audit_id=? AND org_id=?",
+                              (audit_id, org_id)).fetchone() is not None
+
+    def _generated_exercise(self, audit_id, org_id):
+        from webapp.report_archive import digest
+        with self.connect() as db:
+            row=db.execute("SELECT * FROM generated_exercises WHERE audit_id=? AND org_id=?",
+                           (audit_id,org_id)).fetchone()
+        if not row:
+            return None
+        if digest(row["metadata_json"].encode()) != row["metadata_sha256"]:
+            raise ValueError("出题记录完整性校验失败，请核查备份。")
+        return json.loads(row["metadata_json"])
+
+    def get_generated_material(self, audit_id, user, assignment_id=None):
+        """Authorize first; return only frozen inputs, never teacher metadata."""
+        if user["role"] not in {"teacher", "student"}:
+            raise PermissionError("仅教师或获发布作业的学生可下载仿真材料。")
+        if user["role"] == "student":
+            assignment = self.get_assignment_for_user(assignment_id, user) if assignment_id else None
+            if not assignment or assignment["audit_id"] != audit_id:
+                return None
+        entry = self.get_audit(audit_id)
+        if not entry or entry["org_id"] != user["org_id"]:
+            return None
+        metadata = self._generated_exercise(audit_id, user["org_id"])
+        if not metadata:
+            return None
+        from src.exercise_generator import case_digest
+        rules = [f.rule for f in entry["findings"] if f.rule.id in metadata["rule_versions"]]
+        if (metadata["standard_answer"] != sorted(f.rule.id for f in entry["findings"] if f.hit)
+                or case_digest(entry["dataset"], rules) != metadata["case_sha256"]):
+            raise ValueError("出题记录与冻结材料不一致，请核查备份。")
+        return entry["dataset"]
+
+    def _insert_report_version(self, db, audit_id, user, snapshot):
+        from webapp.report_archive import canonical, digest
+
+        html, manifest = snapshot["html"], snapshot["manifest"]
+        audit = db.execute("SELECT org_id FROM audits WHERE id=?", (audit_id,)).fetchone()
+        if not audit or manifest["audit_id"] != audit_id or manifest["org_id"] != audit["org_id"]:
+            raise ValueError("归档主体不一致。")
+        manifest_json = canonical(manifest)
+        html_hash = digest(html.encode())
+        manifest_hash = digest(manifest_json.encode())
+        content_hash = digest((html_hash + manifest_hash).encode())
+        existing = db.execute("SELECT version FROM audit_report_versions WHERE audit_id=? AND content_sha256=?",
+                              (audit_id, content_hash)).fetchone()
+        if existing:
+            return existing["version"], False
+        version = db.execute("SELECT COALESCE(MAX(version),0)+1 FROM audit_report_versions WHERE audit_id=?",
+                             (audit_id,)).fetchone()[0]
+        db.execute("""INSERT INTO audit_report_versions
+                   (audit_id,version,html,html_sha256,manifest_json,manifest_sha256,content_sha256,created_by,created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                   (audit_id, version, html, html_hash, manifest_json, manifest_hash, content_hash, user["id"], _now()))
+        self._register_report_protection(db,manifest.get("protection"),audit["org_id"],"audit",audit_id,version)
+        return version, True
+
+    @staticmethod
+    def _register_report_protection(db, protection, org_id, kind, audit_id=None, version=None, org_report_id=None):
+        from src.report_protection import IDENTIFIER
+        if protection is None:
+            return  # Legacy archives remain unmarked; no fabricated old registrations.
+        if (not isinstance(protection,dict) or protection.get("method") != "archive-original"
+                or not isinstance(protection.get("id"),str) or not IDENTIFIER.fullmatch(protection["id"])):
+            raise ValueError("报告追溯标识无效。")
+        db.execute("INSERT INTO report_protections VALUES (?,?,?,?,?,?)",
+                   (protection["id"],org_id,kind,audit_id,version,org_report_id))
+
+    def report_protection_target(self, identifier, user):
+        if user["role"] not in {"org_admin","accountant","teacher","platform_admin"}:
+            raise PermissionError("无权核验报告。")
+        with self.connect() as db:
+            row=db.execute("SELECT * FROM report_protections WHERE id=? AND org_id=?",
+                           (identifier,user["org_id"])).fetchone()
+        return dict(row) if row else None
+
+    def archive_report(self, audit_id, user, snapshot):
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            return self._insert_report_version(db, audit_id, user, snapshot)
+
+    @staticmethod
+    def _verify_report_version(row, full=False):
+        from webapp.report_archive import digest
+
+        if (digest(row["manifest_json"].encode()) != row["manifest_sha256"]
+                or digest((row["html_sha256"] + row["manifest_sha256"]).encode()) != row["content_sha256"]
+                or full and digest(row["html"].encode()) != row["html_sha256"]
+                or full and row["pdf_bytes"] is not None and digest(row["pdf_bytes"]) != row["pdf_sha256"]):
+            raise ValueError("归档完整性校验失败；请核查备份，不重新覆盖该版本。")
+
+    def report_versions(self, audit_id):
+        with self.connect() as db:
+            rows = db.execute("""SELECT audit_id,version,html_sha256,manifest_json,manifest_sha256,content_sha256,
+                                 created_by,created_at,pdf_sha256,pdf_created_at FROM audit_report_versions
+                                 WHERE audit_id=? ORDER BY version DESC""", (audit_id,)).fetchall()
+        result = []
+        for row in rows:
+            self._verify_report_version(row)
+            item = dict(row)
+            item["manifest"] = json.loads(item.pop("manifest_json"))
+            result.append(item)
+        return result
+
+    def get_report_version(self, audit_id, version):
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM audit_report_versions WHERE audit_id=? AND version=?",
+                             (audit_id, version)).fetchone()
+        if not row:
+            return None
+        self._verify_report_version(row, full=True)
+        item = dict(row)
+        item["manifest"] = json.loads(item.pop("manifest_json"))
+        return item
+
+    def attach_report_pdf(self, audit_id, version, pdf):
+        """First completed exporter wins; no overwrite, even across processes."""
+        from webapp.report_archive import digest
+
+        if not pdf.startswith(b"%PDF"):
+            raise ValueError("PDF 归档内容无效。")
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("""UPDATE audit_report_versions SET pdf_bytes=?,pdf_sha256=?,pdf_created_at=?
+                          WHERE audit_id=? AND version=? AND pdf_bytes IS NULL""",
+                       (pdf, digest(pdf), _now(), audit_id, version))
+        return self.get_report_version(audit_id, version)
+
+    def search_audits(self, user, query="", period="", date_from=None, date_to=None,
+                      risk="all", page=1, page_size=20):
+        def literal(value):
+            return "%" + value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+        where, args = "a.org_id=?", [user["org_id"]]
+        if user["role"] == "accountant":
+            where += " AND c.accountant_id=? AND c.org_id=a.org_id"
+            args.append(user["id"])
+        if query:
+            where += " AND (a.company_name LIKE ? ESCAPE '\\' OR a.taxpayer_id LIKE ? ESCAPE '\\' OR a.id LIKE ? ESCAPE '\\')"
+            args.extend([literal(query)] * 3)
+        if period:
+            where += " AND a.period LIKE ? ESCAPE '\\'"
+            args.append(literal(period))
+        for field, operator in ((date_from, ">="), (date_to, "<=")):
+            if field:
+                where += f" AND substr(a.audited_at,1,10){operator}?"
+                args.append(field)
+        if risk in {"hit", "high"}:
+            key = "hit" if risk == "hit" else "high"
+            where += f" AND json_extract(a.summary_json,'$.{key}')>0"
+        join = "FROM audits a LEFT JOIN clients c ON c.id=a.client_id WHERE " + where
+        with self.connect() as db:
+            # Count and page must describe the same read snapshot during uploads.
+            db.execute("BEGIN")
+            total = db.execute("SELECT COUNT(*) " + join, args).fetchone()[0]
+            rows = db.execute("""SELECT a.id,a.company_name,a.taxpayer_id,a.period,a.audited_at,a.summary_json,
+                              (SELECT COUNT(*) FROM audit_report_versions v WHERE v.audit_id=a.id) AS report_versions """ + join
+                              + " ORDER BY a.audited_at DESC,a.rowid DESC LIMIT ? OFFSET ?",
+                              [*args, page_size, (page-1)*page_size]).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row); item["summary"] = json.loads(item.pop("summary_json")); items.append(item)
+        return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+    def org_report_sources(self, user):
+        """Capture current clients, audit revisions and branding in one read snapshot."""
+        import base64
+        if user["role"] not in {"org_admin", "platform_admin"}:
+            raise PermissionError("只有机构/平台管理员可生成本机构总览。")
+        with self.connect() as db:
+            db.execute("BEGIN")
+            clients = [dict(row) for row in db.execute(
+                """SELECT c.*,u.display_name AS accountant_name FROM clients c
+                   LEFT JOIN users u ON u.id=c.accountant_id AND u.org_id=c.org_id
+                   WHERE c.org_id=? ORDER BY c.name,c.id""", (user["org_id"],))]
+            audits = [dict(row) for row in db.execute(
+                "SELECT * FROM audits WHERE org_id=? ORDER BY audited_at DESC,rowid DESC", (user["org_id"],))]
+            row = db.execute("SELECT * FROM org_settings WHERE org_id=?", (user["org_id"],)).fetchone()
+            branding = dict(row) if row else dict(self.ORG_DEFAULTS)
+        logo = branding.pop("logo_bytes", None)
+        branding["logo_data_uri"] = (f"data:{branding.get('logo_mime')};base64,{base64.b64encode(logo).decode()}" if logo else "")
+        return {"clients": clients, "audits": audits, "branding": {
+            key: branding[key] for key in ("display_name", "report_title", "footer_text", "logo_data_uri")}}
+
+    def save_org_report(self, user, snapshot, html):
+        from webapp.report_archive import canonical, digest
+        if user["role"] not in {"org_admin", "platform_admin"} or snapshot["org_id"] != user["org_id"]:
+            raise PermissionError("无权归档该机构报告。")
+        encoded = canonical(snapshot)
+        with self.connect() as db:
+            db.execute("""INSERT INTO org_reports
+                       (id,org_id,created_by,created_at,snapshot_json,snapshot_sha256,html,html_sha256)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                       (snapshot["id"],user["org_id"],user["id"],snapshot["created_at"],encoded,digest(encoded.encode()),html,digest(html.encode())))
+            self._register_report_protection(db,snapshot.get("protection"),user["org_id"],"org",org_report_id=snapshot["id"])
+        return self.get_org_report(snapshot["id"], user)
+
+    def get_org_report(self, report_id, user):
+        from webapp.report_archive import digest
+        if user["role"] not in {"org_admin", "platform_admin"}:
+            raise PermissionError("无权访问机构总览。")
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM org_reports WHERE id=? AND org_id=?", (report_id,user["org_id"])).fetchone()
+        if row is None:
+            return None
+        if (digest(row["snapshot_json"].encode()) != row["snapshot_sha256"]
+                or digest(row["html"].encode()) != row["html_sha256"]
+                or row["pdf_bytes"] is not None and digest(row["pdf_bytes"]) != row["pdf_sha256"]):
+            raise ValueError("机构报告完整性校验失败，请核查备份，不重新覆盖归档。")
+        result = dict(row); result["snapshot"] = json.loads(result.pop("snapshot_json"))
+        return result
+
+    def list_org_reports(self, user):
+        if user["role"] not in {"org_admin", "platform_admin"}:
+            raise PermissionError("无权访问机构总览。")
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                """SELECT id,created_at,created_by,html_sha256,snapshot_sha256,pdf_sha256
+                   FROM org_reports WHERE org_id=? ORDER BY created_at DESC,rowid DESC LIMIT 100""", (user["org_id"],))]
+
+    def attach_org_report_pdf(self, report_id, user, pdf):
+        from webapp.report_archive import digest
+        if not pdf.startswith(b"%PDF"):
+            raise ValueError("PDF 内容无效。")
+        if not self.get_org_report(report_id, user):
+            return None
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("""UPDATE org_reports SET pdf_bytes=?,pdf_sha256=?,pdf_created_at=?
+                       WHERE id=? AND org_id=? AND pdf_bytes IS NULL""", (pdf,digest(pdf),_now(),report_id,user["org_id"]))
+        return self.get_org_report(report_id, user)
 
     def get_audit(self, audit_id: str) -> dict[str, Any] | None:
         with self.connect() as db:
@@ -1052,6 +1337,15 @@ class Store:
                 item["summary"] = json.loads(item.pop("summary_json"))
                 result.append(item)
             return result
+
+    def audit_history_for_comparison(self, entry: dict[str, Any]) -> list[dict[str, Any]]:
+        """Only metadata for the exact current organization/client/taxpayer."""
+        with self.connect() as db:
+            return [dict(row) for row in db.execute(
+                """SELECT id,org_id,client_id,taxpayer_id,period,audited_at FROM audits
+                   WHERE org_id=? AND client_id IS ? AND taxpayer_id=?
+                   ORDER BY audited_at DESC,rowid DESC""",
+                (entry["org_id"], entry["client_id"], entry["taxpayer_id"]))]
 
     def get_finding_interpretation(self, audit_id: str, rule_id: str,
                                    evidence_hash: str) -> dict[str, Any] | None:
@@ -1105,18 +1399,31 @@ class Store:
 
     def create_assignment(self, user: dict[str, Any], title: str, audit_id: str,
                           target_student_id: str | None, weights: dict[str, float],
-                          false_positive_penalty: float, published: bool) -> str:
+                          false_positive_penalty: float, published: bool,
+                          class_id: str | None = None, deadline_at=None) -> str:
         assignment_id = secrets.token_hex(12)
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            due = classroom.deadline(deadline_at)
+            if published and due and datetime.fromisoformat(due) <= classroom.now():
+                raise classroom.ClassroomError("发布时截止时间必须在未来。")
             db.execute(
                 "INSERT INTO assignments VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (assignment_id, user["org_id"], title, audit_id, user["id"], target_student_id,
+                (assignment_id, user["org_id"], classroom.clean_title(title), audit_id, user["id"], target_student_id,
                  _json(weights), false_positive_penalty, int(published), _now()),
             )
+            if class_id or due:
+                classroom.set_assignment_settings(db,assignment_id,user,class_id,due)
+                if class_id and target_student_id and not db.execute(
+                    "SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?",
+                    (class_id,target_student_id),
+                ).fetchone():
+                    raise classroom.ClassroomError("指定学生不在所选班级名册中。")
         return assignment_id
 
     def list_assignments(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         with self.connect() as db:
+            db.execute("BEGIN")
             if user["role"] == "student":
                 rows = db.execute(
                     """SELECT * FROM assignments WHERE org_id=? AND published=1
@@ -1125,12 +1432,26 @@ class Store:
                 )
             else:
                 rows = db.execute("SELECT * FROM assignments WHERE org_id=? ORDER BY created_at DESC", (user["org_id"],))
-            return [self._assignment_dict(dict(row)) for row in rows]
+            result=[]
+            for row in rows.fetchall():
+                item=classroom.decorate(db,self._assignment_dict(dict(row)))
+                if classroom.can_access(db,item,user):
+                    if user["role"] == "student":
+                        item.pop("weights",None)  # Configured hit weights can reveal answers.
+                    result.append(item)
+            return result
 
     def get_assignment(self, assignment_id: str) -> dict[str, Any] | None:
         with self.connect() as db:
             row = db.execute("SELECT * FROM assignments WHERE id=?", (assignment_id,)).fetchone()
-        return self._assignment_dict(dict(row)) if row else None
+            return classroom.decorate(db,self._assignment_dict(dict(row))) if row else None
+
+    def get_assignment_for_user(self, assignment_id, user):
+        with self.connect() as db:
+            db.execute("BEGIN")
+            row=db.execute("SELECT * FROM assignments WHERE id=?",(assignment_id,)).fetchone()
+            item=classroom.decorate(db,self._assignment_dict(dict(row))) if row else None
+            return item if classroom.can_access(db,item,user) else None
 
     @staticmethod
     def _assignment_dict(item: dict[str, Any]) -> dict[str, Any]:
@@ -1139,9 +1460,14 @@ class Store:
         return item
 
     def save_submission(self, assignment_id: str, student_id: str, answers: list[str],
-                        score: float, details: dict[str, Any]) -> str:
+                        score: float, details: dict[str, Any], user=None) -> str:
         submission_id = secrets.token_hex(12)
         with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            account=db.execute("SELECT id,role,org_id FROM users WHERE id=?",(student_id,)).fetchone()
+            if not account or (user and user["id"] != student_id):
+                raise classroom.ClassroomError("作业不存在。",404)
+            classroom.check_submission(db,assignment_id,user or dict(account))
             db.execute(
                 """INSERT INTO submissions(id,assignment_id,student_id,answers_json,score,details_json,submitted_at)
                    VALUES (?,?,?,?,?,?,?)
@@ -1163,11 +1489,14 @@ class Store:
         item["details"] = json.loads(item.pop("details_json"))
         return item
 
-    def list_submissions(self, org_id: str, assignment_id: str | None = None) -> list[dict[str, Any]]:
+    def list_submissions(self, org_id: str, assignment_id: str | None = None, user_id=None) -> list[dict[str, Any]]:
         where, args = "a.org_id=?", [org_id]
         if assignment_id:
             where += " AND s.assignment_id=?"
             args.append(assignment_id)
+        if user_id:
+            where += " AND (a.created_by=? OR NOT EXISTS (SELECT 1 FROM training_assignment_settings ts WHERE ts.assignment_id=a.id AND (ts.class_id IS NOT NULL OR ts.paper_id IS NOT NULL)))"
+            args.append(user_id)
         with self.connect() as db:
             rows = db.execute(
                 f"""SELECT s.*,u.display_name,a.title FROM submissions s
@@ -1183,13 +1512,15 @@ class Store:
                 result.append(item)
             return result
 
-    def submission_org(self, submission_id: str) -> str | None:
+    def submission_org(self, submission_id: str, user=None) -> str | None:
         with self.connect() as db:
             row = db.execute(
-                """SELECT a.org_id FROM submissions s JOIN assignments a ON a.id=s.assignment_id
+                """SELECT a.* FROM submissions s JOIN assignments a ON a.id=s.assignment_id
                    WHERE s.id=?""", (submission_id,),
             ).fetchone()
-        return row["org_id"] if row else None
+            if row and user and not classroom.can_access(db,classroom.decorate(db,dict(row)),user):
+                return None
+            return row["org_id"] if row else None
 
     def review_submission(self, submission_id: str, teacher_id: str, adjusted_score: float, feedback: str) -> None:
         with self.connect() as db:

@@ -270,9 +270,69 @@ function renderTrend(box,rows){
   if(!values.length){box.append(emptyChart("所选期间没有收入或成本数据","上传含利润表的材料后，这里会展示趋势折线图"));return;}
   const low=Math.min(0,...values),high=Math.max(1,...values),x=i=>65+i*520/(data.length-1),y=v=>190-(v-low)/(high-low)*160;
   for(let i=0;i<4;i++){const v=low+(high-low)*i/3,yy=y(v);svg.append(svgNode("line",{x1:65,y1:yy,x2:590,y2:yy,stroke:"#edf0f6"}),svgNode("text",{x:57,y:yy+4,"text-anchor":"end",class:"chart-label"},(v/10000).toFixed(1)+"万"));}
+  /* 折线生长动画 + 悬停浮卡：线段 dashoffset 扫描展开、数据点沿线点亮；悬停出浮卡 + 竖向参考线。 */
+  const SWEEP=800;
+  box.classList.add("trend-chart-panel");
+  const tooltip=el("div","risk-hover-card");tooltip.hidden=true;
+  const guide=svgNode("line",{y1:22,y2:196,stroke:"#b9c7dd","stroke-dasharray":"3 4",class:"trend-guide"});
+  svg.append(guide);
+  function placeTrendTip(event,target){
+    const bounds=box.getBoundingClientRect(),anchor=target.getBoundingClientRect();
+    const px=event&&Number.isFinite(event.clientX)?event.clientX:anchor.left+anchor.width/2;
+    const py=event&&Number.isFinite(event.clientY)?event.clientY:anchor.top+anchor.height/2;
+    const w=tooltip.offsetWidth,h=tooltip.offsetHeight;
+    tooltip.style.left=Math.max(8,Math.min(px-bounds.left+16,bounds.width-w-8))+"px";
+    tooltip.style.top=Math.max(8,(py+h+16>innerHeight?py-bounds.top-h-12:py-bounds.top+16))+"px";
+  }
+  function bindTrendDot(hit,dot,p){
+    const show=e=>{
+      tooltip.replaceChildren();
+      const heading=el("div","risk-hover-heading"),name=el("strong","risk-label",p.key);
+      name.style.setProperty("--risk-color",p.color);
+      heading.append(name,el("span",null,p.periodLabel));
+      tooltip.append(heading,el("p","trend-hover-value",p.valueText));
+      tooltip.hidden=false;
+      guide.setAttribute("x1",p.x);guide.setAttribute("x2",p.x);
+      dot.classList.add("is-active");guide.classList.add("is-active");
+      placeTrendTip(e,hit);
+    };
+    const hide=()=>{tooltip.hidden=true;dot.classList.remove("is-active");guide.classList.remove("is-active");};
+    hit.addEventListener("pointerenter",show);
+    hit.addEventListener("pointermove",e=>{if(!tooltip.hidden)placeTrendTip(e,hit);});
+    hit.addEventListener("pointerleave",hide);
+    hit.addEventListener("focus",()=>show(null));
+    hit.addEventListener("blur",hide);
+  }
   for(const [key,color]of [["营业收入","#2865e8"],["营业成本","#6bbda9"]]){
-    let previous=null;data.forEach((r,i)=>{const m=metricOf(r,key);if(!m){previous=null;return;}const point=[x(i),y(Number(m.value))];if(previous)svg.append(svgNode("line",{x1:previous[0],y1:previous[1],x2:point[0],y2:point[1],stroke:color,"stroke-width":3}));const dot=svgNode("circle",{cx:point[0],cy:point[1],r:5,fill:color,tabindex:0});dot.append(svgNode("title",{},r.period+" "+key+"："+amount(m)+" 元"));svg.append(dot);previous=point;});
+    const pts=data.map((r,i)=>{const m=metricOf(r,key);return m?{x:x(i),y:y(Number(m.value)),i,periodLabel:r.period,valueText:amount(m)+" 元"}:null;});
+    const segs=[];
+    for(let j=0;j<pts.length-1;j++)if(pts[j]&&pts[j+1])segs.push([pts[j],pts[j+1]]);
+    const spacing=segs.length?SWEEP/segs.length:0,dur=Math.round(spacing+150);
+    segs.forEach((seg,k)=>{
+      const line=svgNode("line",{x1:seg[0].x,y1:seg[0].y,x2:seg[1].x,y2:seg[1].y,stroke:color,"stroke-width":3,"stroke-linecap":"round"});
+      svg.append(line);
+      if(!REDUCED_MOTION){
+        const len=Math.hypot(seg[1].x-seg[0].x,seg[1].y-seg[0].y);
+        line.style.strokeDasharray=len+" "+len;line.style.strokeDashoffset=len;
+        line.style.transition="stroke-dashoffset "+dur+"ms linear "+Math.round(k*spacing)+"ms";
+        requestAnimationFrame(()=>requestAnimationFrame(()=>{line.style.strokeDashoffset="0";}));
+      }
+    });
+    for(const p of pts){
+      if(!p)continue;
+      const dot=svgNode("circle",{cx:p.x,cy:p.y,r:5,fill:color,class:"trend-dot"});
+      svg.append(dot);
+      const hit=svgNode("circle",{cx:p.x,cy:p.y,r:14,tabindex:0,class:"trend-hit","aria-label":p.periodLabel+" "+key+"："+p.valueText});
+      bindTrendDot(hit,dot,{x:p.x,key,color,periodLabel:p.periodLabel,valueText:p.valueText});
+      svg.append(hit);
+      if(!REDUCED_MOTION){
+        dot.style.opacity="0";
+        dot.style.transition="opacity .25s ease "+Math.round(p.i/(data.length-1)*SWEEP+180)+"ms";
+        requestAnimationFrame(()=>requestAnimationFrame(()=>{dot.style.opacity="1";}));
+        dot.addEventListener("transitionend",()=>{dot.style.opacity="";dot.style.transition="";},{once:true});
+      }
+    }
   }
   data.forEach((r,i)=>{const p=periodInfo(r.period),labels={month:()=>Math.floor((p.order-1)/12)+"-"+String((p.order-1)%12+1).padStart(2,"0"),quarter:()=>Math.floor((p.order-1)/4)+"Q"+((p.order-1)%4+1),half:()=>Math.floor((p.order-1)/2)+"H"+((p.order-1)%2+1),year:()=>String(p.order)};svg.append(svgNode("text",{x:x(i),y:224,"text-anchor":"middle",class:"chart-label"},labels[p.group]()));});
-  const legend=el("div","legend");for(const [text,color]of [["营业收入","#2865e8"],["营业成本","#6bbda9"]]){const n=el("span",null,text);n.style.setProperty("--color",color);legend.append(n);}box.append(svg,legend,el("p","source-note","缺失指标不连线；仅比较相同期间粒度，最多展示最近 8 期。"));
+  const legend=el("div","legend");for(const [text,color]of [["营业收入","#2865e8"],["营业成本","#6bbda9"]]){const n=el("span",null,text);n.style.setProperty("--color",color);legend.append(n);}box.append(svg,legend,el("p","source-note","缺失指标不连线；仅比较相同期间粒度，最多展示最近 8 期。"),tooltip);
 }
