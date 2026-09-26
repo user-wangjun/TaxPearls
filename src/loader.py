@@ -1616,7 +1616,9 @@ def _from_workbook(wb) -> Dataset:
                 raise InputError(f"指标「{key}」与合同四流勾稽计算值冲突")
             metrics[key] = metric
         _read_supplement(wb, company, metrics)
-        return Dataset(company, accounts, declarations, metrics)
+        from . import related_graph
+        graph = related_graph.read_workbook(wb, company)
+        return Dataset(company, accounts, declarations, metrics, graph)
     finally:
         wb.close()
 

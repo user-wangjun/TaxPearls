@@ -4,12 +4,13 @@
 明文只存在于 ``.env`` 与进程内存，**不进日志、不进数据库、不进异常信息**。
 
 域名 ``taxpearls.wxtech.site`` 须在 Resend 后台完成 SPF/DKIM 验证，
-否则发出的邮件会被收件方判为垃圾邮件（详见 docs/06 第 7.3 节）。
+否则发出的邮件会被收件方判为垃圾邮件（详见 第 7.3 节）。
 """
 from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 
@@ -24,6 +25,16 @@ class MailError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _open_request(request, timeout):
+    # Do not forward a bearer key or notification payload through redirects.
+    return urllib.request.build_opener(_NoRedirect()).open(request, timeout=timeout)
 
 
 def _api_key() -> str:
@@ -47,7 +58,8 @@ def _validate_recipient(to: str) -> str:
 
 
 def send_email(*, to: str, subject: str, html: str, text: str | None = None,
-               reply_to: str | None = None, timeout: int = 30) -> str:
+               reply_to: str | None = None, timeout: int = 30,
+               idempotency_key: str | None = None, from_header: str | None = None) -> str:
     """发送一封邮件，返回 Resend 受理后的邮件 ID。
 
     参数：
@@ -61,8 +73,13 @@ def send_email(*, to: str, subject: str, html: str, text: str | None = None,
     失败抛出 :class:`MailError`，消息中含上游状态码与响应摘要，但**不含密钥**。
     """
     recipient = _validate_recipient(to)
+    if idempotency_key is not None and not re.fullmatch(r"[A-Za-z0-9/_-]{1,256}", idempotency_key):
+        raise MailError("邮件幂等键格式不正确。")
+    sender = from_header if from_header is not None else _from_header()
+    if not sender or len(sender) > 200 or any(ord(char) < 32 for char in sender):
+        raise MailError("发件人配置无效。")
     payload: dict[str, object] = {
-        "from": _from_header(),
+        "from": sender,
         "to": [recipient],
         "subject": subject,
         "html": html,
@@ -84,8 +101,10 @@ def send_email(*, to: str, subject: str, html: str, text: str | None = None,
         },
         method="POST",
     )
+    if idempotency_key:
+        request.add_header("Idempotency-Key", idempotency_key)
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _open_request(request, timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", "replace")[:300]
@@ -127,3 +146,20 @@ def send_password_reset_email(*, to: str, reset_url: str, expires_minutes: int =
     )
     footnote = "若非本人操作，请忽略本邮件——您的账号不会被修改。请勿回复本邮件。"
     return send_email(to=to, subject=subject, html=_page("重置登录密码", body_html, footnote))
+
+
+def send_registration_code_email(*, to: str, code: str, signup_url: str,
+                                 expires_minutes: int = 10) -> str:
+    """发送注册验证邮件：6 位验证码 + 一键预填链接。"""
+    subject = f"【税海拾珠】注册验证码 {code}"
+    body_html = (
+        "<p>您的注册验证码为：</p>"
+        f'<p style="font-size:30px;font-weight:700;letter-spacing:.35em;color:#1a3a5c;'
+        f'background:#f4f7fb;border:1px solid #dbe2ec;border-radius:8px;'
+        f'padding:14px 10px;text-align:center">{code}</p>'
+        "<p>也可以点击下面的链接，验证码会自动填入：</p>"
+        f'<p><a href="{signup_url}">完成注册（{expires_minutes} 分钟内有效）</a></p>'
+        "<p><b>验证码 10 分钟内有效；连续输错 5 次将作废，需重新获取。</b></p>"
+    )
+    footnote = "若非本人操作，请忽略本邮件。请勿回复本邮件。"
+    return send_email(to=to, subject=subject, html=_page("注册验证码", body_html, footnote))

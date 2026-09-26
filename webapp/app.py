@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import base64
 from copy import deepcopy
-from dataclasses import replace
+from contextlib import asynccontextmanager
+from dataclasses import asdict, replace
 import os
 import re
 import sqlite3
 import tempfile
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,10 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from src import engine, loader, render, training
 from src import settings  # Load .env before Store and route initialization.
-from src.mailer import MailError, send_password_reset_email
-from src.models import Dataset
+from src.mailer import MailError, send_password_reset_email, send_registration_code_email
+from src.models import Dataset, Rule
+from webapp import captcha
+from webapp.notifications import NotificationWorker, email_delivery_enabled
 from webapp.storage import SetupAlreadyInitialized, Store
 from webapp.login_guard import LoginGuard, RateLimiter
 from webapp.knowledge import (
@@ -45,10 +48,21 @@ MAX_NORMALIZED_LOGO_BYTES = 1024 * 1024
 MAX_ORG_LOGO_EDGE = 1200
 COOKIE_NAME = "taxpearls_session"
 
-app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(application):
+    worker = NotificationWorker(lambda: store)
+    worker.start()
+    try:
+        yield
+    finally:
+        worker.stop()
+
+
+app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
 store = Store()
 login_guard = LoginGuard()
 reset_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})
+register_code_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})
 
 
 @app.get("/healthz")
@@ -87,6 +101,26 @@ class PasswordResetConfirmBody(BaseModel):
     password: str
 
 
+class EmailStartBody(BaseModel):
+    email: str
+    captcha_id: str
+    captcha_answer: str
+
+
+class RegisterCompleteBody(BaseModel):
+    email: str
+    code: str
+    invite_code: str
+    password: str
+
+
+class InviteBody(BaseModel):
+    org_name: str = Field(min_length=1, max_length=120)
+    seats: int = Field(ge=1, le=200)
+    bound_email: str
+    expires_days: int = Field(default=7, ge=1, le=30)
+
+
 class ClientBody(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     taxpayer_id: str = Field(min_length=1, max_length=64)
@@ -115,11 +149,19 @@ class RuleStateBody(BaseModel):
     enabled: bool
 
 
+class NotificationPreferencesBody(BaseModel):
+    audit_completed: bool = False
+    high_risk: bool = False
+    email_enabled: bool = False
+
+
 class RuleParametersBody(BaseModel):
     expected_version: str = Field(min_length=1, max_length=32)
     new_version: str = Field(min_length=1, max_length=32)
     logic: dict[str, Any]
     threshold_basis: str = Field(min_length=1, max_length=500)
+    effective_from: str | None = Field(default=None, max_length=10)
+    effective_to: str | None = Field(default=None, max_length=10)
 
 
 class RuleTrialBody(RuleParametersBody):
@@ -230,19 +272,57 @@ def _version_tuple(value: str) -> tuple[int, ...]:
 
 def _effective_rules() -> list[Any]:
     overrides = store.rule_overrides()
+    histories = store.rule_versions()
     effective = []
     for base in engine.load_rules(RULES_DIR):
         override = overrides.get(base.id)
         if override and _version_tuple(override["version"]) > _version_tuple(base.version):
+            record = next((item for item in histories.get(base.id, []) if item["version"] == override["version"]), None)
+            frozen = Rule(**record["rule"]) if record and record.get("rule") else base
             candidate = replace(
-                base, version=override["version"], logic=deepcopy(override["logic"]),
+                frozen, version=override["version"], logic=deepcopy(override["logic"]),
                 threshold_basis=override["threshold_basis"],
+                effective_from=override["effective_from"], effective_to=override["effective_to"],
             )
             engine.validate_rule_update(candidate)
             effective.append(candidate)
         else:
             effective.append(base)
     return effective
+
+
+def _audit_rules(dataset: Dataset, enabled: set[str] | None = None) -> list[Any]:
+    """Select one rule version covering the complete audited period.
+
+    An interval crossing a version boundary needs a split-period audit; choosing
+    a version by the end date would silently apply it to earlier transactions.
+    """
+    period = loader._parse_period(dataset.company.period, "审计所属期")
+    histories = store.rule_versions()
+    selected = []
+    for base in engine.load_rules(RULES_DIR):
+        if enabled is not None and base.id not in enabled:
+            continue
+        versions = histories.get(base.id, [])
+        overlapping = [item for item in versions if item["effective_from"]
+                       and item["effective_from"] <= period.end.isoformat()
+                       and (item["effective_to"] or "9999-12-31") >= period.start.isoformat()]
+        if overlapping:
+            item = overlapping[0]
+            if len(overlapping) != 1 or item["effective_from"] > period.start.isoformat() or (item["effective_to"] or "9999-12-31") < period.end.isoformat():
+                raise HTTPException(422, f"规则 {base.id} 生效期跨越审计所属期；请拆分期间审计，不能混用版本。")
+        else:
+            undated = [item for item in versions if not item["effective_from"]]
+            item = undated[-1] if undated else None
+        if item:
+            frozen = Rule(**item["rule"]) if item.get("rule") else base
+            candidate = replace(frozen, version=item["version"], logic=deepcopy(item["logic"]),
+                                threshold_basis=item["threshold_basis"],
+                                effective_from=item["effective_from"], effective_to=item["effective_to"])
+            selected.append(engine.validate_rule_update(candidate))
+        else:
+            selected.append(base)
+    return selected
 
 
 def _rule_by_id(rule_id: str) -> Any:
@@ -262,9 +342,24 @@ def _candidate_rule(rule: Any, body: RuleParametersBody) -> Any:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     if new_version <= current_version:
         raise HTTPException(status_code=422, detail=f"新版本必须高于当前 v{rule.version}。")
+    effective_from = body.effective_from or None
+    effective_to = body.effective_to or None
+    if effective_to and not effective_from:
+        raise HTTPException(422, "规则终止日期必须同时提供起始日期。")
+    for value in (effective_from, effective_to):
+        if value:
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                raise HTTPException(422, "规则生效日期须为 YYYY-MM-DD。")
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                raise HTTPException(422, "规则生效日期须为有效的 YYYY-MM-DD。") from None
+    if effective_from and effective_to and effective_from > effective_to:
+        raise HTTPException(422, "规则生效终止日不能早于起始日。")
     candidate = replace(
         rule, version=body.new_version.strip(), logic=deepcopy(body.logic),
         threshold_basis=body.threshold_basis.strip(),
+        effective_from=effective_from, effective_to=effective_to,
     )
     try:
         return engine.validate_rule_update(candidate)
@@ -278,6 +373,7 @@ def _rule_payload(rule: Any, enabled: bool, override: dict[str, Any] | None = No
         "severity": rule.severity, "version": rule.version, "enabled": enabled,
         "logic": rule.logic, "inputs": rule.inputs,
         "threshold_basis": rule.threshold_basis,
+        "effective_from": rule.effective_from, "effective_to": rule.effective_to,
         "customized": bool(override and override.get("version") == rule.version),
         "updated_at": override.get("updated_at") if override else None,
     }
@@ -287,6 +383,8 @@ def _trial_payload(finding: Any, audit_id: str) -> dict[str, Any]:
     return {
         "audit_id": audit_id, "rule_id": finding.rule.id,
         "version": finding.rule.version, "name": finding.rule.name,
+        "effective_from": finding.rule.effective_from,
+        "effective_to": finding.rule.effective_to,
         "status": finding.status, "severity": finding.rule.severity,
         "conclusion": finding.conclusion, "calculation": finding.calculation,
         "threshold_desc": finding.threshold_desc, "skip_reason": finding.skip_reason,
@@ -541,7 +639,7 @@ def logout(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Res
 
 @app.post("/api/auth/password/reset")
 def password_reset(body: PasswordResetBody, request: Request) -> dict[str, Any]:
-    """申请重置邮件。防枚举（docs/06 3.5）：无论邮箱是否存在，成功响应完全一致。"""
+    """申请重置邮件。防枚举：无论邮箱是否存在，成功响应完全一致。"""
     ip = request.client.host if request.client else "unknown"
     if not reset_limiter.allow(email=body.email, ip=ip):
         return JSONResponse(status_code=429, content={"detail": "请求过于频繁，请稍后再试。"})
@@ -555,7 +653,7 @@ def password_reset(body: PasswordResetBody, request: Request) -> dict[str, Any]:
             store.log(None, "password_reset_failed", "email_hash",
                       login_guard.fingerprint(body.email.strip().lower()), str(exc)[:200])
             raise HTTPException(status_code=502, detail="重置邮件发送失败，请稍后重试。") from None
-        # 留痕口径（docs/06 11.1.1）：发送事件入审计日志，邮箱只以哈希出现，不落明文。
+        # 留痕口径：发送事件入审计日志，邮箱只以哈希出现，不落明文。
         store.log(None, "password_reset_sent", "email_hash",
                   login_guard.fingerprint(body.email.strip().lower()),
                   f"ip_hash={login_guard.fingerprint(ip)}")
@@ -572,9 +670,171 @@ def password_reset_confirm(body: PasswordResetConfirmBody) -> dict[str, Any]:
     return {"message": "密码已重置，请使用新密码登录。"}
 
 
+@app.get("/api/auth/captcha")
+def auth_captcha() -> dict[str, str]:
+    """签发算术人机验证题。"""
+    return captcha.issue()
+
+
+@app.post("/api/auth/email/start")
+def email_start(body: EmailStartBody, request: Request) -> dict[str, Any]:
+    """注册第一步：人机验证 + 发送邮箱验证码。
+
+    - 人机验证挡的是「发送验证码」这个可被滥用的动作
+    - 邮箱已注册时不发信，提示直接登录
+    - 限频：单邮箱 15 分钟 1 次 / 单 IP 每小时 10 次
+    """
+    ip = request.client.host if request.client else "unknown"
+    if not captcha.verify(body.captcha_id, body.captcha_answer):
+        return JSONResponse(status_code=422, content={"detail": "人机验证不正确，请重试。"})
+    email = body.email.strip().lower()
+    if not register_code_limiter.allow(email=email, ip=ip):
+        return JSONResponse(status_code=429, content={"detail": "发送过于频繁，请 15 分钟后再试。"})
+    if store.get_user_by_email(email):
+        return {"message": "该邮箱已注册，请直接登录；忘记密码可用登录页的「忘记密码？」找回。",
+                "exists": True}
+    code = store.create_register_code(email)
+    if not code:
+        return JSONResponse(status_code=422, content={"detail": "邮箱格式不正确。"})
+    base = (os.getenv("TAXPEARLS_PUBLIC_BASE_URL", "").strip().rstrip("/")
+            or str(request.base_url).rstrip("/"))
+    signup_url = f"{base}/?email={email}&code={code}"
+    try:
+        send_registration_code_email(to=email, code=code, signup_url=signup_url)
+    except MailError as exc:
+        store.log(None, "register_code_failed", "email_hash",
+                  login_guard.fingerprint(email), str(exc)[:200])
+        raise HTTPException(status_code=502, detail="验证邮件发送失败，请稍后重试。") from None
+    store.log(None, "register_code_sent", "email_hash",
+              login_guard.fingerprint(email), f"ip_hash={login_guard.fingerprint(ip)}")
+    return {"message": "验证码已发送，10 分钟内有效；输错 5 次将作废。", "exists": False}
+
+
+@app.post("/api/register/complete")
+def register_complete(body: RegisterCompleteBody) -> Response:
+    """开户最后一步：邮箱验证码 + 创始码在单事务内核验并建号。
+
+    第一层（创始码）：建机构，注册者成为 org_admin。第二层（机构链接）为第二轮实现。
+    """
+    try:
+        user, token = store.register_with_code(body.email, body.code, body.invite_code, body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    except sqlite3.IntegrityError as exc:
+        if "users.email" in str(exc):
+            raise HTTPException(status_code=409, detail="该邮箱已注册，请直接登录。") from None
+        raise HTTPException(status_code=409, detail="账号与现有数据冲突。") from None
+    response = JSONResponse({"user": user, "org_id": user["org_id"]})
+    response.set_cookie(
+        COOKIE_NAME, token, max_age=12 * 3600, httponly=True,
+        samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1",
+    )
+    return response
+
+
+@app.post("/api/invites")
+def create_invite(body: InviteBody, session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
+    """平台管理员签发一次性创始码。"""
+    actor = _user(session)
+    _allow(actor, "platform_admin")
+    try:
+        invite = store.create_invite_code(actor, body.org_name, body.seats,
+                                          body.bound_email, body.expires_days)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    store.log(actor, "invite_created", "invite", invite["code"][:4] + "…",
+              f"org={body.org_name};seats={body.seats}")
+    return invite
+
+
+@app.get("/api/invites")
+def list_invites(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
+    actor = _user(session)
+    _allow(actor, "platform_admin")
+    return store.list_invite_codes()
+
+
 @app.get("/api/me")
 def me(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
     return _user(session)
+
+
+@app.get("/api/notifications/preferences")
+def notification_preferences(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
+    user = _user(session)
+    _allow(user, "platform_admin", "org_admin", "accountant", "teacher")
+    account = store.get_user(user["id"])
+    return {**store.notification_preferences(user["id"]), "has_email": bool(account and account.get("email")),
+            "delivery_enabled": email_delivery_enabled()}
+
+
+def _save_notification_preferences(user: dict[str, Any], target_id: str, body: NotificationPreferencesBody) -> dict[str, Any]:
+    try:
+        saved = store.set_notification_preferences(user, target_id, body.audit_completed, body.high_risk, body.email_enabled)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    store.log(user, "notification_preferences", "user", target_id,
+              f"audit_completed={body.audit_completed};high_risk={body.high_risk};email={body.email_enabled}")
+    return saved
+
+
+@app.put("/api/notifications/preferences")
+def update_notification_preferences(body: NotificationPreferencesBody,
+        session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
+    user = _user(session)
+    _allow(user, "platform_admin", "org_admin", "accountant", "teacher")
+    return _save_notification_preferences(user, user["id"], body)
+
+
+@app.get("/api/notifications/recipients")
+def notification_recipients(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
+    user = _user(session)
+    _allow(user, "platform_admin", "org_admin")
+    members = store.list_users(None if user["role"] == "platform_admin" else user["org_id"])
+    return [{"id": member["id"], "display_name": member["display_name"], "org_id": member["org_id"],
+             "role": member["role"], "has_email": bool(member.get("email")),
+             **store.notification_preferences(member["id"])}
+            for member in members if member["active"] and member["role"] != "student"]
+
+
+@app.put("/api/notifications/recipients/{user_id}")
+def update_notification_recipient(user_id: str, body: NotificationPreferencesBody,
+        session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
+    user = _user(session)
+    _allow(user, "platform_admin", "org_admin")
+    return _save_notification_preferences(user, user_id, body)
+
+
+@app.get("/api/notifications")
+def notifications(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
+    user = _user(session)
+    _allow(user, "platform_admin", "org_admin", "accountant", "teacher")
+    return store.list_notifications(user)
+
+
+@app.put("/api/notifications/{notification_id}/read")
+def read_notification(notification_id: str, session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
+    user = _user(session)
+    _allow(user, "platform_admin", "org_admin", "accountant", "teacher")
+    if not store.mark_notification_read(user, notification_id):
+        raise HTTPException(404, "通知不存在或无权查看。")
+    return {"id": notification_id, "read": True}
+
+
+@app.post("/api/notifications/{notification_id}/retry")
+def retry_notification(notification_id: str, session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
+    user = _user(session)
+    _allow(user, "platform_admin", "org_admin", "accountant", "teacher")
+    try:
+        authorized = store.retry_notification_delivery(user, notification_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    if not authorized:
+        raise HTTPException(404, "通知不存在或无权访问。")
+    store.log(user, "notification_retry", "notification", notification_id, "manual retry")
+    return {"id": notification_id, "email_status": "pending"}
 
 
 @app.get("/api/users")
@@ -668,11 +928,13 @@ def _save_audit(dataset: Dataset, user: dict[str, Any], client_id: str | None = 
         assigned = user["id"] if user["role"] == "accountant" else None
         client_id = store.upsert_client(user, dataset.company.name, dataset.company.taxpayer_id, assigned)["id"]
     try:
-        rules = _effective_rules()
         enabled = store.enabled_rule_ids()
-        if enabled is not None:
-            rules = [rule for rule in rules if rule.id in enabled]
+        rules = _audit_rules(dataset, enabled)
         findings = engine.run(rules, dataset)
+        # FR-B09 is a separate relationship traversal, not a YAML condition.
+        from src import related_graph
+        findings.extend(related_graph.run(dataset))
+        findings.sort(key=lambda f: ({"hit": 0, "pass": 1, "skipped": 2}[f.status], -f.severity_rank, f.rule.id))
     except engine.RuleError as exc:
         raise HTTPException(500, f"规则执行失败：{exc}")
     audit_id = uuid.uuid4().hex
@@ -838,6 +1100,14 @@ def rules(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list
     ]
 
 
+@app.get("/api/rules/{rule_id}/versions")
+def rule_versions(rule_id: str, session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
+    user = _user(session)
+    _allow(user, "platform_admin")
+    _rule_by_id(rule_id)
+    return store.rule_versions(rule_id).get(rule_id, [])
+
+
 @app.put("/api/rules/{rule_id}/state")
 def rule_state(rule_id: str, body: RuleStateBody,
                session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
@@ -861,14 +1131,24 @@ def rule_parameters(
 ) -> dict[str, Any]:
     user = _user(session)
     _allow(user, "platform_admin")
+    # Capture the database revision before loading the current YAML/library
+    # version. A deployment may have a newer base than the stored override.
+    previous_override = store.rule_overrides().get(rule_id)
     current = _rule_by_id(rule_id)
     candidate = _candidate_rule(current, body)
-    saved = store.set_rule_override(
-        rule_id, candidate.version, candidate.logic, candidate.threshold_basis, user["id"]
-    )
+    try:
+        saved = store.set_rule_override(
+            rule_id, candidate.version, candidate.logic, candidate.threshold_basis,
+            user["id"], previous_override["version"] if previous_override else current.version,
+            candidate.effective_from, candidate.effective_to,
+            asdict(candidate),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
     store.log(
         user, "update_rule_parameters", "rule", rule_id,
-        f"version={current.version}->{candidate.version}",
+        f"version={current.version}->{candidate.version};effective={candidate.effective_from or 'legacy'}"
+        f"..{candidate.effective_to or 'open'};closed={saved['closed_version'] or '-'}@{saved['closed_on'] or '-'}",
     )
     enabled = store.enabled_rule_ids()
     return _rule_payload(candidate, enabled is None or rule_id in enabled, saved)

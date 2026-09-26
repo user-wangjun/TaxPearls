@@ -1,5 +1,5 @@
 "use strict";
-const graphKinds={company:["企业","#d49b38"],rule:["核对规则","#4278e8"],metric:["业务指标","#2da99a"],risk:["核对结果","#e77277"],law:["法条依据","#9970d2"],source:["材料来源","#7090ad"]};
+const graphKinds={company:["企业","#d49b38"],entity:["关联主体","#a16fbd"],relation:["股权/控制关系","#5f87c4"],trade:["关联交易","#d48453"],rule:["核对规则","#4278e8"],metric:["业务指标","#2da99a"],risk:["核对结果","#e77277"],law:["法条依据","#9970d2"],source:["材料来源","#7090ad"]};
 let graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphTransform={x:0,y:0,k:1},graphFocused=false,graphRequest=0,graphBusy=false;
 const graphCanvas=$("graphCanvas");
 for(const [kind,[label,color]]of Object.entries(graphKinds)){const item=el("span",null,label);item.style.setProperty("--node-color",color);$("graphLegend").append(item);}
@@ -73,7 +73,7 @@ function drawGraph(){
     if(cards){
       if(selected)g.append(svgNode("rect",{x:-111,y:-51,width:222,height:102,rx:21,fill:color,opacity:.09}));
       g.append(svgNode("rect",{x:-104,y:-44,width:208,height:88,rx:16,fill:selected?"#f4f8ff":"#fff",stroke:selected?color:"#dee7f2","stroke-width":selected?1.6:1,filter:"url(#nodeShadow)"}));
-      g.append(svgNode("rect",{x:-88,y:-27,width:25,height:25,rx:8,fill:color,opacity:.12}),svgNode("text",{x:-75.5,y:-10,"text-anchor":"middle",fill:color,"font-size":13}, {rule:"◇",metric:"≋",law:"§",risk:"!",source:"▤",company:"▥"}[n.kind]));
+      g.append(svgNode("rect",{x:-88,y:-27,width:25,height:25,rx:8,fill:color,opacity:.12}),svgNode("text",{x:-75.5,y:-10,"text-anchor":"middle",fill:color,"font-size":13}, {rule:"◇",metric:"≋",law:"§",risk:"!",source:"▤",company:"▥",entity:"◉",relation:"↔",trade:"¥"}[n.kind]));
       g.append(svgNode("text",{x:-54,y:-11,fill:color,"font-size":11,"font-weight":600},graphKinds[n.kind][0]+(n.kind==="rule"?" · "+n.id:"")));
       const label=n.label.replace(/[《》]/g,"");
       g.append(svgNode("text",{x:-88,y:13,fill:"#263c58","font-size":13,"font-weight":600},label.length>13?label.slice(0,13)+"…":label));
@@ -81,7 +81,7 @@ function drawGraph(){
       g.append(svgNode("text",{x:-88,y:31,fill:"#8a9ab0","font-size":10},sub.length>21?sub.slice(0,21)+"…":sub));
     }else{
       if(selected)g.append(svgNode("circle",{r:radius+9,fill:color,opacity:.14}));g.append(svgNode("circle",{r:radius,fill:selected?color:"white",stroke:color,"stroke-width":selected?3:1.5}));
-      g.append(svgNode("text",{"text-anchor":"middle",y:4,fill:selected?"white":color,"font-size":12,"font-weight":600},{company:"▥",rule:"◇",metric:"≋",risk:n.status==="hit"?"!":n.status==="pass"?"✓":"?",law:"§",source:"▤"}[n.kind]));
+      g.append(svgNode("text",{"text-anchor":"middle",y:4,fill:selected?"white":color,"font-size":12,"font-weight":600},{company:"▥",entity:"◉",relation:"↔",trade:"¥",rule:"◇",metric:"≋",risk:n.status==="hit"?"!":n.status==="pass"?"✓":"?",law:"§",source:"▤"}[n.kind]));
       if(selected||graphFocused||n.kind==="rule"||n.kind==="company")g.append(svgNode("text",{"text-anchor":"middle",y:radius+18,class:"node-label"},!selected&&!graphFocused&&n.kind==="rule"?n.id:n.label.length>13?n.label.slice(0,13)+"…":n.label));
     }
     g.append(svgNode("title",{},graphKinds[n.kind][0]+"："+n.label));g.addEventListener("click",()=>{if(!graphDragged)selectGraphNode(n.id);});g.addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();selectGraphNode(n.id);}});layer.append(g);

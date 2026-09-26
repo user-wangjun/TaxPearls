@@ -70,6 +70,8 @@
   .btn.pdf:disabled { background: #9aa3b8; cursor: wait; }
   .btn.re { background: #fff; color: var(--ink-2); border: 1px solid var(--line); }
   .btn.re:hover { color: var(--ink); border-color: var(--ink-3); }
+  #notificationPanel label { display:inline-flex; align-items:center; gap:6px; margin:8px 16px 12px 0; }
+  #notificationPanel p { overflow-wrap:anywhere; }
 
   /* 区块标题 */
   .sec-title { font-size: 16px; font-weight: 700; margin: 26px 0 12px; display: flex; align-items: center; gap: 8px; }
@@ -180,6 +182,16 @@
   .auth-link { display:block; background:none; border:none; color:var(--navy); cursor:pointer; font-size:15px; padding:0; margin:18px auto 0; text-decoration:underline; text-underline-offset:3px; }
   .auth-link:hover { color:var(--navy-2); }
   .auth-status { display:none; color:#1a6b3c; background:#e8f5ee; border:1px solid #bfe3cf; border-radius:8px; padding:12px 14px; font-size:15px; margin-top:16px; }
+  .auth-step { font-size:13px; color:#8a93a3; margin:12px 0 0; letter-spacing:.02em; }
+  .auth-inline-link { background:none; border:none; color:var(--navy); cursor:pointer; font-size:inherit; padding:0; text-decoration:underline; text-underline-offset:3px; }
+  .code-row, .captcha-row { display:flex; gap:10px; align-items:center; }
+  .code-row input, .captcha-row input { flex:1; min-width:0; }
+  .btn-send { flex-shrink:0; min-height:48px; padding:0 16px; border:1px solid #c9d4e2; border-radius:10px; background:#f4f7fb; color:var(--navy); font-size:15px; cursor:pointer; white-space:nowrap; transition:border-color .15s, background .15s; }
+  .btn-send:hover:not(:disabled) { border-color:#c3942d; background:#fffdf8; }
+  .btn-send:disabled { opacity:.55; cursor:not-allowed; }
+  .captcha-question { flex-shrink:0; min-width:96px; text-align:center; background:#f4f7fb; border:1px solid #c9d4e2; border-radius:10px; padding:12px 10px; font-size:17px; font-weight:600; letter-spacing:.08em; user-select:none; }
+  .captcha-refresh { flex-shrink:0; width:44px; height:44px; border:1px solid #c9d4e2; border-radius:10px; background:#f4f7fb; color:var(--navy); font-size:18px; cursor:pointer; }
+  .captcha-refresh:hover { border-color:#c3942d; background:#fffdf8; }
   @keyframes auth-copy-in { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
   @keyframes auth-pearl-float {
     0%,100% { transform:translateY(0) scale(1); filter:drop-shadow(0 18px 30px #020912a6); }
@@ -291,7 +303,7 @@
   </aside>
   <div class="auth-entry">
     <form class="auth-card" id="authForm" data-view="login" novalidate>
-      <div class="auth-brand"><img src="/logo" alt="税海拾珠"><div><h2 id="authTitle">登录税海拾珠</h2></div></div>
+      <div class="auth-brand"><img src="/logo" alt="税海拾珠"><div><h2 id="authTitle">登录税海拾珠</h2></div><p class="auth-step" id="authStep"></p></div>
       <div id="viewLogin">
         <div class="field"><label for="loginUser">用户名</label><input id="loginUser" name="username" autocomplete="username" required></div>
         <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
@@ -305,10 +317,32 @@
         <div class="field"><label for="newPass2">确认新密码</label><input id="newPass2" type="password" autocomplete="new-password" required></div>
         <p class="muted" style="font-size:14px;margin-top:0">至少 10 位，须包含大小写字母、数字、符号中的至少三类；不能使用常见弱口令。重置成功后，此账号的所有登录状态将被注销。</p>
       </div>
+      <div id="viewSignup" style="display:none">
+        <div class="field"><label for="signupCode">邀请码</label><input id="signupCode" autocomplete="off" spellcheck="false" placeholder="平台或机构管理员提供" required></div>
+        <div class="field"><label for="signupEmail">邮箱</label><input id="signupEmail" type="email" autocomplete="email" placeholder="name@example.com" required></div>
+        <div class="field"><label for="signupPass">设置密码</label><input id="signupPass" type="password" autocomplete="new-password" required></div>
+        <div class="field"><label for="signupPass2">确认密码</label><input id="signupPass2" type="password" autocomplete="new-password" required></div>
+        <div class="field"><label for="signupEmailCode">邮箱验证码</label>
+          <div class="code-row">
+            <input id="signupEmailCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" spellcheck="false" placeholder="6 位数字" required>
+            <button type="button" class="btn-send" id="signupSendBtn" disabled>获取验证码</button>
+          </div>
+          <p class="muted" id="signupEmailHint" style="font-size:13px;margin:6px 0 0">填写邮箱与人机验证后，点击「获取验证码」；10 分钟内有效，输错 5 次作废。</p>
+        </div>
+        <div class="field"><label for="captchaAnswer">人机验证</label>
+          <div class="captcha-row">
+            <span class="captcha-question" id="captchaQuestion">加载中…</span>
+            <input id="captchaAnswer" inputmode="numeric" placeholder="计算结果" autocomplete="off" required>
+            <button type="button" class="captcha-refresh" id="captchaRefresh" title="换一题" aria-label="换一题">↻</button>
+          </div>
+        </div>
+        <p class="muted" style="font-size:14px;margin-top:0">密码至少 10 位，须包含大小写字母、数字、符号中的至少三类；不能使用常见弱口令。</p>
+      </div>
       <div class="error-box" id="authError"></div>
       <p class="auth-status" id="authStatus" role="status"></p>
       <button class="btn" type="submit" id="authSubmit">登录</button>
       <button type="button" class="auth-link" id="forgotLink">忘记密码？</button>
+      <button type="button" class="auth-link" id="signupEntryLink">有邀请码？前往开户</button>
       <button type="button" class="auth-link" id="backToLogin" style="display:none">← 返回登录</button>
     </form>
   </div>
@@ -482,6 +516,7 @@
 
     <div class="nav" id="nav" role="navigation" aria-label="企业工作空间">
       <div class="nav-heading"><div class="nav-caption">企业工作空间</div><button type="button" id="navToggle" aria-controls="nav" aria-expanded="true" aria-label="收起侧边栏" title="收起侧边栏"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.6 5.6 1.8 1.8-4.6 4.6 4.6 4.6-1.8 1.8L8.2 12z"/></svg></button></div>
+      <button data-panel="notificationPanel" aria-label="通知订阅" title="通知订阅"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a6 6 0 0 0-6 6v5l-2 4h16l-2-4V8a6 6 0 0 0-6-6Zm-3 17h6a3 3 0 0 1-6 0Z"/></svg><span class="nav-label">通知订阅</span></button>
       <button data-panel="dashboardPanel" class="business-nav" aria-label="工作台" title="工作台"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="8" height="10" rx="2"/><rect x="13" y="3" width="8" height="6" rx="2"/><rect x="3" y="15" width="8" height="6" rx="2"/><rect x="13" y="11" width="8" height="10" rx="2"/></svg><span class="nav-label">工作台</span></button>
       <button data-panel="uploadPanel" class="business-nav" aria-label="上传材料" title="上传材料"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 15V7.4L8.7 9.7 7.3 8.3 12 3.6l4.7 4.7-1.4 1.4L13 7.4V15zM4 13h4v4h8v-4h4v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span class="nav-label">上传材料</span></button>
       <button data-panel="auditPanel" class="business-nav" aria-label="审计详情" title="审计详情"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 2v5h5Zm2.2 8.3-4.7 4.8-2.7-2.7-1.4 1.4 4.1 4.1 6.1-6.2Z"/></svg><span class="nav-label">审计详情</span></button>
@@ -498,7 +533,7 @@
     </section>
     <section class="panel" id="knowledgePanel">
       <div class="page-head graph-page-head"><div><p class="eyebrow">税务洞察 / KNOWLEDGE EXPLORER</p><h2>让每一条关联，都有据可循<span class="graph-title-tag">知识图谱</span></h2><p class="muted">从一个指标出发，探索业务、风险与法规之间的证据网络。</p></div><div id="graphSummary" class="graph-summary"></div></div>
-      <div class="graph-filterbar"><div class="field graph-scope"><label for="graphAudit">探索范围</label><select id="graphAudit"><option value="">规则知识图谱</option></select></div><div class="field graph-search"><label for="knowledgeSearch">搜索关联</label><input id="knowledgeSearch" placeholder="搜索指标、规则、法条…"></div><div class="field"><label for="knowledgeCategory">规则类型</label><select id="knowledgeCategory"><option value="">全部类型</option><option>内部勾稽</option><option>外部交叉</option><option>指标偏离</option></select></div><div class="field"><label for="graphStatus">核对状态</label><select id="graphStatus"><option value="">全部状态</option><option value="hit">风险命中</option><option value="skipped">材料不足</option><option value="pass">检查通过</option></select></div></div>
+      <div class="graph-filterbar"><div class="field graph-scope"><label for="graphAudit">探索范围</label><select id="graphAudit"><option value="">规则知识图谱</option></select></div><div class="field graph-search"><label for="knowledgeSearch">搜索关联</label><input id="knowledgeSearch" placeholder="搜索指标、规则、法条、关联主体…"></div><div class="field"><label for="knowledgeCategory">规则类型</label><select id="knowledgeCategory"><option value="">全部类型</option><option>内部勾稽</option><option>外部交叉</option><option>指标偏离</option><option>关联方图</option></select></div><div class="field"><label for="graphStatus">核对状态</label><select id="graphStatus"><option value="">全部状态</option><option value="hit">风险命中</option><option value="skipped">材料不足</option><option value="pass">检查通过</option></select></div></div>
       <div class="graph-workspace">
         <div class="graph-stage"><div class="graph-stage-heading"><div><span class="graph-live-dot"></span><strong>证据关系网络</strong><p id="graphCount"></p></div><span class="graph-mode" id="graphMode">关联视图</span></div><div class="graph-toolbar"><button id="graphOverview">全景</button><button id="graphFocus">聚焦关联</button><button id="graphExpand">展开一层</button><button id="graphZoomIn" aria-label="放大图谱">＋</button><button id="graphZoomOut" aria-label="缩小图谱">−</button><button id="graphReset">居中</button></div><svg id="graphCanvas" viewBox="0 0 960 680" aria-label="交互式知识图谱"></svg><div id="graphLegend" class="graph-legend"></div><p class="graph-hint">滚轮缩放 · 拖动画布或节点 · 点击节点查看证据</p></div>
         <aside class="graph-inspector"><div class="inspector-heading"><span>◈</span><div><strong>洞察面板</strong><p>关联证据 · 智能解读</p></div></div><div class="inspector-tabs"><button id="nodeTab" class="active">节点详情</button><button id="aiTab">✦ AI 助手</button></div><div id="knowledgeDetail" aria-live="polite"></div><div id="graphAssistant" hidden><div class="ai-welcome"><span>✦</span><h3>沿着证据，深入一步</h3><p>选中图谱节点，让 AI 帮你理解关联、梳理疑点。</p></div><p id="graphAIStatus" class="muted"></p><div id="graphAIContext" class="ai-context"></div><div class="ai-prompts"><button data-question="解释当前节点及关联证据；如果是风险，说明为什么命中。">解释关联</button><button data-question="当前检查还缺哪些材料？请说明补充和核对顺序。">补充材料</button><button data-question="请根据证据给出排查顺序，并将可能原因标注为待核实。">排查建议</button></div><div id="graphMessages" aria-live="polite"></div><form id="graphQuestionForm"><textarea id="graphQuestion" aria-label="向图谱 AI 提问" placeholder="围绕当前节点提问…" maxlength="2000" required></textarea><button id="graphSend" class="btn pdf">发送问题 ↗</button></form></div></aside>
@@ -571,7 +606,7 @@
       <div class="row">
         <div class="field"><label>结果状态</label><select id="filterStatus"><option value="">全部</option><option value="hit">命中</option><option value="pass">通过</option><option value="skipped">未执行</option></select></div>
         <div class="field"><label>风险等级</label><select id="filterSeverity"><option value="">全部</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></div>
-        <div class="field"><label>规则类型</label><select id="filterCategory"><option value="">全部</option><option>内部勾稽</option><option>外部交叉</option><option>指标偏离</option></select></div>
+        <div class="field"><label>规则类型</label><select id="filterCategory"><option value="">全部</option></select></div>
         <div class="field"><label>税种</label><select id="filterTax"><option value="">全部</option></select></div>
       </div>
     </div>
@@ -606,6 +641,18 @@
       <div class="sheet"><h2>审计历史</h2><p class="muted">保存的是标准化指标、规则版本和证据快照；刷新或重启后仍可追溯。</p><div class="data-list" id="historyList"></div></div>
     </section>
 
+    <section class="panel" id="notificationPanel">
+      <div class="sheet"><h2>通知与订阅</h2><p class="muted">只发送风险摘要，不包含企业名称、税号或原始财务数据。关闭邮件通知可退订，已经受理的邮件无法撤回。</p>
+        <label><input type="checkbox" id="noticeCompleted"> 审计完成提醒</label>
+        <label><input type="checkbox" id="noticeHigh"> 高风险单独提醒</label>
+        <label><input type="checkbox" id="noticeEmail"> 我同意接收摘要邮件</label>
+        <div class="row"><button class="btn pdf" id="noticeSave" type="button">保存订阅</button><button class="btn re" id="noticeRefresh" type="button">刷新通知</button></div>
+        <p class="muted" id="noticeStatus" role="status"></p>
+      </div>
+      <div class="sheet" id="noticeRecipientBox" hidden><h2>指定接收人</h2><p class="muted">管理员可指定事件接收人，不能代替本人开启邮件。会计仅接收当前负责客户的通知。</p><div class="data-list" id="noticeRecipients"></div></div>
+      <div class="sheet"><h2>最近 100 条通知</h2><p class="muted">“邮件已受理”仅表示服务商接收请求，不代表收件箱送达。失败/未知可在 23 小时内手动重试，累计最多 3 次尝试；超出后请人工核查。</p><div class="data-list" id="noticeList"></div></div>
+    </section>
+
     <section class="panel" id="trainingPanel">
       <div class="sheet" id="teacherBox" style="display:none">
         <h2>发布实训作业</h2><p class="muted">只允许使用明确标记的仿真案例。标准答案直接来自同一规则引擎。</p>
@@ -620,7 +667,7 @@
       <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
       <div class="sheet" id="userAdmin"><h2>账号管理</h2><p class="muted">平台管理员可创建各角色；机构管理员仅可创建本机构会计。</p><div class="row"><div class="field"><label>用户名</label><input id="newUsername"></div><div class="field"><label>显示姓名</label><input id="newDisplayName"></div><div class="field"><label>初始密码</label><input id="newPassword" type="password"></div><div class="field"><label>角色</label><select id="newRole"><option value="teacher">教师</option><option value="student">学生</option><option value="org_admin">机构管理员</option><option value="accountant">会计</option></select></div><button class="btn pdf" id="btnCreateUser">创建账号</button></div><div class="data-list" id="userList"></div></div>
       <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称</label><input id="clientName"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号</label><input id="clientTaxpayerId"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
-      <div class="sheet" id="ruleAdmin"><h2>规则参数与试跑</h2><p class="muted">选择规则后以表单调整参数，并在指定历史材料快照上试跑。试跑不修改历史审计；只有平台管理员可正式保存，新版本仅影响后续审计。</p><div class="data-list" id="ruleList"></div><div class="rule-editor" id="ruleEditor" hidden><div class="rule-editor-head"><div><h3 id="ruleEditorTitle"></h3><p class="muted" id="ruleEditorMeta"></p></div><span class="role-chip" id="ruleEditorState"></span></div><div class="row"><div class="field"><label for="ruleCurrentVersion">当前版本</label><input id="ruleCurrentVersion" readonly></div><div class="field"><label for="ruleNewVersion">新版本</label><input id="ruleNewVersion" maxlength="32" inputmode="decimal"></div></div><div class="field"><label for="ruleThresholdBasis">阈值依据</label><textarea id="ruleThresholdBasis" maxlength="500"></textarea></div><div><h3>可调参数</h3><p class="muted" id="ruleMetricHint"></p><div class="rule-param-grid" id="ruleParamFields"></div></div><div class="field"><label for="ruleTrialAudit">试跑材料</label><select id="ruleTrialAudit"></select></div><div class="row"><button class="btn pdf" id="btnRuleTrial" type="button">试跑当前草稿</button><button id="btnRuleSave" type="button">保存为新版本</button><p class="muted" id="ruleEditorStatus" role="status"></p></div><div class="rule-trial-result" id="ruleTrialResult" hidden></div></div></div>
+      <div class="sheet" id="ruleAdmin"><h2>规则参数与试跑</h2><p class="muted">选择规则后以表单调整参数，并在指定历史材料快照上试跑。试跑不修改历史审计；只有平台管理员可正式保存。带日期的新版本只适用于完整落在其生效区间内的审计期。</p><div class="data-list" id="ruleList"></div><div class="rule-editor" id="ruleEditor" hidden><div class="rule-editor-head"><div><h3 id="ruleEditorTitle"></h3><p class="muted" id="ruleEditorMeta"></p></div><span class="role-chip" id="ruleEditorState"></span></div><div class="row"><div class="field"><label for="ruleCurrentVersion">最新保存版本</label><input id="ruleCurrentVersion" readonly></div><div class="field"><label for="ruleNewVersion">新版本</label><input id="ruleNewVersion" maxlength="32" inputmode="decimal"></div></div><div class="row"><div class="field"><label for="ruleEffectiveFrom">生效起始日</label><input id="ruleEffectiveFrom" type="date"></div><div class="field"><label for="ruleEffectiveTo">生效终止日（可留空）</label><input id="ruleEffectiveTo" type="date"></div></div><p class="muted">首次配置可留空日期沿用全期间兼容模式；启用定期版本后，后续版本须填写起始日。新起始日会自动截止前一条开放式版本；有限区间不得重叠。跨版本的审计期需拆期审计。</p><div class="field"><label for="ruleThresholdBasis">阈值依据</label><textarea id="ruleThresholdBasis" maxlength="500"></textarea></div><div><h3>可调参数</h3><p class="muted" id="ruleMetricHint"></p><div class="rule-param-grid" id="ruleParamFields"></div></div><div class="field"><label for="ruleTrialAudit">试跑材料</label><select id="ruleTrialAudit"></select></div><div class="row"><button class="btn pdf" id="btnRuleTrial" type="button">试跑当前草稿</button><button id="btnRuleSave" type="button">保存为新版本</button><p class="muted" id="ruleEditorStatus" role="status"></p></div><div class="rule-trial-result" id="ruleTrialResult" hidden></div><div id="ruleVersionHistory" class="data-list"></div></div></div>
       <div class="sheet" id="logAdmin"><h2>操作日志</h2><div class="data-list" id="logList"></div></div>
     </section>
 
@@ -669,6 +716,7 @@ function switchPanel(id) {
   document.querySelectorAll(".panel").forEach((n) => n.classList.toggle("active", n.id === id));
   document.querySelectorAll("#nav [data-panel]").forEach((n) => n.classList.toggle("active", n.dataset.panel === id));
   if (id === "historyPanel") loadHistory();
+  if (id === "notificationPanel") loadNotifications();
   if (id === "trainingPanel") loadAssignments();
   if (id === "adminPanel") loadAdmin();
   if (id === "dashboardPanel") loadDashboard();
@@ -809,6 +857,7 @@ function renderMaterialReview(files) {
       if(doc.contracts?.length){const contracts=el("details");contracts.append(el("summary","",`查看已读取的 ${doc.contracts.length} 份合同`));doc.contracts.forEach(r=>contracts.append(el("p","muted",`${r.number} · ${r.kind} · ${r.counterparty} · 含税 ${r.amount} · 履约期 ${r.performance_start} 至 ${r.performance_end} · ${r.reviewed?"已复核":"待复核"}${r.workpaper?" · 底稿 "+r.workpaper:""}`)));card.append(contracts);}
       if(doc.fulfillments?.length){const fulfillments=el("details");fulfillments.append(el("summary","",`查看已读取的 ${doc.fulfillments.length} 条履约记录`));doc.fulfillments.forEach(r=>fulfillments.append(el("p","muted",`${r.number} · 合同 ${r.contract_number} · ${r.fulfilled_on} · ${r.kind} · 含税 ${r.amount} · ${r.reviewed?"已复核":"待复核"}${r.workpaper?" · 底稿 "+r.workpaper:""}`)));card.append(fulfillments);}
       if(doc.contract_links?.length){const links=el("details");links.append(el("summary","",`查看已读取的 ${doc.contract_links.length} 条四流勾稽`));doc.contract_links.forEach(r=>links.append(el("p","muted",`${r.number} · 合同 ${r.contract_number} · 发票 ${r.invoice_number||"待补"} · 流水 ${r.transaction_id||"待补"} · 履约 ${r.fulfillment_number||"待补"} · 分摊含税 ${r.amount} · ${r.reviewed?"已复核":"待复核"}${r.workpaper?" · 底稿 "+r.workpaper:""}`)));card.append(links);}
+      if(doc.related_graph){const graph=doc.related_graph,details=el("details");details.append(el("summary","",`查看关联方图：${graph.subjects.length} 个主体、${graph.relations.length} 条关系、${graph.trades.length} 笔交易`));graph.relations.forEach(r=>details.append(el("p","muted",`${r.key} · ${r.owner_key} → ${r.company_key} · ${r.kind} · ${r.start_on} 至 ${r.end_on||"持续"} · ${r.reviewed?"已复核":"待复核"} · ${r.basis||"无证据说明"} · ${r.source}`)));graph.trades.forEach(t=>details.append(el("p","muted",`${t.key} · ${t.seller_key} → ${t.buyer_key} · ${t.traded_on} · 含税 ${t.amount} · ${t.reviewed?"已复核":"待复核"} · ${t.anomaly_basis||"无异常依据"} · ${t.source}`)));card.append(details);}
     }
   });
   const submit=el("button","primary","确认材料并开始审计"), reset=el("button","","重新选择材料");
@@ -864,6 +913,8 @@ function renderResult(j) {
   renderAuditNarrative(j.narrative || null);
 
   latestFindings = j.findings;
+  const category = $("filterCategory"); category.textContent = ""; const allCategory = el("option",null,"全部"); allCategory.value=""; category.appendChild(allCategory);
+  for (const value of Array.from(new Set(j.findings.map((f)=>f.category))).sort()) { const o=el("option",null,value); o.value=value; category.appendChild(o); }
   const tax = $("filterTax"); tax.textContent = ""; const allTax = el("option",null,"全部"); allTax.value=""; tax.appendChild(allTax);
   for (const value of Array.from(new Set(j.findings.map((f)=>f.tax_type))).sort()) { const o=el("option",null,value); o.value=value; tax.appendChild(o); }
   applyFilters();
@@ -956,7 +1007,7 @@ function findingCard(f) {
 
   /* 基本属性 */
   const kv = el("div", "kv");
-  kv.appendChild(el("div", null, "风险类型：" + f.category + "　·　税种：" + f.tax_type + "　·　规则版本 v" + f.version));
+  kv.appendChild(el("div", null, "风险类型：" + f.category + "　·　税种：" + f.tax_type + "　·　规则版本 v" + f.version + (f.effective_from ? "（" + f.effective_from + " 至 " + (f.effective_to || "持续") + "）" : "")));
   if (f.scope) kv.appendChild(el("div", null, "适用范围：" + f.scope));
   body.appendChild(kv);
 
@@ -1128,36 +1179,114 @@ $("pwToggle").addEventListener("click", () => {
 async function bootstrap() {
   const params = new URLSearchParams(location.search);
   const resetToken = params.get("reset");
+  const inviteCode = (params.get("invite") || "").trim();
   if (resetToken) history.replaceState(null, "", location.pathname);
+  if (inviteCode) {
+    history.replaceState(null, "", location.pathname);
+    $("authForm").dataset.inviteCode = inviteCode;
+    $("authForm").dataset.inviteFromUrl = "1";
+  }
   const s = await api("/api/status");
   if (s.user) return enterApp(s.user);
   const setup = s.needs_setup;
   $("authForm").dataset.setup = setup ? "1" : "0";
   $("loginPass").autocomplete = setup ? "new-password" : "current-password";
   if (resetToken && !setup) $("authForm").dataset.resetToken = resetToken;
+  if (inviteCode && !setup) return showAuthView("signup");
   showAuthView(resetToken && !setup ? "reset" : "login");
 }
 
-const authViews = ["viewLogin", "viewForgot", "viewReset"];
+const authViews = ["viewLogin", "viewForgot", "viewReset", "viewSignup"];
+const authViewMap = {
+  login: "viewLogin", forgot: "viewForgot", reset: "viewReset", signup: "viewSignup",
+};
+const authViewLabels = {
+  login: ["登录税海拾珠", "登录", ""],
+  forgot: ["找回密码", "发送重置邮件", ""],
+  reset: ["设置新密码", "设置新密码", ""],
+  signup: ["使用邀请码开户", "注 册", "邀请码由平台或机构管理员提供；链接进入时已自动填入"],
+};
 function showAuthView(view) {
   const form = $("authForm");
-  const map = {login: "viewLogin", forgot: "viewForgot", reset: "viewReset"};
   const setup = form.dataset.setup === "1";
+  const [title, submitText, step] = authViewLabels[view] || authViewLabels.login;
   authViews.forEach((id) => {
-    const on = id === map[view];
+    const on = id === authViewMap[view];
     $(id).style.display = on ? "" : "none";
     $(id).querySelectorAll("input").forEach((i) => { i.required = on; });
   });
   $("forgotLink").style.display = view === "login" ? "" : "none";
+  $("signupEntryLink").style.display = view === "login" && !setup ? "" : "none";
   $("backToLogin").style.display = view === "login" ? "none" : "";
+  $("authStep").textContent = setup ? "" : step;
   $("authStatus").textContent = ""; $("authStatus").style.display = "none";
   $("authError").textContent = ""; $("authError").style.display = "none";
-  $("authTitle").textContent = view === "forgot" ? "找回密码" : view === "reset" ? "设置新密码" : (setup ? "初始化平台管理员" : "登录税海拾珠");
-  $("authSubmit").textContent = view === "forgot" ? "发送重置邮件" : view === "reset" ? "设置新密码" : (setup ? "创建管理员" : "登录");
+  $("authTitle").textContent = setup ? "初始化平台管理员" : title;
+  $("authSubmit").textContent = setup ? "创建管理员" : submitText;
   form.dataset.view = view;
+  if (view === "signup") loadCaptcha();
 }
 $("forgotLink").addEventListener("click", () => showAuthView("forgot"));
+$("signupEntryLink").addEventListener("click", () => showAuthView("signup"));
 $("backToLogin").addEventListener("click", () => showAuthView("login"));
+
+let captchaBusy = false;
+async function loadCaptcha() {
+  if (captchaBusy) return;
+  captchaBusy = true;
+  $("captchaQuestion").textContent = "加载中…";
+  try {
+    const result = await api("/api/auth/captcha");
+    $("authForm").dataset.captchaId = result.captcha_id;
+    $("captchaQuestion").textContent = result.question;
+    $("captchaAnswer").value = "";
+    $("captchaAnswer").disabled = false;
+  } catch (err) {
+    $("authForm").dataset.captchaId = "";
+    $("captchaQuestion").textContent = "加载失败 ↻";
+    $("captchaAnswer").disabled = true;
+  } finally { captchaBusy = false; }
+}
+$("captchaRefresh").addEventListener("click", loadCaptcha);
+
+let sendCooldown = 0;
+function startCooldown(seconds) {
+  sendCooldown = seconds;
+  const btn = $("signupSendBtn");
+  btn.disabled = true;
+  const tick = () => {
+    if (sendCooldown <= 0) { btn.textContent = "获取验证码"; btn.disabled = false; return; }
+    btn.textContent = `重新发送(${sendCooldown}s)`;
+    sendCooldown -= 1;
+    setTimeout(tick, 1000);
+  };
+  tick();
+}
+
+$("signupSendBtn").addEventListener("click", async () => {
+  const form = $("authForm");
+  const email = $("signupEmail").value.trim();
+  const captchaId = form.dataset.captchaId || "";
+  const captchaAnswer = $("captchaAnswer").value.trim();
+  if (!email) { $("authError").textContent = "请先填写邮箱。"; $("authError").style.display = "block"; return; }
+  if (!captchaId || !captchaAnswer) { $("authError").textContent = "请先完成人机验证。"; $("authError").style.display = "block"; return; }
+  $("authError").style.display = "none";
+  try {
+    const result = await api("/api/auth/email/start", {method:"POST", headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({email, captcha_id:captchaId, captcha_answer:captchaAnswer})});
+    if (result.exists) {
+      $("signupEmailHint").textContent = "该邮箱已注册，请直接登录；忘记密码可用登录页的「忘记密码？」找回。";
+      return;
+    }
+    $("signupEmailHint").textContent = result.message || "验证码已发送，10 分钟内有效，输错 5 次作废。";
+    $("authStatus").style.display = "none";
+    startCooldown(60);
+    loadCaptcha();
+  } catch (err) {
+    $("authError").textContent = err.message; $("authError").style.display = "block";
+    loadCaptcha();
+  }
+});
 
 $("authForm").addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1178,6 +1307,16 @@ $("authForm").addEventListener("submit", async (e) => {
       delete form.dataset.resetToken;
       showAuthView("login");
       $("authStatus").textContent = "密码已重置，请使用新密码登录。"; $("authStatus").style.display = "block";
+      return;
+    }
+    if (view === "signup") {
+      if ($("signupPass").value !== $("signupPass2").value) throw new Error("两次输入的密码不一致。");
+      if (!$("signupEmailCode").value.trim()) throw new Error("请填写邮箱验证码。");
+      await api("/api/register/complete", {method:"POST", headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({email:$("signupEmail").value.trim(), code:$("signupEmailCode").value.trim(),
+                             invite_code:$("signupCode").value.trim(), password:$("signupPass").value})});
+      const user = await api("/api/me");
+      enterApp(user);
       return;
     }
     const setup = form.dataset.setup === "1";
@@ -1207,12 +1346,59 @@ function enterApp(user) {
   $("logAdmin").style.display = ["platform_admin","org_admin","teacher"].includes(user.role) ? "block" : "none";
   $("auditClientField").style.display = ["platform_admin","org_admin","accountant"].includes(user.role) ? "block" : "none";
   document.querySelector('[data-panel="auditPanel"]').style.display = user.role === "student" ? "none" : "block";
-  document.querySelectorAll(".business-nav, [data-panel='historyPanel']").forEach(n => n.style.display = user.role === "student" ? "none" : "block");
+  document.querySelectorAll(".business-nav, [data-panel='historyPanel'], [data-panel='notificationPanel']").forEach(n => n.style.display = user.role === "student" ? "none" : "block");
   if (user.role === "student") switchPanel("trainingPanel"); else switchPanel("dashboardPanel");
 }
 
 $("btnLogout").addEventListener("click", async () => { await api("/api/logout", {method:"POST"}); location.reload(); });
 document.querySelectorAll("#nav [data-panel]").forEach((b) => b.addEventListener("click", () => switchPanel(b.dataset.panel)));
+
+async function loadNotifications() {
+  try {
+    const prefs = await api("/api/notifications/preferences");
+    $("noticeCompleted").checked = prefs.audit_completed;
+    $("noticeHigh").checked = prefs.high_risk;
+    $("noticeEmail").checked = prefs.email_enabled;
+    $("noticeEmail").disabled = !prefs.has_email;
+    $("noticeStatus").textContent = !prefs.has_email ? "账号未绑定邮箱，仅可接收站内通知。" :
+      (prefs.delivery_enabled ? "邮件发送服务已启用。" : "邮件发送服务未启用：订阅仍会保存，邮件留在队列中。") + " 退订不撤回已受理邮件。";
+    const box = $("noticeList"); box.textContent = "";
+    const labels = {pending:"待发送",claimed:"发送中",accepted:"邮件已受理（非送达）",failed:"发送失败",uncertain:"发送结果未知",suppressed:"邮件已取消"};
+    for (const item of await api("/api/notifications")) {
+      const card = el("div", "sheet");
+      card.append(el("h3", null, (item.event === "high_risk" ? "高风险提醒" : "审计完成") + (item.read_at ? " · 已读" : " · 未读")),
+        el("p", "muted", item.created_at + " · " + item.audit_id),
+        el("p", null, `风险 ${item.summary.hit_count} 项，高风险 ${item.summary.high_count} 项 · ${labels[item.email_status] || "仅站内通知"}`));
+      for (const risk of item.summary.risks) card.append(el("p", null, risk.id + "：" + risk.name));
+      const open = el("button", "btn pdf", "查看审计");
+      open.onclick = async () => { try { renderResult(await api("/api/audits/" + item.audit_id)); await api("/api/notifications/" + item.id + "/read", {method:"PUT"}); switchPanel("auditPanel"); } catch (e) { $("noticeStatus").textContent = e.message; } };
+      card.append(open);
+      if (!item.read_at) { const read = el("button", "btn re", "标为已读"); read.onclick = async () => { try { await api("/api/notifications/" + item.id + "/read", {method:"PUT"}); await loadNotifications(); } catch(e) { $("noticeStatus").textContent=e.message; } }; card.append(read); }
+      if (["failed", "uncertain"].includes(item.email_status)) { const retry = el("button", "btn re", "申请邮件重试"); retry.onclick = async () => { try { await api("/api/notifications/" + item.id + "/retry", {method:"POST"}); await loadNotifications(); } catch(e) { $("noticeStatus").textContent=e.message; } }; card.append(retry); }
+      box.append(card);
+    }
+    if (!box.childElementCount) box.append(el("p", "muted", "暂无通知。订阅只影响之后的审计。"));
+    const admin = ["platform_admin", "org_admin"].includes(currentUser.role);
+    $("noticeRecipientBox").hidden = !admin;
+    if (admin) {
+      const recipients = $("noticeRecipients"); recipients.textContent = "";
+      for (const member of await api("/api/notifications/recipients")) {
+        const row = el("div", "row"); row.append(el("span", null, member.display_name + " · " + member.org_id));
+        const inputs = {};
+        for (const [key, title] of [["audit_completed","审计完成"],["high_risk","高风险"]]) {
+          const label = el("label"); const input = el("input"); input.type = "checkbox"; input.checked = member[key]; inputs[key] = input; label.append(input, document.createTextNode(title)); row.append(label);
+        }
+        row.append(el("span", "muted", member.email_enabled ? "本人已同意邮件" : "本人未开邮件"));
+        const save = el("button", "btn re", "保存接收事件"); save.onclick = async () => { try { await api("/api/notifications/recipients/" + member.id, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({audit_completed:inputs.audit_completed.checked, high_risk:inputs.high_risk.checked, email_enabled:member.email_enabled})}); await loadNotifications(); } catch(e) { $("noticeStatus").textContent=e.message; } }; row.append(save); recipients.append(row);
+      }
+    }
+  } catch(e) { $("noticeStatus").textContent = e.message; }
+}
+$("noticeRefresh").onclick = loadNotifications;
+$("noticeSave").onclick = async () => {
+  try { await api("/api/notifications/preferences", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({audit_completed:$("noticeCompleted").checked, high_risk:$("noticeHigh").checked, email_enabled:$("noticeEmail").checked})}); await loadNotifications(); $("noticeStatus").textContent += " 订阅已保存。"; }
+  catch(e) { $("noticeStatus").textContent=e.message; }
+};
 
 async function loadHistory() {
   try {
@@ -1319,16 +1505,33 @@ function openRuleEditor(rule){
   editingRule=rule;ruleDraftLogic=JSON.parse(JSON.stringify(rule.logic));$("ruleEditor").hidden=false;
   $("ruleEditorTitle").textContent=rule.id+" "+rule.name;$("ruleEditorMeta").textContent=rule.category+" · "+({high:"高",medium:"中",low:"低"}[rule.severity]||rule.severity)+"风险";
   $("ruleEditorState").textContent=rule.customized?"已配置":"基础规则";$("ruleCurrentVersion").value=rule.version;$("ruleNewVersion").value=nextRuleVersion(rule.version);$("ruleThresholdBasis").value=rule.threshold_basis;
+  $("ruleEffectiveFrom").value="";$("ruleEffectiveTo").value="";
   $("ruleMetricHint").textContent="允许引用的指标："+Object.keys(rule.inputs).join("、");$("btnRuleSave").hidden=currentUser.role!=="platform_admin";
-  $("ruleEditorStatus").textContent=currentUser.role==="platform_admin"?"试跑确认后可保存为更高版本。":"可调整并试跑草稿；正式保存由平台管理员完成。";$("ruleTrialResult").hidden=true;renderRuleParamFields();
+  $("ruleEditorStatus").textContent=currentUser.role==="platform_admin"?"试跑确认后可保存为更高版本；日期不填则为兼容旧版的全期间规则。":"可调整并试跑草稿；正式保存由平台管理员完成。";$("ruleTrialResult").hidden=true;renderRuleParamFields();
+  loadRuleVersionHistory(rule.id);
   $("ruleEditor").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
+async function loadRuleVersionHistory(ruleId){
+  const box=$("ruleVersionHistory");box.textContent="";
+  if(currentUser.role!=="platform_admin")return;
+  try{
+    const versions=await api("/api/rules/"+ruleId+"/versions");
+    if(!editingRule||editingRule.id!==ruleId)return;
+    box.append(el("h3",null,"版本历史"));
+    if(!versions.length){box.append(el("p","muted","尚无自定义版本。"));return;}
+    for(const item of versions){const interval=item.effective_from?item.effective_from+" 至 "+(item.effective_to||"持续"):"全期间兼容版本";
+      box.append(el("div","data-item","v"+item.version+" · "+interval+" · 保存于 "+item.updated_at));}
+  }catch(err){if(editingRule&&editingRule.id===ruleId)box.append(el("p","muted","版本历史加载失败："+err.message));}
 }
 
 function ruleDraftBody(){
   if(!editingRule)throw new Error("请先选择规则。");const version=$("ruleNewVersion").value.trim(),basis=$("ruleThresholdBasis").value.trim();
   if(!version)throw new Error("请填写新版本号。");if(!basis)throw new Error("请填写阈值依据。");
   if(Array.from($("ruleParamFields").querySelectorAll('input[type="number"]')).some(input=>input.value===""))throw new Error("数值参数不能为空。");
-  return {expected_version:editingRule.version,new_version:version,logic:ruleDraftLogic,threshold_basis:basis};
+  const from=$("ruleEffectiveFrom").value||null,to=$("ruleEffectiveTo").value||null;
+  if(to&&!from)throw new Error("请填写生效起始日。");if(from&&to&&to<from)throw new Error("终止日不能早于起始日。");
+  return {expected_version:editingRule.version,new_version:version,logic:ruleDraftLogic,threshold_basis:basis,effective_from:from,effective_to:to};
 }
 
 function showRuleTrial(result){
@@ -1369,11 +1572,11 @@ $("btnSaveOrgSettings").addEventListener("click",async()=>{try{const saved=await
 $("btnUploadOrgLogo").addEventListener("click",async()=>{const file=$("orgLogoFile").files[0];if(!file)return showError("请选择 PNG 或 JPEG Logo。");try{const form=new FormData();form.append("file",file);const saved=await api("/api/org/logo",{method:"POST",body:form});$("orgLogoFile").value="";showOrgSettings(saved,"Logo 已上传并同步到报告模板。");}catch(err){showError(err.message);}});
 $("btnRemoveOrgLogo").addEventListener("click",async()=>{if(!window.confirm("确认移除本机构报告 Logo？机构名称、标题和页脚不会改变。"))return;try{showOrgSettings(await api("/api/org/logo",{method:"DELETE"}),"Logo 已移除。");}catch(err){showError(err.message);}});
 $("btnRuleTrial").addEventListener("click",async()=>{try{const auditId=$("ruleTrialAudit").value;if(!auditId)throw new Error("请先完成一份可访问的审计再试跑。");const result=await api("/api/rules/"+editingRule.id+"/trial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...ruleDraftBody(),audit_id:auditId})});showRuleTrial(result);$("ruleEditorStatus").textContent="试跑完成，历史审计未被修改。";}catch(err){showError(err.message);}});
-$("btnRuleSave").addEventListener("click",async()=>{try{const id=editingRule.id,saved=await api("/api/rules/"+id+"/parameters",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(ruleDraftBody())});$("ruleEditorStatus").textContent="已保存 "+saved.id+" v"+saved.version+"，仅影响后续审计。";editingRule=saved;await loadAdmin();}catch(err){showError(err.message);}});
+$("btnRuleSave").addEventListener("click",async()=>{try{const id=editingRule.id,saved=await api("/api/rules/"+id+"/parameters",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(ruleDraftBody())});editingRule=saved;await loadAdmin();$("ruleEditorStatus").textContent="已保存 "+saved.id+" v"+saved.version+"；审计将按完整所属期选择适用版本。";}catch(err){showError(err.message);}});
 
 </script>
 <script src="/workspace.js?v=dropdown-20260922-1"></script>
-<script src="/graph.js"></script>
+<script src="/graph.js?v=related-20260925-1"></script>
 <script>bootstrap().catch((err) => { $("authError").textContent=err.message; $("authError").style.display="block"; });</script>
 </body>
 </html>

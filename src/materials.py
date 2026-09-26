@@ -14,8 +14,11 @@ from zipfile import ZipFile, BadZipFile
 import pdfplumber
 from openpyxl import load_workbook
 
-from . import config, loader
-from .models import Account, Company, Dataset, Metric
+from . import config, loader, related_graph
+from .models import (
+    Account, Company, Dataset, Metric, RelatedGraph, RelatedRelation,
+    RelatedSubject, RelatedTrade,
+)
 from .ai_extraction import ExtractionError
 
 InputError = loader.InputError
@@ -121,10 +124,11 @@ def _excel(data, doc):
         contracts = loader._read_contracts(wb)
         fulfillments = loader._read_fulfillments(wb)
         contract_links = loader._read_contract_links(wb)
+        graph = related_graph.read_workbook(wb, company)
         loader._read_supplement(wb, company, metrics)
         if (not accounts and not declarations and not metrics and not period_series and not invoices
                 and not bank_transactions and not bank_adjustments and not human_records
-                and not contracts and not fulfillments and not contract_links):
+                and not contracts and not fulfillments and not contract_links and graph is None):
             raise InputError("没有找到支持的账表；请保留标准工作表名称和列名。")
         serialized_series = [
             {
@@ -145,13 +149,15 @@ def _excel(data, doc):
                    human_records=_serial([asdict(item) for item in human_records]),
                    contracts=_serial([asdict(item) for item in contracts]),
                    fulfillments=_serial([asdict(item) for item in fulfillments]),
-                   contract_links=_serial([asdict(item) for item in contract_links]))
+                   contract_links=_serial([asdict(item) for item in contract_links]),
+                   related_graph=_serial(asdict(graph)) if graph else None)
         doc["summary"] = (
             f"{len(accounts)} 行科目、{len(declarations)} 项申报、{len(metrics)} 项补充/报表指标、"
             f"{len(serialized_series)} 条期间序列、{len(invoices)} 张发票、"
             f"{len(bank_transactions)} 笔银行流水、{len(bank_adjustments)} 条银行调节、"
             f"{len(human_records)} 条人力记录、{len(contracts)} 份合同、"
-            f"{len(fulfillments)} 条履约记录、{len(contract_links)} 条四流勾稽"
+            f"{len(fulfillments)} 条履约记录、{len(contract_links)} 条四流勾稽、"
+            f"{len(graph.trades) if graph else 0} 条关联交易"
         )
     finally:
         wb.close()
@@ -354,7 +360,8 @@ def _unmapped_excel(data, doc):
              config.SHEET_INCOME, config.SHEET_BALANCE, config.SHEET_CASHFLOW,
              config.SHEET_HISTORY, config.SHEET_INVOICES, config.SHEET_BANK,
              config.SHEET_BANK_ADJUSTMENTS, config.SHEET_HUMAN, config.SHEET_CONTRACTS,
-             config.SHEET_FULFILLMENTS, config.SHEET_CONTRACT_LINKS, config.SHEET_SUPPLEMENT}
+             config.SHEET_FULFILLMENTS, config.SHEET_CONTRACT_LINKS, config.SHEET_SUPPLEMENT,
+             related_graph.SHEET_SUBJECTS, related_graph.SHEET_RELATIONS, related_graph.SHEET_TRADES}
     with ZipFile(BytesIO(data)) as archive:
         if sum(i.file_size for i in archive.infolist()) > MAX_TOTAL or len(archive.infolist()) > 1000:
             raise InputError("Excel 解压内容超过限制。")
@@ -393,6 +400,7 @@ def preview(files, keys, extractor=None):
                "accounts": [], "declarations": {}, "rows": [], "period_series": [], "invoices": [],
                 "bank_transactions": [], "bank_adjustments": [],
                 "human_records": [], "contracts": [], "fulfillments": [], "contract_links": [],
+                "related_graph": None,
                "pages": [], "warnings": [], "error": "",
                "extraction": {"method": "local"}}
         try:
@@ -438,6 +446,7 @@ def build_dataset(documents, selections, company_override, keys):
     company_data, accounts, declarations, metrics, period_series, invoices = {}, {}, {}, {}, {}, {}
     bank_transactions, bank_adjustments, human_records, unkeyed_bank_docs = {}, {}, {}, set()
     contracts, fulfillments, contract_links = {}, {}, {}
+    graph = None
     account_sources, declaration_sources = {}, {}
     for doc in documents:
         selection = selections[doc["id"]]
@@ -458,6 +467,19 @@ def build_dataset(documents, selections, company_override, keys):
             if company[key]:
                 _merge_value(company_data, key, company[key], "企业或期间不一致")
         source = f"{doc['name']} [SHA256:{doc['fingerprint']}]"
+        raw_graph = doc.get("related_graph")
+        if raw_graph is not None:
+            if graph is not None:
+                raise InputError("关联方图材料一次只能选择一份完整工作簿；请先合并并复核主体、关系和交易")
+            graph = RelatedGraph(
+                [RelatedSubject(**{**item, "source": f"{source} / {item['source']}"})
+                 for item in raw_graph["subjects"]],
+                [RelatedRelation(**{**item, "source": f"{source} / {item['source']}"})
+                 for item in raw_graph["relations"]],
+                [RelatedTrade(**{**item, "amount": Decimal(item["amount"]),
+                                 "source": f"{source} / {item['source']}"})
+                 for item in raw_graph["trades"]],
+            )
         for raw in doc.get("invoices", []):
             if not isinstance(raw, dict):
                 raise InputError(f"{source}：发票记录格式错误")
@@ -769,6 +791,6 @@ def build_dataset(documents, selections, company_override, keys):
             metric.source += "；" + metrics[key].source
         metrics[key] = metric
     loader._derive_period_metrics(company, metrics, period_series)
-    if not metrics:
+    if not metrics and graph is None:
         raise InputError("没有可执行核对的指标；请补充至少一个有效指标，缺失值不会当成零。")
-    return Dataset(company, list(accounts.values()), declarations, metrics)
+    return Dataset(company, list(accounts.values()), declarations, metrics, graph)

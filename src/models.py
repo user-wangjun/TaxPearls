@@ -47,6 +47,47 @@ class Metric:
 
 
 @dataclass
+class RelatedSubject:
+    key: str
+    name: str
+    kind: str
+    taxpayer_id: str
+    source: str
+
+
+@dataclass
+class RelatedRelation:
+    key: str
+    owner_key: str
+    company_key: str
+    kind: str
+    start_on: str
+    end_on: str
+    reviewed: bool
+    basis: str
+    source: str
+
+
+@dataclass
+class RelatedTrade:
+    key: str
+    seller_key: str
+    buyer_key: str
+    traded_on: str
+    amount: Decimal
+    anomaly_basis: str
+    reviewed: bool
+    source: str
+
+
+@dataclass
+class RelatedGraph:
+    subjects: list[RelatedSubject]
+    relations: list[RelatedRelation]
+    trades: list[RelatedTrade]
+
+
+@dataclass
 class Dataset:
     """一次审计的全部输入，标准化后的形态。"""
 
@@ -54,6 +95,7 @@ class Dataset:
     accounts: list[Account]
     declarations: dict[str, Decimal | float]
     metrics: dict[str, Metric]
+    related_graph: RelatedGraph | None = None
 
     def values(self) -> dict[str, Decimal | float]:
         """供规则引擎求值用的扁平数值表。"""
@@ -92,6 +134,8 @@ class Rule:
     threshold_basis: str = ""
     references: list[str] = field(default_factory=list)
     version: str = "1.0"
+    effective_from: str | None = None
+    effective_to: str | None = None
 
 
 @dataclass

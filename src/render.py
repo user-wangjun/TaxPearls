@@ -71,6 +71,8 @@ def _finding_dict(f: Finding) -> dict:
         "threshold_basis": f.rule.threshold_basis,
         "references": f.rule.references,
         "version": f.rule.version,
+        "effective_from": f.rule.effective_from,
+        "effective_to": f.rule.effective_to,
         "evidence": _evidence_dict(f),
         "legal_basis": f.rule.legal_basis,
         "suggestion": f.rule.suggestion,

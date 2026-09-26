@@ -14,7 +14,7 @@ import re
 import secrets
 import sqlite3
 from dataclasses import asdict
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from threading import RLock
@@ -24,7 +24,10 @@ from contextlib import contextmanager
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
-from src.models import Account, Company, Dataset, EvidenceItem, Finding, Metric, Rule
+from src.models import (
+    Account, Company, Dataset, EvidenceItem, Finding, Metric, RelatedGraph,
+    RelatedRelation, RelatedSubject, RelatedTrade, Rule,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "instance" / "taxpearls.db"
@@ -61,7 +64,7 @@ def _validate_password(password: str) -> None:
 
 
 def _normalize_email(email: str) -> str:
-    """邮箱归一化：去空格 + 转小写（docs/06 3.2）。同一邮箱只允许一个账号。"""
+    """邮箱归一化：去空格 + 转小写。同一邮箱只允许一个账号。"""
     return (email or "").strip().lower()
 
 
@@ -79,6 +82,34 @@ def _validate_email(email: str) -> str:
 
 
 PASSWORD_RESET_MINUTES = 10
+REGISTER_CODE_MINUTES = 10
+REGISTER_CODE_MAX_ATTEMPTS = 5
+INVITE_CODE_DAYS = 7
+CROCKFORD_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _generate_invite_code(length: int = 12) -> str:
+    """生成邀请码：Crockford Base32（排除 I/L/O/U，5.7.2）。"""
+    return "".join(secrets.choice(CROCKFORD_ALPHABET) for _ in range(length))
+
+
+def _normalize_invite_code(code: str) -> str:
+    """邀请码规范化：去分隔符与空白 → 大写 → 形近归一。"""
+    cleaned = "".join(ch for ch in (code or "").upper() if ch.isalnum())
+    return cleaned.translate(str.maketrans({"I": "1", "L": "1", "O": "0"}))
+
+
+def _username_from_email(email: str, db) -> str:
+    """由邮箱本地部分生成用户名，撞名自动追加随机后缀。"""
+    local = _normalize_email(email).partition("@")[0]
+    base = "".join(ch for ch in local if ch.isalnum())[:16] or "user"
+    if not db.execute("SELECT 1 FROM users WHERE username=?", (base,)).fetchone():
+        return base
+    for _ in range(5):
+        candidate = f"{base}{secrets.token_hex(2)}"
+        if not db.execute("SELECT 1 FROM users WHERE username=?", (candidate,)).fetchone():
+            return candidate
+    return f"{base}{secrets.token_hex(4)}"
 
 
 def serialize_dataset(dataset: Dataset) -> dict[str, Any]:
@@ -92,6 +123,11 @@ def serialize_dataset(dataset: Dataset) -> dict[str, Any]:
         "metrics": {
             k: {"name": m.name, "value": str(m.value), "source": m.source, "detail": m.detail}
             for k, m in dataset.metrics.items()
+        },
+        "related_graph": None if dataset.related_graph is None else {
+            "subjects": [asdict(item) for item in dataset.related_graph.subjects],
+            "relations": [asdict(item) for item in dataset.related_graph.relations],
+            "trades": [{**asdict(item), "amount": str(item.amount)} for item in dataset.related_graph.trades],
         },
     }
 
@@ -114,6 +150,12 @@ def deserialize_dataset(data: dict[str, Any]) -> Dataset:
             k: Metric(name=m["name"], value=Decimal(m["value"]), source=m["source"], detail=m["detail"])
             for k, m in data["metrics"].items()
         },
+        related_graph=(RelatedGraph(
+            subjects=[RelatedSubject(**item) for item in data["related_graph"]["subjects"]],
+            relations=[RelatedRelation(**item) for item in data["related_graph"]["relations"]],
+            trades=[RelatedTrade(**{**item, "amount": Decimal(item["amount"])})
+                    for item in data["related_graph"]["trades"]],
+        ) if data.get("related_graph") is not None else None),
     )
 
 
@@ -158,7 +200,9 @@ class Store:
         try:
             db.row_factory = sqlite3.Row
             db.execute("PRAGMA foreign_keys=ON")
-            db.execute("PRAGMA journal_mode=WAL")
+            # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
+            # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
+            # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
             yield db
             db.commit()
         except Exception:
@@ -169,6 +213,8 @@ class Store:
 
     def _init_schema(self) -> None:
         with self.connect() as db:
+            # WAL 一次设置、持久化于库文件
+            db.execute("PRAGMA journal_mode=WAL")
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE,
@@ -217,6 +263,18 @@ class Store:
                     logic_json TEXT NOT NULL, threshold_basis TEXT NOT NULL,
                     updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS rule_version_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_id TEXT NOT NULL, version TEXT NOT NULL,
+                    effective_from TEXT, effective_to TEXT,
+                    logic_json TEXT NOT NULL, threshold_basis TEXT NOT NULL,
+                    rule_json TEXT,
+                    updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL,
+                    UNIQUE(rule_id, version),
+                    CHECK(effective_from IS NOT NULL OR effective_to IS NULL)
+                );
+                CREATE INDEX IF NOT EXISTS idx_rule_version_period
+                    ON rule_version_history(rule_id, effective_from, effective_to);
                 CREATE TABLE IF NOT EXISTS org_settings (
                     org_id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '税海拾珠',
                     report_title TEXT NOT NULL DEFAULT '税务风险审计报告',
@@ -229,6 +287,31 @@ class Store:
                     target_type TEXT NOT NULL, target_id TEXT NOT NULL,
                     detail TEXT NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS notification_preferences (
+                    user_id TEXT PRIMARY KEY REFERENCES users(id),
+                    audit_completed INTEGER NOT NULL DEFAULT 0,
+                    high_risk INTEGER NOT NULL DEFAULT 0,
+                    email_enabled INTEGER NOT NULL DEFAULT 0,
+                    updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS notifications (
+                    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+                    org_id TEXT NOT NULL, audit_id TEXT NOT NULL REFERENCES audits(id),
+                    event TEXT NOT NULL, summary_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL, read_at TEXT,
+                    UNIQUE(user_id,audit_id,event)
+                );
+                CREATE INDEX IF NOT EXISTS idx_notifications_user
+                    ON notifications(user_id,org_id,created_at);
+                CREATE TABLE IF NOT EXISTS notification_deliveries (
+                    notification_id TEXT PRIMARY KEY REFERENCES notifications(id),
+                    recipient_email TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+                    attempts INTEGER NOT NULL DEFAULT 0, claim_token TEXT,
+                    provider_id TEXT, error_code TEXT, claimed_at TEXT, payload_json TEXT,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_notification_deliveries_status
+                    ON notification_deliveries(status,created_at,notification_id);
                 CREATE TABLE IF NOT EXISTS finding_interpretations (
                     audit_id TEXT NOT NULL REFERENCES audits(id),
                     rule_id TEXT NOT NULL, evidence_hash TEXT NOT NULL,
@@ -244,6 +327,19 @@ class Store:
                     PRIMARY KEY(audit_id, evidence_hash)
                 );
             """)
+            version_columns = {row["name"] for row in db.execute("PRAGMA table_info(rule_version_history)")}
+            if "rule_json" not in version_columns:
+                db.execute("ALTER TABLE rule_version_history ADD COLUMN rule_json TEXT")
+            delivery_columns = {row["name"] for row in db.execute("PRAGMA table_info(notification_deliveries)")}
+            if "payload_json" not in delivery_columns:
+                db.execute("ALTER TABLE notification_deliveries ADD COLUMN payload_json TEXT")
+            # Preserve pre-B12 overrides as undated legacy versions. Existing
+            # audits already contain immutable Finding snapshots.
+            db.execute("""INSERT OR IGNORE INTO rule_version_history
+                       (rule_id,version,effective_from,effective_to,logic_json,
+                        threshold_basis,updated_by,updated_at)
+                       SELECT rule_id,version,NULL,NULL,logic_json,
+                              threshold_basis,updated_by,updated_at FROM rule_overrides""")
             # Existing P1 databases predate configurable organization logos.
             columns = {row["name"] for row in db.execute("PRAGMA table_info(org_settings)")}
             for name, sql_type in (
@@ -268,6 +364,25 @@ class Store:
                     created_at TEXT NOT NULL
                 )""")
             db.execute("CREATE INDEX IF NOT EXISTS idx_email_tokens_email ON email_tokens(email, purpose)")
+            db.execute("""CREATE TABLE IF NOT EXISTS invite_codes (
+                    token_hash TEXT PRIMARY KEY,
+                    org_name TEXT NOT NULL,
+                    seats INTEGER NOT NULL,
+                    bound_email TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    redeemed_by TEXT REFERENCES users(id),
+                    redeemed_at TEXT,
+                    revoked INTEGER NOT NULL DEFAULT 0,
+                    created_by TEXT NOT NULL REFERENCES users(id),
+                    created_at TEXT NOT NULL,
+                    CHECK (redeemed_by IS NULL OR redeemed_at IS NOT NULL)
+                )""")
+            db.execute("""CREATE TABLE IF NOT EXISTS org_quota (
+                    org_id TEXT PRIMARY KEY,
+                    seats INTEGER NOT NULL,
+                    updated_by TEXT REFERENCES users(id),
+                    updated_at TEXT NOT NULL
+                )""")
             db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email "
                        "ON users(email) WHERE email IS NOT NULL AND email <> ''")
             count = db.execute("SELECT COUNT(*) FROM users WHERE role='platform_admin'").fetchone()[0]
@@ -428,10 +543,134 @@ class Store:
             ).fetchone()
         return self._with_email(dict(row)) if row else None
 
+    def create_invite_code(self, creator: dict[str, Any], org_name: str, seats: int,
+                           bound_email: str, expires_days: int = INVITE_CODE_DAYS) -> dict[str, Any]:
+        """平台管理员签发一次性创始码。明文只在此刻返回一次。"""
+        if creator.get("role") != "platform_admin":
+            raise ValueError("只有平台管理员可以签发创始码")
+        org_name = (org_name or "").strip()
+        address = _validate_email(bound_email)
+        if not org_name:
+            raise ValueError("机构名称不能为空")
+        if not isinstance(seats, int) or not 1 <= seats <= 200:
+            raise ValueError("席位须为 1–200 的整数")
+        if not address:
+            raise ValueError("必须绑定机构负责人的邮箱")
+        code = _generate_invite_code(12)
+        expires = (datetime.now(UTC) + timedelta(days=expires_days)).isoformat(timespec="seconds")
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO invite_codes
+                       (token_hash,org_name,seats,bound_email,expires_at,revoked,created_by,created_at)
+                   VALUES (?,?,?,?,?,0,?,?)""",
+                (_hash_token(_normalize_invite_code(code)), org_name, seats, address, expires,
+                 creator["id"], _now()),
+            )
+        return {"code": code, "org_name": org_name, "seats": seats,
+                "bound_email": address, "expires_at": expires}
+
+    def list_invite_codes(self) -> list[dict[str, Any]]:
+        """平台管理员查看创始码（不含明文）。"""
+        with self.connect() as db:
+            rows = db.execute(
+                """SELECT token_hash,org_name,seats,bound_email,expires_at,redeemed_by,
+                          redeemed_at,revoked,created_at
+                   FROM invite_codes ORDER BY created_at DESC"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def register_with_code(self, email: str, code: str, invite_code: str,
+                           password: str) -> tuple[dict[str, Any], str]:
+        """邮箱验证码 + 创始码注册：单事务完成核验与建号。
+
+        顺序：邮箱验证码（一次性 / 尝试上限）→ 创始码 CAS 核销 → 建机构与
+        org_admin（org_id 由系统生成，5.8.2）→ 建席位配额 → 种会话。
+        任何一步失败整体回滚。
+        """
+        _validate_password(password)
+        address = _normalize_email(email)
+        if not address or "@" not in address:
+            raise ValueError("邮箱格式不正确")
+        now = _now()
+        code_hash = _hash_token((code or "").strip())
+        invite_hash = _hash_token(_normalize_invite_code(invite_code))
+        # ⚠️ 验证码输错时的尝试计数必须**提交**而非回滚——在 with 块内 raise 会触发
+        # 整体回滚（含 attempts 自增），计数永远停在 0。因此错误以标志位记录、
+        # 事务提交后再抛出。
+        error: str | None = None
+        user_id = org_id = session_token = None
+        with self._lock:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                # ① 邮箱验证码：一次性、10 分钟、5 次尝试上限
+                token_row = db.execute(
+                    """SELECT token_hash,attempts,expires_at,used_at FROM email_tokens
+                       WHERE email=? AND purpose='register' AND used_at IS NULL""",
+                    (address,),
+                ).fetchone()
+                if not token_row or token_row["expires_at"] < now:
+                    error = "验证码无效或已过期，请重新获取。"
+                elif token_row["token_hash"] != code_hash:
+                    attempts = token_row["attempts"] + 1
+                    if attempts >= REGISTER_CODE_MAX_ATTEMPTS:
+                        db.execute("UPDATE email_tokens SET used_at=?,attempts=? WHERE token_hash=?",
+                                   (now, attempts, token_row["token_hash"]))
+                        error = "验证码错误次数过多，请重新获取。"
+                    else:
+                        db.execute("UPDATE email_tokens SET attempts=? WHERE token_hash=?",
+                                   (attempts, token_row["token_hash"]))
+                        error = f"验证码不正确（还可尝试 {REGISTER_CODE_MAX_ATTEMPTS - attempts} 次）。"
+                if error is None:
+                    # ② 创始码校验：CAS 核销由数据库层保证只能兑换一次
+                    invite = db.execute(
+                        """SELECT org_name,seats,bound_email,expires_at,revoked,redeemed_by
+                           FROM invite_codes WHERE token_hash=?""",
+                        (invite_hash,),
+                    ).fetchone()
+                    if not invite or invite["revoked"]:
+                        error = "邀请码无效。"
+                    elif invite["redeemed_by"]:
+                        error = "邀请码已被使用。"
+                    elif invite["expires_at"] < now:
+                        error = "邀请码已过期，请联系平台管理员重新签发。"
+                    elif _normalize_email(invite["bound_email"]) != address:
+                        error = "该创始码绑定的是其他邮箱，请使用绑定的邮箱注册。"
+                    elif db.execute("SELECT 1 FROM users WHERE email=?", (address,)).fetchone():
+                        error = "该邮箱已注册，请直接登录。"  # 一个邮箱 = 一个账号 = 一个机构（5.8.3）
+                if error is None:
+                    # ③ 建机构与 org_admin：org_id 由系统生成（5.8.2），角色由层级硬编码（5.8.1）
+                    org_id = "org-" + secrets.token_hex(6)
+                    user_id = secrets.token_hex(12)
+                    username = _username_from_email(address, db)
+                    db.execute(
+                        """INSERT INTO users (id,username,password_hash,display_name,role,org_id,active,email,created_at)
+                           VALUES (?,?,?,?,?,?,1,?,?)""",
+                        (user_id, username, _passwords.hash(password), invite["org_name"], "org_admin",
+                         org_id, address, now),
+                    )
+                    db.execute(
+                        "INSERT INTO org_quota (org_id,seats,updated_at) VALUES (?,?,?)",
+                        (org_id, invite["seats"], now),
+                    )
+                    db.execute("UPDATE invite_codes SET redeemed_by=?,redeemed_at=? WHERE token_hash=?",
+                               (user_id, now, invite_hash))
+                    db.execute("UPDATE email_tokens SET used_at=? WHERE token_hash=?",
+                               (now, token_row["token_hash"]))
+                    session_token = secrets.token_urlsafe(32)
+                    expires = (datetime.now(UTC) + timedelta(hours=SESSION_HOURS)).isoformat(timespec="seconds")
+                    db.execute("INSERT INTO sessions VALUES (?,?,?,?)",
+                               (_hash_token(session_token), user_id, expires, now))
+        if error:
+            raise ValueError(error)
+        user = self.get_user(user_id)
+        assert user is not None
+        self.log(user, "register", "user", user["id"], f"invite={invite_hash[:12]}…;org={org_id}")
+        return user, session_token
+
     def create_password_reset(self, email: str) -> str | None:
         """为已激活用户生成一次性重置令牌；邮箱不存在时返回 None。
 
-        调用方必须保证：无论返回令牌还是 None，对外的响应完全一致（防账号枚举，docs/06 3.5）。
+        调用方必须保证：无论返回令牌还是 None，对外的响应完全一致（防账号枚举，3.5）。
         同一邮箱同时只保留一张未使用的重置令牌，新申请会作废旧令牌。
         """
         address = _normalize_email(email)
@@ -451,8 +690,27 @@ class Store:
                 )
         return token
 
+    def create_register_code(self, email: str) -> str | None:
+        """生成 6 位注册验证码；邮箱格式非法返回 None。旧验证码随即作废。"""
+        address = _validate_email(_normalize_email(email))
+        if not address:
+            return None
+        code = f"{secrets.randbelow(1000000):06d}"
+        expires = (datetime.now(UTC) + timedelta(minutes=REGISTER_CODE_MINUTES)).isoformat(timespec="seconds")
+        with self._lock:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("DELETE FROM email_tokens WHERE email=? AND purpose='register' AND used_at IS NULL",
+                           (address,))
+                db.execute(
+                    """INSERT INTO email_tokens (token_hash,email,purpose,attempts,expires_at,used_at,created_at)
+                       VALUES (?,?,?,0,?,NULL,?)""",
+                    (_hash_token(code), address, "register", expires, _now()),
+                )
+        return code
+
     def redeem_password_reset(self, token: str, new_password: str) -> dict[str, Any]:
-        """用一次性重置令牌设置新密码；成功后该账号全部历史会话失效（docs/06 3.5）。"""
+        """用一次性重置令牌设置新密码；成功后该账号全部历史会话失效。"""
         _validate_password(new_password)
         token_hash = _hash_token((token or "").strip())
         now = _now()
@@ -565,6 +823,193 @@ class Store:
                 )
             return [dict(row) for row in rows]
 
+    def notification_preferences(self, user_id: str) -> dict[str, Any]:
+        with self.connect() as db:
+            row = db.execute("SELECT * FROM notification_preferences WHERE user_id=?", (user_id,)).fetchone()
+        return {"user_id": user_id, "audit_completed": bool(row["audit_completed"]) if row else False,
+                "high_risk": bool(row["high_risk"]) if row else False,
+                "email_enabled": bool(row["email_enabled"]) if row else False}
+
+    def set_notification_preferences(self, actor: dict[str, Any], user_id: str,
+                                     audit_completed: bool, high_risk: bool, email_enabled: bool) -> dict[str, Any]:
+        from webapp.notifications import RECIPIENT_ROLES
+
+        with self._lock:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                target = db.execute("SELECT * FROM users WHERE id=? AND active=1", (user_id,)).fetchone()
+                if not target or target["role"] not in RECIPIENT_ROLES:
+                    raise ValueError("接收人不存在、已停用或角色不支持审计通知。")
+                if actor["id"] != user_id and not (actor["role"] == "platform_admin" or
+                        actor["role"] == "org_admin" and actor["org_id"] == target["org_id"]):
+                    raise PermissionError("无权配置该接收人的通知。")
+                current = db.execute("SELECT email_enabled FROM notification_preferences WHERE user_id=?", (user_id,)).fetchone()
+                if actor["id"] != user_id and email_enabled != bool(current["email_enabled"] if current else False):
+                    raise PermissionError("邮件通知必须由接收人本人开启或关闭。")
+                if email_enabled and not target["email"]:
+                    raise ValueError("请先绑定本人邮箱，再开启邮件通知。")
+                db.execute("""INSERT INTO notification_preferences VALUES (?,?,?,?,?,?)
+                           ON CONFLICT(user_id) DO UPDATE SET audit_completed=excluded.audit_completed,
+                               high_risk=excluded.high_risk,email_enabled=excluded.email_enabled,
+                               updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
+                           (user_id, int(audit_completed), int(high_risk), int(email_enabled), actor["id"], _now()))
+                # A queued message is cancelled immediately on unsubscribe.
+                # Already claimed/accepted messages cannot be retracted.
+                db.execute("""UPDATE notification_deliveries SET status='suppressed',error_code='unsubscribed',updated_at=?
+                           WHERE status IN ('pending','failed') AND notification_id IN
+                             (SELECT id FROM notifications WHERE user_id=? AND
+                              (?=0 OR event='audit_completed' AND ?=0 OR event='high_risk' AND ?=0))""",
+                           (_now(), user_id, int(email_enabled), int(audit_completed), int(high_risk)))
+        return self.notification_preferences(user_id)
+
+    def list_notifications(self, user: dict[str, Any], limit: int = 100) -> list[dict[str, Any]]:
+        from webapp.notifications import RECIPIENT_ROLES
+
+        if user["role"] not in RECIPIENT_ROLES:
+            return []
+        where = "n.user_id=? AND n.org_id=? AND a.org_id=?"
+        args: list[Any] = [user["id"], user["org_id"], user["org_id"]]
+        if user["role"] == "accountant":
+            where += " AND c.org_id=? AND c.accountant_id=?"
+            args.extend([user["org_id"], user["id"]])
+        args.append(max(1, min(limit, 100)))
+        with self.connect() as db:
+            rows = db.execute(f"""SELECT n.*,d.status AS email_status FROM notifications n
+                              JOIN audits a ON a.id=n.audit_id LEFT JOIN clients c ON c.id=a.client_id
+                              LEFT JOIN notification_deliveries d ON d.notification_id=n.id
+                              WHERE {where} ORDER BY n.created_at DESC,n.id LIMIT ?""", args).fetchall()
+        return [{**{key: row[key] for key in ("id", "audit_id", "event", "created_at", "read_at", "email_status")},
+                 "summary": json.loads(row["summary_json"])} for row in rows]
+
+    def mark_notification_read(self, user: dict[str, Any], notification_id: str) -> bool:
+        from webapp.notifications import RECIPIENT_ROLES
+
+        if user["role"] not in RECIPIENT_ROLES:
+            return False
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""SELECT n.id,c.org_id AS client_org,c.accountant_id FROM notifications n
+                               JOIN audits a ON a.id=n.audit_id LEFT JOIN clients c ON c.id=a.client_id
+                               WHERE n.id=? AND n.user_id=? AND n.org_id=? AND a.org_id=?""",
+                             (notification_id, user["id"], user["org_id"], user["org_id"])).fetchone()
+            if not row or user["role"] == "accountant" and (row["client_org"] != user["org_id"] or row["accountant_id"] != user["id"]):
+                return False
+            result = db.execute("""UPDATE notifications SET read_at=COALESCE(read_at,?)
+                                  WHERE id=? AND user_id=? AND org_id=?""",
+                                (_now(), notification_id, user["id"], user["org_id"]))
+            return result.rowcount == 1
+
+    def claim_notification_delivery(self) -> dict[str, Any] | None:
+        """Atomically claim one pending email, rechecking consent and current access."""
+        from webapp.notifications import RECIPIENT_ROLES, email_content
+        from src.mailer import _from_header
+
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            rows = db.execute("""SELECT d.*,n.user_id,n.org_id,n.audit_id,n.event,n.summary_json,
+                          u.active,u.role,u.org_id AS user_org,u.email,
+                          p.audit_completed,p.high_risk,p.email_enabled,a.org_id AS audit_org,
+                          c.org_id AS client_org,c.accountant_id
+                          FROM notification_deliveries d JOIN notifications n ON n.id=d.notification_id
+                          JOIN users u ON u.id=n.user_id JOIN audits a ON a.id=n.audit_id
+                          LEFT JOIN notification_preferences p ON p.user_id=u.id
+                          LEFT JOIN clients c ON c.id=a.client_id
+                          WHERE d.status='pending' ORDER BY d.created_at,d.notification_id LIMIT 100""").fetchall()
+            for row in rows:
+                authorized = (row["active"] and row["role"] in RECIPIENT_ROLES and
+                              row["user_org"] == row["org_id"] == row["audit_org"])
+                if row["role"] == "accountant":
+                    authorized = authorized and row["client_org"] == row["org_id"] and row["accountant_id"] == row["user_id"]
+                consent = row["email_enabled"] and row[row["event"]] and row["email"] == row["recipient_email"]
+                if not authorized or not consent:
+                    db.execute("""UPDATE notification_deliveries SET status='suppressed',
+                                  error_code='recipient_unavailable',updated_at=? WHERE notification_id=? AND status='pending'""",
+                               (_now(), row["notification_id"]))
+                    continue
+                token = secrets.token_hex(16)
+                payload = json.loads(row["payload_json"]) if row["payload_json"] else None
+                if payload is None:
+                    subject, html, text = email_content(json.loads(row["summary_json"]))
+                    payload = {"subject": subject, "html": html, "text": text, "from_header": _from_header()}
+                db.execute("""UPDATE notification_deliveries SET status='claimed',claim_token=?,
+                              attempts=attempts+1,claimed_at=?,updated_at=?,payload_json=? WHERE notification_id=? AND status='pending'""",
+                           (token, _now(), _now(), _json(payload), row["notification_id"]))
+                return {"notification_id": row["notification_id"], "claim_token": token,
+                        "recipient_email": row["recipient_email"], "summary": json.loads(row["summary_json"]), "payload": payload}
+        return None
+
+    def finish_notification_delivery(self, notification_id: str, claim_token: str, status: str,
+                                     provider_id: str = "", error_code: str = "") -> bool:
+        if (status not in {"accepted", "failed", "uncertain"} or status == "accepted" and not provider_id
+                or len(provider_id) > 128 or not re.fullmatch(r"[a-z0-9_]{0,40}", error_code)):
+            raise ValueError("通知发送回执无效。")
+        with self.connect() as db:
+            result = db.execute("""UPDATE notification_deliveries SET status=?,provider_id=?,error_code=?,
+                                  updated_at=? WHERE notification_id=? AND status='claimed' AND claim_token=?""",
+                                (status, provider_id or None, error_code or None, _now(), notification_id, claim_token))
+            return result.rowcount == 1
+
+    def recover_notification_claims(self) -> int:
+        """A crashed send may have reached the provider: never automatically resend it."""
+        threshold = (datetime.now(UTC) - timedelta(minutes=5)).isoformat(timespec="seconds")
+        with self.connect() as db:
+            result = db.execute("""UPDATE notification_deliveries SET status='uncertain',error_code='interrupted',updated_at=?
+                                  WHERE status='claimed' AND claimed_at<?""", (_now(), threshold))
+            return result.rowcount
+
+    def retry_notification_delivery(self, user: dict[str, Any], notification_id: str) -> bool:
+        from webapp.notifications import RECIPIENT_ROLES
+
+        if user["role"] not in RECIPIENT_ROLES:
+            return False
+        with self.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("""SELECT d.*,c.org_id AS client_org,c.accountant_id
+                               FROM notification_deliveries d JOIN notifications n ON n.id=d.notification_id
+                               JOIN audits a ON a.id=n.audit_id LEFT JOIN clients c ON c.id=a.client_id
+                               WHERE n.id=? AND n.user_id=? AND n.org_id=? AND a.org_id=?""",
+                             (notification_id, user["id"], user["org_id"], user["org_id"])).fetchone()
+            if not row or user["role"] == "accountant" and (row["client_org"] != user["org_id"] or row["accountant_id"] != user["id"]):
+                return False
+            if row["status"] not in {"failed", "uncertain"}:
+                raise ValueError("只有失败或结果未知的邮件可申请重试。")
+            cutoff = (datetime.now(UTC) - timedelta(hours=23)).isoformat(timespec="seconds")
+            if row["attempts"] >= 3 or row["created_at"] < cutoff:
+                raise ValueError("已超出安全重试次数或 23 小时窗口；请人工核查，不再重发。")
+            db.execute("""UPDATE notification_deliveries SET status='pending',claim_token=NULL,
+                          provider_id=NULL,error_code=NULL,updated_at=? WHERE notification_id=?""", (_now(), notification_id))
+            return True
+
+    def _enqueue_audit_notifications(self, db, org_id: str, client_id: str | None,
+                                     audit_id: str, findings: list[Finding], when: str) -> None:
+        from webapp.notifications import RECIPIENT_ROLES, safe_summary, email_content
+        from src.mailer import _from_header
+
+        members = db.execute("""SELECT u.id,u.role,u.email,p.audit_completed,p.high_risk,p.email_enabled
+                              FROM notification_preferences p JOIN users u ON u.id=p.user_id
+                              WHERE u.active=1 AND u.org_id=?""", (org_id,)).fetchall()
+        client = db.execute("SELECT org_id,accountant_id FROM clients WHERE id=?", (client_id,)).fetchone() if client_id else None
+        high = any(item.status == "hit" and item.rule.severity == "high" for item in findings)
+        for member in members:
+            if member["role"] not in RECIPIENT_ROLES:
+                continue
+            if member["role"] == "accountant" and (not client or client["org_id"] != org_id or client["accountant_id"] != member["id"]):
+                continue
+            for event in ("audit_completed", "high_risk"):
+                if not member[event] or event == "high_risk" and not high:
+                    continue
+                key = hashlib.sha256(f"{member['id']}:{audit_id}:{event}".encode()).hexdigest()
+                summary = safe_summary(audit_id, findings, event, when)
+                created = _now()
+                db.execute("""INSERT OR IGNORE INTO notifications VALUES (?,?,?,?,?,?,?,NULL)""",
+                           (key, member["id"], org_id, audit_id, event, _json(summary), created))
+                if member["email_enabled"] and member["email"]:
+                    subject, html, text = email_content(summary)
+                    payload = {"subject": subject, "html": html, "text": text, "from_header": _from_header()}
+                    db.execute("""INSERT OR IGNORE INTO notification_deliveries
+                               (notification_id,recipient_email,created_at,updated_at,payload_json) VALUES (?,?,?,?,?)""",
+                               (key, member["email"], created, created, _json(payload)))
+
     def save_audit(self, audit_id: str, user: dict[str, Any], client_id: str | None,
                    dataset: Dataset, findings: list[Finding], summary: dict[str, Any], audited_at: str) -> None:
         with self.connect() as db:
@@ -575,6 +1020,7 @@ class Store:
                  _json(serialize_dataset(dataset)), _json(serialize_findings(findings)),
                  _json(summary), audited_at),
             )
+            self._enqueue_audit_notifications(db, user["org_id"], client_id, audit_id, findings, audited_at)
 
     def get_audit(self, audit_id: str) -> dict[str, Any] | None:
         with self.connect() as db:
@@ -769,7 +1215,10 @@ class Store:
     def rule_overrides(self) -> dict[str, dict[str, Any]]:
         with self.connect() as db:
             rows = db.execute(
-                "SELECT rule_id,version,logic_json,threshold_basis,updated_by,updated_at FROM rule_overrides"
+                """SELECT o.rule_id,o.version,o.logic_json,o.threshold_basis,o.updated_by,o.updated_at,
+                          h.effective_from,h.effective_to
+                   FROM rule_overrides o LEFT JOIN rule_version_history h
+                     ON h.rule_id=o.rule_id AND h.version=o.version"""
             )
             return {
                 row["rule_id"]: {
@@ -778,27 +1227,107 @@ class Store:
                     "threshold_basis": row["threshold_basis"],
                     "updated_by": row["updated_by"],
                     "updated_at": row["updated_at"],
+                    "effective_from": row["effective_from"],
+                    "effective_to": row["effective_to"],
                 }
                 for row in rows
             }
 
+    def rule_versions(self, rule_id: str | None = None) -> dict[str, list[dict[str, Any]]]:
+        with self.connect() as db:
+            if rule_id is None:
+                rows = db.execute("""SELECT * FROM rule_version_history
+                                     ORDER BY rule_id,id""").fetchall()
+            else:
+                rows = db.execute("""SELECT * FROM rule_version_history
+                                     WHERE rule_id=? ORDER BY id""", (rule_id,)).fetchall()
+        versions: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            versions.setdefault(row["rule_id"], []).append({
+                "version": row["version"], "effective_from": row["effective_from"],
+                "effective_to": row["effective_to"], "logic": json.loads(row["logic_json"]),
+                "threshold_basis": row["threshold_basis"], "updated_by": row["updated_by"],
+                "updated_at": row["updated_at"],
+                "rule": json.loads(row["rule_json"]) if row["rule_json"] else None,
+            })
+        return versions
+
     def set_rule_override(
         self, rule_id: str, version: str, logic: dict[str, Any],
-        threshold_basis: str, user_id: str,
+        threshold_basis: str, user_id: str, expected_version: str,
+        effective_from: str | None = None, effective_to: str | None = None,
+        rule_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if rule_snapshot is not None and (rule_snapshot.get("id") != rule_id or rule_snapshot.get("version") != version
+                or rule_snapshot.get("logic") != logic or rule_snapshot.get("threshold_basis") != threshold_basis
+                or rule_snapshot.get("effective_from") != effective_from or rule_snapshot.get("effective_to") != effective_to):
+            raise ValueError("规则快照与发布参数不一致。")
+        if effective_to and not effective_from:
+            raise ValueError("规则终止日期必须同时提供起始日期。")
+        for value in (effective_from, effective_to):
+            if value:
+                if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                    raise ValueError("规则生效日期须为 YYYY-MM-DD。")
+                try:
+                    date.fromisoformat(value)
+                except ValueError:
+                    raise ValueError("规则生效日期须为有效的 YYYY-MM-DD。") from None
+        if effective_from and effective_to and effective_from > effective_to:
+            raise ValueError("规则生效终止日不能早于起始日。")
         updated_at = _now()
-        with self.connect() as db:
-            db.execute(
-                """INSERT INTO rule_overrides
-                       (rule_id,version,logic_json,threshold_basis,updated_by,updated_at)
-                   VALUES (?,?,?,?,?,?)
-                   ON CONFLICT(rule_id) DO UPDATE SET version=excluded.version,
-                       logic_json=excluded.logic_json,threshold_basis=excluded.threshold_basis,
-                       updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
-                (rule_id, version, _json(logic), threshold_basis, user_id, updated_at),
-            )
+        closed_version = closed_on = None
+        with self._lock:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                current = db.execute("SELECT version FROM rule_overrides WHERE rule_id=?", (rule_id,)).fetchone()
+                if current and current["version"] != expected_version:
+                    raise ValueError("规则版本已变化，请刷新后重试。")
+                existing = db.execute("""SELECT version,effective_from,effective_to
+                                         FROM rule_version_history WHERE rule_id=?""", (rule_id,)).fetchall()
+                if any(row["version"] == version for row in existing):
+                    raise ValueError("该规则版本号已使用，请填写更高版本。")
+                if not effective_from and any(row["effective_from"] for row in existing):
+                    raise ValueError("已有定期生效版本，后续版本必须填写生效起始日。")
+                if effective_from:
+                    latest_start = max((row["effective_from"] for row in existing if row["effective_from"]), default=None)
+                    upper = effective_to or "9999-12-31"
+                    closing = []
+                    for row in existing:
+                        if row["effective_from"] and effective_from <= (row["effective_to"] or "9999-12-31") and row["effective_from"] <= upper:
+                            if row["effective_to"] is None and row["effective_from"] < effective_from:
+                                closing.append(row["version"])
+                            else:
+                                raise ValueError(f"生效区间与 v{row['version']} 重叠。")
+                    if latest_start and effective_from <= latest_start:
+                        raise ValueError("新版本生效起始日须晚于既有定期版本。")
+                    if len(closing) > 1:
+                        raise ValueError("既有规则生效区间重叠，请人工修复后再保存。")
+                    if closing:
+                        previous_end = (date.fromisoformat(effective_from) - timedelta(days=1)).isoformat()
+                        closed_version, closed_on = closing[0], previous_end
+                        db.execute("""UPDATE rule_version_history SET effective_to=?
+                                      WHERE rule_id=? AND version=? AND effective_to IS NULL""",
+                                   (previous_end, rule_id, closing[0]))
+                db.execute("""INSERT INTO rule_version_history
+                           (rule_id,version,effective_from,effective_to,logic_json,
+                            threshold_basis,updated_by,updated_at,rule_json)
+                           VALUES (?,?,?,?,?,?,?,?,?)""",
+                           (rule_id, version, effective_from, effective_to, _json(logic),
+                            threshold_basis, user_id, updated_at,
+                            _json(rule_snapshot) if rule_snapshot is not None else None))
+                db.execute(
+                    """INSERT INTO rule_overrides
+                           (rule_id,version,logic_json,threshold_basis,updated_by,updated_at)
+                       VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(rule_id) DO UPDATE SET version=excluded.version,
+                           logic_json=excluded.logic_json,threshold_basis=excluded.threshold_basis,
+                           updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
+                    (rule_id, version, _json(logic), threshold_basis, user_id, updated_at),
+                )
         return {
             "rule_id": rule_id, "version": version, "logic": logic,
             "threshold_basis": threshold_basis, "updated_by": user_id,
-            "updated_at": updated_at,
+            "updated_at": updated_at, "effective_from": effective_from,
+            "effective_to": effective_to,
+            "closed_version": closed_version, "closed_on": closed_on,
         }
