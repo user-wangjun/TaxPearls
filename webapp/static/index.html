@@ -1,0 +1,1142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>税海拾珠 · 税务风险审计</title>
+<link rel="icon" type="image/svg+xml" href="/logo">
+<style>
+  :root {
+    --navy: #1a2b4c; --navy-2: #2c4270; --gold: #b8860b; --gold-2: #d4a017;
+    --bg: #f5f6fa; --card: #ffffff; --line: #e3e6ee;
+    --ink: #232733; --ink-2: #5b6377; --ink-3: #8a92a6;
+    --high: #c62828; --high-bg: #fdecea;
+    --medium: #d97706; --medium-bg: #fdf3e7;
+    --low: #2563eb; --low-bg: #eaf1fe;
+    --pass: #2e7d32; --pass-bg: #edf7ee;
+    --skip: #6b7280; --skip-bg: #f3f4f6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Noto Serif SC","Source Han Serif SC","Microsoft YaHei",serif; background: var(--bg); color: var(--ink); min-height: 100vh; }
+  .num { font-variant-numeric: tabular-nums; font-family: "Consolas","Microsoft YaHei",monospace; }
+
+  header { background: linear-gradient(135deg, var(--navy) 0%, var(--navy-2) 100%); color: #fff; padding: 24px 0; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 24px; }
+  .hdr { display: flex; align-items: center; gap: 28px; }
+  .hdr-brand { display: flex; align-items: center; gap: 18px; min-width: 0; flex: 1; }
+  .hdr-txt { min-width: 0; }
+  .hdr-txt h1 { font-size: 22px; font-weight: 600; letter-spacing: 2px; }
+  .hdr-txt p { font-size: 12.5px; color: #b8c3dc; margin-top: 4px; }
+  /* 左上角品牌标识：矢量 SVG，任意尺寸不失真 */
+  .hdr-logo { flex: none; display: block; height: 76px; width: auto; }
+
+  main { padding: 28px 0 60px; }
+
+  /* 上传区 */
+  .dropzone { background: var(--card); border: 2px dashed #c4cadb; border-radius: 12px; padding: 48px 24px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+  .dropzone:hover, .dropzone.drag { border-color: var(--gold-2); background: #fffdf5; }
+  .dropzone .t1 { font-size: 17px; font-weight: 600; margin-bottom: 8px; }
+  .dropzone .t2 { font-size: 13px; color: var(--ink-3); line-height: 1.8; }
+  .dropzone .pick { margin-top: 18px; display: inline-block; background: var(--gold); color: #fff; border: none; border-radius: 6px; padding: 10px 30px; font-size: 14px; cursor: pointer; font-family: inherit; }
+  .dropzone .pick:hover { background: var(--gold-2); }
+
+  .error-box { display: none; background: var(--high-bg); color: var(--high); border: 1px solid #f2c4c0; border-radius: 8px; padding: 14px 18px; margin-top: 16px; font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+  .busy { display: none; text-align: center; color: var(--ink-2); padding: 36px; font-size: 14px; }
+  .busy .dot { display: inline-block; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+
+  /* 企业信息条 */
+  .co-bar { display: none; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 24px; margin-bottom: 18px; }
+  .co-grid { display: grid; grid-template-columns: 2fr 1.4fr 1fr 1fr; gap: 14px; }
+  .co-grid .k { font-size: 12px; color: var(--ink-3); margin-bottom: 4px; }
+  .co-grid .v { font-size: 15px; font-weight: 600; }
+  .co-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .co-head .time { font-size: 12.5px; color: var(--ink-3); }
+
+  /* 统计条 */
+  .stat-row { display: none; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; }
+  .stat .n { font-size: 30px; font-weight: 700; }
+  .stat .l { font-size: 12.5px; color: var(--ink-2); margin-top: 2px; }
+  .stat.hit .n { color: var(--high); }
+  .stat.pass .n { color: var(--pass); }
+  .stat.skip .n { color: var(--skip); }
+
+  /* 按钮组 */
+  .actions { display: none; gap: 12px; margin-bottom: 22px; }
+  .btn { border: none; border-radius: 6px; padding: 10px 22px; font-size: 14px; cursor: pointer; font-family: inherit; }
+  .btn.pdf { background: var(--navy); color: #fff; }
+  .btn.pdf:hover { background: var(--navy-2); }
+  .btn.pdf:disabled { background: #9aa3b8; cursor: wait; }
+  .btn.re { background: #fff; color: var(--ink-2); border: 1px solid var(--line); }
+  .btn.re:hover { color: var(--ink); border-color: var(--ink-3); }
+
+  /* 区块标题 */
+  .sec-title { font-size: 16px; font-weight: 700; margin: 26px 0 12px; display: flex; align-items: center; gap: 8px; }
+  .sec-title .cnt { font-size: 12px; color: var(--ink-3); font-weight: 400; }
+  .sec-title::before { content: ""; width: 4px; height: 16px; background: var(--gold); border-radius: 2px; }
+
+  /* 风险卡 */
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+  .card-head { display: flex; align-items: center; gap: 12px; padding: 15px 20px; cursor: pointer; user-select: none; }
+  .card-head:hover { background: #fafbfd; }
+  .tag { flex: none; font-size: 12px; font-weight: 600; border-radius: 4px; padding: 3px 10px; }
+  .tag.high { color: var(--high); background: var(--high-bg); }
+  .tag.medium { color: var(--medium); background: var(--medium-bg); }
+  .tag.low { color: var(--low); background: var(--low-bg); }
+  .tag.pass { color: var(--pass); background: var(--pass-bg); }
+  .tag.skip { color: var(--skip); background: var(--skip-bg); }
+  .card-head .rid { flex: none; font-size: 13px; color: var(--ink-3); }
+  .card-head .rname { font-size: 14.5px; font-weight: 600; flex: 1; }
+  .card-head .concl { font-size: 13px; color: var(--ink-2); max-width: 46%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card-head .arrow { flex: none; color: var(--ink-3); font-size: 12px; transition: transform .15s; }
+  .card.open .arrow { transform: rotate(90deg); }
+
+  .card-body { display: none; border-top: 1px solid var(--line); padding: 20px 22px; }
+  .card.open .card-body { display: block; }
+  .ev-title { font-size: 13px; font-weight: 700; color: var(--ink-2); margin: 14px 0 8px; }
+  .ev-title:first-child { margin-top: 0; }
+  table.ev { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  table.ev th { text-align: left; font-size: 12px; color: var(--ink-3); font-weight: 600; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+  table.ev td { padding: 8px 10px; border-bottom: 1px solid #f0f2f7; vertical-align: top; }
+  table.ev td.v { text-align: right; white-space: nowrap; font-weight: 600; }
+  table.ev td.src { color: var(--ink-2); font-size: 12.5px; }
+  tr.emph td { background: #fffdf5; }
+  tr.emph td.v { color: var(--high); }
+
+  .calc-box { background: #f8f9fc; border-left: 3px solid var(--gold); border-radius: 0 6px 6px 0; padding: 10px 16px; font-size: 13.5px; line-height: 1.8; color: var(--ink); }
+  .plain-list { list-style: none; font-size: 13.5px; line-height: 2; color: var(--ink); }
+  .plain-list a { color: var(--navy-2); }
+  .kv { font-size: 13.5px; line-height: 1.9; color: var(--ink-2); }
+  .kv b { color: var(--ink); font-weight: 600; }
+
+  .fold { display: none; }
+  .fold-btn { cursor: pointer; color: var(--ink-2); font-size: 13.5px; padding: 10px 4px; user-select: none; }
+  .fold-btn:hover { color: var(--ink); }
+  .fold-btn .arrow { display: inline-block; transition: transform .15s; font-size: 12px; margin-right: 4px; }
+  .fold-btn.open .arrow { transform: rotate(90deg); }
+
+  footer { border-top: 1px solid var(--line); padding: 22px 0 40px; color: var(--ink-3); font-size: 12px; line-height: 1.9; }
+
+  .auth-screen { min-height:100vh; display:grid; grid-template-columns:minmax(0,3fr) minmax(460px,2fr); padding:0; overflow:hidden; background:#f1f4f9; }
+  .auth-visual { position:relative; min-height:100vh; overflow:hidden; color:#fff; isolation:isolate; background:linear-gradient(180deg,#06162f0a,#03102366),url("/auth-ocean-data-v1.webp") center 43% / cover no-repeat,#06172f; }
+  .auth-visual::after { content:""; position:absolute; inset:0; z-index:1; pointer-events:none; background:linear-gradient(180deg,#0310260d 18%,#0310274d 54%,#020d20d9 100%),linear-gradient(90deg,#020d2052,transparent 48%,#020d2024); }
+  .auth-canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .auth-pearl { position:absolute; z-index:2; left:55%; top:24%; width:108px; aspect-ratio:1; pointer-events:none; opacity:1; transform:translateY(0) scale(1); animation:auth-pearl-float 7s ease-in-out infinite; filter:drop-shadow(0 18px 30px #020912a6); }
+  .auth-pearl > img { position:relative; z-index:2; width:100%; height:100%; display:block; object-fit:contain; filter:saturate(.92) contrast(1.03); }
+  .auth-pearl::before,.auth-pearl::after { content:""; position:absolute; z-index:1; left:50%; top:66%; width:78%; height:22%; border:1px solid #eed59b80; border-radius:50%; opacity:0; transform:translate(-50%,-50%) scale(.4); animation:auth-pearl-ripple 7s ease-out infinite; }
+  .auth-pearl::after { animation-delay:.42s; }
+  .auth-pearl-caption { position:absolute; left:calc(100% + 12px); top:50%; width:max-content; padding:6px 10px; border:1px solid #f2dda73d; border-radius:999px; background:#071a35c7; color:#f2dfaf; font-size:11px; font-weight:600; letter-spacing:.08em; opacity:.88; transform:translateY(-50%); box-shadow:0 10px 24px #020b1866; animation:auth-pearl-caption 7s ease-in-out infinite; }
+  .auth-visual-mark { position:absolute; z-index:3; top:34px; left:42px; display:flex; align-items:center; gap:14px; color:#dbe9fb; font-size:13px; letter-spacing:.16em; }
+  .auth-visual-mark img { width:126px; height:auto; display:block; filter:drop-shadow(0 10px 24px #020b1899); }
+  .auth-visual-copy { position:absolute; z-index:3; left:52px; right:44px; bottom:50px; max-width:650px; animation:auth-copy-in .7s ease-out both; }
+  .auth-visual-kicker { display:inline-flex; padding:7px 11px; border:1px solid #ffffff2e; border-radius:999px; background:#ffffff12; color:#e7f1ff; font-size:11px; font-weight:700; letter-spacing:.14em; }
+  .auth-visual-copy h1 { margin-top:18px; max-width:620px; color:#fff; font-size:clamp(30px,3.5vw,48px); line-height:1.24; letter-spacing:.02em; text-shadow:0 8px 30px #0008; }
+  .auth-visual-copy p { margin-top:14px; max-width:590px; color:#d2def0; font-size:15px; line-height:1.8; text-shadow:0 4px 18px #0008; }
+  .auth-proof { display:flex; align-items:center; gap:10px; margin-top:22px; color:#bdcee4; font-size:12px; }
+  .auth-proof span { padding:6px 10px; border:1px solid #ffffff20; border-radius:999px; background:#ffffff0d; }
+  .auth-proof i { color:#d7aa51; font-style:normal; }
+  .auth-entry { min-height:100vh; display:grid; padding:0; background:radial-gradient(circle at 85% 10%,#fff 0%,transparent 28%),linear-gradient(160deg,#f8fafc 0%,#edf2f7 100%); }
+  .auth-card { position:relative; width:100%; min-height:100vh; overflow:hidden; display:flex; flex-direction:column; justify-content:center; background:#fffffffa; border:0; border-left:1px solid #dbe2ec; border-radius:0; padding:clamp(52px,6vw,88px); box-shadow:-18px 0 60px #15233d16; animation:auth-card-in .55s cubic-bezier(.22,.8,.25,1) both; }
+  .auth-card::before { content:""; position:absolute; inset:0 0 auto; height:4px; background:linear-gradient(90deg,#8c6507,#e2b65d,#8c6507); }
+  .auth-brand { position:absolute; top:clamp(42px,5vh,64px); left:clamp(52px,6vw,88px); right:clamp(52px,6vw,88px); display:flex; align-items:center; gap:20px; margin:0; }
+  .auth-brand img { width:104px; }
+  .auth-brand h2 { font-size:26px; }
+  .auth-brand p { color:var(--ink-3); font-size:14px; margin-top:7px; }
+  .field { margin:12px 0; }
+  .field label { display:block; font-size:12px; color:var(--ink-2); margin-bottom:6px; }
+  .field input,.field select,.field textarea { width:100%; border:1px solid var(--line); border-radius:6px; padding:10px 12px; font:inherit; background:#fff; transition:border-color .16s,box-shadow .16s,background .16s; }
+  .auth-card .field { margin:16px 0; }
+  .auth-card .field label { font-size:15px; margin-bottom:9px; }
+  .auth-card .field input { min-height:56px; border-radius:10px; padding:14px 16px; font-size:16px; }
+  .pw-wrap { position:relative; }
+  .pw-wrap input { padding-right:52px; }
+  .pw-toggle { position:absolute; top:50%; right:8px; transform:translateY(-50%); width:38px; height:38px; display:flex; align-items:center; justify-content:center; border:none; border-radius:8px; background:transparent; color:var(--ink-3,#9aa3b2); cursor:pointer; transition:color .15s,background .15s; }
+  .pw-toggle:hover { color:#c3942d; background:#d4a01714; }
+  .pw-toggle:focus-visible { outline:none; color:#c3942d; box-shadow:0 0 0 3px #d4a01720; }
+  .pw-wrap input:focus ~ .pw-toggle { color:var(--ink-2,#5b6472); }
+  .auth-card .field input:focus { outline:none; border-color:#c3942d; box-shadow:0 0 0 3px #d4a01720; background:#fffdf8; }
+  .auth-remember { display:flex; align-items:center; gap:9px; margin-top:18px; font-size:15px; color:var(--ink-2); cursor:pointer; }
+  .auth-remember input { width:18px; height:18px; accent-color:var(--navy); }
+  .auth-remember-hint { margin-top:7px; font-size:13px; line-height:1.65; color:var(--ink-3); }
+  .field textarea { min-height:76px; resize:vertical; }
+  .auth-card .btn { position:relative; width:100%; min-height:52px; margin-top:20px; overflow:hidden; background:linear-gradient(135deg,var(--navy),var(--navy-2)); color:#fff; font-size:16px; box-shadow:0 12px 28px #14233f2e; transition:transform .16s,box-shadow .16s; }
+  .auth-card .btn::after { content:""; position:absolute; inset:0; transform:translateX(-120%); background:linear-gradient(110deg,transparent 25%,#ffffff38 50%,transparent 75%); transition:transform .55s ease; }
+  .auth-card .btn:hover { transform:translateY(-1px); box-shadow:0 16px 32px #14233f3d; }
+  .auth-card .btn:hover::after { transform:translateX(120%); }
+  @keyframes auth-card-in { from { opacity:0; transform:translateY(18px) scale(.985); } to { opacity:1; transform:none; } }
+  @keyframes auth-copy-in { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+  @keyframes auth-pearl-float {
+    0%,100% { transform:translateY(0) scale(1); filter:drop-shadow(0 18px 30px #020912a6); }
+    50% { transform:translateY(-7px) scale(1.025); filter:drop-shadow(0 22px 36px #d6a84b40); }
+  }
+  @keyframes auth-pearl-ripple {
+    0%,18% { opacity:0; transform:translate(-50%,-50%) scale(.35); }
+    24% { opacity:.5; }
+    58%,100% { opacity:0; transform:translate(-50%,-50%) scale(2.1); }
+  }
+  @keyframes auth-pearl-caption {
+    0%,100% { opacity:.7; transform:translate(0,-50%); }
+    50% { opacity:1; transform:translate(3px,-50%); }
+  }
+  .top-tools { display:flex; align-items:center; gap:10px; font-size:12px; }
+  .top-tools button { color:#fff; background:#ffffff18; border:1px solid #ffffff38; padding:6px 10px; border-radius:5px; cursor:pointer; }
+  .nav { display:none; gap:8px; margin-bottom:20px; flex-wrap:wrap; }
+  .nav button { border:1px solid var(--line); background:#fff; color:var(--ink-2); border-radius:6px; padding:8px 15px; cursor:pointer; font:inherit; }
+  .nav button.active { background:var(--navy); color:#fff; border-color:var(--navy); }
+  .panel { display:none; }
+  .panel.active { display:block; }
+  .sheet { background:#fff; border:1px solid var(--line); border-radius:12px; padding:22px; margin-bottom:16px; }
+  .sheet h2 { font-size:18px; margin-bottom:6px; }
+  .muted { color:var(--ink-3); font-size:12.5px; line-height:1.7; }
+  .row { display:flex; gap:12px; align-items:end; flex-wrap:wrap; }
+  .row .field { flex:1; min-width:180px; }
+  .data-list { margin-top:14px; border-top:1px solid var(--line); }
+  .data-item { padding:13px 4px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:12px; align-items:center; }
+  .data-item button { border:1px solid var(--line); background:#fff; padding:6px 10px; border-radius:5px; cursor:pointer; }
+  .role-chip { color:var(--navy); background:#edf1f8; border-radius:10px; padding:2px 8px; font-size:11px; }
+  .score { font-size:34px; color:var(--gold); font-weight:700; }
+  .check-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:14px 0; }
+  .check-grid label { border:1px solid var(--line); border-radius:6px; padding:9px; font-size:13px; }
+
+  @media (max-width: 720px) {
+    header { padding: 18px 0; }
+    .hdr { gap: 16px; }
+    .hdr-brand { gap: 12px; }
+    .hdr-txt h1 { font-size: 17px; letter-spacing: 1px; }
+    .hdr-txt p { display: none; }
+    .hdr-logo { height: 48px; }
+  }
+  @media (max-width: 520px) {
+    .hdr { flex-wrap: wrap; row-gap: 10px; }
+    .hdr-brand { flex-basis: 100%; }
+    .top-tools { margin-left: auto; }
+  }
+  @media (max-width: 900px) {
+    .auth-screen { position:relative; display:block; min-height:100vh; overflow:hidden; background:#071b39; }
+    .auth-visual { position:absolute; inset:0; min-height:100%; height:100%; max-height:none; }
+    .auth-canvas { opacity:.5; }
+    .auth-visual-mark,.auth-visual-copy { display:none; }
+    .auth-pearl { left:auto; right:22px; top:34px; width:68px; }
+    .auth-pearl-caption { display:none; }
+    .auth-entry { position:relative; z-index:2; min-height:100vh; place-items:center; padding:28px 24px; background:linear-gradient(180deg,#071b393d,#071b398f); }
+    .auth-card { width:min(500px,100%); min-height:auto; border:1px solid #dbe2ec; border-radius:24px; padding:34px; box-shadow:0 28px 80px #020b186e; }
+    .auth-brand { position:static; margin-bottom:30px; }
+  }
+  @media (max-width: 520px) {
+    .auth-entry { padding:18px 16px; }
+    .auth-card { padding:28px 22px 24px; border-radius:20px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .auth-card,.auth-visual-copy { animation:none; }
+    .auth-card .btn,.auth-card .btn::after { transition:none; }
+    .auth-pearl { opacity:.82; transform:none; animation:none; }
+    .auth-pearl::before,.auth-pearl::after,.auth-pearl-caption { display:none; animation:none; }
+  }
+
+  .material-review { margin:18px 0; padding:20px; background:white; border:1px solid var(--line); border-radius:12px; }
+  .material-review h2 { font-size:19px; margin-bottom:12px; }
+  .material-review p, .material-review summary { line-height:1.7; margin:8px 0; }
+  .material-review button { padding:8px 14px; margin:6px 8px 6px 0; cursor:pointer; border:1px solid #c4cadb; border-radius:6px; background:#f5f6fa; color:var(--navy); }
+  .material-review button.primary { background:var(--navy); color:white; }
+  .material-review input:not([type=checkbox]), .material-review select { width:100%; padding:8px; border:1px solid #c4cadb; border-radius:5px; min-width:0; font:inherit; font-size:13px; }
+  .material-company { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:12px 0; }
+  .material-company label { font-size:12px; color:var(--ink-2); }
+  .material-card { border-top:1px solid var(--line); padding:16px 0; }
+  .material-card h3 { overflow-wrap:anywhere; font-size:15px; }
+  .material-note { color:#996200; font-size:13px; }
+  .material-table-wrap { overflow-x:auto; margin:12px 0; }
+  .material-table { width:100%; min-width:760px; border-collapse:collapse; }
+  .material-table th, .material-table td { padding:6px; text-align:left; font-size:12px; border-bottom:1px solid var(--line); }
+  .material-table th:first-child { width:25%; }
+  .material-table th:nth-child(2) { width:18%; }
+  .material-table th:nth-child(3) { width:70px; }
+  .material-card pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:auto; background:var(--bg); padding:12px; font-size:12px; }
+  .material-check { display:block; margin:12px 0; line-height:1.8; }
+  @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
+
+</style>
+<link rel="stylesheet" href="/workspace.css?v=readable-layout-20260921-2">
+</head>
+<body>
+<section class="auth-screen" id="authScreen">
+  <aside class="auth-visual" aria-label="税务证据网络动态展示">
+    <canvas class="auth-canvas" id="authCanvas" aria-hidden="true"></canvas>
+    <div class="auth-pearl" aria-hidden="true">
+      <img src="/auth-pearl-real-v1.webp" alt="">
+      <span class="auth-pearl-caption">风险线索已定位</span>
+    </div>
+    <div class="auth-visual-mark"><img src="/logo" alt="税海拾珠"><span>AI 税务审计平台</span></div>
+    <div class="auth-visual-copy">
+      <span class="auth-visual-kicker">EXPLAINABLE TAX AUDIT</span>
+      <h1>从浩瀚数据中，拾取每一条风险线索</h1>
+      <p>连接账簿、发票、申报与资金证据，让每一条风险结论都有来源、有计算、有依据。</p>
+      <div class="auth-proof"><span>业务数据</span><i>→</i><span>交叉核验</span><i>→</i><span>风险线索</span></div>
+    </div>
+  </aside>
+  <div class="auth-entry">
+    <form class="auth-card" id="authForm">
+      <div class="auth-brand"><img src="/logo" alt="税海拾珠"><div><h2 id="authTitle">登录税海拾珠</h2><p id="authHint">P1 审计与实训工作台</p></div></div>
+      <div class="field"><label for="loginUser">用户名</label><input id="loginUser" name="username" autocomplete="username" required></div>
+      <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+      <label class="auth-remember"><input id="rememberLogin" type="checkbox" aria-describedby="rememberHint">记住账号密码</label>
+      <p class="auth-remember-hint" id="rememberHint" role="status">勾选后将账号密码以明文保存在当前浏览器中，仅建议在个人设备使用。</p>
+      <div class="error-box" id="authError"></div>
+      <button class="btn" type="submit" id="authSubmit">登录</button>
+    </form>
+  </div>
+</section>
+
+<script>
+(() => {
+  const canvas = document.getElementById("authCanvas");
+  const screen = document.getElementById("authScreen");
+  if (!canvas || !screen) return;
+
+  const ctx = canvas.getContext("2d");
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const flows = [
+    {kind:"ambient",start:[-.08,.14],c1:[.2,.04],c2:[.67,.24],end:[1.08,.12]},
+    {kind:"ambient",start:[-.08,.42],c1:[.24,.26],c2:[.67,.56],end:[1.08,.34]},
+    {kind:"ambient",start:[-.08,.72],c1:[.25,.58],c2:[.7,.82],end:[1.08,.61]},
+    {kind:"collect",start:[-.08,.24],c1:[.2,.19],c2:[.47,.2]},
+    {kind:"collect",start:[-.08,.55],c1:[.2,.5],c2:[.44,.47]},
+    {kind:"collect",start:[.14,.88],c1:[.29,.72],c2:[.5,.55]},
+    {kind:"collect",start:[.34,-.08],c1:[.39,.1],c2:[.53,.2]}
+  ];
+  const motes = Array.from({length:36},(_,i) => {
+    const hash=n => Math.abs(Math.sin((i+1)*n)*43758.5453)%1;
+    return {x:hash(12.9898),y:hash(78.233),depth:.25+hash(39.425)*.75,phase:hash(93.117)*Math.PI*2};
+  });
+  let width = 0, height = 0, raf = 0, started = performance.now();
+
+  function resize() {
+    const box = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+    width = Math.max(1, box.width);
+    height = Math.max(1, box.height);
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw(performance.now());
+  }
+
+  function drawParticles(seconds) {
+    motes.forEach((mote,i) => {
+      const x=((mote.x+seconds*(.0018+.0032*mote.depth))%1)*width+Math.sin(seconds*.16+mote.phase)*5*mote.depth;
+      const y=((mote.y-seconds*(.0012+.002*mote.depth)+1)%1)*height+Math.cos(seconds*.2+mote.phase)*4;
+      const pulse=.62+.38*Math.sin(seconds*(.32+mote.depth*.28)+mote.phase);
+      const alpha=(.025+mote.depth*.11)*pulse;
+      const radius=.45+mote.depth*1.25;
+      if (mote.depth>.72 && i%3===0) {
+        const haze=ctx.createRadialGradient(x,y,0,x,y,radius*5.5);
+        haze.addColorStop(0,`rgba(207,239,252,${alpha*.7})`);
+        haze.addColorStop(1,"rgba(111,190,224,0)");
+        ctx.fillStyle=haze; ctx.beginPath(); ctx.arc(x,y,radius*5.5,0,Math.PI*2); ctx.fill();
+      }
+      ctx.fillStyle=`rgba(218,239,249,${alpha})`;
+      ctx.beginPath(); ctx.arc(x,y,radius,0,Math.PI*2); ctx.fill();
+    });
+  }
+  function cubicPoint(p0,p1,p2,p3,t) {
+    const m=1-t, m2=m*m, t2=t*t;
+    return {
+      x:m2*m*p0.x+3*m2*t*p1.x+3*m*t2*p2.x+t2*t*p3.x,
+      y:m2*m*p0.y+3*m2*t*p1.y+3*m*t2*p2.y+t2*t*p3.y
+    };
+  }
+
+  function cubicTangent(p0,p1,p2,p3,t) {
+    const m=1-t;
+    return {
+      x:3*m*m*(p1.x-p0.x)+6*m*t*(p2.x-p1.x)+3*t*t*(p3.x-p2.x),
+      y:3*m*m*(p1.y-p0.y)+6*m*t*(p2.y-p1.y)+3*t*t*(p3.y-p2.y)
+    };
+  }
+
+  function drawPearlHalo(target,seconds) {
+    for (let i=0;i<8;i++) {
+      const angle=seconds*(.16+i*.008)+i*Math.PI*.71;
+      const radius=31+(i%4)*8+Math.sin(seconds*.3+i)*3;
+      const x=target.x+Math.cos(angle)*radius;
+      const y=target.y+Math.sin(angle)*radius*.38;
+      const alpha=.16+.2*(.5+.5*Math.sin(seconds*.7+i));
+      ctx.fillStyle=`rgba(${i%3===0?"249,218,154":"190,233,248"},${alpha})`;
+      ctx.beginPath(); ctx.arc(x,y,.65+(i%3)*.35,0,Math.PI*2); ctx.fill();
+    }
+  }
+
+  function drawDataFlows(seconds) {
+    const mobile=window.innerWidth<=900;
+    const target=mobile ? {x:width-56,y:68} : {x:width*.55+54,y:height*.24+54};
+    flows.forEach((flow,index) => {
+      const start={x:flow.start[0]*width,y:flow.start[1]*height};
+      const c1={x:flow.c1[0]*width,y:flow.c1[1]*height};
+      const c2={x:flow.c2[0]*width,y:flow.c2[1]*height};
+      const end=flow.kind==="collect" ? target : {x:flow.end[0]*width,y:flow.end[1]*height};
+      const stroke=ctx.createLinearGradient(start.x,start.y,end.x,end.y);
+      stroke.addColorStop(0,"rgba(92,183,224,0)");
+      stroke.addColorStop(.48,flow.kind==="collect"?"rgba(121,211,244,.12)":"rgba(121,211,244,.055)");
+      stroke.addColorStop(1,flow.kind==="collect"?"rgba(236,201,126,.18)":"rgba(129,204,235,0)");
+      ctx.beginPath(); ctx.moveTo(start.x,start.y); ctx.bezierCurveTo(c1.x,c1.y,c2.x,c2.y,end.x,end.y);
+      ctx.strokeStyle=stroke; ctx.lineWidth=flow.kind==="collect"?1.05:.72; ctx.lineCap="round"; ctx.stroke();
+
+      const count=flow.kind==="collect"?3:2;
+      for (let particle=0; particle<count; particle++) {
+        const raw=(seconds*(.026+index*.0015)+index*.137+particle/count)%1;
+        const t=raw*raw*(3-2*raw);
+        const point=cubicPoint(start,c1,c2,end,t);
+        const tangent=cubicTangent(start,c1,c2,end,t);
+        const tangentLength=Math.max(1,Math.hypot(tangent.x,tangent.y));
+        const flutter=Math.sin(raw*Math.PI*5+index*1.7+particle)*5*(1-t);
+        point.x+=-tangent.y/tangentLength*flutter;
+        point.y+=tangent.x/tangentLength*flutter;
+        const tail=cubicPoint(start,c1,c2,end,Math.max(0,t-(flow.kind==="collect"?.038:.026)));
+        const absorption=flow.kind==="collect"&&t>.82 ? Math.max(0,(1-t)/.18) : 1;
+        const visibility=Math.sin(Math.PI*raw)*absorption;
+        const radius=(.7+t*1.25)*(.55+.45*absorption);
+        const glow=ctx.createRadialGradient(point.x,point.y,0,point.x,point.y,5+t*6);
+        if (flow.kind==="collect"&&t>.68) {
+          glow.addColorStop(0,`rgba(255,241,200,${.9*visibility})`);
+          glow.addColorStop(1,"rgba(216,163,63,0)");
+        } else {
+          glow.addColorStop(0,`rgba(190,236,255,${(flow.kind==="collect"?.68:.42)*visibility})`);
+          glow.addColorStop(1,"rgba(84,183,229,0)");
+        }
+        ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(point.x,point.y,5+t*6,0,Math.PI*2); ctx.fill();
+        const trail=ctx.createLinearGradient(tail.x,tail.y,point.x,point.y);
+        trail.addColorStop(0,"rgba(150,218,244,0)");
+        trail.addColorStop(1,flow.kind==="collect"&&t>.68?`rgba(248,218,157,${visibility*.42})`:`rgba(168,226,249,${visibility*.28})`);
+        ctx.strokeStyle=trail; ctx.lineWidth=.7+radius*.25; ctx.beginPath(); ctx.moveTo(tail.x,tail.y); ctx.lineTo(point.x,point.y); ctx.stroke();
+        ctx.fillStyle=flow.kind==="collect"&&t>.68?`rgba(255,239,196,${visibility})`:`rgba(202,240,255,${visibility})`;
+        ctx.beginPath(); ctx.arc(point.x,point.y,radius,0,Math.PI*2); ctx.fill();
+      }
+    });
+    drawPearlHalo(target,seconds);
+  }
+
+  function draw(now) {
+    if (!width || !height) return;
+    const seconds = reduced ? 3.6 : (now-started)/1000;
+    ctx.clearRect(0,0,width,height);
+    drawParticles(seconds); drawDataFlows(seconds);
+  }
+
+  function frame(now) {
+    if (document.hidden || screen.style.display === "none") { raf=0; return; }
+    draw(now); raf=requestAnimationFrame(frame);
+  }
+
+  function resume() {
+    if (!reduced && !raf && !document.hidden && screen.style.display !== "none") raf=requestAnimationFrame(frame);
+  }
+
+  new ResizeObserver(resize).observe(screen);
+  document.addEventListener("visibilitychange",resume);
+  resize();
+  if (!reduced) resume();
+})();
+</script>
+
+<header id="appHeader" style="display:none">
+  <div class="wrap hdr">
+    <div class="hdr-brand">
+      <img class="hdr-logo" src="/logo" alt="税海拾珠">
+      <div class="hdr-txt">
+        <h1>税海拾珠 · 税务风险审计</h1>
+        <p>可解释税务风险识别引擎 —— 每条结论可追溯：数值 · 来源 · 计算过程 · 阈值 · 法条依据</p>
+      </div>
+    </div>
+    <div class="top-tools"><span id="currentUser"></span><button id="btnLogout">退出</button></div>
+  </div>
+</header>
+
+<main id="appMain" style="display:none">
+  <div class="wrap">
+
+    <div class="nav" id="nav" role="navigation" aria-label="企业工作空间">
+      <div class="nav-heading"><div class="nav-caption">企业工作空间</div><button type="button" id="navToggle" aria-controls="nav" aria-expanded="true" aria-label="收起侧边栏" title="收起侧边栏"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m14.6 5.6 1.8 1.8-4.6 4.6 4.6 4.6-1.8 1.8L8.2 12z"/></svg></button></div>
+      <button data-panel="dashboardPanel" class="business-nav" aria-label="工作台" title="工作台"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="8" height="10" rx="2"/><rect x="13" y="3" width="8" height="6" rx="2"/><rect x="3" y="15" width="8" height="6" rx="2"/><rect x="13" y="11" width="8" height="10" rx="2"/></svg><span class="nav-label">工作台</span></button>
+      <button data-panel="uploadPanel" class="business-nav" aria-label="上传材料" title="上传材料"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 15V7.4L8.7 9.7 7.3 8.3 12 3.6l4.7 4.7-1.4 1.4L13 7.4V15zM4 13h4v4h8v-4h4v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span class="nav-label">上传材料</span></button>
+      <button data-panel="auditPanel" class="business-nav" aria-label="审计详情" title="审计详情"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 2v5h5Zm2.2 8.3-4.7 4.8-2.7-2.7-1.4 1.4 4.1 4.1 6.1-6.2Z"/></svg><span class="nav-label">审计详情</span></button>
+      <button data-panel="historyPanel" aria-label="历史档案" title="历史档案"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="3" width="20" height="5" rx="1.5"/><path fill-rule="evenodd" d="M4 10h16v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Zm5 3v2h6v-2Z"/></svg><span class="nav-label">历史档案</span></button>
+      <button data-panel="knowledgePanel" aria-label="知识图谱" title="知识图谱"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m11 6 2-1 6 12-2 1zM5 17 11 5l2 1-6 12zM6 17h12v2H6z"/><circle cx="12" cy="5" r="3.5"/><circle cx="5" cy="18" r="3.5"/><circle cx="19" cy="18" r="3.5"/></svg><span class="nav-label">知识图谱</span></button>
+      <button data-panel="trainingPanel" class="training-nav" aria-label="实训中心" title="实训中心"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 11 5-11 5L1 8zm-7 9 7 3.2 7-3.2v5c-3.7 3.5-10.3 3.5-14 0zM21 11h2v8h-2z"/></svg><span class="nav-label">实训中心</span></button>
+      <button data-panel="adminPanel" class="admin-nav" aria-label="管理" title="管理"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10" cy="7" r="4"/><path d="M2 21v-3a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v3zm16-18a4 4 0 0 1 0 8h-1a6 6 0 0 0 0-8zm.5 10a5 5 0 0 1 4.5 5v3h-3v-3a8 8 0 0 0-1.5-5z"/></svg><span class="nav-label">管理</span></button>
+    </div>
+
+    <section class="panel" id="dashboardPanel">
+      <div class="page-head"><div><p class="eyebrow">BUSINESS OVERVIEW</p><h2>工作台</h2><p class="muted">从企业业务数据出发，了解经营表现与税务风险。</p></div><button class="btn pdf" id="dashboardUpload">上传材料 ↗</button></div>
+      <div class="sheet row"><div class="field"><label for="dashboardCompany">企业</label><select id="dashboardCompany"></select></div><div class="field"><label for="dashboardPeriod">所属期间</label><select id="dashboardPeriod"></select></div><p class="muted" id="dashboardUpdated"></p></div>
+      <div id="dashboardBody" aria-live="polite"></div>
+    </section>
+    <section class="panel" id="knowledgePanel">
+      <div class="page-head graph-page-head"><div><p class="eyebrow">税务洞察 / KNOWLEDGE EXPLORER</p><h2>让每一条关联，都有据可循<span class="graph-title-tag">知识图谱</span></h2><p class="muted">从一个指标出发，探索业务、风险与法规之间的证据网络。</p></div><div id="graphSummary" class="graph-summary"></div></div>
+      <div class="graph-filterbar"><div class="field graph-scope"><label for="graphAudit">探索范围</label><select id="graphAudit"><option value="">规则知识图谱</option></select></div><div class="field graph-search"><label for="knowledgeSearch">搜索关联</label><input id="knowledgeSearch" placeholder="搜索指标、规则、法条…"></div><div class="field"><label for="knowledgeCategory">规则类型</label><select id="knowledgeCategory"><option value="">全部类型</option><option>内部勾稽</option><option>外部交叉</option><option>指标偏离</option></select></div><div class="field"><label for="graphStatus">核对状态</label><select id="graphStatus"><option value="">全部状态</option><option value="hit">风险命中</option><option value="skipped">材料不足</option><option value="pass">检查通过</option></select></div></div>
+      <div class="graph-workspace">
+        <div class="graph-stage"><div class="graph-stage-heading"><div><span class="graph-live-dot"></span><strong>证据关系网络</strong><p id="graphCount"></p></div><span class="graph-mode" id="graphMode">关联视图</span></div><div class="graph-toolbar"><button id="graphOverview">全景</button><button id="graphFocus">聚焦关联</button><button id="graphExpand">展开一层</button><button id="graphZoomIn" aria-label="放大图谱">＋</button><button id="graphZoomOut" aria-label="缩小图谱">−</button><button id="graphReset">居中</button></div><svg id="graphCanvas" viewBox="0 0 960 680" aria-label="交互式知识图谱"></svg><div id="graphLegend" class="graph-legend"></div><p class="graph-hint">滚轮缩放 · 拖动画布或节点 · 点击节点查看证据</p></div>
+        <aside class="graph-inspector"><div class="inspector-heading"><span>◈</span><div><strong>洞察面板</strong><p>关联证据 · 智能解读</p></div></div><div class="inspector-tabs"><button id="nodeTab" class="active">节点详情</button><button id="aiTab">✦ AI 助手</button></div><div id="knowledgeDetail" aria-live="polite"></div><div id="graphAssistant" hidden><div class="ai-welcome"><span>✦</span><h3>沿着证据，深入一步</h3><p>选中图谱节点，让 AI 帮你理解关联、梳理疑点。</p></div><p id="graphAIStatus" class="muted"></p><div id="graphAIContext" class="ai-context"></div><div class="ai-prompts"><button data-question="解释当前节点及关联证据；如果是风险，说明为什么命中。">解释关联</button><button data-question="当前检查还缺哪些材料？请说明补充和核对顺序。">补充材料</button><button data-question="请根据证据给出排查顺序，并将可能原因标注为待核实。">排查建议</button></div><div id="graphMessages" aria-live="polite"></div><form id="graphQuestionForm"><textarea id="graphQuestion" aria-label="向图谱 AI 提问" placeholder="围绕当前节点提问…" maxlength="2000" required></textarea><button id="graphSend" class="btn pdf">发送问题 ↗</button></form></div></aside>
+      </div>
+    </section>
+    <section class="panel" id="uploadPanel">
+    <div class="page-head"><div><p class="eyebrow">DATA IMPORT</p><h2>上传材料</h2><p class="muted">核对企业与所属期间后，生成审计结果并更新工作台。</p></div></div>
+
+    <!-- 1. 上传区 -->
+    <div class="sheet" style="margin-bottom:16px">
+      <label for="extractionMode">数据提取方式</label>
+      <select id="extractionMode" style="padding:8px;margin:8px">
+        <option value="auto">自动：已配置时使用 AI 提取 PDF / 非标准 Excel</option>
+        <option value="ai">使用 AI 提取（需要配置模型服务）</option>
+        <option value="local">仅本地解析</option>
+      </select>
+      <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
+    </div>
+    <div class="dropzone" id="dropzone">
+      <div class="t1">一次选择或拖拽多份 Excel、PDF，也可上传 ZIP 文件包</div>
+      <div class="t2">支持账表 Excel、文字 / 扫描 PDF；AI 候选数据经校验后进入核对页<br>
+        最多 20 份材料，单份 / ZIP 不超过 10MB，解压后合计 50MB · 原始文件仅在内存中解析</div>
+      <button class="pick" type="button">选择多份材料</button>
+      <input type="file" id="fileInput" accept=".xlsx,.pdf,.zip" multiple hidden>
+    </div>
+    <div class="error-box" id="errorBox"></div>
+    <div class="busy" id="busy">正在处理材料，请稍候<span class="dot">……</span></div>
+
+    <div id="materialReview" class="material-review" hidden></div>
+    <div id="batchResults" class="material-review" hidden></div>
+
+    </section>
+    <section class="panel" id="auditPanel">
+    <div class="page-head"><div><p class="eyebrow">AUDIT EVIDENCE</p><h2>审计详情</h2><p class="muted" id="auditEmpty">请从工作台或历史档案打开报告，或上传材料开始审计。</p></div></div>
+
+    <!-- 2. 企业信息条 + 导出 -->
+    <div class="co-bar" id="coBar">
+      <div class="co-head">
+        <div style="font-size:16px;font-weight:700" id="coName"></div>
+        <div class="time" id="auditTime"></div>
+      </div>
+      <div class="co-grid">
+        <div><div class="k">纳税人识别号</div><div class="v num" id="coTaxId"></div></div>
+        <div><div class="k">所属行业</div><div class="v" id="coIndustry"></div></div>
+        <div><div class="k">审计期间</div><div class="v" id="coPeriod"></div></div>
+        <div><div class="k">已提取指标</div><div class="v num" id="coMetrics"></div></div>
+      </div>
+    </div>
+
+    <!-- 统计 -->
+    <div class="stat-row" id="statRow">
+      <div class="stat hit"><div class="n num" id="nHit">0</div><div class="l">风险命中</div></div>
+      <div class="stat"><div class="n num" id="nHigh">0</div><div class="l">其中高风险</div></div>
+      <div class="stat pass"><div class="n num" id="nPass">0</div><div class="l">检查通过</div></div>
+      <div class="stat skip"><div class="n num" id="nSkip">0</div><div class="l">未执行（材料不足）</div></div>
+    </div>
+
+    <div class="sheet" id="filterBar" style="display:none;padding:12px 18px">
+      <div class="row">
+        <div class="field"><label>结果状态</label><select id="filterStatus"><option value="">全部</option><option value="hit">命中</option><option value="pass">通过</option><option value="skipped">未执行</option></select></div>
+        <div class="field"><label>风险等级</label><select id="filterSeverity"><option value="">全部</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></div>
+        <div class="field"><label>规则类型</label><select id="filterCategory"><option value="">全部</option><option>内部勾稽</option><option>外部交叉</option><option>指标偏离</option></select></div>
+        <div class="field"><label>税种</label><select id="filterTax"><option value="">全部</option></select></div>
+      </div>
+    </div>
+
+    <!-- 操作 -->
+    <div class="actions" id="actions">
+      <button class="btn pdf" id="btnPdf">导出 A4 PDF 报告</button>
+      <button class="btn re" id="btnNew">审计另一家企业</button>
+    </div>
+
+    <!-- 3. 风险清单（命中） -->
+    <div id="hitSection" style="display:none">
+      <div class="sec-title">风险事项 <span class="cnt" id="hitCnt"></span></div>
+      <div id="hitList"></div>
+    </div>
+
+    <!-- 5. 未执行 -->
+    <div id="skipSection" style="display:none">
+      <div class="sec-title">未能执行的检查 <span class="cnt">缺数据不等于无风险，请补齐材料后复检</span></div>
+      <div id="skipList"></div>
+    </div>
+
+    <!-- 通过项（折叠） -->
+    <div id="passSection" style="display:none">
+      <div class="fold-btn" id="passFold"><span class="arrow">▶</span><span id="passFoldText"></span></div>
+      <div class="fold" id="passList"></div>
+    </div>
+
+    </section>
+
+    <section class="panel" id="historyPanel">
+      <div class="sheet"><h2>审计历史</h2><p class="muted">保存的是标准化指标、规则版本和证据快照；刷新或重启后仍可追溯。</p><div class="data-list" id="historyList"></div></div>
+    </section>
+
+    <section class="panel" id="trainingPanel">
+      <div class="sheet" id="teacherBox" style="display:none">
+        <h2>发布实训作业</h2><p class="muted">只允许使用明确标记的仿真案例。标准答案直接来自同一规则引擎。</p>
+        <div class="row"><div class="field"><label>作业标题</label><input id="assignmentTitle" value="税务风险识别实训"></div><div class="field"><label>选择审计案例</label><select id="assignmentAudit"></select></div><div class="field"><label>每项误报扣分</label><input id="assignmentPenalty" type="number" min="0" max="100" value="5"></div><button class="btn pdf" id="btnAssignment">发布</button></div>
+      </div>
+      <div class="sheet"><h2>实训作业</h2><div class="data-list" id="assignmentList"></div></div>
+      <div class="sheet" id="exerciseBox" style="display:none"><h2 id="exerciseTitle"></h2><p class="muted" id="exerciseCompany"></p><div id="exerciseData"></div><div class="ev-title">标注你认为命中的风险</div><div class="check-grid" id="exerciseRules"></div><button class="btn pdf" id="btnSubmitExercise">提交答案并评分</button><div id="scoreResult"></div></div>
+      <div class="sheet" id="reviewBox" style="display:none"><h2>学生提交与人工复核</h2><div class="data-list" id="submissionList"></div></div>
+    </section>
+
+    <section class="panel" id="adminPanel">
+      <div class="sheet" id="userAdmin"><h2>账号管理</h2><p class="muted">平台管理员可创建各角色；机构管理员仅可创建本机构会计。</p><div class="row"><div class="field"><label>用户名</label><input id="newUsername"></div><div class="field"><label>显示姓名</label><input id="newDisplayName"></div><div class="field"><label>初始密码</label><input id="newPassword" type="password"></div><div class="field"><label>角色</label><select id="newRole"><option value="teacher">教师</option><option value="student">学生</option><option value="org_admin">机构管理员</option><option value="accountant">会计</option></select></div><button class="btn pdf" id="btnCreateUser">创建账号</button></div><div class="data-list" id="userList"></div></div>
+      <div class="sheet"><h2>规则管理</h2><p class="muted">规则启停对后续审计生效；历史报告保留当时的完整规则快照。</p><div class="data-list" id="ruleList"></div></div>
+      <div class="sheet"><h2>操作日志</h2><div class="data-list" id="logList"></div></div>
+    </section>
+
+  </div>
+</main>
+
+<footer id="appFooter" style="display:none">
+  <div class="wrap">
+    本报告基于所提供材料与内置规则自动生成，不构成税务鉴证、涉税鉴证或法律意见，不能替代税务机关的认定结论，不能作为纳税申报的唯一依据。<br>
+    演示样例数据全部为仿真生成，不含任何真实企业信息。行业税负率等参考区间为示意值，正式使用前须按当地税务机关口径校准。
+  </div>
+</footer>
+
+<script>
+"use strict";
+/* 安全约定：所有来自上传数据的文本一律通过 textContent / DOM API 写入，
+   绝不 innerHTML 拼接（杜绝原型期遗留的 XSS 路径）。 */
+
+function el(tag, className, text) {
+  const n = document.createElement(tag);
+  if (className) n.className = className;
+  if (text !== undefined && text !== null && text !== "") n.textContent = text;
+  return n;
+}
+
+const $ = (id) => document.getElementById(id);
+let auditId = null;
+let currentUser = null;
+let openAssignmentId = null;
+let latestFindings = [];
+
+async function api(url, options = {}) {
+  const r = await fetch(url, options);
+  const ct = r.headers.get("content-type") || "";
+  const body = ct.includes("application/json") ? await r.json() : await r.text();
+  if (!r.ok) throw new Error(body.detail || body || "请求失败");
+  return body;
+}
+
+function switchPanel(id) {
+  if (id === "uploadPanel") refreshAIStatus();
+  document.querySelectorAll(".panel").forEach((n) => n.classList.toggle("active", n.id === id));
+  document.querySelectorAll("#nav [data-panel]").forEach((n) => n.classList.toggle("active", n.dataset.panel === id));
+  if (id === "historyPanel") loadHistory();
+  if (id === "trainingPanel") loadAssignments();
+  if (id === "adminPanel") loadAdmin();
+  if (id === "dashboardPanel") loadDashboard();
+  if (id === "knowledgePanel") loadKnowledge();
+}
+
+/* ---------- 多材料上传与 PDF 核对 ---------- */
+const dz = $("dropzone"), fi = $("fileInput");
+let materialDraft = null, materialCards = [], originalUrls = [];
+async function refreshAIStatus() {
+  try { const status = await api("/api/materials/config"); $("aiStatus").textContent = status.message; }
+  catch(err) { $("aiStatus").textContent = "AI 配置状态不可用：" + err.message; }
+}
+function clearMaterials() {
+  originalUrls.forEach(URL.revokeObjectURL); originalUrls = [];
+  materialDraft = null; materialCards = [];
+  $("materialReview").replaceChildren(); $("materialReview").hidden = true;
+  $("batchResults").replaceChildren(); $("batchResults").hidden = true;
+  $("materialReview").after($("batchResults"));
+}
+function showError(msg) { const b = $("errorBox"); $("appMain").prepend(b); b.textContent = msg; b.style.display = "block"; }
+function hideError() { $("errorBox").style.display = "none"; }
+dz.addEventListener("click", () => fi.click());
+fi.addEventListener("click", e => e.stopPropagation());
+fi.addEventListener("change", () => { if (fi.files.length) upload(Array.from(fi.files)); fi.value = ""; });
+dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("drag"); });
+dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+dz.addEventListener("drop", e => { e.preventDefault(); dz.classList.remove("drag"); if (e.dataTransfer.files.length) upload(Array.from(e.dataTransfer.files)); });
+async function upload(files) {
+  hideError();
+  if (files.length > 20) return showError("每次最多选择 20 个文件。");
+  if (files.some(f => !/\.(xlsx|pdf|zip)$/i.test(f.name))) return showError("支持 .xlsx、.pdf 和 .zip 文件。");
+  if (files.some(f => !f.size || f.size > 10 * 1024 * 1024)) return showError("单个文件须非空且不超过 10MB。");
+  if (files.reduce((n,f) => n+f.size,0) > 50 * 1024 * 1024) return showError("上传总大小不能超过 50MB。");
+  clearMaterials();
+  $("coBar").style.display = $("statRow").style.display = $("actions").style.display = $("filterBar").style.display = "none";
+  $("hitSection").style.display = $("skipSection").style.display = $("passSection").style.display = "none";
+  dz.style.display = "none"; $("busy").style.display = "block";
+  try {
+    const fd = new FormData(); files.forEach(f => fd.append("files", f));
+    fd.append("extraction", $("extractionMode").value);
+    materialDraft = await api("/api/materials/preview", {method:"POST",body:fd});
+    if (materialDraft.job_id) {
+      $("busy").textContent = "AI 正在提取并校验材料，请保持页面打开……";
+      const jobId = materialDraft.job_id, started = Date.now();
+      for (;;) {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        const job = await api("/api/materials/jobs/" + encodeURIComponent(jobId));
+        if (job.state === "failed") throw new Error(job.detail);
+        if (job.state === "done") { materialDraft = job.result; break; }
+        if (Date.now() - started > 15 * 60 * 1000) throw new Error("提取任务等待超时，请稍后重新上传。");
+      }
+    }
+    renderMaterialReview(files);
+  } catch(err) { showError(err.message); dz.style.display = "block"; }
+  finally { $("busy").style.display = "none"; $("busy").textContent = "正在处理材料，请稍候……"; }
+}
+function companyInputs(parent, values, locked = false) {
+  const grid = el("div", "material-company"), inputs = {};
+  [["name","企业名称"],["taxpayer_id","纳税人识别号"],["industry","所属行业"],["period","核对所属期（与账表保持一致）"]].forEach(([key,title]) => {
+    const label = el("label", "", title), input = el("input");
+    input.value = values[key] || ""; input.maxLength = 200; input.setAttribute("aria-label",title);
+    input.readOnly = locked && Boolean(values[key]); inputs[key] = input; label.append(input); grid.append(label);
+  });
+  parent.append(grid); return () => Object.fromEntries(Object.entries(inputs).map(([k,v]) => [k,v.value.trim()]));
+}
+function checkLabel(parent, text) {
+  const label = el("label","material-check"), input = el("input"); input.type = "checkbox";
+  label.append(input, document.createTextNode(" " + text)); parent.append(label); return input;
+}
+function renderMaterialReview(files) {
+  const root = $("materialReview"); root.hidden = false;
+  root.append(el("h2","","材料核对"),el("p","muted","先确认材料分组，再开始审计。核对草稿保留 10 分钟；材料不完整时，相应规则显示“未执行”。"));
+  const mode = el("select"); mode.id = "materialMode"; mode.setAttribute("aria-label","审计方式");
+  [["merge","同一企业、同一期间：合并为一次审计"],["separate","不同企业或不同期间：每个文件分别审计"]].forEach(([v,t]) => { const o=el("option","",t); o.value=v; mode.append(o); });
+  root.append(mode);
+  const scope = el("div"); const first = materialDraft.documents.find(d => !d.error);
+  scope.append(el("p","muted","以下信息用于补全缺少企业信息的材料。已有信息不一致时，系统会阻止合并。"));
+  const company = companyInputs(scope, first ? first.company : {});
+  const sameScope = checkLabel(scope,"我已确认选中的材料属于同一企业、同一核对期间；历史指标已注明实际期间。不同企业材料请改用分别审计。");
+  root.append(scope); mode.addEventListener("change",()=>scope.hidden=mode.value!=="merge");
+  materialCards = [];
+  materialDraft.documents.forEach(doc => {
+    const card = el("div","material-card"); root.append(card);
+    const selected = checkLabel(card,doc.name); selected.checked = !doc.error; selected.disabled = Boolean(doc.error);
+    card.append(el("p",doc.error ? "material-note" : "muted",doc.error || doc.summary));
+    if(doc.error) return;
+    const editable = doc.kind === "pdf" || doc.review_required;
+    const getCompany = companyInputs(card,doc.company,!editable);
+    const state = {doc, selected, getCompany, rows:[]}; materialCards.push(state);
+    doc.warnings.forEach(w => card.append(el("p","material-note",w)));
+    if(editable) {
+      const original = files.find(f=>f.name===doc.name);
+      if(original && doc.kind === "pdf") { const url=URL.createObjectURL(original); originalUrls.push(url); const a=el("a","","打开原始 PDF 对照核对"); a.href=url; a.target="_blank"; a.rel="noopener"; card.append(a); }
+      else card.append(el("p","muted","请打开本地原件对照核对；下方可查看提取文字及来源编号。"));
+      const textDetail=el("details"), summary=el("summary","","查看提取的原文（按页）"); textDetail.append(summary);
+      doc.pages.forEach(page => textDetail.append(el("h3","",page.label || "第 "+page.page+" 页"),el("pre","",page.text || "本页没有可提取文字，请查看原件。"))); card.append(textDetail);
+      const wrap=el("div","material-table-wrap"), table=el("table","material-table"), head=el("thead"), tr=el("tr");
+      ["标准指标 / 口径","数值（元；比率用小数）",doc.kind === "pdf" ? "页码" : "表编号","来源栏次及口径说明","操作"].forEach(t=>tr.append(el("th","",t))); head.append(tr); table.append(head);
+      const tbody=el("tbody"); table.append(tbody); wrap.append(table); card.append(wrap);
+      function addRow(row={}) {
+        const tr=el("tr"), name=el("select"), value=el("input"), page=el("input"), detail=el("input"), remove=el("button","","移除");
+        name.setAttribute("aria-label","标准指标"); value.setAttribute("aria-label","指标数值"); page.setAttribute("aria-label","来源页码"); detail.setAttribute("aria-label","口径说明");
+        Object.entries(materialDraft.fields).sort(([a],[b])=>a.localeCompare(b,"zh")).forEach(([k,d])=>{const o=el("option","",k);o.value=k;o.title=d;name.append(o);});
+        if(row.name) name.value=row.name;
+        value.value=row.value ?? ""; value.placeholder="空白表示缺失"; value.inputMode="decimal";
+        page.type="number"; page.min=1; page.max=doc.page_count; page.value=row.page || 1;
+        detail.value=row.detail || ""; detail.maxLength=2000; detail.placeholder="例如：第1栏本期金额，不含税";
+        name.title=materialDraft.fields[name.value]; name.addEventListener("change",()=>name.title=materialDraft.fields[name.value]);
+        const entry={name,value,page,detail}; state.rows.push(entry);
+        remove.addEventListener("click",()=>{tr.remove();state.rows=state.rows.filter(r=>r!==entry);});
+        [name,value,page,detail,remove].forEach(n=>{const td=el("td");td.append(n);tr.append(td);});tbody.append(tr);
+        if(row.ai_issues?.length) { const hint=el("p","material-note",row.ai_issues.join("；")); tr.cells[0].append(hint); }
+        if(row.ai_raw_value !== undefined) tr.cells[1].append(el("p","muted",`原件：${row.ai_raw_value ?? "缺失"} ${row.ai_unit || ""}`));
+      }
+      doc.rows.forEach(addRow);
+      const add=el("button","","＋ 手工添加未识别指标"); add.addEventListener("click",()=>addRow()); card.append(add);
+      state.reviewed=checkLabel(card,"已确认提取结果及标注疑点：企业、期间、金额列和口径正确；金额统一为元，未确认的数值已清空或移除。");
+    } else {
+      const details=el("details"); details.append(el("summary","","查看已读取的报表及补充指标"));
+      doc.rows.forEach(r=>details.append(el("p","muted",r.name+"："+r.value+" · "+r.source)));card.append(details);
+    }
+  });
+  const submit=el("button","primary","确认材料并开始审计"), reset=el("button","","重新选择材料");
+  reset.addEventListener("click",()=>{clearMaterials();hideError();dz.style.display="block";});
+  submit.addEventListener("click",async()=>{
+    hideError();
+    const selected=materialCards.filter(c=>c.selected.checked);
+    if(!selected.length) return showError("请至少选择一份有效材料。");
+    if(mode.value==="merge" && !sameScope.checked) return showError("合并前请确认所有材料属于同一企业、同一核对期间。");
+    if(selected.some(c=>(c.doc.kind==="pdf"||c.doc.review_required)&&!c.reviewed.checked)) return showError("请完成所选材料提取结果的核对确认。");
+    const selections=selected.map(c=>({id:c.doc.id,company:c.getCompany(),reviewed:c.reviewed?.checked,
+      rows:(c.doc.kind==="pdf"||c.doc.review_required)?c.rows.map(r=>({name:r.name.value,value:r.value.value.trim(),page:Number(r.page.value),detail:r.detail.value.trim()})):undefined}));
+    submit.disabled=true; reset.disabled=true; $("busy").style.display="block";
+    try {
+      const result=await api("/api/materials/audit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:materialDraft.token,mode:mode.value,same_scope:sameScope.checked,company:company(),selections})});
+      const box=$("batchResults"); box.replaceChildren(); box.hidden=false;
+      box.append(el("h2","",`完成 ${result.results.length} 份审计，${result.errors.length} 组材料未通过`));
+      result.errors.forEach(e=>box.append(el("p","material-note",e.files.join("、")+"："+e.detail)));
+      result.results.forEach(item=>{const b=el("button","",item.audit.company.name+" · 查看报告");b.addEventListener("click",()=>renderResult(item.audit));box.append(b);});
+      if(result.results.length) {
+        root.hidden=true;
+        $("auditPanel").insertBefore(box,$("coBar"));
+        const again=el("button","","上传下一组材料");again.addEventListener("click",()=>$("btnNew").click());box.append(again);
+        renderResult(result.results[0].audit);
+      } else box.scrollIntoView({behavior:"smooth",block:"center"});
+    } catch(err){showError(err.message);}
+    finally{submit.disabled=false;reset.disabled=false;$("busy").style.display="none";}
+  });
+  root.append(submit,reset);
+}
+
+/* ---------- 渲染 ---------- */
+function renderResult(j) {
+  switchPanel("auditPanel");
+  $("auditEmpty").style.display = "none";
+  auditId = j.audit_id;
+  $("coName").textContent = j.company.name;
+  $("coTaxId").textContent = j.company.taxpayer_id;
+  $("coIndustry").textContent = j.company.industry;
+  $("coPeriod").textContent = j.company.period;
+  $("coMetrics").textContent = j.metrics.length + " 项";
+  $("auditTime").textContent = "审计时间 " + j.audited_at;
+  $("coBar").style.display = "block";
+
+  $("nHit").textContent = j.summary.hit;
+  $("nHigh").textContent = j.summary.high;
+  $("nPass").textContent = j.summary.pass;
+  $("nSkip").textContent = j.summary.skipped;
+  $("statRow").style.display = "grid";
+  $("filterBar").style.display = "block";
+  $("actions").style.display = "flex";
+
+  latestFindings = j.findings;
+  const tax = $("filterTax"); tax.textContent = ""; const allTax = el("option",null,"全部"); allTax.value=""; tax.appendChild(allTax);
+  for (const value of Array.from(new Set(j.findings.map((f)=>f.tax_type))).sort()) { const o=el("option",null,value); o.value=value; tax.appendChild(o); }
+  applyFilters();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function applyFilters() {
+  const filtered = latestFindings.filter((f) => (!$("filterStatus").value || f.status === $("filterStatus").value) && (!$("filterSeverity").value || f.severity === $("filterSeverity").value) && (!$("filterCategory").value || f.category === $("filterCategory").value) && (!$("filterTax").value || f.tax_type === $("filterTax").value));
+  const hits = filtered.filter((f) => f.status === "hit");
+  const skips = filtered.filter((f) => f.status === "skipped");
+  const passes = filtered.filter((f) => f.status === "pass");
+
+  $("hitCnt").textContent = "命中 " + hits.length + " 项，点击卡片展开完整证据链";
+  renderCards($("hitList"), hits);
+  renderCards($("skipList"), skips);
+  renderCards($("passList"), passes);
+
+  $("hitSection").style.display = hits.length ? "block" : "none";
+  $("skipSection").style.display = skips.length ? "block" : "none";
+  $("passSection").style.display = passes.length ? "block" : "none";
+  $("passFoldText").textContent = "检查通过事项（" + passes.length + " 项）—— 已执行，未发现异常";
+  $("passList").classList.remove("open");
+
+}
+
+for (const id of ["filterStatus","filterSeverity","filterCategory","filterTax"]) $(id).addEventListener("change",applyFilters);
+
+/* 一张规则卡：head（可点击展开/收起）+ body（证据链） */
+function renderCards(container, findings) {
+  container.textContent = "";
+  for (const f of findings) container.appendChild(findingCard(f));
+}
+
+function findingCard(f) {
+  const card = el("div", "card");
+
+  const head = el("div", "card-head");
+  const sev = f.status === "hit" ? f.severity : (f.status === "skipped" ? "skip" : "pass");
+  const sevText = f.status === "hit" ? f.severity_label : (f.status === "skipped" ? "未执行" : "通过");
+  head.appendChild(el("span", "tag " + sev, sevText));
+  head.appendChild(el("span", "rid", f.id));
+  head.appendChild(el("span", "rname", f.name));
+  if (f.status === "hit") head.appendChild(el("span", "concl", f.conclusion));
+  head.appendChild(el("span", "arrow", "▶"));
+  head.addEventListener("click", () => card.classList.toggle("open"));
+  card.appendChild(head);
+
+  const body = el("div", "card-body");
+
+  /* 基本属性 */
+  const kv = el("div", "kv");
+  kv.appendChild(el("div", null, "风险类型：" + f.category + "　·　税种：" + f.tax_type + "　·　规则版本 v" + f.version));
+  if (f.scope) kv.appendChild(el("div", null, "适用范围：" + f.scope));
+  body.appendChild(kv);
+
+  /* 未执行：原因置顶 */
+  if (f.status === "skipped") {
+    body.appendChild(el("div", "ev-title", "未执行原因（补齐以下材料后可复检）"));
+    body.appendChild(el("div", "calc-box", f.skip_reason || f.conclusion));
+  }
+
+  /* 触发明细 */
+  if (f.evidence && f.evidence.length) {
+    body.appendChild(el("div", "ev-title", "触发明细（每项数值均标注取数来源）"));
+    const tbl = el("table", "ev");
+    const trh = el("tr");
+    for (const h of ["项目", "数值", "取数来源"]) trh.appendChild(el("th", null, h));
+    const thead = el("thead"); thead.appendChild(trh); tbl.appendChild(thead);
+    const tb = el("tbody");
+    for (const e of f.evidence) {
+      const tr = el("tr", e.emphasis ? "emph" : null);
+      tr.appendChild(el("td", null, e.label));
+      tr.appendChild(el("td", "v num", e.value));
+      tr.appendChild(el("td", "src", e.source));
+      tb.appendChild(tr);
+    }
+    tbl.appendChild(tb);
+    body.appendChild(tbl);
+  }
+
+  /* 计算过程 + 阈值 */
+  if (f.calculation) {
+    body.appendChild(el("div", "ev-title", "计算过程"));
+    body.appendChild(el("div", "calc-box num", f.calculation));
+  }
+  if (f.threshold_desc) {
+    body.appendChild(el("div", "ev-title", "判定阈值"));
+    body.appendChild(el("div", "kv", f.threshold_desc + (f.threshold_basis ? "（" + f.threshold_basis + "）" : "")));
+  }
+
+  /* 法条依据 */
+  if (f.legal_basis && f.legal_basis.length) {
+    body.appendChild(el("div", "ev-title", "法律依据"));
+    const ul = el("ul", "plain-list");
+    for (const item of f.legal_basis) ul.appendChild(el("li", null, item));
+    body.appendChild(ul);
+  }
+
+  /* 建议 */
+  if (f.status === "hit" && f.suggestion) {
+    body.appendChild(el("div", "ev-title", "整改建议"));
+    body.appendChild(el("div", "calc-box", f.suggestion));
+  }
+
+  /* 参考链接 */
+  if (f.references && f.references.length) {
+    body.appendChild(el("div", "ev-title", "官方参考"));
+    const ul = el("ul", "plain-list");
+    for (const url of f.references) {
+      const li = el("li");
+      const a = el("a", null, url); a.href = url; a.target = "_blank"; a.rel = "noopener";
+      li.appendChild(a); ul.appendChild(li);
+    }
+    body.appendChild(ul);
+  }
+
+  card.appendChild(body);
+  return card;
+}
+
+/* ---------- 折叠 / 导出 / 重来 ---------- */
+$("passFold").addEventListener("click", () => {
+  $("passFold").classList.toggle("open");
+  $("passList").classList.toggle("open");
+});
+
+$("btnPdf").addEventListener("click", async () => {
+  if (!auditId) return;
+  const btn = $("btnPdf"); btn.disabled = true; btn.textContent = "正在生成 PDF……";
+  try {
+    const confirmed = currentUser && currentUser.role === "accountant" ? window.confirm("确认导出该客户报告并记录本次导出行为？") : true;
+    if (!confirmed) return;
+    const r = await fetch("/api/report/" + auditId + (currentUser && currentUser.role === "accountant" ? "?confirm=true" : ""));
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.detail || "PDF 生成失败");
+    }
+    const blob = await r.blob();
+    const a = el("a"); a.href = URL.createObjectURL(blob);
+    a.download = "税务风险审计报告.pdf";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (err) {
+    showError(err.message || String(err));
+  } finally {
+    btn.disabled = false; btn.textContent = "导出 A4 PDF 报告";
+  }
+});
+
+$("btnNew").addEventListener("click", () => {
+  switchPanel("uploadPanel");
+  $("auditEmpty").style.display = "block";
+  clearMaterials();
+  auditId = null;
+  latestFindings = [];
+  $("coBar").style.display = $("statRow").style.display = $("actions").style.display = $("filterBar").style.display = "none";
+  $("hitSection").style.display = $("skipSection").style.display = $("passSection").style.display = "none";
+  $("hitList").textContent = $("skipList").textContent = $("passList").textContent = "";
+  hideError();
+  dz.style.display = "block";
+  window.scrollTo({ top: 0, behavior: "smooth" });
+});
+
+/* ---------- P1 登录、档案、实训与管理 ---------- */
+const rememberedLoginKey = "taxpearls.rememberedLogin.v1";
+function restoreRememberedLogin() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(rememberedLoginKey) || "null");
+    if (!saved || typeof saved.username !== "string" || typeof saved.password !== "string") return;
+    $("loginUser").value = saved.username;
+    $("loginPass").value = saved.password;
+    $("rememberLogin").checked = true;
+  } catch {
+    // Unavailable storage or invalid saved data must not prevent signing in.
+  }
+}
+function saveRememberedLogin(username, password) {
+  try {
+    if ($("rememberLogin").checked) {
+      localStorage.setItem(rememberedLoginKey, JSON.stringify({username, password}));
+    } else {
+      localStorage.removeItem(rememberedLoginKey);
+    }
+  } catch {
+    $("rememberHint").textContent = "浏览器未允许更新保存信息，本次操作未生效；可在浏览器设置中清除本站数据。";
+    return false;
+  }
+  return true;
+}
+$("rememberLogin").addEventListener("change", () => {
+  if (!$("rememberLogin").checked) {
+    if (saveRememberedLogin("", "")) $("rememberHint").textContent = "已清除本站保存的账号密码。";
+  } else {
+    $("rememberHint").textContent = "登录成功后将账号密码以明文保存在当前浏览器中，仅建议在个人设备使用。";
+  }
+});
+$("pwToggle").addEventListener("click", () => {
+  const input = $("loginPass");
+  const show = input.type === "password";
+  input.type = show ? "text" : "password";
+  document.querySelector("#pwToggle .pw-eye").style.display = show ? "none" : "";
+  document.querySelector("#pwToggle .pw-eye-off").style.display = show ? "" : "none";
+  $("pwToggle").setAttribute("aria-label", show ? "隐藏密码" : "显示密码");
+  $("pwToggle").setAttribute("aria-pressed", String(show));
+});
+
+async function bootstrap() {
+  const s = await api("/api/status");
+  if (s.user) return enterApp(s.user);
+  const setup = s.needs_setup;
+  $("authTitle").textContent = setup ? "初始化平台管理员" : "登录税海拾珠";
+  $("authHint").textContent = setup ? "首次启动不提供默认密码，请自行创建" : "P1 审计与实训工作台";
+  $("authSubmit").textContent = setup ? "创建管理员" : "登录";
+  $("authForm").dataset.setup = setup ? "1" : "0";
+  $("loginPass").autocomplete = setup ? "new-password" : "current-password";
+  if (!setup) restoreRememberedLogin();
+}
+
+$("authForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  $("authError").style.display = "none";
+  const setup = form.dataset.setup === "1";
+  const body = {username: $("loginUser").value, password: $("loginPass").value};
+  if (setup) body.display_name = body.username;
+  try {
+    await api(setup ? "/api/setup" : "/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    if (setup) { form.dataset.setup = "0"; await api("/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({username:body.username,password:body.password})}); }
+    const user = await api("/api/me");
+    saveRememberedLogin(body.username, body.password);
+    $("loginPass").value = "";
+    enterApp(user);
+  } catch (err) { $("authError").textContent = err.message; $("authError").style.display = "block"; }
+});
+
+function enterApp(user) {
+  currentUser = user;
+  $("authScreen").style.display = "none";
+  $("appHeader").style.display = "block"; $("appMain").style.display = "block"; $("appFooter").style.display = "block";
+  $("nav").style.display = "flex";
+  $("currentUser").textContent = user.display_name + " · " + ({teacher:"教师",student:"学生",org_admin:"机构管理员",accountant:"会计",platform_admin:"平台管理员"}[user.role] || user.role);
+  document.querySelectorAll(".training-nav").forEach((n) => n.style.display = ["teacher","student"].includes(user.role) ? "block" : "none");
+  document.querySelectorAll(".admin-nav").forEach((n) => n.style.display = ["platform_admin","org_admin","teacher"].includes(user.role) ? "block" : "none");
+  $("teacherBox").style.display = user.role === "teacher" ? "block" : "none";
+  $("userAdmin").style.display = ["platform_admin","org_admin"].includes(user.role) ? "block" : "none";
+  document.querySelector('[data-panel="auditPanel"]').style.display = user.role === "student" ? "none" : "block";
+  document.querySelectorAll(".business-nav, [data-panel='historyPanel']").forEach(n => n.style.display = user.role === "student" ? "none" : "block");
+  if (user.role === "student") switchPanel("trainingPanel"); else switchPanel("dashboardPanel");
+}
+
+$("btnLogout").addEventListener("click", async () => { await api("/api/logout", {method:"POST"}); location.reload(); });
+document.querySelectorAll("#nav [data-panel]").forEach((b) => b.addEventListener("click", () => switchPanel(b.dataset.panel)));
+
+async function loadHistory() {
+  try {
+    const rows = await api("/api/audits"); const box = $("historyList"); box.textContent = "";
+    if (!rows.length) box.appendChild(el("div","data-item","暂无历史审计。"));
+    for (const row of rows) {
+      const item = el("div","data-item"); const txt = el("div");
+      txt.appendChild(el("div",null,row.company_name + " · " + row.period));
+      txt.appendChild(el("div","muted",row.audited_at + "　命中 " + row.summary.hit + " / 通过 " + row.summary.pass + " / 未执行 " + row.summary.skipped));
+      const btn = el("button",null,"打开证据快照"); btn.addEventListener("click", async () => { renderResult(await api("/api/audits/" + row.id)); switchPanel("auditPanel"); });
+      item.append(txt,btn); box.appendChild(item);
+    }
+  } catch (err) { showError(err.message); }
+}
+
+async function loadAssignments() {
+  try {
+    const rows = await api("/api/assignments"); const box = $("assignmentList"); box.textContent = "";
+    for (const row of rows) {
+      const item = el("div","data-item"); item.appendChild(el("div",null,row.title));
+      const btn = el("button",null,currentUser.role === "student" ? "开始 / 查看评分" : "查看");
+      btn.addEventListener("click",() => openExercise(row.id)); item.appendChild(btn); box.appendChild(item);
+    }
+    if (!rows.length) box.appendChild(el("div","data-item","暂无实训作业。"));
+    if (currentUser.role === "teacher") {
+      const audits = await api("/api/audits"); const select = $("assignmentAudit"); select.textContent = "";
+      for (const row of audits) { const o = el("option",null,row.company_name + " · " + row.period); o.value=row.id; select.appendChild(o); }
+      $("reviewBox").style.display="block"; const submissions=await api("/api/submissions"); const sb=$("submissionList"); sb.textContent="";
+      for(const s of submissions){const item=el("div","data-item");const shown=s.adjusted_score===null?s.score:s.adjusted_score;item.appendChild(el("span",null,s.display_name+" · "+s.title+" · "+shown+" 分"));const b=el("button",null,"复核调整");b.addEventListener("click",async()=>{const value=window.prompt("调整后分数（0-100）",String(shown));if(value===null)return;const feedback=window.prompt("教师评语",s.feedback||"")||"";await api("/api/submissions/"+s.id+"/review",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({adjusted_score:Number(value),feedback})});loadAssignments();});item.appendChild(b);sb.appendChild(item);}if(!submissions.length)sb.appendChild(el("div","data-item","暂无学生提交。"));
+    }
+  } catch (err) { showError(err.message); }
+}
+
+$("btnAssignment").addEventListener("click", async () => {
+  try {
+    await api("/api/assignments", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:$("assignmentTitle").value,audit_id:$("assignmentAudit").value,false_positive_penalty:Number($("assignmentPenalty").value),published:true})});
+    await loadAssignments();
+  } catch (err) { showError(err.message); }
+});
+
+async function openExercise(id) {
+  try {
+    const a = await api("/api/assignments/" + id); openAssignmentId=id; $("exerciseBox").style.display="block";
+    $("exerciseTitle").textContent=a.title; $("exerciseCompany").textContent=a.company.name + " · " + a.company.period;
+    const data=$("exerciseData"); data.textContent=""; data.appendChild(el("div","ev-title","科目余额表"));
+    const at=el("table","ev"), ah=el("tr"); for(const h of ["科目编码","科目名称","期初","借方","贷方","期末"])ah.appendChild(el("th",null,h));const ahr=el("thead");ahr.appendChild(ah);at.appendChild(ahr);const ab=el("tbody");for(const row of a.accounts){const tr=el("tr");for(const v of [row.code,row.name,row.opening,row.debit,row.credit,row.closing])tr.appendChild(el("td",null,v));ab.appendChild(tr);}at.appendChild(ab);data.appendChild(at);
+    data.appendChild(el("div","ev-title","增值税申报")); const dt=el("table","ev"),db=el("tbody");for(const [k,v] of Object.entries(a.declarations)){const tr=el("tr");tr.append(el("td",null,k),el("td","v num",v));db.appendChild(tr);}dt.appendChild(db);data.appendChild(dt);
+    const box=$("exerciseRules"); box.textContent="";
+    for (const r of a.rules) { const label=el("label"); const input=el("input"); input.type="checkbox"; input.value=r.id; label.append(input,document.createTextNode(" "+r.id+" "+r.name)); box.appendChild(label); }
+    $("btnSubmitExercise").style.display=currentUser.role === "student" ? "inline-block" : "none";
+    $("scoreResult").textContent="";
+    if (a.submission) showScore(a.submission.details);
+  } catch (err) { showError(err.message); }
+}
+
+$("btnSubmitExercise").addEventListener("click", async () => {
+  const ids=Array.from($("exerciseRules").querySelectorAll("input:checked")).map((n)=>n.value);
+  try { showScore(await api("/api/assignments/"+openAssignmentId+"/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({selected_rule_ids:ids})})); }
+  catch(err){showError(err.message);}
+});
+
+function showScore(result) {
+  const box=$("scoreResult"); box.textContent=""; box.appendChild(el("div","score",result.score+" 分"));
+  box.appendChild(el("div","muted","命中 "+result.correct.length+" 项，漏检 "+result.missed.length+" 项，误报 "+result.false_positives.length+" 项；误报扣 "+result.false_positive_deduction+" 分。"));
+  for (const group of [["漏检明细",result.missed],["误报明细",result.false_positives]]) { if (!group[1].length) continue; box.appendChild(el("div","ev-title",group[0])); for (const d of group[1]) box.appendChild(el("div","calc-box",d.rule_id+" "+d.name+"："+d.explanation)); }
+}
+
+async function loadAdmin() {
+  try {
+    if (["platform_admin","org_admin"].includes(currentUser.role)) {
+      const users=await api("/api/users"); const box=$("userList"); box.textContent="";
+      for(const u of users){const item=el("div","data-item");item.append(el("span",null,u.display_name+" · "+u.username),el("span","role-chip",u.role));box.appendChild(item);}
+      if(currentUser.role==="org_admin"){$("newRole").textContent="";const o=el("option",null,"会计");o.value="accountant";$("newRole").appendChild(o);}
+    }
+    const rules=await api("/api/rules"); const rb=$("ruleList"); rb.textContent="";
+    for(const r of rules){const item=el("div","data-item");item.appendChild(el("span",null,r.id+" "+r.name+" · "+r.category));const chip=el("span","role-chip",r.enabled?"已启用":"已停用");item.appendChild(chip);if(currentUser.role==="platform_admin"){const b=el("button",null,r.enabled?"停用":"启用");b.addEventListener("click",async()=>{await api("/api/rules/"+r.id+"/state",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!r.enabled})});loadAdmin();});item.appendChild(b);}rb.appendChild(item);}
+    if(["platform_admin","org_admin","teacher"].includes(currentUser.role)){const logs=await api("/api/audit-log");const lb=$("logList");lb.textContent="";for(const l of logs.slice(0,80))lb.appendChild(el("div","data-item",l.created_at+" · "+l.action+" · "+l.target_type+" "+l.target_id));}
+  } catch(err){showError(err.message);}
+}
+
+$("btnCreateUser").addEventListener("click",async()=>{try{await api("/api/users",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:$("newUsername").value,password:$("newPassword").value,display_name:$("newDisplayName").value,role:$("newRole").value})});loadAdmin();}catch(err){showError(err.message);}});
+
+</script>
+<script src="/workspace.js?v=risk-hover-2"></script>
+<script src="/graph.js"></script>
+<script>bootstrap().catch((err) => { $("authError").textContent=err.message; $("authError").style.display="block"; });</script>
+</body>
+</html>
