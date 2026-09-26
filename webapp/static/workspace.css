@@ -93,6 +93,7 @@ body{font-size:16px;line-height:1.55;--sidebar-width:244px}
 #appHeader .wrap{max-width:none;padding-left:32px;padding-right:32px}
 .hdr-logo{height:62px}.hdr-txt h1{font-size:23px;letter-spacing:1px}.hdr-txt p{font-size:14px;line-height:1.55}
 .org-logo-editor{display:grid;grid-template-columns:minmax(120px,220px) minmax(280px,1fr);gap:22px;align-items:center;margin:14px 0}.org-logo-editor img{display:block;max-width:220px;max-height:110px;object-fit:contain;border:1px solid #e2e8f1;border-radius:8px;padding:12px;background:#fff}.org-logo-editor img[hidden]{display:none}
+.rule-editor{margin-top:18px;padding:18px;border:1px solid var(--line);border-radius:10px;background:#f8fafc}.rule-editor-head{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:8px}.rule-editor-head h3,.rule-editor h3{margin:0 0 5px;font-size:15px}.rule-param-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px 14px;margin:10px 0 4px}.rule-param-grid .field{margin:0}.rule-param-path{display:block;margin-top:4px;color:var(--ink-3);font-size:10px;overflow-wrap:anywhere}.rule-trial-result{margin-top:14px;padding:14px;border-left:3px solid var(--blue);background:#fff;border-radius:6px}.rule-trial-result.hit{border-left-color:var(--red)}.rule-trial-result.pass{border-left-color:#18835b}.rule-trial-result.skipped{border-left-color:#a66a00}
 .top-tools{font-size:14px;gap:12px}.top-tools button{font-size:14px;padding:8px 13px}
 main>.wrap{padding:34px 40px 72px calc(var(--sidebar-width) + 40px)}
 main>.wrap>.panel{width:100%;max-width:2300px;margin-left:auto;margin-right:auto}
@@ -218,6 +219,17 @@ body:has(.nav-collapsed){--sidebar-width:108px}
 .risk-center-label{font-size:15px}
 .risk-hover-card{font-size:15px}
 .risk-hover-heading>span{font-size:14px}
+
+.finding-ai-tools{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:20px}
+.finding-ai-btn{border:1px solid rgba(34,114,255,.35);background:linear-gradient(135deg,#ecf4ff,#f5f1ff);color:#174ea6}
+.finding-ai-btn:disabled{opacity:.65;cursor:wait}
+.finding-ai-note,.finding-ai-meta{color:var(--muted);font-size:14px}
+.finding-ai-panel{margin-top:12px;padding:18px;border:1px solid rgba(34,114,255,.22);border-radius:12px;background:#f8fbff;line-height:1.75}
+.finding-ai-panel p{margin:7px 0}
+.finding-ai-locked{padding:9px 12px;border-left:4px solid #2272ff;background:#edf5ff;font-weight:700;color:#174ea6}
+.finding-ai-steps{margin:6px 0 8px;padding-left:24px}
+.finding-ai-steps li{margin:4px 0}
+.finding-ai-error{color:#a42b2b;background:#fff1f1;padding:10px 12px;border-radius:8px}
 .field label{font-size:16px}
 .field input,.field select,.field textarea{font-size:17px}
 .legend{font-size:15px}

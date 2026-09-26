@@ -2,8 +2,17 @@ FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /app
+
+# apt 换国内镜像源：香港直连 deb.debian.org 实测仅 ~39KB/s，会卡死构建
+RUN sed -i 's|^URIs: http://deb.debian.org/|URIs: https://mirrors.aliyun.com/|' \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update
+
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --timeout 120 --retries 10 \
+        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        -r requirements.txt \
     && python -m playwright install --with-deps chromium \
     && apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/* \

@@ -109,7 +109,9 @@ class Store:
 
     def __init__(self, path: str | Path | None = None) -> None:
         configured = os.environ.get("TAXPEARLS_DB")
-        self.path = Path(path or configured or DEFAULT_DB)
+        p = Path(path or configured or DEFAULT_DB)
+        # 相对路径一律锚定项目根，与启动时的工作目录无关（防止在子目录启动时误建空库）。
+        self.path = p if p.is_absolute() else (ROOT / p).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self._init_schema()
@@ -174,10 +176,16 @@ class Store:
                     rule_id TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,
                     updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS rule_overrides (
+                    rule_id TEXT PRIMARY KEY, version TEXT NOT NULL,
+                    logic_json TEXT NOT NULL, threshold_basis TEXT NOT NULL,
+                    updated_by TEXT REFERENCES users(id), updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS org_settings (
                     org_id TEXT PRIMARY KEY, display_name TEXT NOT NULL DEFAULT '税海拾珠',
                     report_title TEXT NOT NULL DEFAULT '税务风险审计报告',
-                    footer_text TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL
+                    footer_text TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL,
+                    logo_mime TEXT, logo_bytes BLOB, logo_updated_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS audit_log (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT,
@@ -185,31 +193,54 @@ class Store:
                     target_type TEXT NOT NULL, target_id TEXT NOT NULL,
                     detail TEXT NOT NULL, created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS finding_interpretations (
+                    audit_id TEXT NOT NULL REFERENCES audits(id),
+                    rule_id TEXT NOT NULL, evidence_hash TEXT NOT NULL,
+                    model TEXT NOT NULL, result_json TEXT NOT NULL,
+                    created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL,
+                    PRIMARY KEY(audit_id, rule_id, evidence_hash)
+                );
             """)
+            # Existing P1 databases predate configurable organization logos.
+            columns = {row["name"] for row in db.execute("PRAGMA table_info(org_settings)")}
+            for name, sql_type in (
+                ("logo_mime", "TEXT"), ("logo_bytes", "BLOB"), ("logo_updated_at", "TEXT")
+            ):
+                if name not in columns:
+                    db.execute(f"ALTER TABLE org_settings ADD COLUMN {name} {sql_type}")
 
     def has_users(self) -> bool:
         with self.connect() as db:
             return bool(db.execute("SELECT 1 FROM users LIMIT 1").fetchone())
 
-    ORG_DEFAULTS = {"org_id": "", "display_name": "税海拾珠", "report_title": "税务风险审计报告", "footer_text": ""}
+    ORG_DEFAULTS = {
+        "org_id": "", "display_name": "税海拾珠", "report_title": "税务风险审计报告",
+        "footer_text": "", "logo_mime": None, "logo_updated_at": None, "has_logo": False,
+    }
 
-    def get_org_settings(self, org_id: str) -> dict[str, str]:
+    def get_org_settings(self, org_id: str) -> dict[str, Any]:
         with self.connect() as db:
             row = db.execute(
-                "SELECT org_id, display_name, report_title, footer_text FROM org_settings WHERE org_id=?",
+                """SELECT org_id,display_name,report_title,footer_text,logo_mime,logo_updated_at
+                   FROM org_settings WHERE org_id=?""",
                 (org_id,),
             ).fetchone()
         if row:
-            return dict(row)
+            result = dict(row)
+            result["has_logo"] = bool(result["logo_mime"])
+            return result
         return {**self.ORG_DEFAULTS, "org_id": org_id}
 
     def update_org_settings(
         self, org_id: str, display_name: str, report_title: str, footer_text: str
-    ) -> dict[str, str]:
+    ) -> dict[str, Any]:
         display_name = display_name.strip()
         report_title = report_title.strip()
+        footer_text = footer_text.strip()
         if not display_name or not report_title:
             raise ValueError("机构名称与报告标题不能为空")
+        if any(ord(ch) < 32 for ch in display_name + report_title):
+            raise ValueError("机构名称与报告标题不能包含控制字符")
         with self.connect() as db:
             db.execute(
                 "INSERT INTO org_settings (org_id, display_name, report_title, footer_text, updated_at)"
@@ -217,7 +248,39 @@ class Store:
                 " ON CONFLICT(org_id) DO UPDATE SET display_name=excluded.display_name,"
                 " report_title=excluded.report_title, footer_text=excluded.footer_text,"
                 " updated_at=excluded.updated_at",
-                (org_id, display_name, report_title, footer_text.strip(), _now()),
+                (org_id, display_name, report_title, footer_text, _now()),
+            )
+        return self.get_org_settings(org_id)
+
+    def get_org_logo(self, org_id: str) -> tuple[str, bytes] | None:
+        with self.connect() as db:
+            row = db.execute(
+                "SELECT logo_mime,logo_bytes FROM org_settings WHERE org_id=?", (org_id,)
+            ).fetchone()
+        if not row or not row["logo_mime"] or not row["logo_bytes"]:
+            return None
+        return str(row["logo_mime"]), bytes(row["logo_bytes"])
+
+    def update_org_logo(self, org_id: str, mime: str, content: bytes) -> dict[str, Any]:
+        now = _now()
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO org_settings
+                       (org_id,display_name,report_title,footer_text,updated_at,logo_mime,logo_bytes,logo_updated_at)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(org_id) DO UPDATE SET logo_mime=excluded.logo_mime,
+                       logo_bytes=excluded.logo_bytes,logo_updated_at=excluded.logo_updated_at,
+                       updated_at=excluded.updated_at""",
+                (org_id, self.ORG_DEFAULTS["display_name"], self.ORG_DEFAULTS["report_title"], "",
+                 now, mime, content, now),
+            )
+        return self.get_org_settings(org_id)
+
+    def clear_org_logo(self, org_id: str) -> dict[str, Any]:
+        with self.connect() as db:
+            db.execute(
+                "UPDATE org_settings SET logo_mime=NULL,logo_bytes=NULL,logo_updated_at=NULL,updated_at=? WHERE org_id=?",
+                (_now(), org_id),
             )
         return self.get_org_settings(org_id)
 
@@ -319,9 +382,19 @@ class Store:
     def list_clients(self, user: dict[str, Any]) -> list[dict[str, Any]]:
         with self.connect() as db:
             if user["role"] == "accountant":
-                rows = db.execute("SELECT * FROM clients WHERE org_id=? AND accountant_id=? ORDER BY name", (user["org_id"], user["id"]))
+                rows = db.execute(
+                    """SELECT c.*,u.display_name AS accountant_name,u.username AS accountant_username
+                       FROM clients c LEFT JOIN users u ON u.id=c.accountant_id
+                       WHERE c.org_id=? AND c.accountant_id=? ORDER BY c.name""",
+                    (user["org_id"], user["id"]),
+                )
             else:
-                rows = db.execute("SELECT * FROM clients WHERE org_id=? ORDER BY name", (user["org_id"],))
+                rows = db.execute(
+                    """SELECT c.*,u.display_name AS accountant_name,u.username AS accountant_username
+                       FROM clients c LEFT JOIN users u ON u.id=c.accountant_id
+                       WHERE c.org_id=? ORDER BY c.name""",
+                    (user["org_id"],),
+                )
             return [dict(row) for row in rows]
 
     def save_audit(self, audit_id: str, user: dict[str, Any], client_id: str | None,
@@ -365,6 +438,32 @@ class Store:
                 item["summary"] = json.loads(item.pop("summary_json"))
                 result.append(item)
             return result
+
+    def get_finding_interpretation(self, audit_id: str, rule_id: str,
+                                   evidence_hash: str) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT model,result_json,created_at FROM finding_interpretations
+                   WHERE audit_id=? AND rule_id=? AND evidence_hash=?""",
+                (audit_id, rule_id, evidence_hash),
+            ).fetchone()
+        if not row:
+            return None
+        result = json.loads(row["result_json"])
+        return {**result, "model": row["model"], "created_at": row["created_at"], "cached": True}
+
+    def save_finding_interpretation(self, audit_id: str, rule_id: str,
+                                    evidence_hash: str, result: dict[str, Any],
+                                    user_id: str) -> dict[str, Any]:
+        stored = {key: value for key, value in result.items() if key not in {"model", "cached", "created_at"}}
+        with self.connect() as db:
+            db.execute(
+                """INSERT OR IGNORE INTO finding_interpretations
+                   (audit_id,rule_id,evidence_hash,model,result_json,created_by,created_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (audit_id, rule_id, evidence_hash, result["model"], _json(stored), user_id, _now()),
+            )
+        return self.get_finding_interpretation(audit_id, rule_id, evidence_hash)
 
     def create_assignment(self, user: dict[str, Any], title: str, audit_id: str,
                           target_student_id: str | None, weights: dict[str, float],
@@ -474,3 +573,40 @@ class Store:
                      updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
                 (rule_id, int(enabled), user_id, _now()),
             )
+
+    def rule_overrides(self) -> dict[str, dict[str, Any]]:
+        with self.connect() as db:
+            rows = db.execute(
+                "SELECT rule_id,version,logic_json,threshold_basis,updated_by,updated_at FROM rule_overrides"
+            )
+            return {
+                row["rule_id"]: {
+                    "version": row["version"],
+                    "logic": json.loads(row["logic_json"]),
+                    "threshold_basis": row["threshold_basis"],
+                    "updated_by": row["updated_by"],
+                    "updated_at": row["updated_at"],
+                }
+                for row in rows
+            }
+
+    def set_rule_override(
+        self, rule_id: str, version: str, logic: dict[str, Any],
+        threshold_basis: str, user_id: str,
+    ) -> dict[str, Any]:
+        updated_at = _now()
+        with self.connect() as db:
+            db.execute(
+                """INSERT INTO rule_overrides
+                       (rule_id,version,logic_json,threshold_basis,updated_by,updated_at)
+                   VALUES (?,?,?,?,?,?)
+                   ON CONFLICT(rule_id) DO UPDATE SET version=excluded.version,
+                       logic_json=excluded.logic_json,threshold_basis=excluded.threshold_basis,
+                       updated_by=excluded.updated_by,updated_at=excluded.updated_at""",
+                (rule_id, version, _json(logic), threshold_basis, user_id, updated_at),
+            )
+        return {
+            "rule_id": rule_id, "version": version, "logic": logic,
+            "threshold_basis": threshold_basis, "updated_by": user_id,
+            "updated_at": updated_at,
+        }

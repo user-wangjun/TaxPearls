@@ -6,28 +6,39 @@ Uploaded workbook bytes stay in memory; only normalized evidence is stored.
 """
 from __future__ import annotations
 
+import base64
+from copy import deepcopy
+from dataclasses import replace
 import os
+import re
 import tempfile
 import uuid
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, Cookie, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 from src import engine, loader, render, training
 from src import settings  # Load .env before Store and route initialization.
 from src.models import Dataset
 from webapp.storage import Store
-from webapp.knowledge import build_graph, ask_graph, ai_config
+from webapp.knowledge import (
+    ai_config, ask_graph, build_graph, finding_evidence_hash, interpret_finding,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 RULES_DIR = ROOT / "rules"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 LOGO_SVG = ROOT / "logo" / "logo-shui-hai-shi-zhu.svg"
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+MAX_ORG_LOGO_BYTES = 512 * 1024
+MAX_NORMALIZED_LOGO_BYTES = 1024 * 1024
+MAX_ORG_LOGO_EDGE = 1200
 COOKIE_NAME = "taxpearls_session"
 
 app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None)
@@ -60,8 +71,8 @@ class UserBody(BaseModel):
 
 
 class ClientBody(BaseModel):
-    name: str
-    taxpayer_id: str
+    name: str = Field(min_length=1, max_length=200)
+    taxpayer_id: str = Field(min_length=1, max_length=64)
     accountant_id: str | None = None
 
 
@@ -87,10 +98,21 @@ class RuleStateBody(BaseModel):
     enabled: bool
 
 
+class RuleParametersBody(BaseModel):
+    expected_version: str = Field(min_length=1, max_length=32)
+    new_version: str = Field(min_length=1, max_length=32)
+    logic: dict[str, Any]
+    threshold_basis: str = Field(min_length=1, max_length=500)
+
+
+class RuleTrialBody(RuleParametersBody):
+    audit_id: str = Field(min_length=1, max_length=64)
+
+
 class OrgSettingsBody(BaseModel):
-    display_name: str
-    report_title: str
-    footer_text: str = ""
+    display_name: str = Field(min_length=1, max_length=80)
+    report_title: str = Field(min_length=1, max_length=120)
+    footer_text: str = Field(default="", max_length=300)
 
 
 def _err(status: int, message: str) -> JSONResponse:
@@ -132,6 +154,132 @@ def _company_dict(dataset: Dataset) -> dict[str, str]:
     return {"name": c.name, "taxpayer_id": c.taxpayer_id, "industry": c.industry, "period": c.period}
 
 
+def _normalize_org_logo(content: bytes) -> tuple[str, bytes]:
+    """Decode, constrain and re-encode logos so stored bytes cannot contain active content."""
+    if not content:
+        raise ValueError("Logo 文件为空。")
+    if len(content) > MAX_ORG_LOGO_BYTES:
+        raise ValueError("Logo 文件不得超过 512KB。")
+    try:
+        with Image.open(BytesIO(content)) as image:
+            source_format = image.format
+            if source_format not in {"PNG", "JPEG"}:
+                raise ValueError("Logo 仅支持 PNG 或 JPEG 图片。")
+            if getattr(image, "n_frames", 1) != 1:
+                raise ValueError("Logo 必须是静态图片。")
+            width, height = image.size
+            if width < 1 or height < 1 or width > MAX_ORG_LOGO_EDGE or height > MAX_ORG_LOGO_EDGE:
+                raise ValueError("Logo 宽高须在 1–1200 像素之间。")
+            image.load()
+            normalized = ImageOps.exif_transpose(image)
+            output = BytesIO()
+            if source_format == "JPEG":
+                normalized.convert("RGB").save(output, format="JPEG", quality=90, optimize=True)
+                mime = "image/jpeg"
+            else:
+                mode = "RGBA" if "A" in normalized.getbands() or "transparency" in normalized.info else "RGB"
+                normalized.convert(mode).save(output, format="PNG", optimize=True, compress_level=9)
+                mime = "image/png"
+    except ValueError:
+        raise
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("Logo 不是有效的 PNG 或 JPEG 图片。") from exc
+    data = output.getvalue()
+    if len(data) > MAX_NORMALIZED_LOGO_BYTES:
+        raise ValueError("Logo 规范化后过大，请降低图片复杂度或尺寸。")
+    return mime, data
+
+
+def _org_branding(org_id: str) -> dict[str, Any]:
+    settings = store.get_org_settings(org_id)
+    logo = store.get_org_logo(org_id)
+    settings["logo_data_uri"] = (
+        f"data:{logo[0]};base64,{base64.b64encode(logo[1]).decode('ascii')}" if logo else ""
+    )
+    return settings
+
+
+def _safe_filename_component(value: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", value).strip(". ")
+    return cleaned[:80] or "审计报告"
+
+
+def _version_tuple(value: str) -> tuple[int, ...]:
+    if not re.fullmatch(r"\d+(?:\.\d+){1,2}", value.strip()):
+        raise ValueError("规则版本须为 2.1 或 2.1.0 形式。")
+    parts = [int(part) for part in value.split(".")]
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+def _effective_rules() -> list[Any]:
+    overrides = store.rule_overrides()
+    effective = []
+    for base in engine.load_rules(RULES_DIR):
+        override = overrides.get(base.id)
+        if override and _version_tuple(override["version"]) > _version_tuple(base.version):
+            candidate = replace(
+                base, version=override["version"], logic=deepcopy(override["logic"]),
+                threshold_basis=override["threshold_basis"],
+            )
+            engine.validate_rule_update(candidate)
+            effective.append(candidate)
+        else:
+            effective.append(base)
+    return effective
+
+
+def _rule_by_id(rule_id: str) -> Any:
+    rule = next((item for item in _effective_rules() if item.id == rule_id), None)
+    if not rule:
+        raise HTTPException(status_code=404, detail="规则不存在。")
+    return rule
+
+
+def _candidate_rule(rule: Any, body: RuleParametersBody) -> Any:
+    if body.expected_version.strip() != rule.version:
+        raise HTTPException(status_code=409, detail=f"规则已更新为 v{rule.version}，请刷新后重试。")
+    try:
+        current_version = _version_tuple(rule.version)
+        new_version = _version_tuple(body.new_version.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    if new_version <= current_version:
+        raise HTTPException(status_code=422, detail=f"新版本必须高于当前 v{rule.version}。")
+    candidate = replace(
+        rule, version=body.new_version.strip(), logic=deepcopy(body.logic),
+        threshold_basis=body.threshold_basis.strip(),
+    )
+    try:
+        return engine.validate_rule_update(candidate)
+    except engine.RuleError as exc:
+        raise HTTPException(status_code=422, detail=f"规则参数无效：{exc}") from None
+
+
+def _rule_payload(rule: Any, enabled: bool, override: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "id": rule.id, "name": rule.name, "category": rule.category,
+        "severity": rule.severity, "version": rule.version, "enabled": enabled,
+        "logic": rule.logic, "inputs": rule.inputs,
+        "threshold_basis": rule.threshold_basis,
+        "customized": bool(override and override.get("version") == rule.version),
+        "updated_at": override.get("updated_at") if override else None,
+    }
+
+
+def _trial_payload(finding: Any, audit_id: str) -> dict[str, Any]:
+    return {
+        "audit_id": audit_id, "rule_id": finding.rule.id,
+        "version": finding.rule.version, "name": finding.rule.name,
+        "status": finding.status, "severity": finding.rule.severity,
+        "conclusion": finding.conclusion, "calculation": finding.calculation,
+        "threshold_desc": finding.threshold_desc, "skip_reason": finding.skip_reason,
+        "evidence": [
+            {"label": item.label, "value": item.value, "source": item.source}
+            for item in finding.evidence
+        ],
+    }
+
+
 def _is_synthetic_dataset(dataset: Dataset) -> bool:
     """Use one definition for teaching-data checks across audit and training."""
     name = dataset.company.name
@@ -163,6 +311,11 @@ def index() -> FileResponse:
 
 @app.get("/logo")
 def logo() -> Response:
+    return FileResponse(LOGO_SVG, media_type="image/svg+xml")
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> Response:
     return FileResponse(LOGO_SVG, media_type="image/svg+xml")
 
 
@@ -208,7 +361,8 @@ def dashboard(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> 
                         "severity": f.rule.severity, "category": f.rule.category,
                         "status": f.status, "reason": f.skip_reason}
                        for f in entry["findings"] if f.status != "pass"]})
-    return {"records": records, "history": history}
+    clients = [] if user["role"] == "teacher" else store.list_clients(user)
+    return {"records": records, "history": history, "clients": clients}
 
 
 @app.get("/api/knowledge")
@@ -220,7 +374,7 @@ def knowledge(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> 
              "inputs": r.inputs, "evidence": r.evidence, "legal_basis": r.legal_basis,
              "references": r.references, "suggestion": r.suggestion,
              "enabled": enabled is None or r.id in enabled}
-            for r in engine.load_rules(RULES_DIR)]
+            for r in _effective_rules()]
 
 
 @app.get("/api/status")
@@ -239,7 +393,7 @@ def _graph_for_user(user, audit_id):
     if audit_id:
         _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
         entry = _audit_or_404(audit_id, user)
-    return build_graph(engine.load_rules(RULES_DIR), entry)
+    return build_graph(_effective_rules(), entry)
 
 
 @app.get("/api/knowledge/graph")
@@ -257,6 +411,34 @@ def knowledge_ask(body: GraphQuestion,
     user = _user(session)
     graph = _graph_for_user(user, body.audit_id)
     return ask_graph(graph, body.node_id, body.question)
+
+
+@app.post("/api/audits/{audit_id}/findings/{rule_id}/interpretation")
+def finding_interpretation(audit_id: str, rule_id: str,
+                           session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
+    entry = _audit_or_404(audit_id, user)
+    finding = next((item for item in entry["findings"] if item.rule.id == rule_id), None)
+    if not finding:
+        raise HTTPException(status_code=404, detail="该审计中不存在指定 Finding。")
+    if finding.status != "hit":
+        raise HTTPException(status_code=422, detail="仅可对规则引擎已命中的 Finding 生成白话解读。")
+    evidence_hash = finding_evidence_hash(finding)
+    cached = store.get_finding_interpretation(audit_id, rule_id, evidence_hash)
+    if cached:
+        store.log(user, "interpret_finding", "audit", audit_id,
+                  f"rule={rule_id};cache=hit;model={cached['model']}")
+        return cached
+    result = interpret_finding(finding)
+    if result["evidence_hash"] != evidence_hash:
+        raise HTTPException(status_code=502, detail="模型解读与当前审计证据版本不一致。")
+    saved = store.save_finding_interpretation(
+        audit_id, rule_id, evidence_hash, result, user["id"],
+    )
+    store.log(user, "interpret_finding", "audit", audit_id,
+              f"rule={rule_id};cache=miss;model={result['model']}")
+    return {**saved, "cached": False}
 
 
 @app.get("/graph.js")
@@ -348,11 +530,14 @@ def clients(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> li
 def create_client(body: ClientBody, session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
     user = _user(session)
     _allow(user, "org_admin", "platform_admin")
+    name, taxpayer_id = body.name.strip(), body.taxpayer_id.strip()
+    if not name or not taxpayer_id:
+        raise HTTPException(status_code=422, detail="企业名称和纳税人识别号不能为空。")
     if body.accountant_id:
         accountant = store.get_user(body.accountant_id)
         if not accountant or accountant["role"] != "accountant" or accountant["org_id"] != user["org_id"]:
             raise HTTPException(status_code=422, detail="负责人必须是本机构会计。")
-    client = store.upsert_client(user, body.name.strip(), body.taxpayer_id.strip(), body.accountant_id)
+    client = store.upsert_client(user, name, taxpayer_id, body.accountant_id)
     store.log(user, "upsert_client", "client", client["id"])
     return client
 
@@ -389,11 +574,13 @@ def _save_audit(dataset: Dataset, user: dict[str, Any], client_id: str | None = 
             raise HTTPException(422, "客户档案不存在或不属于当前机构。")
         if user["role"] == "accountant" and client.get("accountant_id") != user["id"]:
             raise HTTPException(403, "会计只能审计自己负责的客户。")
+        if client["taxpayer_id"] != dataset.company.taxpayer_id:
+            raise HTTPException(422, "审计材料中的纳税人识别号与所选客户档案不一致。")
     elif user["role"] in {"org_admin", "accountant"}:
         assigned = user["id"] if user["role"] == "accountant" else None
         client_id = store.upsert_client(user, dataset.company.name, dataset.company.taxpayer_id, assigned)["id"]
     try:
-        rules = engine.load_rules(RULES_DIR)
+        rules = _effective_rules()
         enabled = store.enabled_rule_ids()
         if enabled is not None:
             rules = [rule for rule in rules if rule.id in enabled]
@@ -443,17 +630,18 @@ def report(
         raise HTTPException(status_code=409, detail="会计导出需二次确认，请确认报告用途后重试。")
     entry = _audit_or_404(audit_id, user)
     dataset, findings = entry["dataset"], entry["findings"]
-    org = store.get_org_settings(user["org_id"])
+    org = _org_branding(entry["org_id"])
     try:
         when = datetime.fromisoformat(entry["audited_at"])
         html, _ = render.render_html(
             dataset, findings, when=when, write=False,
             org_name=org["display_name"], report_title=org["report_title"],
-            footer_text=org["footer_text"],
+            footer_text=org["footer_text"], logo_data_uri=org["logo_data_uri"],
         )
         report_no = render.make_report_no(dataset.company.name, when)
-        short = dataset.company.name.replace("（仿真样例）", "")[:12]
-        pdf_name = f"{org['report_title']}-{short}-{entry['audited_at'][:10].replace('-', '')}.pdf"
+        short = _safe_filename_component(dataset.company.name.replace("（仿真样例）", "")[:12])
+        title = _safe_filename_component(org["report_title"])
+        pdf_name = f"{title}-{short}-{entry['audited_at'][:10].replace('-', '')}.pdf"
         fd, tmp = tempfile.mkstemp(suffix=".pdf")
         os.close(fd)
         render.export_pdf(html, tmp, report_no=report_no, footer_text=org["footer_text"])
@@ -469,11 +657,11 @@ def report_html(audit_id: str, session: str | None = Cookie(default=None, alias=
     user = _user(session)
     _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
     entry = _audit_or_404(audit_id, user)
-    org = store.get_org_settings(user["org_id"])
+    org = _org_branding(entry["org_id"])
     html, _ = render.render_html(
         entry["dataset"], entry["findings"], write=False,
         org_name=org["display_name"], report_title=org["report_title"],
-        footer_text=org["footer_text"],
+        footer_text=org["footer_text"], logo_data_uri=org["logo_data_uri"],
     )
     store.log(user, "view_report", "audit", audit_id)
     return Response(content=html, media_type="text/html")
@@ -503,14 +691,54 @@ def put_org_settings(
     return saved
 
 
+@app.get("/api/org/logo")
+def get_org_logo(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
+    user = _user(session)
+    logo = store.get_org_logo(user["org_id"])
+    if not logo:
+        raise HTTPException(status_code=404, detail="当前机构尚未配置 Logo。")
+    return Response(
+        content=logo[1], media_type=logo[0],
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.post("/api/org/logo")
+async def put_org_logo(
+    file: UploadFile = File(...),
+    session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> dict[str, Any]:
+    user = _user(session)
+    _allow(user, "org_admin", "platform_admin")
+    content = await file.read(MAX_ORG_LOGO_BYTES + 1)
+    try:
+        mime, normalized = _normalize_org_logo(content)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    finally:
+        content = b""
+    saved = store.update_org_logo(user["org_id"], mime, normalized)
+    store.log(user, "update_org_logo", "org", user["org_id"], f"mime={mime}; bytes={len(normalized)}")
+    return saved
+
+
+@app.delete("/api/org/logo")
+def delete_org_logo(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
+    user = _user(session)
+    _allow(user, "org_admin", "platform_admin")
+    saved = store.clear_org_logo(user["org_id"])
+    store.log(user, "delete_org_logo", "org", user["org_id"])
+    return saved
+
+
 @app.get("/api/rules")
 def rules(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
     _user(session)
-    loaded = engine.load_rules(RULES_DIR)
+    loaded = _effective_rules()
+    overrides = store.rule_overrides()
     enabled = store.enabled_rule_ids()
     return [
-        {"id": r.id, "name": r.name, "category": r.category, "severity": r.severity,
-         "version": r.version, "enabled": enabled is None or r.id in enabled}
+        _rule_payload(r, enabled is None or r.id in enabled, overrides.get(r.id))
         for r in loaded
     ]
 
@@ -520,7 +748,7 @@ def rule_state(rule_id: str, body: RuleStateBody,
                session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
     user = _user(session)
     _allow(user, "platform_admin")
-    valid = {rule.id for rule in engine.load_rules(RULES_DIR)}
+    valid = {rule.id for rule in _effective_rules()}
     if rule_id not in valid:
         raise HTTPException(status_code=404, detail="规则不存在。")
     if store.enabled_rule_ids() is None:
@@ -529,6 +757,44 @@ def rule_state(rule_id: str, body: RuleStateBody,
     store.set_rule_enabled(rule_id, body.enabled, user["id"])
     store.log(user, "set_rule_state", "rule", rule_id, f"enabled={body.enabled}")
     return {"id": rule_id, "enabled": body.enabled}
+
+
+@app.put("/api/rules/{rule_id}/parameters")
+def rule_parameters(
+    rule_id: str, body: RuleParametersBody,
+    session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> dict[str, Any]:
+    user = _user(session)
+    _allow(user, "platform_admin")
+    current = _rule_by_id(rule_id)
+    candidate = _candidate_rule(current, body)
+    saved = store.set_rule_override(
+        rule_id, candidate.version, candidate.logic, candidate.threshold_basis, user["id"]
+    )
+    store.log(
+        user, "update_rule_parameters", "rule", rule_id,
+        f"version={current.version}->{candidate.version}",
+    )
+    enabled = store.enabled_rule_ids()
+    return _rule_payload(candidate, enabled is None or rule_id in enabled, saved)
+
+
+@app.post("/api/rules/{rule_id}/trial")
+def rule_trial(
+    rule_id: str, body: RuleTrialBody,
+    session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+) -> dict[str, Any]:
+    user = _user(session)
+    _allow(user, "platform_admin", "org_admin", "accountant", "teacher")
+    entry = _audit_or_404(body.audit_id, user)
+    current = _rule_by_id(rule_id)
+    candidate = _candidate_rule(current, body)
+    finding = engine.evaluate(candidate, entry["dataset"])
+    store.log(
+        user, "trial_rule_parameters", "rule", rule_id,
+        f"audit={body.audit_id}; version={candidate.version}; result={finding.status}",
+    )
+    return _trial_payload(finding, body.audit_id)
 
 
 @app.post("/api/assignments")

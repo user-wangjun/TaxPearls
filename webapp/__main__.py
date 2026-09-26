@@ -1,6 +1,7 @@
-"""python -m webapp 启动 Web 端证据链页面（FR-G01）。
+"""启动 Web 端证据链页面（FR-G01）。
 
-    .venv/Scripts/python.exe -m webapp            # http://127.0.0.1:8000
+    .venv/Scripts/python.exe -m webapp            # 推荐：从项目根以模块方式启动
+    .venv/Scripts/python.exe webapp/__main__.py   # 直接运行本文件也可以
 
 仅监听 127.0.0.1：本机演示用途，不对局域网暴露（安全基线：宁少勿多）。
 """
@@ -8,7 +9,16 @@ from __future__ import annotations
 
 import argparse
 import os
-from src import settings
+import sys
+from pathlib import Path
+
+# 直接运行本文件时，sys.path[0] 是 webapp/ 而非项目根，src/webapp 包都找不到。
+# 与 main.py 同款自救：把项目根塞回模块搜索路径。
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src import settings  # noqa: E402
 
 
 def main() -> int:

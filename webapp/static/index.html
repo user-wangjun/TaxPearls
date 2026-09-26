@@ -111,6 +111,7 @@
   .kv b { color: var(--ink); font-weight: 600; }
 
   .fold { display: none; }
+  .fold.open { display: block; }
   .fold-btn { cursor: pointer; color: var(--ink-2); font-size: 13.5px; padding: 10px 4px; user-select: none; }
   .fold-btn:hover { color: var(--ink); }
   .fold-btn .arrow { display: inline-block; transition: transform .15s; font-size: 12px; margin-right: 4px; }
@@ -510,11 +511,11 @@
       <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
     </div>
     <div class="dropzone" id="dropzone">
-      <div class="t1">一次选择或拖拽多份 Excel、PDF，也可上传 ZIP 文件包</div>
-      <div class="t2">支持账表 Excel、文字 / 扫描 PDF；AI 候选数据经校验后进入核对页<br>
+      <div class="t1">一次选择或拖拽多份 Excel、XML、PDF，也可上传 ZIP 文件包</div>
+      <div class="t2">支持账表 Excel、数电发票 XML、来源银行 Excel / 调节底稿、文字 / 扫描 PDF；AI 候选数据经校验后进入核对页<br>
         最多 20 份材料，单份 / ZIP 不超过 10MB，解压后合计 50MB · 原始文件仅在内存中解析</div>
       <button class="pick" type="button">选择多份材料</button>
-      <input type="file" id="fileInput" accept=".xlsx,.pdf,.zip" multiple hidden>
+      <input type="file" id="fileInput" accept=".xlsx,.xml,.pdf,.zip" multiple hidden>
     </div>
     <div class="error-box" id="errorBox"></div>
     <div class="busy" id="busy">正在处理材料，请稍候<span class="dot">……</span></div>
@@ -601,8 +602,8 @@
       <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
       <div class="sheet" id="userAdmin"><h2>账号管理</h2><p class="muted">平台管理员可创建各角色；机构管理员仅可创建本机构会计。</p><div class="row"><div class="field"><label>用户名</label><input id="newUsername"></div><div class="field"><label>显示姓名</label><input id="newDisplayName"></div><div class="field"><label>初始密码</label><input id="newPassword" type="password"></div><div class="field"><label>角色</label><select id="newRole"><option value="teacher">教师</option><option value="student">学生</option><option value="org_admin">机构管理员</option><option value="accountant">会计</option></select></div><button class="btn pdf" id="btnCreateUser">创建账号</button></div><div class="data-list" id="userList"></div></div>
       <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称</label><input id="clientName"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号</label><input id="clientTaxpayerId"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
-      <div class="sheet"><h2>规则管理</h2><p class="muted">规则启停对后续审计生效；历史报告保留当时的完整规则快照。</p><div class="data-list" id="ruleList"></div></div>
-      <div class="sheet"><h2>操作日志</h2><div class="data-list" id="logList"></div></div>
+      <div class="sheet" id="ruleAdmin"><h2>规则参数与试跑</h2><p class="muted">选择规则后以表单调整参数，并在指定历史材料快照上试跑。试跑不修改历史审计；只有平台管理员可正式保存，新版本仅影响后续审计。</p><div class="data-list" id="ruleList"></div><div class="rule-editor" id="ruleEditor" hidden><div class="rule-editor-head"><div><h3 id="ruleEditorTitle"></h3><p class="muted" id="ruleEditorMeta"></p></div><span class="role-chip" id="ruleEditorState"></span></div><div class="row"><div class="field"><label for="ruleCurrentVersion">当前版本</label><input id="ruleCurrentVersion" readonly></div><div class="field"><label for="ruleNewVersion">新版本</label><input id="ruleNewVersion" maxlength="32" inputmode="decimal"></div></div><div class="field"><label for="ruleThresholdBasis">阈值依据</label><textarea id="ruleThresholdBasis" maxlength="500"></textarea></div><div><h3>可调参数</h3><p class="muted" id="ruleMetricHint"></p><div class="rule-param-grid" id="ruleParamFields"></div></div><div class="field"><label for="ruleTrialAudit">试跑材料</label><select id="ruleTrialAudit"></select></div><div class="row"><button class="btn pdf" id="btnRuleTrial" type="button">试跑当前草稿</button><button id="btnRuleSave" type="button">保存为新版本</button><p class="muted" id="ruleEditorStatus" role="status"></p></div><div class="rule-trial-result" id="ruleTrialResult" hidden></div></div></div>
+      <div class="sheet" id="logAdmin"><h2>操作日志</h2><div class="data-list" id="logList"></div></div>
     </section>
 
   </div>
@@ -633,6 +634,9 @@ let currentUser = null;
 let selectedClientId = "";
 let openAssignmentId = null;
 let latestFindings = [];
+let ruleCatalog = [];
+let editingRule = null;
+let ruleDraftLogic = null;
 
 async function api(url, options = {}) {
   const r = await fetch(url, options);
@@ -691,7 +695,7 @@ dz.addEventListener("drop", e => { e.preventDefault(); dz.classList.remove("drag
 async function upload(files) {
   hideError();
   if (files.length > 20) return showError("每次最多选择 20 个文件。");
-  if (files.some(f => !/\.(xlsx|pdf|zip)$/i.test(f.name))) return showError("支持 .xlsx、.pdf 和 .zip 文件。");
+  if (files.some(f => !/\.(xlsx|xml|pdf|zip)$/i.test(f.name))) return showError("支持 .xlsx、.xml、.pdf 和 .zip 文件。");
   if (files.some(f => !f.size || f.size > 10 * 1024 * 1024)) return showError("单个文件须非空且不超过 10MB。");
   if (files.reduce((n,f) => n+f.size,0) > 50 * 1024 * 1024) return showError("上传总大小不能超过 50MB。");
   clearMaterials();
@@ -781,6 +785,9 @@ function renderMaterialReview(files) {
     } else {
       const details=el("details"); details.append(el("summary","","查看已读取的报表及补充指标"));
       doc.rows.forEach(r=>details.append(el("p","muted",r.name+"："+r.value+" · "+r.source)));card.append(details);
+      if(doc.invoices?.length){const inv=el("details");inv.append(el("summary","",`查看已读取的 ${doc.invoices.length} 张发票`));doc.invoices.forEach(r=>inv.append(el("p","muted",`${r.number} · ${r.issued_on} · ${r.kind||"待按企业税号判定"}${r.status} · 不含税 ${r.amount} · 税额 ${r.tax}`)));card.append(inv);}
+      if(doc.bank_transactions?.length){const bank=el("details");bank.append(el("summary","",`查看已读取的 ${doc.bank_transactions.length} 笔银行流水（原始入账不直接作为收入）`));doc.bank_transactions.forEach(r=>bank.append(el("p","muted",`${r.transaction_id} · ${r.transacted_on} · ${Number(r.income)>0?"收入 "+r.income:"支出 "+r.expense} · ${r.category||"待调节底稿分类"}${r.summary?" · "+r.summary:""}`)));card.append(bank);}
+      if(doc.bank_adjustments?.length){const bridge=el("details");bridge.append(el("summary","",`查看已读取的 ${doc.bank_adjustments.length} 条银行调节底稿`));doc.bank_adjustments.forEach(r=>bridge.append(el("p","muted",`${r.number} · ${r.transaction_id||"独立调节"} · ${r.category} · 权责期 ${r.period} · ${r.transaction_id?"本期不含税收入 "+(r.recognized_amount??"未填"):(r.direction||"未定方向")+" "+(r.adjustment_amount??"未填")} · 底稿 ${r.workpaper} · ${r.reviewed?"已复核":"待复核"}`)));card.append(bridge);}
     }
   });
   const submit=el("button","primary","确认材料并开始审计"), reset=el("button","","重新选择材料");
@@ -938,6 +945,47 @@ function findingCard(f) {
     body.appendChild(el("div", "calc-box", f.suggestion));
   }
 
+  /* 命中 Finding 的受约束模型解读：规则结论始终由上方确定性证据卡负责。 */
+  if (f.status === "hit") {
+    const tools = el("div", "finding-ai-tools");
+    const explain = el("button", "btn finding-ai-btn", "✦ AI 白话解读");
+    explain.type = "button";
+    const panel = el("div", "finding-ai-panel");
+    panel.hidden = true;
+    explain.addEventListener("click", async () => {
+      if (!auditId) return;
+      explain.disabled = true;
+      explain.textContent = "正在基于证据解读……";
+      panel.hidden = false;
+      panel.replaceChildren(el("p", "muted", "模型只翻译当前 Finding，不参与风险判定。"));
+      try {
+        const result = await api("/api/audits/" + encodeURIComponent(auditId) + "/findings/" + encodeURIComponent(f.id) + "/interpretation", {method:"POST"});
+        panel.replaceChildren();
+        const locked = el("div", "finding-ai-locked", "规则引擎结论已锁定：命中（" + result.citation + "）");
+        panel.appendChild(locked);
+        panel.appendChild(el("div", "ev-title", "业务白话"));
+        panel.appendChild(el("p", null, result.plain_language));
+        panel.appendChild(el("div", "ev-title", "为什么触发"));
+        panel.appendChild(el("p", null, result.why_flagged));
+        panel.appendChild(el("div", "ev-title", "建议核对顺序"));
+        const ol = el("ol", "finding-ai-steps");
+        for (const step of result.review_steps) ol.appendChild(el("li", null, step));
+        panel.appendChild(ol);
+        panel.appendChild(el("p", "finding-ai-meta", "仅解释，不改变规则结论 · " + result.model + " · " + (result.cached ? "已保存解读" : "本次生成")));
+        explain.textContent = "已生成 AI 白话解读";
+      } catch (err) {
+        panel.replaceChildren(el("div", "finding-ai-error", err.message || String(err)));
+        explain.textContent = "重试 AI 白话解读";
+      } finally {
+        explain.disabled = false;
+      }
+    });
+    tools.appendChild(explain);
+    tools.appendChild(el("span", "finding-ai-note", "仅解释，不改变规则结论"));
+    body.appendChild(tools);
+    body.appendChild(panel);
+  }
+
   /* 参考链接 */
   if (f.references && f.references.length) {
     body.appendChild(el("div", "ev-title", "官方参考"));
@@ -1075,11 +1123,13 @@ function enterApp(user) {
   $("nav").style.display = "flex";
   $("currentUser").textContent = user.display_name + " · " + ({teacher:"教师",student:"学生",org_admin:"机构管理员",accountant:"会计",platform_admin:"平台管理员"}[user.role] || user.role);
   document.querySelectorAll(".training-nav").forEach((n) => n.style.display = ["teacher","student"].includes(user.role) ? "block" : "none");
-  document.querySelectorAll(".admin-nav").forEach((n) => n.style.display = ["platform_admin","org_admin","teacher"].includes(user.role) ? "block" : "none");
+  document.querySelectorAll(".admin-nav").forEach((n) => n.style.display = ["platform_admin","org_admin","teacher","accountant"].includes(user.role) ? "block" : "none");
   $("teacherBox").style.display = user.role === "teacher" ? "block" : "none";
   $("orgSettingsAdmin").style.display = ["platform_admin","org_admin"].includes(user.role) ? "block" : "none";
   $("userAdmin").style.display = ["platform_admin","org_admin"].includes(user.role) ? "block" : "none";
   $("clientAdmin").style.display = ["platform_admin","org_admin"].includes(user.role) ? "block" : "none";
+  $("ruleAdmin").style.display = ["platform_admin","org_admin","teacher","accountant"].includes(user.role) ? "block" : "none";
+  $("logAdmin").style.display = ["platform_admin","org_admin","teacher"].includes(user.role) ? "block" : "none";
   $("auditClientField").style.display = ["platform_admin","org_admin","accountant"].includes(user.role) ? "block" : "none";
   document.querySelector('[data-panel="auditPanel"]').style.display = user.role === "student" ? "none" : "block";
   document.querySelectorAll(".business-nav, [data-panel='historyPanel']").forEach(n => n.style.display = user.role === "student" ? "none" : "block");
@@ -1168,6 +1218,50 @@ function showOrgSettings(settings,message="") {
 
 async function loadOrgSettings(){showOrgSettings(await api("/api/org/settings"));}
 
+function nextRuleVersion(version){const parts=version.split(".").map(Number);if(parts.some(n=>!Number.isInteger(n)))return version+".1";parts[parts.length-1]+=1;return parts.join(".");}
+function setRuleDraft(path,value){let node=ruleDraftLogic;for(let i=0;i<path.length-1;i++)node=node[path[i]];node[path[path.length-1]]=value;}
+function ruleFieldName(path){const key=path[path.length-1],names={threshold:"相对偏离阈值",tolerance:"差额容差",min:"区间下限",max:"区间上限",left:"左侧指标 / 基准",right:"右侧指标 / 基准",numerator:"分子指标",denominator:"分母指标",direction:"比较方向"};return names[key]||("参数 "+(Number.isInteger(key)?key+1:key));}
+
+function renderRuleParamFields(){
+  const box=$("ruleParamFields");box.textContent="";const metrics=Object.keys(editingRule.inputs);
+  function walk(value,path=[]){
+    if(Array.isArray(value)){value.forEach((item,index)=>walk(item,path.concat(index)));return;}
+    if(value&&typeof value==="object"){for(const [key,item] of Object.entries(value)){if(key!=="type")walk(item,path.concat(key));}return;}
+    const key=path[path.length-1],field=el("div","field"),label=el("label",null,ruleFieldName(path));let input;
+    if(typeof value==="number"){
+      input=el("input");input.type="number";input.step="any";input.value=String(value);input.addEventListener("input",()=>{if(input.value!==""&&Number.isFinite(Number(input.value)))setRuleDraft(path,Number(input.value));});
+    }else if(key==="direction"){
+      input=el("select");for(const [v,t] of [["absolute","绝对差"],["above","左侧高于右侧"],["below","左侧低于右侧"]]){const option=el("option",null,t);option.value=v;input.append(option);}input.value=value;input.addEventListener("change",()=>setRuleDraft(path,input.value));
+    }else{
+      input=el("select");for(const metric of metrics){const option=el("option",null,metric);option.value=metric;input.append(option);}input.value=value;input.addEventListener("change",()=>setRuleDraft(path,input.value));
+    }
+    input.setAttribute("aria-label",ruleFieldName(path));const hint=el("span","rule-param-path",path.join("."));field.append(label,input,hint);box.append(field);
+  }
+  walk(ruleDraftLogic);
+}
+
+function openRuleEditor(rule){
+  editingRule=rule;ruleDraftLogic=JSON.parse(JSON.stringify(rule.logic));$("ruleEditor").hidden=false;
+  $("ruleEditorTitle").textContent=rule.id+" "+rule.name;$("ruleEditorMeta").textContent=rule.category+" · "+({high:"高",medium:"中",low:"低"}[rule.severity]||rule.severity)+"风险";
+  $("ruleEditorState").textContent=rule.customized?"已配置":"基础规则";$("ruleCurrentVersion").value=rule.version;$("ruleNewVersion").value=nextRuleVersion(rule.version);$("ruleThresholdBasis").value=rule.threshold_basis;
+  $("ruleMetricHint").textContent="允许引用的指标："+Object.keys(rule.inputs).join("、");$("btnRuleSave").hidden=currentUser.role!=="platform_admin";
+  $("ruleEditorStatus").textContent=currentUser.role==="platform_admin"?"试跑确认后可保存为更高版本。":"可调整并试跑草稿；正式保存由平台管理员完成。";$("ruleTrialResult").hidden=true;renderRuleParamFields();
+  $("ruleEditor").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+
+function ruleDraftBody(){
+  if(!editingRule)throw new Error("请先选择规则。");const version=$("ruleNewVersion").value.trim(),basis=$("ruleThresholdBasis").value.trim();
+  if(!version)throw new Error("请填写新版本号。");if(!basis)throw new Error("请填写阈值依据。");
+  if(Array.from($("ruleParamFields").querySelectorAll('input[type="number"]')).some(input=>input.value===""))throw new Error("数值参数不能为空。");
+  return {expected_version:editingRule.version,new_version:version,logic:ruleDraftLogic,threshold_basis:basis};
+}
+
+function showRuleTrial(result){
+  const box=$("ruleTrialResult");box.className="rule-trial-result "+result.status;box.textContent="";const labels={hit:"风险命中",pass:"检查通过",skipped:"材料不足"};
+  box.append(el("h3",null,"试跑结果："+(labels[result.status]||result.status)+" · v"+result.version),el("p",null,result.conclusion));
+  if(result.calculation)box.append(el("div","calc-box",result.calculation));if(result.skip_reason)box.append(el("p","muted",result.skip_reason));box.hidden=false;
+}
+
 async function loadAdmin() {
   try {
     let users=[];
@@ -1184,8 +1278,12 @@ async function loadAdmin() {
       for(const client of clients){const item=el("div","data-item"),text=el("div");text.append(el("div",null,client.name),el("p","muted",client.taxpayer_id+" · 负责会计："+(client.accountant_name||client.accountant_username||"未指派")));item.append(text,el("span","role-chip","客户档案"));cb.append(item);}
       if(!clients.length)cb.append(el("div","data-item","暂无客户档案。"));
     }
-    const rules=await api("/api/rules"); const rb=$("ruleList"); rb.textContent="";
-    for(const r of rules){const item=el("div","data-item");item.appendChild(el("span",null,r.id+" "+r.name+" · "+r.category));const chip=el("span","role-chip",r.enabled?"已启用":"已停用");item.appendChild(chip);if(currentUser.role==="platform_admin"){const b=el("button",null,r.enabled?"停用":"启用");b.addEventListener("click",async()=>{await api("/api/rules/"+r.id+"/state",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!r.enabled})});loadAdmin();});item.appendChild(b);}rb.appendChild(item);}
+    ruleCatalog=await api("/api/rules");const audits=await api("/api/audits"),trialSelect=$("ruleTrialAudit"),selectedAudit=trialSelect.value;trialSelect.textContent="";
+    for(const row of audits){const option=el("option",null,row.company_name+" · "+row.period+" · "+row.audited_at);option.value=row.id;trialSelect.append(option);}if(audits.some(row=>row.id===selectedAudit))trialSelect.value=selectedAudit;
+    if(!audits.length){const option=el("option",null,"暂无可试跑的历史审计");option.value="";trialSelect.append(option);}
+    const rb=$("ruleList");rb.textContent="";
+    for(const r of ruleCatalog){const item=el("div","data-item"),text=el("div");text.append(el("div",null,r.id+" "+r.name+" · v"+r.version),el("p","muted",r.category+(r.customized?" · 已配置参数":" · 基础参数")));const actions=el("div","row"),chip=el("span","role-chip",r.enabled?"已启用":"已停用"),edit=el("button",null,"配置 / 试跑");edit.addEventListener("click",()=>openRuleEditor(r));actions.append(chip,edit);if(currentUser.role==="platform_admin"){const toggle=el("button",null,r.enabled?"停用":"启用");toggle.addEventListener("click",async()=>{await api("/api/rules/"+r.id+"/state",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!r.enabled})});await loadAdmin();});actions.append(toggle);}item.append(text,actions);rb.append(item);}
+    if(editingRule){const refreshed=ruleCatalog.find(rule=>rule.id===editingRule.id);if(refreshed)openRuleEditor(refreshed);}
     if(["platform_admin","org_admin","teacher"].includes(currentUser.role)){const logs=await api("/api/audit-log");const lb=$("logList");lb.textContent="";for(const l of logs.slice(0,80))lb.appendChild(el("div","data-item",l.created_at+" · "+l.action+" · "+l.target_type+" "+l.target_id));}
   } catch(err){showError(err.message);}
 }
@@ -1195,6 +1293,8 @@ $("btnCreateClient").addEventListener("click",async()=>{try{const client=await a
 $("btnSaveOrgSettings").addEventListener("click",async()=>{try{const saved=await api("/api/org/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({display_name:$("orgDisplayName").value,report_title:$("orgReportTitle").value,footer_text:$("orgFooterText").value})});showOrgSettings(saved,"报告抬头与页脚已保存。");}catch(err){showError(err.message);}});
 $("btnUploadOrgLogo").addEventListener("click",async()=>{const file=$("orgLogoFile").files[0];if(!file)return showError("请选择 PNG 或 JPEG Logo。");try{const form=new FormData();form.append("file",file);const saved=await api("/api/org/logo",{method:"POST",body:form});$("orgLogoFile").value="";showOrgSettings(saved,"Logo 已上传并同步到报告模板。");}catch(err){showError(err.message);}});
 $("btnRemoveOrgLogo").addEventListener("click",async()=>{if(!window.confirm("确认移除本机构报告 Logo？机构名称、标题和页脚不会改变。"))return;try{showOrgSettings(await api("/api/org/logo",{method:"DELETE"}),"Logo 已移除。");}catch(err){showError(err.message);}});
+$("btnRuleTrial").addEventListener("click",async()=>{try{const auditId=$("ruleTrialAudit").value;if(!auditId)throw new Error("请先完成一份可访问的审计再试跑。");const result=await api("/api/rules/"+editingRule.id+"/trial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...ruleDraftBody(),audit_id:auditId})});showRuleTrial(result);$("ruleEditorStatus").textContent="试跑完成，历史审计未被修改。";}catch(err){showError(err.message);}});
+$("btnRuleSave").addEventListener("click",async()=>{try{const id=editingRule.id,saved=await api("/api/rules/"+id+"/parameters",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(ruleDraftBody())});$("ruleEditorStatus").textContent="已保存 "+saved.id+" v"+saved.version+"，仅影响后续审计。";editingRule=saved;await loadAdmin();}catch(err){showError(err.message);}});
 
 </script>
 <script src="/workspace.js?v=dropdown-20260922-1"></script>
