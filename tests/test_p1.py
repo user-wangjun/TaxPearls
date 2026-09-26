@@ -159,8 +159,9 @@ class P1WebFlow(unittest.TestCase):
                         })
                         self.assertEqual(response.status_code, 200, response.text)
                         created[username] = response.json()
+                    sample = loader.load(ROOT / "samples" / "样例企业-审计材料.xlsx")
                     customer = client.post("/api/clients", json={
-                        "name": "仿真客户", "taxpayer_id": "TEST-CLIENT",
+                        "name": "仿真客户", "taxpayer_id": sample.company.taxpayer_id,
                         "accountant_id": created["accountant1"]["id"],
                     })
                     self.assertEqual(customer.status_code, 200, customer.text)
