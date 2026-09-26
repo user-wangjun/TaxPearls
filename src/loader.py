@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from io import BytesIO
 from decimal import Decimal, InvalidOperation
+from hashlib import sha256
 from pathlib import Path
 import re
 from openpyxl import load_workbook
@@ -89,6 +90,66 @@ class _BankAdjustment:
     direction: str
     workpaper: str
     reviewed: bool
+    detail: str
+    source: str
+
+
+@dataclass(frozen=True)
+class _HumanRecord:
+    """A privacy-minimized monthly tax/social/provident-fund record."""
+
+    kind: str
+    person_key: str
+    month: str
+    active: bool
+    amount: Decimal | None
+    source: str
+
+
+@dataclass(frozen=True)
+class _Contract:
+    """One contract master record; amount is tax-inclusive."""
+
+    number: str
+    kind: str
+    counterparty: str
+    signed_on: str
+    amount: Decimal
+    performance_start: str
+    performance_end: str
+    reviewed: bool
+    workpaper: str
+    detail: str
+    source: str
+
+
+@dataclass(frozen=True)
+class _Fulfillment:
+    """A reviewed goods/service delivery record supporting the performance flow."""
+
+    number: str
+    contract_number: str
+    fulfilled_on: str
+    kind: str
+    amount: Decimal
+    reviewed: bool
+    workpaper: str
+    detail: str
+    source: str
+
+
+@dataclass(frozen=True)
+class _ContractLink:
+    """A manual allocation connecting contract, invoice, funds and performance evidence."""
+
+    number: str
+    contract_number: str
+    invoice_number: str
+    transaction_id: str
+    fulfillment_number: str
+    amount: Decimal
+    reviewed: bool
+    workpaper: str
     detail: str
     source: str
 
@@ -609,7 +670,9 @@ def _read_invoices(wb, company: Company) -> list[_Invoice]:
     known = {
         config.SHEET_COMPANY, config.SHEET_ACCOUNTS, config.SHEET_DECLARATION,
         config.SHEET_INCOME, config.SHEET_BALANCE, config.SHEET_CASHFLOW,
-        config.SHEET_HISTORY, config.SHEET_BANK, config.SHEET_BANK_ADJUSTMENTS, config.SHEET_SUPPLEMENT,
+        config.SHEET_HISTORY, config.SHEET_BANK, config.SHEET_BANK_ADJUSTMENTS,
+        config.SHEET_HUMAN, config.SHEET_CONTRACTS, config.SHEET_FULFILLMENTS,
+        config.SHEET_CONTRACT_LINKS, config.SHEET_SUPPLEMENT,
     }
     candidates = []
     for ws in wb.worksheets:
@@ -812,6 +875,8 @@ def _read_bank_transactions(wb) -> list[_BankTransaction]:
         config.SHEET_COMPANY, config.SHEET_ACCOUNTS, config.SHEET_DECLARATION,
         config.SHEET_INCOME, config.SHEET_BALANCE, config.SHEET_CASHFLOW,
         config.SHEET_HISTORY, config.SHEET_INVOICES, config.SHEET_BANK_ADJUSTMENTS,
+        config.SHEET_HUMAN, config.SHEET_CONTRACTS, config.SHEET_FULFILLMENTS,
+        config.SHEET_CONTRACT_LINKS,
         config.SHEET_SUPPLEMENT,
     }
     candidates = []
@@ -1074,6 +1139,441 @@ def _bank_metrics(
     return metrics
 
 
+_CONTRACT_KINDS = {"销售": "销售", "销售合同": "销售", "采购": "采购", "采购合同": "采购"}
+_FULFILLMENT_KINDS = {"发货", "收货", "服务验收", "其他履约"}
+
+
+def _contract_date(value: object, location: str) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?", text)
+    if not match:
+        raise InputError(f"{location}：须为完整日期")
+    try:
+        return date(*(int(part) for part in match.groups())).isoformat()
+    except ValueError:
+        raise InputError(f"{location}：日期无效「{text}」") from None
+
+
+def _contract_note(workpaper: object, detail: object, reviewed: bool, location: str) -> tuple[str, str]:
+    workpaper_text = str(workpaper or "").strip()
+    detail_text = str(detail or "").strip()
+    if reviewed and (not workpaper_text or not detail_text):
+        raise InputError(f"{location}：已复核记录必须填写底稿编号和说明")
+    if len(workpaper_text) > 128 or len(detail_text) > 2000:
+        raise InputError(f"{location}：底稿编号或说明过长")
+    return workpaper_text, detail_text
+
+
+def _read_contracts(wb) -> list[_Contract]:
+    if config.SHEET_CONTRACTS not in wb.sheetnames:
+        return []
+    ws = _sheet(wb, config.SHEET_CONTRACTS, config.COL_CONTRACTS)
+    contracts, seen = [], set()
+    for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+        if all(value is None or isinstance(value, str) and not value.strip() for value in row):
+            continue
+        location = f"{config.SHEET_CONTRACTS}第 {idx} 行"
+        number = _bank_identifier(row[0], f"{location}合同编号")
+        if number in seen:
+            raise InputError(f"{location}：合同编号重复「{number}」")
+        seen.add(number)
+        kind = _CONTRACT_KINDS.get(str(row[1] or "").strip())
+        if not kind:
+            raise InputError(f"{location}：合同类型仅支持销售或采购")
+        counterparty = str(row[2] or "").strip()
+        if not counterparty or len(counterparty) > 200:
+            raise InputError(f"{location}：对方名称不能为空且不能超过 200 字")
+        signed_on = _contract_date(row[3], f"{location}签订日期")
+        amount = _number(row[4], f"{location}合同含税金额")
+        if amount is None or amount <= 0:
+            raise InputError(f"{location}：合同含税金额必须为正数")
+        performance_start = _contract_date(row[5], f"{location}履约起始日")
+        performance_end = _contract_date(row[6], f"{location}履约结束日")
+        if performance_start > performance_end:
+            raise InputError(f"{location}：履约起始日不能晚于履约结束日")
+        reviewed = _bank_reviewed(row[7], f"{location}复核状态")
+        workpaper, detail = _contract_note(row[8], row[9], reviewed, location)
+        contracts.append(_Contract(
+            number, kind, counterparty, signed_on, amount, performance_start, performance_end,
+            reviewed, workpaper, detail, f"{ws.title}!第{idx}行",
+        ))
+    return contracts
+
+
+def _read_fulfillments(wb) -> list[_Fulfillment]:
+    if config.SHEET_FULFILLMENTS not in wb.sheetnames:
+        return []
+    ws = _sheet(wb, config.SHEET_FULFILLMENTS, config.COL_FULFILLMENTS)
+    records, seen = [], set()
+    for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+        if all(value is None or isinstance(value, str) and not value.strip() for value in row):
+            continue
+        location = f"{config.SHEET_FULFILLMENTS}第 {idx} 行"
+        number = _bank_identifier(row[0], f"{location}履约单据号")
+        if number in seen:
+            raise InputError(f"{location}：履约单据号重复「{number}」")
+        seen.add(number)
+        contract_number = _bank_identifier(row[1], f"{location}合同编号")
+        fulfilled_on = _contract_date(row[2], f"{location}履约日期")
+        kind = str(row[3] or "").strip()
+        if kind not in _FULFILLMENT_KINDS:
+            raise InputError(f"{location}：履约类型仅支持发货、收货、服务验收或其他履约")
+        amount = _number(row[4], f"{location}含税金额")
+        if amount is None or amount <= 0:
+            raise InputError(f"{location}：含税金额必须为正数")
+        reviewed = _bank_reviewed(row[5], f"{location}复核状态")
+        workpaper, detail = _contract_note(row[6], row[7], reviewed, location)
+        records.append(_Fulfillment(
+            number, contract_number, fulfilled_on, kind, amount, reviewed, workpaper, detail,
+            f"{ws.title}!第{idx}行",
+        ))
+    return records
+
+
+def _read_contract_links(wb) -> list[_ContractLink]:
+    if config.SHEET_CONTRACT_LINKS not in wb.sheetnames:
+        return []
+    ws = _sheet(wb, config.SHEET_CONTRACT_LINKS, config.COL_CONTRACT_LINKS)
+    links, seen = [], set()
+    for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+        if all(value is None or isinstance(value, str) and not value.strip() for value in row):
+            continue
+        location = f"{config.SHEET_CONTRACT_LINKS}第 {idx} 行"
+        number = _bank_identifier(row[0], f"{location}勾稽编号")
+        if number in seen:
+            raise InputError(f"{location}：勾稽编号重复「{number}」")
+        seen.add(number)
+        contract_number = _bank_identifier(row[1], f"{location}合同编号")
+        invoice_number = _invoice_number(row[2], f"{location}发票号码") if str(row[2] or "").strip() else ""
+        transaction_id = _bank_identifier(row[3], f"{location}银行流水号") if str(row[3] or "").strip() else ""
+        fulfillment_number = _bank_identifier(row[4], f"{location}履约单据号") if str(row[4] or "").strip() else ""
+        if not any((invoice_number, transaction_id, fulfillment_number)):
+            raise InputError(f"{location}：发票、银行流水和履约单据至少关联一项")
+        amount = _number(row[5], f"{location}勾稽含税金额")
+        if amount is None or amount <= 0:
+            raise InputError(f"{location}：勾稽含税金额必须为正数")
+        reviewed = _bank_reviewed(row[6], f"{location}复核状态")
+        workpaper, detail = _contract_note(row[7], row[8], reviewed, location)
+        links.append(_ContractLink(
+            number, contract_number, invoice_number, transaction_id, fulfillment_number,
+            amount, reviewed, workpaper, detail, f"{ws.title}!第{idx}行",
+        ))
+    return links
+
+
+def _contract_metrics(
+    company: Company,
+    contracts: list[_Contract],
+    fulfillments: list[_Fulfillment],
+    links: list[_ContractLink],
+    invoices: list[_Invoice],
+    transactions: list[_BankTransaction],
+) -> dict[str, Metric]:
+    if not contracts and not fulfillments and not links:
+        return {}
+    if (fulfillments or links) and not contracts:
+        raise InputError("履约记录或四流勾稽存在，但没有合同台账")
+
+    audit_period = _parse_period(company.period, "企业信息核对所属期")
+    contract_map, fulfillment_map, invoice_map, transaction_map = {}, {}, {}, {}
+    contract_sources, fulfillment_sources, link_sources, external_sources = [], [], [], []
+    for contract in contracts:
+        if contract.number in contract_map:
+            raise InputError(f"合同编号重复「{contract.number}」；请先去重")
+        if contract.kind not in {"销售", "采购"} or contract.amount <= 0:
+            raise InputError(f"合同「{contract.number}」类型或金额无效")
+        start, end = date.fromisoformat(contract.performance_start), date.fromisoformat(contract.performance_end)
+        if start > end:
+            raise InputError(f"合同「{contract.number}」履约起始日不能晚于结束日")
+        if end < audit_period.start or start > audit_period.end:
+            raise InputError(f"合同「{contract.number}」履约期间与核对期间 {company.period} 不相交")
+        if contract.reviewed and (not contract.workpaper or not contract.detail):
+            raise InputError(f"合同「{contract.number}」已复核但缺少底稿编号或说明")
+        contract_map[contract.number] = contract
+        contract_sources.append(contract.source)
+
+    for invoice in invoices:
+        if invoice.number in invoice_map:
+            raise InputError(f"发票号码重复「{invoice.number}」；请先去重")
+        invoice_map[invoice.number] = invoice
+    for transaction in transactions:
+        if transaction.explicit_id:
+            if transaction.transaction_id in transaction_map:
+                raise InputError(f"银行流水号重复「{transaction.transaction_id}」；请先去重")
+            transaction_map[transaction.transaction_id] = transaction
+
+    for record in fulfillments:
+        if record.number in fulfillment_map:
+            raise InputError(f"履约单据号重复「{record.number}」；请先去重")
+        contract = contract_map.get(record.contract_number)
+        if contract is None:
+            raise InputError(f"履约单据「{record.number}」引用不存在的合同「{record.contract_number}」")
+        fulfilled_on = date.fromisoformat(record.fulfilled_on)
+        if not audit_period.start <= fulfilled_on <= audit_period.end:
+            raise InputError(f"履约单据「{record.number}」日期不在核对期间 {company.period} 内")
+        if not date.fromisoformat(contract.performance_start) <= fulfilled_on <= date.fromisoformat(contract.performance_end):
+            raise InputError(f"履约单据「{record.number}」日期不在合同履约期间内")
+        if contract.kind == "销售" and record.kind == "收货":
+            raise InputError(f"销售合同「{contract.number}」不能关联收货记录")
+        if contract.kind == "采购" and record.kind == "发货":
+            raise InputError(f"采购合同「{contract.number}」不能关联发货记录")
+        if record.amount <= 0:
+            raise InputError(f"履约单据「{record.number}」金额必须为正数")
+        if record.reviewed and (not record.workpaper or not record.detail):
+            raise InputError(f"履约单据「{record.number}」已复核但缺少底稿编号或说明")
+        fulfillment_map[record.number] = record
+        fulfillment_sources.append(record.source)
+
+    contract_alloc, full_alloc = {}, {}
+    invoice_alloc, transaction_alloc, fulfillment_alloc = {}, {}, {}
+    link_numbers = set()
+    for link in links:
+        if link.number in link_numbers:
+            raise InputError(f"四流勾稽编号重复「{link.number}」")
+        link_numbers.add(link.number)
+        contract = contract_map.get(link.contract_number)
+        if contract is None:
+            raise InputError(f"四流勾稽「{link.number}」引用不存在的合同「{link.contract_number}」")
+        if link.amount <= 0:
+            raise InputError(f"四流勾稽「{link.number}」金额必须为正数")
+        if link.reviewed and (not link.workpaper or not link.detail):
+            raise InputError(f"四流勾稽「{link.number}」已复核但缺少底稿编号或说明")
+        if link.reviewed and not contract.reviewed:
+            raise InputError(f"四流勾稽「{link.number}」已复核，但合同「{contract.number}」尚未复核")
+        if not any((link.invoice_number, link.transaction_id, link.fulfillment_number)):
+            raise InputError(f"四流勾稽「{link.number}」至少关联一项外部流转证据")
+
+        invoice = invoice_map.get(link.invoice_number) if link.invoice_number else None
+        if link.invoice_number and invoice is None:
+            raise InputError(f"四流勾稽「{link.number}」引用不存在的发票「{link.invoice_number}」")
+        if invoice:
+            expected = "销项" if contract.kind == "销售" else "采购"
+            invoice_kind = invoice.kind or _invoice_kind(
+                "", "合同四流勾稽", invoice.seller_id, invoice.buyer_id, company
+            )
+            if not invoice_kind:
+                raise InputError(f"四流勾稽「{link.number}」无法根据购销双方税号判定发票方向")
+            if invoice_kind != expected:
+                raise InputError(f"四流勾稽「{link.number}」发票方向与{contract.kind}合同不一致")
+            if invoice.status != "正常":
+                raise InputError(f"四流勾稽「{link.number}」当前仅支持关联正常有效发票")
+            invoice_alloc[invoice.number] = invoice_alloc.get(invoice.number, Decimal(0)) + link.amount
+            external_sources.append(invoice.source)
+
+        transaction = transaction_map.get(link.transaction_id) if link.transaction_id else None
+        if link.transaction_id and transaction is None:
+            raise InputError(f"四流勾稽「{link.number}」引用不存在或无唯一编号的银行流水「{link.transaction_id}」")
+        if transaction:
+            bank_amount = transaction.income if contract.kind == "销售" else transaction.expense
+            if bank_amount <= 0:
+                raise InputError(f"四流勾稽「{link.number}」银行收支方向与{contract.kind}合同不一致")
+            transaction_alloc[transaction.transaction_id] = (
+                transaction_alloc.get(transaction.transaction_id, Decimal(0)) + link.amount
+            )
+            external_sources.append(transaction.source)
+
+        fulfillment = fulfillment_map.get(link.fulfillment_number) if link.fulfillment_number else None
+        if link.fulfillment_number and fulfillment is None:
+            raise InputError(f"四流勾稽「{link.number}」引用不存在的履约单据「{link.fulfillment_number}」")
+        if fulfillment and fulfillment.contract_number != contract.number:
+            raise InputError(f"四流勾稽「{link.number}」履约单据不属于合同「{contract.number}」")
+        if fulfillment:
+            if link.reviewed and not fulfillment.reviewed:
+                raise InputError(
+                    f"四流勾稽「{link.number}」已复核，但履约单据「{fulfillment.number}」尚未复核"
+                )
+            fulfillment_alloc[fulfillment.number] = fulfillment_alloc.get(fulfillment.number, Decimal(0)) + link.amount
+
+        if link.reviewed:
+            contract_alloc[contract.number] = contract_alloc.get(contract.number, Decimal(0)) + link.amount
+            if invoice and transaction and fulfillment:
+                full_alloc[contract.number] = full_alloc.get(contract.number, Decimal(0)) + link.amount
+        link_sources.append(link.source)
+
+    for number, allocated in contract_alloc.items():
+        if allocated > contract_map[number].amount:
+            raise InputError(f"合同「{number}」已复核勾稽金额超过合同含税金额")
+    for number, allocated in invoice_alloc.items():
+        invoice = invoice_map[number]
+        if allocated > invoice.amount + invoice.tax:
+            raise InputError(f"发票「{number}」被分摊的勾稽金额超过价税合计")
+    for number, allocated in transaction_alloc.items():
+        transaction = transaction_map[number]
+        if allocated > transaction.income + transaction.expense:
+            raise InputError(f"银行流水「{number}」被分摊的勾稽金额超过交易金额")
+    for number, allocated in fulfillment_alloc.items():
+        if allocated > fulfillment_map[number].amount:
+            raise InputError(f"履约单据「{number}」被分摊的勾稽金额超过履约金额")
+
+    complete = [
+        contract for contract in contracts
+        if full_alloc.get(contract.number, Decimal(0)) == contract.amount
+        and contract_alloc.get(contract.number, Decimal(0)) == contract.amount
+    ]
+    pending = len(contracts) - len(complete)
+    total = sum((contract.amount for contract in contracts), Decimal(0))
+    reviewed_total = sum((contract.amount for contract in contracts if contract.reviewed), Decimal(0))
+    complete_total = sum((contract.amount for contract in complete), Decimal(0))
+    sources = "；".join(dict.fromkeys(
+        contract_sources + external_sources + fulfillment_sources + link_sources
+    )) or "合同台账"
+    complete_numbers = "、".join(contract.number for contract in complete) or "无"
+    detail = (
+        f"合同 {len(contracts)} 份，已复核 {sum(contract.reviewed for contract in contracts)} 份；"
+        f"四流完整 {len(complete)} 份，待完善 {pending} 份；完整合同：{complete_numbers}。"
+        "四流完整仅统计合同、正常发票、方向一致的银行流水、已复核履约单据均已关联，"
+        "且已复核分摊金额与合同含税金额完全一致的合同"
+    )
+    metrics = {
+        "合同.合同数量": Metric("合同.合同数量", Decimal(len(contracts)), sources, detail),
+        "合同.合同含税金额": Metric("合同.合同含税金额", total, sources, detail),
+        "合同.已复核合同金额": Metric("合同.已复核合同金额", reviewed_total, sources, detail),
+        "合同.四流完整合同数量": Metric("合同.四流完整合同数量", Decimal(len(complete)), sources, detail),
+        "合同.四流完整勾稽金额": Metric("合同.四流完整勾稽金额", complete_total, sources, detail),
+        "合同.四流待完善合同数量": Metric("合同.四流待完善合同数量", Decimal(pending), sources, detail),
+    }
+    for kind in ("销售", "采购"):
+        selected = [contract for contract in contracts if contract.kind == kind]
+        if not selected:
+            continue
+        key = f"合同.{kind}合同含税金额"
+        value = sum((contract.amount for contract in selected), Decimal(0))
+        kind_source = "；".join(dict.fromkeys(contract.source for contract in selected))
+        metrics[key] = Metric(
+            key, value, kind_source + f" / {kind}合同台账",
+            f"{len(selected)} 份{kind}合同含税金额合计 {value:,.2f}",
+        )
+    return metrics
+
+
+_HUMAN_KINDS = {
+    "个税": "个税", "个税申报": "个税", "工资薪金申报": "个税",
+    "社保": "社保", "社保参保": "社保", "社会保险": "社保",
+    "公积金": "公积金", "公积金缴存": "公积金", "住房公积金": "公积金",
+}
+_HUMAN_ACTIVE = {"正常", "有效", "已申报", "正常参保", "在保", "正常缴存", "缴存"}
+_HUMAN_INACTIVE = {"作废", "停保", "退保", "封存", "停缴", "销户"}
+
+
+def _human_month(value: object, location: str) -> str:
+    if isinstance(value, datetime):
+        value = value.date()
+    if isinstance(value, date):
+        return f"{value.year:04d}-{value.month:02d}"
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d{4})[-年/.](\d{1,2})月?", text)
+    if not match:
+        raise InputError(f"{location}：所属月须为 YYYY-MM")
+    year, month = int(match.group(1)), int(match.group(2))
+    if not 1 <= month <= 12:
+        raise InputError(f"{location}：所属月无效「{text}」")
+    return f"{year:04d}-{month:02d}"
+
+
+def _human_person_key(value: object, location: str) -> str:
+    text = re.sub(r"\s+", "", str(value or "")).upper()
+    if not 4 <= len(text) <= 64 or any(ord(char) < 32 for char in text):
+        raise InputError(f"{location}：证件号码为空或格式无效")
+    return sha256(text.encode("utf-8")).hexdigest()
+
+
+def _read_human_records(wb) -> list[_HumanRecord]:
+    if config.SHEET_HUMAN not in wb.sheetnames:
+        return []
+    ws = _sheet(wb, config.SHEET_HUMAN, config.COL_HUMAN)
+    records, seen = [], set()
+    for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+        if all(value is None or isinstance(value, str) and not value.strip() for value in row):
+            continue
+        location = f"{config.SHEET_HUMAN}第 {idx} 行"
+        kind = _HUMAN_KINDS.get(str(row[0] or "").strip())
+        if not kind:
+            raise InputError(f"{location}：记录类型仅支持个税申报、社保参保、公积金缴存")
+        if not str(row[1] or "").strip():
+            raise InputError(f"{location}：姓名不能为空")
+        person_key = _human_person_key(row[2], location)
+        month = _human_month(row[3], location)
+        status = str(row[4] or "").strip()
+        if status in _HUMAN_ACTIVE:
+            active = True
+        elif status in _HUMAN_INACTIVE:
+            active = False
+        else:
+            raise InputError(f"{location}：无法识别状态「{status}」")
+        amount = _number(row[5], f"{location}金额")
+        if amount is not None and amount < 0:
+            raise InputError(f"{location}：金额不能为负数")
+        declared_source = str(row[6] or "").strip()
+        if not declared_source:
+            raise InputError(f"{location}：来源不能为空")
+        key = (kind, person_key, month)
+        if key in seen:
+            raise InputError(f"{location}：同一人员、记录类型和所属月重复；请先去重")
+        seen.add(key)
+        records.append(_HumanRecord(
+            kind, person_key, month, active, amount,
+            f"{config.SHEET_HUMAN}!第{idx}行 ← {declared_source}",
+        ))
+    return records
+
+
+def _human_metrics(company: Company, records: list[_HumanRecord]) -> dict[str, Metric]:
+    if not records:
+        return {}
+    audit_period = _parse_period(company.period, "企业信息核对所属期")
+    groups: dict[str, dict[str, list[_HumanRecord]]] = {}
+    seen = set()
+    for record in records:
+        if record.kind not in {"个税", "社保", "公积金"}:
+            raise InputError(f"人力记录类型无效「{record.kind}」")
+        if not re.fullmatch(r"[0-9a-f]{64}", record.person_key):
+            raise InputError("人力记录人员标识无效")
+        month_period = _parse_period(record.month, "人力记录所属月")
+        if not audit_period.start <= month_period.start or not month_period.end <= audit_period.end:
+            raise InputError(f"人力记录所属月 {record.month} 不在核对期间 {company.period} 内")
+        key = (record.kind, record.person_key, record.month)
+        if key in seen:
+            raise InputError("同一人员、记录类型和所属月跨文件重复；请先去重")
+        seen.add(key)
+        groups.setdefault(record.kind, {}).setdefault(record.month, []).append(record)
+
+    tax_months = set(groups.get("个税", {}))
+    social_months = set(groups.get("社保", {}))
+    comparison_month = ""
+    if tax_months and social_months:
+        common = tax_months & social_months
+        if not common:
+            raise InputError("个税与社保记录没有相同所属月，不能进行同月人数比对")
+        comparison_month = max(common)
+
+    specs = {
+        "个税": ("人力.个税申报人数", "个税.工资薪金申报收入"),
+        "社保": ("人力.社保参保人数", "社保.单位缴费金额"),
+        "公积金": ("人力.公积金缴存人数", "公积金.单位缴存金额"),
+    }
+    metrics = {}
+    for kind, months in groups.items():
+        month = comparison_month if comparison_month and comparison_month in months else max(months)
+        selected = months[month]
+        active = [record for record in selected if record.active]
+        excluded = len(selected) - len(active)
+        people_key, amount_key = specs[kind]
+        source = "；".join(dict.fromkeys(record.source for record in selected))
+        detail = f"核对月 {month}；有效去重人数 {len(active)}；停保/作废等剔除 {excluded} 条；不持久化姓名和证件号码"
+        metrics[people_key] = Metric(people_key, Decimal(len(active)), source + " / 月度去重", detail)
+        if all(record.amount is not None for record in active):
+            total = sum((record.amount for record in active if record.amount is not None), Decimal(0))
+            metrics[amount_key] = Metric(
+                amount_key, total, source + " / 有效记录金额汇总",
+                f"核对月 {month}；{len(active)} 条有效记录金额合计 {total:,.2f}",
+            )
+    return metrics
+
+
 def _from_workbook(wb) -> Dataset:
     try:
         # data_only=False 使未重算公式显式报错，而不是把空缓存误认为零。
@@ -1085,15 +1585,35 @@ def _from_workbook(wb) -> Dataset:
         _read_statement(wb, config.SHEET_BALANCE, "资产负债表", metrics)
         _read_statement(wb, config.SHEET_CASHFLOW, "现金流量表", metrics)
         _read_history(wb, company, metrics)
-        invoice_metrics = _invoice_metrics(company, _read_invoices(wb, company))
+        invoices = _read_invoices(wb, company)
+        bank_transactions = _read_bank_transactions(wb)
+        bank_adjustments = _read_bank_adjustments(wb)
+        invoice_metrics = _invoice_metrics(company, invoices)
         for key, metric in invoice_metrics.items():
             if key in metrics and metrics[key].value != metric.value:
                 raise InputError(f"指标「{key}」与发票明细计算值冲突")
             metrics[key] = metric
-        bank_metrics = _bank_metrics(company, _read_bank_transactions(wb), _read_bank_adjustments(wb))
+        bank_metrics = _bank_metrics(company, bank_transactions, bank_adjustments)
         for key, metric in bank_metrics.items():
             if key in metrics and metrics[key].value != metric.value:
                 raise InputError(f"指标「{key}」与银行流水/调节底稿计算值冲突")
+            metrics[key] = metric
+        human_metrics = _human_metrics(company, _read_human_records(wb))
+        for key, metric in human_metrics.items():
+            if key in metrics and metrics[key].value != metric.value:
+                raise InputError(f"指标「{key}」与人力记录计算值冲突")
+            metrics[key] = metric
+        contract_metrics = _contract_metrics(
+            company,
+            _read_contracts(wb),
+            _read_fulfillments(wb),
+            _read_contract_links(wb),
+            invoices,
+            bank_transactions,
+        )
+        for key, metric in contract_metrics.items():
+            if key in metrics and metrics[key].value != metric.value:
+                raise InputError(f"指标「{key}」与合同四流勾稽计算值冲突")
             metrics[key] = metric
         _read_supplement(wb, company, metrics)
         return Dataset(company, accounts, declarations, metrics)

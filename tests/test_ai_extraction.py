@@ -133,6 +133,18 @@ class AIContractTests(unittest.TestCase):
         self.assertIn("AI 提取模型 deepseek-flash", dataset.source_of("增值税.销售额"))
         self.assertIn("100000 元", dataset.detail_of("增值税.销售额"))
 
+    def test_invoice_tax_cannot_become_declaration_or_ledger_value(self):
+        source = "纸质增值税普通发票，发票号码 TEST-1，税额 13000.00 元"
+        doc = document("", pages=[{"page": 1, "text": ""}])
+        result = answer([row("13000.00", "元", "税额 13000.00", name="增值税.销项税额",
+                             detail=source),
+                         row("13000.00", "元", "税额 13000.00", name="账面.销项税额",
+                             detail=source)])
+        AIExtractor(replace(SETTINGS, vision=True), CATALOG, lambda *_: result).enrich(
+            doc, (FIXTURES / "materials-scanned.pdf").read_bytes())
+        self.assertEqual([item["value"] for item in doc["rows"]], ["", ""])
+        self.assertTrue(all("不能直接作为" in item["ai_issues"][-1] for item in doc["rows"]))
+
     def test_failure_preserves_local_candidates_without_claiming_ai(self):
         def fail(*_):
             raise ExtractionError("模拟超时")
@@ -190,7 +202,7 @@ class AIWebTests(unittest.TestCase):
                     self.assertEqual(len(result.json()["results"]),1,result.text)
                     client.post("/api/logout")
                     self.assertEqual(client.get(url).status_code,401)
-                    app_module.store.create_user("otherai", "ai-test-pass-2026", "其他", "platform_admin", "default")
+                    app_module.store.create_user("otherai", "ai-test-pass-2026", "其他", "org_admin", "default")
                     client.post("/api/login",json={"username":"otherai","password":"ai-test-pass-2026"})
                     self.assertEqual(client.get(url).status_code,404)
             finally:

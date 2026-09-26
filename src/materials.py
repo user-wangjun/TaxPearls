@@ -117,9 +117,14 @@ def _excel(data, doc):
         invoices = loader._read_invoices(wb, company)
         bank_transactions = loader._read_bank_transactions(wb)
         bank_adjustments = loader._read_bank_adjustments(wb)
+        human_records = loader._read_human_records(wb)
+        contracts = loader._read_contracts(wb)
+        fulfillments = loader._read_fulfillments(wb)
+        contract_links = loader._read_contract_links(wb)
         loader._read_supplement(wb, company, metrics)
         if (not accounts and not declarations and not metrics and not period_series and not invoices
-                and not bank_transactions and not bank_adjustments):
+                and not bank_transactions and not bank_adjustments and not human_records
+                and not contracts and not fulfillments and not contract_links):
             raise InputError("没有找到支持的账表；请保留标准工作表名称和列名。")
         serialized_series = [
             {
@@ -136,11 +141,17 @@ def _excel(data, doc):
                    declarations=_serial(declarations), rows=[_serial(asdict(m)) for m in metrics.values()],
                    period_series=serialized_series, invoices=_serial([asdict(invoice) for invoice in invoices]),
                    bank_transactions=_serial([asdict(item) for item in bank_transactions]),
-                   bank_adjustments=_serial([asdict(item) for item in bank_adjustments]))
+                   bank_adjustments=_serial([asdict(item) for item in bank_adjustments]),
+                   human_records=_serial([asdict(item) for item in human_records]),
+                   contracts=_serial([asdict(item) for item in contracts]),
+                   fulfillments=_serial([asdict(item) for item in fulfillments]),
+                   contract_links=_serial([asdict(item) for item in contract_links]))
         doc["summary"] = (
             f"{len(accounts)} 行科目、{len(declarations)} 项申报、{len(metrics)} 项补充/报表指标、"
             f"{len(serialized_series)} 条期间序列、{len(invoices)} 张发票、"
-            f"{len(bank_transactions)} 笔银行流水、{len(bank_adjustments)} 条银行调节"
+            f"{len(bank_transactions)} 笔银行流水、{len(bank_adjustments)} 条银行调节、"
+            f"{len(human_records)} 条人力记录、{len(contracts)} 份合同、"
+            f"{len(fulfillments)} 条履约记录、{len(contract_links)} 条四流勾稽"
         )
     finally:
         wb.close()
@@ -291,7 +302,7 @@ def _pdf(data, doc, keys):
                 raise InputError(f"PDF 第 {page_no} 页文字过多。")
             doc["pages"].append({"page": page_no, "text": text})
             if not text.strip():
-                doc["warnings"].append(f"第 {page_no} 页无可提取文字，可能为扫描页；请对照原件手工录入，当前未接入 OCR。")
+                doc["warnings"].append(f"第 {page_no} 页无可提取文字，可能为扫描页；可使用 AI 视觉提取候选值，仍须对照原件人工核对。")
                 continue
             for line in text.splitlines():
                 for label, key in aliases.items():
@@ -342,7 +353,8 @@ def _unmapped_excel(data, doc):
     known = {config.SHEET_ACCOUNTS, config.SHEET_COMPANY, config.SHEET_DECLARATION,
              config.SHEET_INCOME, config.SHEET_BALANCE, config.SHEET_CASHFLOW,
              config.SHEET_HISTORY, config.SHEET_INVOICES, config.SHEET_BANK,
-             config.SHEET_BANK_ADJUSTMENTS, config.SHEET_SUPPLEMENT}
+             config.SHEET_BANK_ADJUSTMENTS, config.SHEET_HUMAN, config.SHEET_CONTRACTS,
+             config.SHEET_FULFILLMENTS, config.SHEET_CONTRACT_LINKS, config.SHEET_SUPPLEMENT}
     with ZipFile(BytesIO(data)) as archive:
         if sum(i.file_size for i in archive.infolist()) > MAX_TOTAL or len(archive.infolist()) > 1000:
             raise InputError("Excel 解压内容超过限制。")
@@ -379,7 +391,8 @@ def preview(files, keys, extractor=None):
         doc = {"id": str(index), "name": name, "fingerprint": sha256(data).hexdigest()[:16],
                "kind": suffix, "company": dict.fromkeys(COMPANY_KEYS, ""),
                "accounts": [], "declarations": {}, "rows": [], "period_series": [], "invoices": [],
-               "bank_transactions": [], "bank_adjustments": [],
+                "bank_transactions": [], "bank_adjustments": [],
+                "human_records": [], "contracts": [], "fulfillments": [], "contract_links": [],
                "pages": [], "warnings": [], "error": "",
                "extraction": {"method": "local"}}
         try:
@@ -423,7 +436,8 @@ def _merge_value(target, key, value, location):
 def build_dataset(documents, selections, company_override, keys):
     """Validate edits server-side and merge same-scope evidence without summation."""
     company_data, accounts, declarations, metrics, period_series, invoices = {}, {}, {}, {}, {}, {}
-    bank_transactions, bank_adjustments, unkeyed_bank_docs = {}, {}, set()
+    bank_transactions, bank_adjustments, human_records, unkeyed_bank_docs = {}, {}, {}, set()
+    contracts, fulfillments, contract_links = {}, {}, {}
     account_sources, declaration_sources = {}, {}
     for doc in documents:
         selection = selections[doc["id"]]
@@ -515,6 +529,121 @@ def build_dataset(documents, selections, company_override, keys):
                 number, transaction_id, category, period, recognized, amount, _text(raw.get("direction")),
                 _text(raw.get("workpaper")), reviewed, _text(raw.get("detail")),
                 f"{source} / {_text(raw.get('source'))}",
+            )
+        for raw in doc.get("human_records", []):
+            if not isinstance(raw, dict):
+                raise InputError(f"{source}：人力记录格式错误")
+            kind = _text(raw.get("kind"))
+            person_key = _text(raw.get("person_key"))
+            month = loader._human_month(raw.get("month"), f"{source} 人力记录所属月")
+            active = raw.get("active")
+            if kind not in {"个税", "社保", "公积金"} or not re.fullmatch(r"[0-9a-f]{64}", person_key):
+                raise InputError(f"{source}：人力记录类型或人员标识无效")
+            if type(active) is not bool:
+                raise InputError(f"{source}：人力记录状态无效")
+            amount = loader._number(raw.get("amount"), f"{source} 人力记录金额")
+            if amount is not None and amount < 0:
+                raise InputError(f"{source}：人力记录金额不能为负数")
+            key = (kind, person_key, month)
+            if key in human_records:
+                raise InputError("同一人员、记录类型和所属月跨文件重复；请先去重")
+            human_records[key] = loader._HumanRecord(
+                kind, person_key, month, active, amount,
+                f"{source} / {_text(raw.get('source'))}",
+            )
+        for raw in doc.get("contracts", []):
+            if not isinstance(raw, dict):
+                raise InputError(f"{source}：合同记录格式错误")
+            number = loader._bank_identifier(raw.get("number"), f"{source} 合同编号")
+            if number in contracts:
+                raise InputError(f"合同编号重复「{number}」；请先去重")
+            kind = _text(raw.get("kind"))
+            counterparty = _text(raw.get("counterparty"))
+            if kind not in {"销售", "采购"} or not counterparty or len(counterparty) > 200:
+                raise InputError(f"{source}：合同「{number}」类型或对方名称无效")
+            signed_on = loader._contract_date(raw.get("signed_on"), f"{source} 合同「{number}」签订日期")
+            amount = loader._number(raw.get("amount"), f"{source} 合同「{number}」含税金额")
+            if amount is None or amount <= 0:
+                raise InputError(f"{source}：合同「{number}」含税金额必须为正数")
+            performance_start = loader._contract_date(
+                raw.get("performance_start"), f"{source} 合同「{number}」履约起始日"
+            )
+            performance_end = loader._contract_date(
+                raw.get("performance_end"), f"{source} 合同「{number}」履约结束日"
+            )
+            if performance_start > performance_end:
+                raise InputError(f"{source}：合同「{number}」履约起始日不能晚于结束日")
+            reviewed = raw.get("reviewed")
+            if type(reviewed) is not bool:
+                raise InputError(f"{source}：合同「{number}」复核状态无效")
+            workpaper, detail = loader._contract_note(
+                raw.get("workpaper"), raw.get("detail"), reviewed, f"{source} 合同「{number}」"
+            )
+            contracts[number] = loader._Contract(
+                number, kind, counterparty, signed_on, amount, performance_start, performance_end,
+                reviewed, workpaper, detail, f"{source} / {_text(raw.get('source'))}",
+            )
+        for raw in doc.get("fulfillments", []):
+            if not isinstance(raw, dict):
+                raise InputError(f"{source}：履约记录格式错误")
+            number = loader._bank_identifier(raw.get("number"), f"{source} 履约单据号")
+            if number in fulfillments:
+                raise InputError(f"履约单据号重复「{number}」；请先去重")
+            contract_number = loader._bank_identifier(
+                raw.get("contract_number"), f"{source} 履约单据「{number}」合同编号"
+            )
+            fulfilled_on = loader._contract_date(
+                raw.get("fulfilled_on"), f"{source} 履约单据「{number}」履约日期"
+            )
+            kind = _text(raw.get("kind"))
+            amount = loader._number(raw.get("amount"), f"{source} 履约单据「{number}」含税金额")
+            if kind not in loader._FULFILLMENT_KINDS or amount is None or amount <= 0:
+                raise InputError(f"{source}：履约单据「{number}」类型或金额无效")
+            reviewed = raw.get("reviewed")
+            if type(reviewed) is not bool:
+                raise InputError(f"{source}：履约单据「{number}」复核状态无效")
+            workpaper, detail = loader._contract_note(
+                raw.get("workpaper"), raw.get("detail"), reviewed, f"{source} 履约单据「{number}」"
+            )
+            fulfillments[number] = loader._Fulfillment(
+                number, contract_number, fulfilled_on, kind, amount, reviewed, workpaper, detail,
+                f"{source} / {_text(raw.get('source'))}",
+            )
+        for raw in doc.get("contract_links", []):
+            if not isinstance(raw, dict):
+                raise InputError(f"{source}：四流勾稽记录格式错误")
+            number = loader._bank_identifier(raw.get("number"), f"{source} 四流勾稽编号")
+            if number in contract_links:
+                raise InputError(f"四流勾稽编号重复「{number}」；请先去重")
+            contract_number = loader._bank_identifier(
+                raw.get("contract_number"), f"{source} 四流勾稽「{number}」合同编号"
+            )
+            invoice_number = (
+                loader._invoice_number(raw.get("invoice_number"), f"{source} 四流勾稽「{number}」发票号码")
+                if _text(raw.get("invoice_number")) else ""
+            )
+            transaction_id = (
+                loader._bank_identifier(raw.get("transaction_id"), f"{source} 四流勾稽「{number}」银行流水号")
+                if _text(raw.get("transaction_id")) else ""
+            )
+            fulfillment_number = (
+                loader._bank_identifier(raw.get("fulfillment_number"), f"{source} 四流勾稽「{number}」履约单据号")
+                if _text(raw.get("fulfillment_number")) else ""
+            )
+            if not any((invoice_number, transaction_id, fulfillment_number)):
+                raise InputError(f"{source}：四流勾稽「{number}」至少关联一项外部流转证据")
+            amount = loader._number(raw.get("amount"), f"{source} 四流勾稽「{number}」含税金额")
+            if amount is None or amount <= 0:
+                raise InputError(f"{source}：四流勾稽「{number}」含税金额必须为正数")
+            reviewed = raw.get("reviewed")
+            if type(reviewed) is not bool:
+                raise InputError(f"{source}：四流勾稽「{number}」复核状态无效")
+            workpaper, detail = loader._contract_note(
+                raw.get("workpaper"), raw.get("detail"), reviewed, f"{source} 四流勾稽「{number}」"
+            )
+            contract_links[number] = loader._ContractLink(
+                number, contract_number, invoice_number, transaction_id, fulfillment_number,
+                amount, reviewed, workpaper, detail, f"{source} / {_text(raw.get('source'))}",
             )
         for raw in doc.get("period_series", []):
             key = _text(raw.get("name"))
@@ -618,6 +747,25 @@ def build_dataset(documents, selections, company_override, keys):
         if key in metrics:
             if metrics[key].value != metric.value:
                 raise InputError(f"指标「{key}」与银行流水/调节底稿计算值冲突，请核对。")
+            metric.source += "；" + metrics[key].source
+        metrics[key] = metric
+    for key, metric in loader._human_metrics(company, list(human_records.values())).items():
+        if key in metrics:
+            if metrics[key].value != metric.value:
+                raise InputError(f"指标「{key}」与人力记录计算值冲突，请核对。")
+            metric.source += "；" + metrics[key].source
+        metrics[key] = metric
+    for key, metric in loader._contract_metrics(
+        company,
+        list(contracts.values()),
+        list(fulfillments.values()),
+        list(contract_links.values()),
+        list(invoices.values()),
+        list(bank_transactions.values()),
+    ).items():
+        if key in metrics:
+            if metrics[key].value != metric.value:
+                raise InputError(f"指标「{key}」与合同四流勾稽计算值冲突，请核对。")
             metric.source += "；" + metrics[key].source
         metrics[key] = metric
     loader._derive_period_metrics(company, metrics, period_series)

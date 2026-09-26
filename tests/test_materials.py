@@ -78,7 +78,7 @@ class MaterialParsing(unittest.TestCase):
         doc = materials.preview([("扫描.pdf", (FIXTURES / "materials-scanned.pdf").read_bytes())], KEYS)[0]
         self.assertFalse(doc["error"])
         self.assertFalse(doc["rows"])
-        self.assertTrue(any("OCR" in w for w in doc["warnings"]))
+        self.assertTrue(any("AI 视觉" in w for w in doc["warnings"]))
         selected = selections([doc])
         with self.assertRaisesRegex(materials.InputError, "没有可执行"):
             materials.build_dataset([doc], selected, COMPANY, KEYS)
@@ -185,7 +185,7 @@ class MaterialWebFlow(unittest.TestCase):
         draft = self.preview([("a.xlsx", accounts())])
         self.client.post("/api/logout")
         self.assertEqual(self.commit(draft).status_code, 401)
-        app_module.store.create_user("other", "material-test-2026", "其他管理员", "platform_admin", "default")
+        app_module.store.create_user("other", "material-test-2026", "其他管理员", "org_admin", "default")
         self.client.post("/api/login", json={"username":"other", "password":"material-test-2026"})
         self.assertEqual(self.commit(draft).status_code, 422)
         self.client.post("/api/logout")
