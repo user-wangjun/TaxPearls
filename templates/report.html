@@ -408,6 +408,22 @@
 </p>
 {% endif %}
 
+{% if ai_narrative %}
+<div class="conclusion" style="margin-top:5mm">
+  <div class="block-label">AI 辅助总体评价（仅汇总 Finding，不参与风险判定）</div>
+  {% for paragraph in ai_narrative.overall_assessment %}
+  <p class="indent">{{ paragraph.text }}</p>
+  <p class="small muted">来源规则：{{ paragraph.citations | join("、") }}</p>
+  {% endfor %}
+  <div class="block-label" style="margin-top:3mm">AI 辅助处理建议</div>
+  {% for paragraph in ai_narrative.recommendations %}
+  <p class="indent">{{ paragraph.text }}</p>
+  <p class="small muted">来源规则：{{ paragraph.citations | join("、") }}</p>
+  {% endfor %}
+  <p class="small muted">规则统计已锁定：命中 {{ ai_narrative.summary.hit }} 项、通过 {{ ai_narrative.summary.pass }} 项、未执行 {{ ai_narrative.summary.skipped }} 项。模型 {{ ai_narrative.model }}，证据版本 {{ ai_narrative.evidence_hash[:12] }}。</p>
+</div>
+{% endif %}
+
 <div class="block-label" style="margin-top:5mm">本次执行规则清单（审计范围）</div>
 <table class="data">
   <tr>
@@ -513,7 +529,7 @@
 <h2>六、报告声明</h2>
 
 <div class="disclaimer">
-  <b>一、判定方式。</b>本报告全部风险判定由确定性规则计算得出，未使用生成式模型进行风险识别。
+  <b>一、判定方式。</b>本报告全部风险判定由确定性规则计算得出，未使用生成式模型进行风险识别；如报告含 AI 辅助总体评价，其仅汇总已冻结的 Finding，不改变任何规则结论。
   每条结论均提供计算过程、触发明细与法律依据，任何结论均可由人工逐步复核。<br>
   <b>二、资料责任。</b>报告结论的可靠性取决于被审计单位所提供资料的真实性、完整性与合法性。资料存在遗漏或错误时，结论可能失真。<br>
   <b>三、参考值说明。</b>涉及行业税负率等对比性指标时，所用参考区间为示意值，正式使用前须按当地税务机关公布的行业预警值或企业实际经营情况校准。<br>

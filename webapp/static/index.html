@@ -271,7 +271,7 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=font-scale-20260922-2">
+<link rel="stylesheet" href="/workspace.css?v=sidebar-narrow-20260922-3">
 </head>
 <body>
 <section class="auth-screen" id="authScreen">
@@ -547,6 +547,12 @@
       <div class="stat"><div class="n num" id="nHigh">0</div><div class="l">其中高风险</div></div>
       <div class="stat pass"><div class="n num" id="nPass">0</div><div class="l">检查通过</div></div>
       <div class="stat skip"><div class="n num" id="nSkip">0</div><div class="l">未执行（材料不足）</div></div>
+    </div>
+
+    <div class="sheet audit-narrative" id="auditNarrativeSection" hidden>
+      <div class="audit-narrative-head"><div><h3>AI 总体评价与处理建议</h3><p class="muted">仅汇总已冻结的 Finding；每段必须引用规则，不参与风险判定。</p></div><button class="btn pdf" id="btnAuditNarrative" type="button">生成总体评价与建议</button></div>
+      <p id="auditNarrativeStatus" class="muted" role="status"></p>
+      <div id="auditNarrativePanel" aria-live="polite"></div>
     </div>
 
     <div class="sheet" id="filterBar" style="display:none;padding:12px 18px">
@@ -839,6 +845,8 @@ function renderResult(j) {
   $("statRow").style.display = "grid";
   $("filterBar").style.display = "block";
   $("actions").style.display = "flex";
+  $("auditNarrativeSection").hidden = false;
+  renderAuditNarrative(j.narrative || null);
 
   latestFindings = j.findings;
   const tax = $("filterTax"); tax.textContent = ""; const allTax = el("option",null,"全部"); allTax.value=""; tax.appendChild(allTax);
@@ -846,6 +854,47 @@ function renderResult(j) {
   applyFilters();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
+
+function renderAuditNarrative(narrative) {
+  const panel = $("auditNarrativePanel"), status = $("auditNarrativeStatus"), button = $("btnAuditNarrative");
+  panel.replaceChildren();
+  status.textContent = "";
+  button.textContent = narrative ? "重新读取已保存内容" : "生成总体评价与建议";
+  if (!narrative) {
+    panel.appendChild(el("p", "muted", "尚未生成。确定性统计和逐条证据不受影响，生成后会同步进入 HTML/PDF 报告。"));
+    return;
+  }
+  panel.appendChild(el("div", "audit-narrative-locked", `规则统计已锁定：命中 ${narrative.summary.hit} 项、通过 ${narrative.summary.pass} 项、未执行 ${narrative.summary.skipped} 项`));
+  const addGroup = (title, items) => {
+    panel.appendChild(el("h4", null, title));
+    for (const item of items) {
+      const block = el("div", "audit-narrative-paragraph");
+      block.append(el("p", null, item.text), el("p", "audit-narrative-citations", "来源规则：" + item.citations.join("、")));
+      panel.appendChild(block);
+    }
+  };
+  addGroup("总体评价", narrative.overall_assessment);
+  addGroup("处理建议", narrative.recommendations);
+  panel.appendChild(el("p", "finding-ai-meta", `仅汇总，不改变规则结论 · ${narrative.model} · 证据版本 ${narrative.evidence_hash.slice(0,12)} · ${narrative.cached ? "已保存内容" : "本次生成"}`));
+}
+
+$("btnAuditNarrative").addEventListener("click", async () => {
+  if (!auditId) return;
+  const button = $("btnAuditNarrative"), status = $("auditNarrativeStatus");
+  button.disabled = true;
+  button.textContent = "正在基于 Finding 汇总……";
+  status.textContent = "模型只负责报告文字，规则结论不会改变。";
+  try {
+    const narrative = await api("/api/audits/" + encodeURIComponent(auditId) + "/narrative", {method:"POST"});
+    renderAuditNarrative(narrative);
+    status.textContent = "总体评价已保存，并同步用于本次审计的 HTML/PDF 报告。";
+  } catch (err) {
+    status.textContent = err.message || String(err);
+    button.textContent = "重试生成总体评价与建议";
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function applyFilters() {
   const filtered = latestFindings.filter((f) => (!$("filterStatus").value || f.status === $("filterStatus").value) && (!$("filterSeverity").value || f.severity === $("filterSeverity").value) && (!$("filterCategory").value || f.category === $("filterCategory").value) && (!$("filterTax").value || f.tax_type === $("filterTax").value));
@@ -1038,6 +1087,9 @@ $("btnNew").addEventListener("click", () => {
   auditId = null;
   latestFindings = [];
   $("coBar").style.display = $("statRow").style.display = $("actions").style.display = $("filterBar").style.display = "none";
+  $("auditNarrativeSection").hidden = true;
+  $("auditNarrativePanel").replaceChildren();
+  $("auditNarrativeStatus").textContent = "";
   $("hitSection").style.display = $("skipSection").style.display = $("passSection").style.display = "none";
   $("hitList").textContent = $("skipList").textContent = $("passList").textContent = "";
   hideError();

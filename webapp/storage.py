@@ -200,6 +200,13 @@ class Store:
                     created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL,
                     PRIMARY KEY(audit_id, rule_id, evidence_hash)
                 );
+                CREATE TABLE IF NOT EXISTS audit_narratives (
+                    audit_id TEXT NOT NULL REFERENCES audits(id),
+                    evidence_hash TEXT NOT NULL, model TEXT NOT NULL,
+                    result_json TEXT NOT NULL,
+                    created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL,
+                    PRIMARY KEY(audit_id, evidence_hash)
+                );
             """)
             # Existing P1 databases predate configurable organization logos.
             columns = {row["name"] for row in db.execute("PRAGMA table_info(org_settings)")}
@@ -464,6 +471,30 @@ class Store:
                 (audit_id, rule_id, evidence_hash, result["model"], _json(stored), user_id, _now()),
             )
         return self.get_finding_interpretation(audit_id, rule_id, evidence_hash)
+
+    def get_audit_narrative(self, audit_id: str, evidence_hash: str) -> dict[str, Any] | None:
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT model,result_json,created_at FROM audit_narratives
+                   WHERE audit_id=? AND evidence_hash=?""",
+                (audit_id, evidence_hash),
+            ).fetchone()
+        if not row:
+            return None
+        result = json.loads(row["result_json"])
+        return {**result, "model": row["model"], "created_at": row["created_at"], "cached": True}
+
+    def save_audit_narrative(self, audit_id: str, evidence_hash: str,
+                             result: dict[str, Any], user_id: str) -> dict[str, Any]:
+        stored = {key: value for key, value in result.items() if key not in {"model", "cached", "created_at"}}
+        with self.connect() as db:
+            db.execute(
+                """INSERT OR IGNORE INTO audit_narratives
+                   (audit_id,evidence_hash,model,result_json,created_by,created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (audit_id, evidence_hash, result["model"], _json(stored), user_id, _now()),
+            )
+        return self.get_audit_narrative(audit_id, evidence_hash)
 
     def create_assignment(self, user: dict[str, Any], title: str, audit_id: str,
                           target_student_id: str | None, weights: dict[str, float],

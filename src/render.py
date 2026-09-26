@@ -116,6 +116,7 @@ def render_html(
     report_title: str = "税务风险审计报告",
     footer_text: str = "",
     logo_data_uri: str = "",
+    ai_narrative: dict | None = None,
 ) -> tuple[str, Path | None]:
     """渲染报告 HTML。write=True 时落盘供浏览器预览（CLI 路径），
     write=False 仅返回 HTML 字符串（Web 路径：产物按需生成，不覆盖已有预览）。
@@ -137,6 +138,7 @@ def render_html(
     vm["report_title"] = report_title
     vm["footer_text"] = footer_text
     vm["logo_data_uri"] = logo_data_uri
+    vm["ai_narrative"] = ai_narrative
 
     html = tpl.render(**vm)
 

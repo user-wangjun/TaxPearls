@@ -196,15 +196,17 @@ footer{font-size:13.5px}
 .risk-hover-heading>span{font-size:13px}
 
 /* 可读性第三轮：侧栏加宽 50% + 工作台字体再上调（2026-09-22）。 */
-body{--sidebar-width:366px;font-size:17px}
-body:has(.nav-collapsed){--sidebar-width:108px}
-.nav-collapsed .nav{width:108px}
-@media(max-width:1050px){body{--sidebar-width:300px}}
-@media(min-width:1800px){body{--sidebar-width:400px}}
-.nav{padding:28px 16px}
+/* 第四轮（2026-09-22 晚）：侧栏整体收窄 30%（366→256 / 108→76 / 300→210 / 400→280），
+   横向内边距同步收紧，字号保持不变。 */
+body{--sidebar-width:256px;font-size:17px}
+body:has(.nav-collapsed){--sidebar-width:76px}
+.nav-collapsed .nav{width:76px}
+@media(max-width:1050px){body{--sidebar-width:210px}}
+@media(min-width:1800px){body{--sidebar-width:280px}}
+.nav{padding:24px 11px}
 .nav-caption{font-size:14px}
-.nav button[data-panel]{min-height:54px;padding:15px 14px;font-size:17px}
-.nav-icon{width:24px;height:24px}
+.nav button[data-panel]{min-height:52px;padding:14px 10px;font-size:17px}
+.nav-icon{width:23px;height:23px}
 .muted{font-size:16px}
 .sheet h2{font-size:23px}
 .kpi .value{font-size:35px}
@@ -230,6 +232,16 @@ body:has(.nav-collapsed){--sidebar-width:108px}
 .finding-ai-steps{margin:6px 0 8px;padding-left:24px}
 .finding-ai-steps li{margin:4px 0}
 .finding-ai-error{color:#a42b2b;background:#fff1f1;padding:10px 12px;border-radius:8px}
+.audit-narrative{margin:18px 0;padding:20px}
+.audit-narrative[hidden]{display:none}
+.audit-narrative-head{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;flex-wrap:wrap}
+.audit-narrative-head h3{margin:0 0 5px;font-size:20px}
+.audit-narrative-head p{margin:0}
+.audit-narrative-locked{margin:12px 0;padding:10px 13px;border-left:4px solid #2272ff;background:#edf5ff;color:#174ea6;font-weight:700}
+.audit-narrative h4{margin:18px 0 8px;font-size:17px}
+.audit-narrative-paragraph{margin:8px 0;padding:12px 14px;border:1px solid #e1e9f5;border-radius:9px;background:#fff}
+.audit-narrative-paragraph p{margin:0;line-height:1.75}
+.audit-narrative-citations{margin-top:6px!important;color:var(--muted);font-size:14px}
 .field label{font-size:16px}
 .field input,.field select,.field textarea{font-size:17px}
 .legend{font-size:15px}

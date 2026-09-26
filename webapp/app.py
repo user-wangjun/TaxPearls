@@ -28,7 +28,8 @@ from src import settings  # Load .env before Store and route initialization.
 from src.models import Dataset
 from webapp.storage import Store
 from webapp.knowledge import (
-    ai_config, ask_graph, build_graph, finding_evidence_hash, interpret_finding,
+    ai_config, ask_graph, audit_narrative_hash, build_graph,
+    finding_evidence_hash, generate_audit_narrative, interpret_finding,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -297,10 +298,12 @@ def _metrics_list(dataset: Dataset) -> list[dict[str, str]]:
 def _result(entry: dict[str, Any]) -> dict[str, Any]:
     dataset, findings = entry["dataset"], entry["findings"]
     vm = render.build_view_model(dataset, findings)
+    narrative = store.get_audit_narrative(entry["id"], audit_narrative_hash(findings))
     return {
         "audit_id": entry["id"], "audited_at": entry["audited_at"],
         "company": _company_dict(dataset), "summary": vm["summary"],
         "findings": vm["findings"], "metrics": _metrics_list(dataset),
+        "narrative": narrative,
     }
 
 
@@ -438,6 +441,28 @@ def finding_interpretation(audit_id: str, rule_id: str,
     )
     store.log(user, "interpret_finding", "audit", audit_id,
               f"rule={rule_id};cache=miss;model={result['model']}")
+    return {**saved, "cached": False}
+
+
+@app.post("/api/audits/{audit_id}/narrative")
+def audit_narrative(audit_id: str,
+                    session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
+    entry = _audit_or_404(audit_id, user)
+    findings = entry["findings"]
+    evidence_hash = audit_narrative_hash(findings)
+    cached = store.get_audit_narrative(audit_id, evidence_hash)
+    if cached:
+        store.log(user, "generate_audit_narrative", "audit", audit_id,
+                  f"cache=hit;model={cached['model']}")
+        return cached
+    result = generate_audit_narrative(findings)
+    if result["evidence_hash"] != evidence_hash:
+        raise HTTPException(status_code=502, detail="模型总体结论与当前审计证据版本不一致。")
+    saved = store.save_audit_narrative(audit_id, evidence_hash, result, user["id"])
+    store.log(user, "generate_audit_narrative", "audit", audit_id,
+              f"cache=miss;model={result['model']}")
     return {**saved, "cached": False}
 
 
@@ -630,6 +655,7 @@ def report(
         raise HTTPException(status_code=409, detail="会计导出需二次确认，请确认报告用途后重试。")
     entry = _audit_or_404(audit_id, user)
     dataset, findings = entry["dataset"], entry["findings"]
+    narrative = store.get_audit_narrative(audit_id, audit_narrative_hash(findings))
     org = _org_branding(entry["org_id"])
     try:
         when = datetime.fromisoformat(entry["audited_at"])
@@ -637,6 +663,7 @@ def report(
             dataset, findings, when=when, write=False,
             org_name=org["display_name"], report_title=org["report_title"],
             footer_text=org["footer_text"], logo_data_uri=org["logo_data_uri"],
+            ai_narrative=narrative,
         )
         report_no = render.make_report_no(dataset.company.name, when)
         short = _safe_filename_component(dataset.company.name.replace("（仿真样例）", "")[:12])
@@ -658,10 +685,15 @@ def report_html(audit_id: str, session: str | None = Cookie(default=None, alias=
     _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
     entry = _audit_or_404(audit_id, user)
     org = _org_branding(entry["org_id"])
+    narrative = store.get_audit_narrative(
+        audit_id, audit_narrative_hash(entry["findings"]),
+    )
     html, _ = render.render_html(
-        entry["dataset"], entry["findings"], write=False,
+        entry["dataset"], entry["findings"],
+        when=datetime.fromisoformat(entry["audited_at"]), write=False,
         org_name=org["display_name"], report_title=org["report_title"],
         footer_text=org["footer_text"], logo_data_uri=org["logo_data_uri"],
+        ai_narrative=narrative,
     )
     store.log(user, "view_report", "audit", audit_id)
     return Response(content=html, media_type="text/html")
