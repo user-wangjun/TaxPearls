@@ -11,6 +11,7 @@ from copy import deepcopy
 from dataclasses import replace
 import os
 import re
+import sqlite3
 import tempfile
 import uuid
 from datetime import datetime
@@ -18,15 +19,17 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from fastapi import BackgroundTasks, Cookie, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Cookie, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from src import engine, loader, render, training
 from src import settings  # Load .env before Store and route initialization.
+from src.mailer import MailError, send_password_reset_email
 from src.models import Dataset
-from webapp.storage import Store
+from webapp.storage import SetupAlreadyInitialized, Store
+from webapp.login_guard import LoginGuard, RateLimiter
 from webapp.knowledge import (
     ai_config, ask_graph, audit_narrative_hash, build_graph,
     finding_evidence_hash, generate_audit_narrative, interpret_finding,
@@ -44,6 +47,8 @@ COOKIE_NAME = "taxpearls_session"
 
 app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None)
 store = Store()
+login_guard = LoginGuard()
+reset_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})
 
 
 @app.get("/healthz")
@@ -55,6 +60,7 @@ class SetupBody(BaseModel):
     username: str
     password: str
     display_name: str = ""
+    email: str = ""
     org_id: str = "default"
 
 
@@ -68,7 +74,17 @@ class UserBody(BaseModel):
     password: str
     display_name: str
     role: str
+    email: str = ""
     org_id: str | None = None
+
+
+class PasswordResetBody(BaseModel):
+    email: str
+
+
+class PasswordResetConfirmBody(BaseModel):
+    token: str
+    password: str
 
 
 class ClientBody(BaseModel):
@@ -473,26 +489,36 @@ def graph_script():
 
 @app.post("/api/setup")
 def setup(body: SetupBody) -> dict[str, Any]:
-    if store.has_users():
-        raise HTTPException(status_code=409, detail="系统已初始化。")
     try:
-        user = store.create_user(body.username, body.password, body.display_name.strip() or body.username, "platform_admin", body.org_id)
+        user = store.create_initial_admin(body.username, body.password, body.display_name.strip() or body.username,
+                                          body.org_id, body.email)
+    except SetupAlreadyInitialized:
+        raise HTTPException(status_code=409, detail="系统已初始化。") from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    except Exception as exc:
-        if exc.__class__.__name__ == "IntegrityError":
-            raise HTTPException(status_code=409, detail="用户名已存在。") from None
-        raise
+    except sqlite3.IntegrityError as exc:
+        if "users.email" in str(exc):
+            raise HTTPException(status_code=409, detail="该邮箱已被占用，请换用其他邮箱。") from None
+        raise HTTPException(status_code=409, detail="账号与现有数据冲突。") from None
     store.log(user, "setup", "system", "initial")
     return {"ok": True}
 
 
 @app.post("/api/login")
-def login(body: LoginBody) -> Response:
-    result = store.authenticate(body.username, body.password)
-    if not result:
-        return _err(401, "用户名或密码错误。")
-    user, token = result
+def login(body: LoginBody, request: Request) -> Response:
+    ip = request.client.host if request.client else "unknown"
+    with login_guard.reserve(body.username, ip) as wait:
+        if wait:
+            return JSONResponse(status_code=429, content={"detail": "登录尝试过于频繁，请稍后重试。"},
+                                headers={"Retry-After": str(wait)})
+        result = store.authenticate(body.username, body.password)
+        if not result:
+            count = login_guard.record_failure(body.username, ip)
+            store.log(None, "login_failed", "account_hash", login_guard.fingerprint(body.username.strip().lower()),
+                      f"ip_hash={login_guard.fingerprint(ip)};failure_count={count}")
+            return _err(401, "用户名或密码错误。")
+        user, token = result
+        login_guard.record_success(body.username)
     store.log(user, "login", "session", user["id"])
     response = JSONResponse({"user": user})
     response.set_cookie(
@@ -511,6 +537,39 @@ def logout(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Res
     response = JSONResponse({"ok": True})
     response.delete_cookie(COOKIE_NAME)
     return response
+
+
+@app.post("/api/auth/password/reset")
+def password_reset(body: PasswordResetBody, request: Request) -> dict[str, Any]:
+    """申请重置邮件。防枚举（docs/06 3.5）：无论邮箱是否存在，成功响应完全一致。"""
+    ip = request.client.host if request.client else "unknown"
+    if not reset_limiter.allow(email=body.email, ip=ip):
+        return JSONResponse(status_code=429, content={"detail": "请求过于频繁，请稍后再试。"})
+    token = store.create_password_reset(body.email)
+    if token:
+        base = (os.getenv("TAXPEARLS_PUBLIC_BASE_URL", "").strip().rstrip("/")
+                or str(request.base_url).rstrip("/"))
+        try:
+            send_password_reset_email(to=body.email.strip().lower(), reset_url=f"{base}/?reset={token}")
+        except MailError as exc:
+            store.log(None, "password_reset_failed", "email_hash",
+                      login_guard.fingerprint(body.email.strip().lower()), str(exc)[:200])
+            raise HTTPException(status_code=502, detail="重置邮件发送失败，请稍后重试。") from None
+        # 留痕口径（docs/06 11.1.1）：发送事件入审计日志，邮箱只以哈希出现，不落明文。
+        store.log(None, "password_reset_sent", "email_hash",
+                  login_guard.fingerprint(body.email.strip().lower()),
+                  f"ip_hash={login_guard.fingerprint(ip)}")
+    return {"message": "若该邮箱已注册，重置邮件已发送，请查收（含垃圾箱）。"}
+
+
+@app.post("/api/auth/password/reset/confirm")
+def password_reset_confirm(body: PasswordResetConfirmBody) -> dict[str, Any]:
+    try:
+        user = store.redeem_password_reset(body.token, body.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+    store.log(user, "password_reset", "user", user["id"])
+    return {"message": "密码已重置，请使用新密码登录。"}
 
 
 @app.get("/api/me")
@@ -533,13 +592,17 @@ def create_user(body: UserBody, session: str | None = Cookie(default=None, alias
     if actor["role"] == "org_admin" and (body.role != "accountant" or org_id != actor["org_id"]):
         raise HTTPException(status_code=403, detail="机构管理员只能创建本机构会计账号。")
     try:
-        created = store.create_user(body.username, body.password, body.display_name, body.role, org_id)
+        created = store.create_user(body.username, body.password, body.display_name, body.role, org_id, body.email)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    except Exception as exc:
-        if exc.__class__.__name__ == "IntegrityError":
+    except sqlite3.IntegrityError as exc:
+        if "users.username" in str(exc):
             raise HTTPException(status_code=409, detail="用户名已存在。") from None
-        raise
+        if "users.email" in str(exc):
+            raise HTTPException(status_code=409, detail="该邮箱已被占用，请换用其他邮箱。") from None
+        if "users.role" in str(exc):
+            raise HTTPException(status_code=409, detail="平台管理员已存在。") from None
+        raise HTTPException(status_code=409, detail="账号与现有数据冲突。") from None
     store.log(actor, "create_user", "user", created["id"], created["role"])
     return created
 

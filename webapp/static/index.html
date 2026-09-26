@@ -171,15 +171,15 @@
   .pw-toggle:focus-visible { outline:none; color:#c3942d; box-shadow:0 0 0 3px #d4a01720; }
   .pw-wrap input:focus ~ .pw-toggle { color:var(--ink-2,#5b6472); }
   .auth-card .field input:focus { outline:none; border-color:#c3942d; box-shadow:0 0 0 3px #d4a01720; background:#fffdf8; }
-  .auth-remember { display:flex; align-items:center; gap:11px; margin-top:24px; font-size:18px; color:var(--ink-2); cursor:pointer; }
-  .auth-remember input { width:21px; height:21px; accent-color:var(--navy); }
-  .auth-remember-hint { margin-top:9px; font-size:15px; line-height:1.65; color:var(--ink-3); }
   .field textarea { min-height:76px; resize:vertical; }
   .auth-card .btn { position:relative; width:100%; min-height:64px; margin-top:28px; overflow:hidden; background:linear-gradient(135deg,var(--navy),var(--navy-2)); color:#fff; font-size:20px; box-shadow:0 12px 28px #14233f2e; transition:transform .16s,box-shadow .16s; }
   .auth-card .btn::after { content:""; position:absolute; inset:0; transform:translateX(-120%); background:linear-gradient(110deg,transparent 25%,#ffffff38 50%,transparent 75%); transition:transform .55s ease; }
   .auth-card .btn:hover { transform:translateY(-1px); box-shadow:0 16px 32px #14233f3d; }
   .auth-card .btn:hover::after { transform:translateX(120%); }
   @keyframes auth-card-in { from { opacity:0; transform:translateY(18px) scale(.985); } to { opacity:1; transform:none; } }
+  .auth-link { display:block; background:none; border:none; color:var(--navy); cursor:pointer; font-size:15px; padding:0; margin:18px auto 0; text-decoration:underline; text-underline-offset:3px; }
+  .auth-link:hover { color:var(--navy-2); }
+  .auth-status { display:none; color:#1a6b3c; background:#e8f5ee; border:1px solid #bfe3cf; border-radius:8px; padding:12px 14px; font-size:15px; margin-top:16px; }
   @keyframes auth-copy-in { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
   @keyframes auth-pearl-float {
     0%,100% { transform:translateY(0) scale(1); filter:drop-shadow(0 18px 30px #020912a6); }
@@ -290,14 +290,26 @@
     </div>
   </aside>
   <div class="auth-entry">
-    <form class="auth-card" id="authForm">
+    <form class="auth-card" id="authForm" data-view="login" novalidate>
       <div class="auth-brand"><img src="/logo" alt="税海拾珠"><div><h2 id="authTitle">登录税海拾珠</h2></div></div>
-      <div class="field"><label for="loginUser">用户名</label><input id="loginUser" name="username" autocomplete="username" required></div>
-      <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
-      <label class="auth-remember"><input id="rememberLogin" type="checkbox" aria-describedby="rememberHint">记住账号密码</label>
-      <p class="auth-remember-hint" id="rememberHint" role="status">勾选后将账号密码以明文保存在当前浏览器中</p>
+      <div id="viewLogin">
+        <div class="field"><label for="loginUser">用户名</label><input id="loginUser" name="username" autocomplete="username" required></div>
+        <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+      </div>
+      <div id="viewForgot" style="display:none">
+        <div class="field"><label for="resetEmail">账号绑定的邮箱</label><input id="resetEmail" type="email" autocomplete="email" placeholder="name@example.com" required></div>
+        <p class="muted" style="font-size:14px;margin-top:0">我们将向该邮箱发送重置链接，链接 10 分钟内有效、只能使用一次。</p>
+      </div>
+      <div id="viewReset" style="display:none">
+        <div class="field"><label for="newPass">新密码</label><input id="newPass" type="password" autocomplete="new-password" required></div>
+        <div class="field"><label for="newPass2">确认新密码</label><input id="newPass2" type="password" autocomplete="new-password" required></div>
+        <p class="muted" style="font-size:14px;margin-top:0">至少 10 位，须包含大小写字母、数字、符号中的至少三类；不能使用常见弱口令。重置成功后，此账号的所有登录状态将被注销。</p>
+      </div>
       <div class="error-box" id="authError"></div>
+      <p class="auth-status" id="authStatus" role="status"></p>
       <button class="btn" type="submit" id="authSubmit">登录</button>
+      <button type="button" class="auth-link" id="forgotLink">忘记密码？</button>
+      <button type="button" class="auth-link" id="backToLogin" style="display:none">← 返回登录</button>
     </form>
   </div>
 </section>
@@ -512,7 +524,7 @@
     </div>
     <div class="dropzone" id="dropzone">
       <div class="t1">一次选择或拖拽多份 Excel、XML、PDF，也可上传 ZIP 文件包</div>
-      <div class="t2">支持账表 Excel、数电发票 XML、来源银行 Excel / 调节底稿、文字 / 扫描 PDF；AI 候选数据经校验后进入核对页<br>
+      <div class="t2">支持账表 Excel、数电发票 XML、来源银行 Excel / 调节底稿、合同四流台账、文字 / 扫描 PDF；AI 候选数据经校验后进入核对页<br>
         最多 20 份材料，单份 / ZIP 不超过 10MB，解压后合计 50MB · 原始文件仅在内存中解析</div>
       <button class="pick" type="button">选择多份材料</button>
       <input type="file" id="fileInput" accept=".xlsx,.xml,.pdf,.zip" multiple hidden>
@@ -794,6 +806,9 @@ function renderMaterialReview(files) {
       if(doc.invoices?.length){const inv=el("details");inv.append(el("summary","",`查看已读取的 ${doc.invoices.length} 张发票`));doc.invoices.forEach(r=>inv.append(el("p","muted",`${r.number} · ${r.issued_on} · ${r.kind||"待按企业税号判定"}${r.status} · 不含税 ${r.amount} · 税额 ${r.tax}`)));card.append(inv);}
       if(doc.bank_transactions?.length){const bank=el("details");bank.append(el("summary","",`查看已读取的 ${doc.bank_transactions.length} 笔银行流水（原始入账不直接作为收入）`));doc.bank_transactions.forEach(r=>bank.append(el("p","muted",`${r.transaction_id} · ${r.transacted_on} · ${Number(r.income)>0?"收入 "+r.income:"支出 "+r.expense} · ${r.category||"待调节底稿分类"}${r.summary?" · "+r.summary:""}`)));card.append(bank);}
       if(doc.bank_adjustments?.length){const bridge=el("details");bridge.append(el("summary","",`查看已读取的 ${doc.bank_adjustments.length} 条银行调节底稿`));doc.bank_adjustments.forEach(r=>bridge.append(el("p","muted",`${r.number} · ${r.transaction_id||"独立调节"} · ${r.category} · 权责期 ${r.period} · ${r.transaction_id?"本期不含税收入 "+(r.recognized_amount??"未填"):(r.direction||"未定方向")+" "+(r.adjustment_amount??"未填")} · 底稿 ${r.workpaper} · ${r.reviewed?"已复核":"待复核"}`)));card.append(bridge);}
+      if(doc.contracts?.length){const contracts=el("details");contracts.append(el("summary","",`查看已读取的 ${doc.contracts.length} 份合同`));doc.contracts.forEach(r=>contracts.append(el("p","muted",`${r.number} · ${r.kind} · ${r.counterparty} · 含税 ${r.amount} · 履约期 ${r.performance_start} 至 ${r.performance_end} · ${r.reviewed?"已复核":"待复核"}${r.workpaper?" · 底稿 "+r.workpaper:""}`)));card.append(contracts);}
+      if(doc.fulfillments?.length){const fulfillments=el("details");fulfillments.append(el("summary","",`查看已读取的 ${doc.fulfillments.length} 条履约记录`));doc.fulfillments.forEach(r=>fulfillments.append(el("p","muted",`${r.number} · 合同 ${r.contract_number} · ${r.fulfilled_on} · ${r.kind} · 含税 ${r.amount} · ${r.reviewed?"已复核":"待复核"}${r.workpaper?" · 底稿 "+r.workpaper:""}`)));card.append(fulfillments);}
+      if(doc.contract_links?.length){const links=el("details");links.append(el("summary","",`查看已读取的 ${doc.contract_links.length} 条四流勾稽`));doc.contract_links.forEach(r=>links.append(el("p","muted",`${r.number} · 合同 ${r.contract_number} · 发票 ${r.invoice_number||"待补"} · 流水 ${r.transaction_id||"待补"} · 履约 ${r.fulfillment_number||"待补"} · 分摊含税 ${r.amount} · ${r.reviewed?"已复核":"待复核"}${r.workpaper?" · 底稿 "+r.workpaper:""}`)));card.append(links);}
     }
   });
   const submit=el("button","primary","确认材料并开始审计"), reset=el("button","","重新选择材料");
@@ -1098,38 +1113,8 @@ $("btnNew").addEventListener("click", () => {
 });
 
 /* ---------- P1 登录、档案、实训与管理 ---------- */
-const rememberedLoginKey = "taxpearls.rememberedLogin.v1";
-function restoreRememberedLogin() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(rememberedLoginKey) || "null");
-    if (!saved || typeof saved.username !== "string" || typeof saved.password !== "string") return;
-    $("loginUser").value = saved.username;
-    $("loginPass").value = saved.password;
-    $("rememberLogin").checked = true;
-  } catch {
-    // Unavailable storage or invalid saved data must not prevent signing in.
-  }
-}
-function saveRememberedLogin(username, password) {
-  try {
-    if ($("rememberLogin").checked) {
-      localStorage.setItem(rememberedLoginKey, JSON.stringify({username, password}));
-    } else {
-      localStorage.removeItem(rememberedLoginKey);
-    }
-  } catch {
-    $("rememberHint").textContent = "浏览器未允许更新保存信息，本次操作未生效；可在浏览器设置中清除本站数据。";
-    return false;
-  }
-  return true;
-}
-$("rememberLogin").addEventListener("change", () => {
-  if (!$("rememberLogin").checked) {
-    if (saveRememberedLogin("", "")) $("rememberHint").textContent = "已清除本站保存的账号密码。";
-  } else {
-    $("rememberHint").textContent = "登录成功后将账号密码以明文保存在当前浏览器中，仅建议在个人设备使用。";
-  }
-});
+// Purge credentials saved by earlier versions; passwords are never stored in browser storage.
+try { localStorage.removeItem("taxpearls.rememberedLogin.v1"); } catch {}
 $("pwToggle").addEventListener("click", () => {
   const input = $("loginPass");
   const show = input.type === "password";
@@ -1141,28 +1126,66 @@ $("pwToggle").addEventListener("click", () => {
 });
 
 async function bootstrap() {
+  const params = new URLSearchParams(location.search);
+  const resetToken = params.get("reset");
+  if (resetToken) history.replaceState(null, "", location.pathname);
   const s = await api("/api/status");
   if (s.user) return enterApp(s.user);
   const setup = s.needs_setup;
-  $("authTitle").textContent = setup ? "初始化平台管理员" : "登录税海拾珠";
-  $("authSubmit").textContent = setup ? "创建管理员" : "登录";
   $("authForm").dataset.setup = setup ? "1" : "0";
   $("loginPass").autocomplete = setup ? "new-password" : "current-password";
-  if (!setup) restoreRememberedLogin();
+  if (resetToken && !setup) $("authForm").dataset.resetToken = resetToken;
+  showAuthView(resetToken && !setup ? "reset" : "login");
 }
+
+const authViews = ["viewLogin", "viewForgot", "viewReset"];
+function showAuthView(view) {
+  const form = $("authForm");
+  const map = {login: "viewLogin", forgot: "viewForgot", reset: "viewReset"};
+  const setup = form.dataset.setup === "1";
+  authViews.forEach((id) => {
+    const on = id === map[view];
+    $(id).style.display = on ? "" : "none";
+    $(id).querySelectorAll("input").forEach((i) => { i.required = on; });
+  });
+  $("forgotLink").style.display = view === "login" ? "" : "none";
+  $("backToLogin").style.display = view === "login" ? "none" : "";
+  $("authStatus").textContent = ""; $("authStatus").style.display = "none";
+  $("authError").textContent = ""; $("authError").style.display = "none";
+  $("authTitle").textContent = view === "forgot" ? "找回密码" : view === "reset" ? "设置新密码" : (setup ? "初始化平台管理员" : "登录税海拾珠");
+  $("authSubmit").textContent = view === "forgot" ? "发送重置邮件" : view === "reset" ? "设置新密码" : (setup ? "创建管理员" : "登录");
+  form.dataset.view = view;
+}
+$("forgotLink").addEventListener("click", () => showAuthView("forgot"));
+$("backToLogin").addEventListener("click", () => showAuthView("login"));
 
 $("authForm").addEventListener("submit", async (e) => {
   e.preventDefault();
   const form = e.currentTarget;
   $("authError").style.display = "none";
-  const setup = form.dataset.setup === "1";
-  const body = {username: $("loginUser").value, password: $("loginPass").value};
-  if (setup) body.display_name = body.username;
+  $("authStatus").textContent = ""; $("authStatus").style.display = "none";
+  const view = form.dataset.view || "login";
   try {
+    if (view === "forgot") {
+      const result = await api("/api/auth/password/reset", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({email:$("resetEmail").value})});
+      $("authStatus").textContent = result.message; $("authStatus").style.display = "block";
+      return;
+    }
+    if (view === "reset") {
+      if ($("newPass").value !== $("newPass2").value) throw new Error("两次输入的新密码不一致。");
+      await api("/api/auth/password/reset/confirm", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({token:form.dataset.resetToken || "", password:$("newPass").value})});
+      history.replaceState(null, "", location.pathname);
+      delete form.dataset.resetToken;
+      showAuthView("login");
+      $("authStatus").textContent = "密码已重置，请使用新密码登录。"; $("authStatus").style.display = "block";
+      return;
+    }
+    const setup = form.dataset.setup === "1";
+    const body = {username: $("loginUser").value, password: $("loginPass").value};
+    if (setup) body.display_name = body.username;
     await api(setup ? "/api/setup" : "/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
     if (setup) { form.dataset.setup = "0"; await api("/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({username:body.username,password:body.password})}); }
     const user = await api("/api/me");
-    saveRememberedLogin(body.username, body.password);
     $("loginPass").value = "";
     enterApp(user);
   } catch (err) { $("authError").textContent = err.message; $("authError").style.display = "block"; }

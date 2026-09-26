@@ -30,7 +30,9 @@ def main() -> int:
     import uvicorn
 
     print(f"  税海拾珠 Web 端启动中 → http://{args.host}:{args.port}")
-    uvicorn.run("webapp.app:app", host=args.host, port=args.port, log_level="warning")
+    uvicorn.run("webapp.app:app", host=args.host, port=args.port, log_level="warning",
+                proxy_headers=True,
+                forwarded_allow_ips=os.getenv("TAXPEARLS_TRUSTED_PROXY_IPS", "127.0.0.1"))
     return 0
 
 
