@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from html import escape
 from datetime import datetime
 from pathlib import Path
 
@@ -114,10 +115,11 @@ def render_html(
     org_name: str = "税海拾珠",
     report_title: str = "税务风险审计报告",
     footer_text: str = "",
+    logo_data_uri: str = "",
 ) -> tuple[str, Path | None]:
     """渲染报告 HTML。write=True 时落盘供浏览器预览（CLI 路径），
     write=False 仅返回 HTML 字符串（Web 路径：产物按需生成，不覆盖已有预览）。
-    org_name / report_title 来自机构设置（org_settings），缺省用平台默认抬头。"""
+    org_name / report_title / logo_data_uri 来自机构设置，缺省用平台默认抬头。"""
     when = when or datetime.now()
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
@@ -134,6 +136,7 @@ def render_html(
     vm["org_name"] = org_name
     vm["report_title"] = report_title
     vm["footer_text"] = footer_text
+    vm["logo_data_uri"] = logo_data_uri
 
     html = tpl.render(**vm)
 
@@ -157,7 +160,8 @@ def _header_template() -> str:
 
 def _footer_template(report_no: str, footer_text: str = "") -> str:
     # ⚠️ Chromium 要求页码模板必须显式声明 font-size，否则文字不可见
-    suffix = f"　{footer_text}" if footer_text else ""
+    safe_footer = escape(" ".join(footer_text.split()))
+    suffix = f"　{safe_footer}" if safe_footer else ""
     return (
         '<div style="width:100%;padding:0 20mm;font-size:8pt;color:#8A94A6;'
         "font-family:'Microsoft YaHei','PingFang SC',sans-serif;"

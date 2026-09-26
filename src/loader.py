@@ -1,9 +1,13 @@
 """Excel 材料标准化；空值保持缺失，来源与期间随指标保留。"""
 from __future__ import annotations
 
+from calendar import monthrange
+from dataclasses import dataclass
+from datetime import date, datetime
 from io import BytesIO
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+import re
 from openpyxl import load_workbook
 from . import config
 from .models import Account, Company, Dataset, Metric
@@ -11,6 +15,249 @@ from .models import Account, Company, Dataset, Metric
 
 class InputError(Exception):
     """输入材料不符合模板要求。"""
+
+
+@dataclass(frozen=True)
+class _Period:
+    """A normalized, complete calendar interval used for deterministic comparisons."""
+
+    start: date
+    end: date
+    group: str
+    months: int
+    label: str
+
+    @property
+    def key(self) -> tuple[int, int]:
+        return (self.start.year * 12 + self.start.month - 1, self.months)
+
+
+@dataclass(frozen=True)
+class _PeriodValue:
+    period: _Period
+    metric: Metric
+    row: int
+
+
+@dataclass(frozen=True)
+class _Invoice:
+    """One normalized invoice row before period validation and aggregation."""
+
+    number: str
+    issued_on: str
+    kind: str
+    amount: Decimal
+    tax: Decimal
+    status: str
+    deductible_tax: Decimal | None
+    deductible_period: str
+    seller_id: str
+    buyer_id: str
+    source: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class _BankTransaction:
+    """One normalized posted bank transaction; never treated as revenue by itself."""
+
+    key: str
+    transaction_id: str
+    transacted_on: str
+    summary: str
+    income: Decimal
+    expense: Decimal
+    category: str
+    currency: str
+    counterparty: str
+    account_hint: str
+    explicit_id: bool
+    source: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class _BankAdjustment:
+    """A reviewed bridge from bank receipts to accrual-basis, tax-exclusive revenue."""
+
+    number: str
+    transaction_id: str
+    category: str
+    period: str
+    recognized_amount: Decimal | None
+    adjustment_amount: Decimal | None
+    direction: str
+    workpaper: str
+    reviewed: bool
+    detail: str
+    source: str
+
+
+def _period_from_month(year: int, month: int, months: int, group: str, label: str) -> _Period:
+    if not 1 <= month <= 12:
+        raise ValueError
+    end_index = year * 12 + month - 1 + months - 1
+    end_year, end_month_zero = divmod(end_index, 12)
+    end_month = end_month_zero + 1
+    return _Period(
+        date(year, month, 1),
+        date(end_year, end_month, monthrange(end_year, end_month)[1]),
+        group,
+        months,
+        label,
+    )
+
+
+def _parse_period(value: object, location: str) -> _Period:
+    """Accept only full calendar month/quarter/half/year periods."""
+
+    text = "" if value is None else str(value).strip()
+    if not text:
+        raise InputError(f"{location}：所属期不能为空")
+
+    range_match = re.fullmatch(
+        r"(\d{4})-(\d{2})-(\d{2})\s*(?:至|~|—)\s*(\d{4})-(\d{2})-(\d{2})",
+        text,
+    )
+    if range_match:
+        try:
+            ys, ms, ds, ye, me, de = map(int, range_match.groups())
+            start, end = date(ys, ms, ds), date(ye, me, de)
+        except ValueError:
+            raise InputError(f"{location}：所属期日期无效「{text}」") from None
+        months = (ye - ys) * 12 + me - ms + 1
+        group = {1: "month", 3: "quarter", 6: "half", 12: "year"}.get(months)
+        aligned = (
+            ds == 1
+            and de == monthrange(ye, me)[1]
+            and ((months == 1) or (months == 3 and ms in {1, 4, 7, 10})
+                 or (months == 6 and ms in {1, 7}) or (months == 12 and ms == 1))
+        )
+        if start > end or not group or not aligned:
+            raise InputError(f"{location}：仅支持完整自然月、季度、半年或年度「{text}」")
+        return _Period(start, end, group, months, text)
+
+    match = re.fullmatch(r"(\d{4})[-年/.](\d{1,2})月?", text)
+    if match:
+        try:
+            return _period_from_month(int(match.group(1)), int(match.group(2)), 1, "month", text)
+        except ValueError:
+            raise InputError(f"{location}：月份无效「{text}」") from None
+    match = re.fullmatch(r"(\d{4})[- ]?Q([1-4])", text, re.IGNORECASE)
+    if match:
+        return _period_from_month(int(match.group(1)), (int(match.group(2)) - 1) * 3 + 1, 3, "quarter", text)
+    match = re.fullmatch(r"(\d{4})年第([1-4])季度", text)
+    if match:
+        return _period_from_month(int(match.group(1)), (int(match.group(2)) - 1) * 3 + 1, 3, "quarter", text)
+    match = re.fullmatch(r"(\d{4})[- ]?H([12])", text, re.IGNORECASE)
+    if match:
+        return _period_from_month(int(match.group(1)), (int(match.group(2)) - 1) * 6 + 1, 6, "half", text)
+    match = re.fullmatch(r"(\d{4})年?(上|下)半年", text)
+    if match:
+        return _period_from_month(int(match.group(1)), 1 if match.group(2) == "上" else 7, 6, "half", text)
+    match = re.fullmatch(r"(\d{4})年?", text)
+    if match:
+        return _period_from_month(int(match.group(1)), 1, 12, "year", text)
+    raise InputError(f"{location}：无法识别所属期「{text}」；请使用完整月、季度、半年或年度")
+
+
+def _shift_period(period: _Period, months: int) -> tuple[int, int]:
+    return (period.key[0] + months, period.months)
+
+
+def _put_derived(metrics: dict[str, Metric], key: str, metric: Metric) -> None:
+    current = metrics.get(key)
+    if current is not None:
+        if current.value != metric.value:
+            raise InputError(f"历史指标自动归集结果与已提供指标「{key}」冲突")
+        return
+    metrics[key] = metric
+
+
+def _comparison_metric(name: str, value: _PeriodValue) -> Metric:
+    return Metric(name, value.metric.value, value.metric.source, value.metric.detail)
+
+
+def _derive_period_metrics(company: Company, metrics: dict[str, Metric], series: dict[str, dict[tuple[int, int], _PeriodValue]]) -> None:
+    if not company.period or not series:
+        return
+    current_period = _parse_period(company.period, "企业信息所属期")
+    end_month_key = current_period.end.year * 12 + current_period.end.month - 1
+
+    for base_key, values in series.items():
+        spec = config.PERIOD_SERIES[base_key]
+        label = spec["label"]
+        trend = f"趋势.{label}"
+        supplied_current = values.get(current_period.key)
+        base_metric = metrics.get(base_key)
+        if supplied_current and base_metric and supplied_current.metric.value != base_metric.value:
+            raise InputError(f"历史指标中「{base_key}」的本期值与本期报表不一致")
+        if supplied_current and base_metric:
+            combined = Metric(
+                base_key,
+                base_metric.value,
+                base_metric.source + "；" + supplied_current.metric.source,
+                base_metric.detail + "；期间序列核对一致：" + supplied_current.metric.detail,
+            )
+            current = _PeriodValue(current_period, combined, supplied_current.row)
+        elif supplied_current:
+            metrics[base_key] = supplied_current.metric
+            current = supplied_current
+        elif base_metric:
+            current = _PeriodValue(current_period, base_metric, 0)
+        else:
+            current = None
+
+        if current:
+            _put_derived(metrics, f"{trend}.本期", _comparison_metric(f"{trend}.本期", current))
+            previous = values.get(_shift_period(current_period, -current_period.months))
+            prior_year = values.get(_shift_period(current_period, -12))
+            for suffix, comparison in (("上期", previous), ("上年同期", prior_year)):
+                if comparison:
+                    _put_derived(metrics, f"{trend}.{suffix}", _comparison_metric(f"{trend}.{suffix}", comparison))
+            if previous and previous.metric.value != 0:
+                value = current.metric.value / previous.metric.value - Decimal(1)
+                _put_derived(metrics, f"{trend}.环比率", Metric(
+                    f"{trend}.环比率", value,
+                    current.metric.source + "；" + previous.metric.source,
+                    f"({current.metric.value} ÷ {previous.metric.value}) - 1 = {value}",
+                ))
+            if prior_year:
+                alias = spec.get("yoy_alias")
+                if alias:
+                    _put_derived(metrics, alias, _comparison_metric(alias, prior_year))
+                if prior_year.metric.value != 0:
+                    value = current.metric.value / prior_year.metric.value - Decimal(1)
+                    _put_derived(metrics, f"{trend}.同比率", Metric(
+                        f"{trend}.同比率", value,
+                        current.metric.source + "；" + prior_year.metric.source,
+                        f"({current.metric.value} ÷ {prior_year.metric.value}) - 1 = {value}",
+                    ))
+
+        if spec["kind"] == "flow":
+            monthly = {key[0]: value for key, value in values.items() if key[1] == 1}
+            if current and current_period.months == 1:
+                monthly[current_period.key[0]] = current
+            required = [end_month_key - offset for offset in range(11, -1, -1)]
+            if all(index in monthly for index in required):
+                selected = [monthly[index] for index in required]
+                total = sum((item.metric.value for item in selected), Decimal(0))
+                start_label, end_label = selected[0].period.label, selected[-1].period.label
+                _put_derived(metrics, f"{trend}.滚动12月", Metric(
+                    f"{trend}.滚动12月", total,
+                    "；".join(dict.fromkeys(item.metric.source for item in selected)),
+                    " + ".join(str(item.metric.value) for item in selected) + f" = {total}（{start_label} 至 {end_label}）",
+                ))
+
+        annual_aliases = spec.get("annual_aliases")
+        if annual_aliases and current_period.group == "year":
+            annual_values = dict(values)
+            if current:
+                annual_values[current_period.key] = current
+            for offset, alias in enumerate(annual_aliases):
+                item = annual_values.get(_shift_period(current_period, -12 * offset))
+                if item:
+                    _put_derived(metrics, alias, _comparison_metric(alias, item))
 
 
 def _sheet(wb, name, header):
@@ -149,87 +396,682 @@ def _read_statement(wb, sheet_name, prefix, metrics):
             metrics[key] = Metric(key, value, f"{sheet_name}!B{idx}—{item}", f"{item} {value:,.2f}")
 
 
-def _read_history(wb, metrics):
+def _read_history(wb, company, metrics):
     if config.SHEET_HISTORY not in wb.sheetnames:
-        return
+        return {}
     ws = _sheet(wb, config.SHEET_HISTORY, config.COL_HISTORY)
-    seen = set()
+    seen, series = set(), {}
     for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
         if row[0] is None:
             continue
         key = str(row[0]).strip()
-        if not (key.startswith("历史.") or key.startswith("年度.")):
-            raise InputError(f"历史指标 A{idx}：指标须以「历史.」或「年度.」开头")
-        if key in seen or key in metrics:
-            raise InputError(f"历史指标 A{idx}：指标重复「{key}」")
-        seen.add(key)
         value = _number(row[1], f"历史指标 B{idx}")
         source, period, detail = [str(v).strip() if v is not None else "" for v in row[2:5]]
         if value is None:
             continue
         if not source or not period or not detail:
             raise InputError(f"历史指标第 {idx} 行「{key}」必须填写来源、实际所属期和口径说明")
-        metrics[key] = Metric(key, value, f"历史指标!B{idx} ← {source}；实际期间 {period}", detail)
+        metric = Metric(key, value, f"历史指标!B{idx} ← {source}；实际期间 {period}", detail)
+        if key.startswith("历史.") or key.startswith("年度."):
+            if key in seen or key in metrics:
+                raise InputError(f"历史指标 A{idx}：指标重复「{key}」")
+            seen.add(key)
+            metrics[key] = metric
+            continue
+        if key not in config.PERIOD_SERIES:
+            allowed = "、".join(config.PERIOD_SERIES)
+            raise InputError(f"历史指标 A{idx}：期间序列仅支持 {allowed}；原有成品指标须以「历史.」或「年度.」开头")
+        normalized = _parse_period(period, f"历史指标 D{idx}")
+        values = series.setdefault(key, {})
+        if normalized.key in values:
+            raise InputError(f"历史指标第 {idx} 行「{key}」存在重复所属期「{period}」")
+        values[normalized.key] = _PeriodValue(normalized, metric, idx)
+    _derive_period_metrics(company, metrics, series)
+    return series
 
 
-def _read_invoices(wb, metrics):
-    if config.SHEET_INVOICES not in wb.sheetnames:
-        return
-    ws = _sheet(wb, config.SHEET_INVOICES, config.COL_INVOICES)
-    seen, totals, tax_total = set(), {"销项": Decimal(0), "采购": Decimal(0)}, Decimal(0)
-    counts = {"销项": 0, "采购": 0}
-    for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
-        if row[0] is None:
+_INVOICE_HEADERS = {
+    "number": {"发票号码", "数电票号码", "发票号", "invoice number", "invoicenumber"},
+    "issued_on": {"开票日期", "开票时间", "申请时间", "request time", "requesttime", "issuedate"},
+    "kind": {"类型", "发票方向", "业务方向", "收支类型", "invoicedirection"},
+    "amount": {"不含税金额", "合计金额", "金额合计", "金额", "totalamwithouttax"},
+    "tax": {"税额", "合计税额", "税额合计", "totaltaxam"},
+    "total": {"价税合计", "价税合计小写", "含税金额", "totaltaxincludedamount"},
+    "status": {"状态", "发票状态", "开票状态", "invoicestatus"},
+    "seller_id": {"销方纳税人识别号", "销售方纳税人识别号", "销方税号", "selleridnum"},
+    "buyer_id": {"购方纳税人识别号", "购买方纳税人识别号", "购方税号", "buyeridnum", "purchaseridnum"},
+    "usage": {"用途确认", "抵扣用途", "用途", "usageconfirmation"},
+    "confirmed": {"是否确认用途", "是否抵扣勾选", "抵扣状态", "用途确认状态", "whethereinvoiceusagehasbeenconfirmed"},
+    "deductible_period": {"用途确认所属期", "抵扣所属期", "确认所属期", "periodofusageconfirmation"},
+    "transferred": {"是否进项转出", "是否进项税额转出", "whetherinputvathasbeentransferredout"},
+    "transferred_tax": {"进项转出税额", "转出税额", "amountoftransferredoutinputvat"},
+}
+
+
+def _header_token(value: object) -> str:
+    return re.sub(r"[\s_()（）【】\[\]:：/\\-]+", "", str(value or "")).lower()
+
+
+_INVOICE_HEADER_TOKENS = {
+    field: {_header_token(alias) for alias in aliases}
+    for field, aliases in _INVOICE_HEADERS.items()
+}
+
+
+def _invoice_columns(ws) -> dict[str, int]:
+    columns = {}
+    for index, cell in enumerate(ws[1]):
+        token = _header_token(cell.value)
+        for field, aliases in _INVOICE_HEADER_TOKENS.items():
+            if token in aliases:
+                if field in columns:
+                    raise InputError(f"{ws.title} 表头存在重复口径「{cell.value}」")
+                columns[field] = index
+                break
+    return columns
+
+
+def _invoice_number(value: object, location: str) -> str:
+    if isinstance(value, bool):
+        raise InputError(f"{location}：发票号码格式无效")
+    if isinstance(value, float) and value.is_integer():
+        value = format(value, ".0f")
+    number = str(value or "").strip()
+    if not number or len(number) > 64 or not re.fullmatch(r"[0-9A-Za-z._/-]+", number):
+        raise InputError(f"{location}：发票号码为空或格式无效")
+    return number.upper()
+
+
+def _invoice_date(value: object, location: str) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value or "").strip()
+    match = re.match(r"^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})(?:日|[ T].*)?$", text)
+    if not match:
+        raise InputError(f"{location}：开票日期须为完整日期")
+    try:
+        return date(*(int(part) for part in match.groups())).isoformat()
+    except ValueError:
+        raise InputError(f"{location}：开票日期无效「{text}」") from None
+
+
+def _invoice_kind(value: object, sheet_name: str, seller_id: object, buyer_id: object, company: Company) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"销项", "销项发票", "销售", "开出", "开具", "sale", "sales"}:
+        return "销项"
+    if text in {"采购", "进项", "进项发票", "购进", "受票", "purchase", "input"}:
+        return "采购"
+    if text:
+        raise InputError(f"{sheet_name}：无法识别发票方向「{value}」；仅支持销项/采购")
+    title = sheet_name.lower()
+    if "销项" in title:
+        return "销项"
+    if any(word in title for word in ("进项", "采购", "受票")):
+        return "采购"
+    taxpayer_id = re.sub(r"\s+", "", company.taxpayer_id or "").upper()
+    seller = re.sub(r"\s+", "", str(seller_id or "")).upper()
+    buyer = re.sub(r"\s+", "", str(buyer_id or "")).upper()
+    if taxpayer_id and seller == taxpayer_id and buyer != taxpayer_id:
+        return "销项"
+    if taxpayer_id and buyer == taxpayer_id and seller != taxpayer_id:
+        return "采购"
+    return ""
+
+
+def _invoice_status(value: object, amount: Decimal, tax: Decimal, location: str) -> str:
+    text = str(value or "").strip().lower()
+    if any(word in text for word in ("作废", "撤销", "void", "cancel")):
+        status = "作废"
+    elif any(word in text for word in ("红字", "红票", "红冲", "冲红", "负数", "red")):
+        status = "红字"
+    elif text in {"", "正常", "有效", "蓝字", "已开具", "normal", "valid", "blue"}:
+        status = "正常"
+    else:
+        raise InputError(f"{location}：无法识别发票状态「{value}」")
+    if amount < 0 or tax < 0:
+        if status == "正常" and text:
+            raise InputError(f"{location}：正常发票金额不能为负数")
+        if status == "正常":
+            status = "红字"
+    return status
+
+
+def _invoice_bool(value: object, location: str) -> bool | None:
+    if value is None or isinstance(value, str) and not value.strip():
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "1", "是", "已确认", "已勾选", "已抵扣", "确认", "yes"}:
+        return True
+    if text in {"false", "0", "否", "未确认", "未勾选", "未抵扣", "no"}:
+        return False
+    raise InputError(f"{location}：布尔状态无法识别「{value}」")
+
+
+def _invoice_row(ws, row: tuple, idx: int, columns: dict[str, int], company: Company, template_mode: bool) -> _Invoice:
+    def value(field):
+        index = columns.get(field)
+        return row[index] if index is not None and index < len(row) else None
+
+    location = f"{ws.title}第 {idx} 行"
+    number = _invoice_number(value("number"), f"{location}发票号码")
+    issued_on = _invoice_date(value("issued_on"), f"{location}开票日期")
+    tax = _number(value("tax"), f"{location}税额")
+    amount = _number(value("amount"), f"{location}不含税金额")
+    total = _number(value("total"), f"{location}价税合计")
+    if tax is None:
+        raise InputError(f"{location}：税额不能为空；零税额须明确填 0")
+    if amount is None:
+        if total is None:
+            raise InputError(f"{location}：不含税金额或价税合计至少填写一项")
+        amount = (abs(total) - abs(tax)) * (-1 if total < 0 else 1)
+        if abs(total) < abs(tax):
+            raise InputError(f"{location}：价税合计不能小于税额")
+    if total is not None and abs(abs(total) - abs(amount) - abs(tax)) > Decimal("0.01"):
+        raise InputError(f"{location}：价税合计与不含税金额加税额不一致")
+    kind = _invoice_kind(value("kind"), ws.title, value("seller_id"), value("buyer_id"), company)
+    if not kind:
+        raise InputError(f"{location}：无法根据类型、工作表名或购销双方税号判定销项/采购")
+    status = _invoice_status(value("status"), amount, tax, location)
+    confirmed = _invoice_bool(value("confirmed"), f"{location}用途确认状态")
+    usage = str(value("usage") or "").strip()
+    transferred = _invoice_bool(value("transferred"), f"{location}进项转出状态")
+    transferred_tax = _number(value("transferred_tax"), f"{location}进项转出税额")
+    if transferred is False and transferred_tax not in {None, Decimal(0)}:
+        raise InputError(f"{location}：未转出时进项转出税额必须为空或 0")
+    deductible_tax = None
+    if kind == "采购" and status != "作废":
+        explicitly_deductible = confirmed is True and (not usage or "抵扣" in usage)
+        if template_mode and confirmed is None and not usage:
+            explicitly_deductible = True
+        if explicitly_deductible:
+            deductible_tax = abs(tax)
+            if transferred:
+                transferred_tax = abs(transferred_tax or Decimal(0))
+                if transferred_tax > deductible_tax:
+                    raise InputError(f"{location}：进项转出税额不能大于发票税额")
+                deductible_tax -= transferred_tax
+    detail = f"{kind}{status}；不含税 {abs(amount):,.2f}；税额 {abs(tax):,.2f}"
+    if total is not None:
+        detail += f"；价税合计 {abs(total):,.2f}"
+    return _Invoice(
+        number, issued_on, kind, abs(amount), abs(tax), status, deductible_tax,
+        str(value("deductible_period") or "").strip(),
+        str(value("seller_id") or "").strip(), str(value("buyer_id") or "").strip(),
+        f"{ws.title}!第{idx}行", detail,
+    )
+
+
+def _read_invoices(wb, company: Company) -> list[_Invoice]:
+    known = {
+        config.SHEET_COMPANY, config.SHEET_ACCOUNTS, config.SHEET_DECLARATION,
+        config.SHEET_INCOME, config.SHEET_BALANCE, config.SHEET_CASHFLOW,
+        config.SHEET_HISTORY, config.SHEET_BANK, config.SHEET_BANK_ADJUSTMENTS, config.SHEET_SUPPLEMENT,
+    }
+    candidates = []
+    for ws in wb.worksheets:
+        if ws.title in known:
             continue
-        number = str(row[0]).strip()
-        if not number or number in seen:
-            raise InputError(f"发票明细 A{idx}：发票号码为空或重复")
-        seen.add(number)
-        kind, status = str(row[2] or "").strip(), str(row[5] or "").strip()
-        if kind not in totals or status not in {"正常", "红字", "作废"}:
-            raise InputError(f"发票明细第 {idx} 行：类型仅支持销项/采购，状态仅支持正常/红字/作废")
-        amount = _number(row[3], f"发票明细 D{idx}")
-        tax = _number(row[4], f"发票明细 E{idx}")
-        if amount is None or tax is None:
-            raise InputError(f"发票明细第 {idx} 行：不含税金额和税额不能为空")
-        if status == "作废":
+        columns = _invoice_columns(ws)
+        required = {"number", "issued_on", "tax"}
+        looks_like_invoice = required.issubset(columns) and ({"amount", "total"} & columns.keys())
+        if ws.title == config.SHEET_INVOICES and not looks_like_invoice:
+            raise InputError(f"「{config.SHEET_INVOICES}」表头不符；必须包含发票号码、开票日期、不含税金额或价税合计、税额")
+        if looks_like_invoice:
+            candidates.append((ws, columns))
+    seen, invoices = set(), []
+    for ws, columns in candidates:
+        template_mode = [cell.value for cell in ws[1]][:len(config.COL_INVOICES)] == config.COL_INVOICES
+        for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+            if all(value is None or isinstance(value, str) and not value.strip() for value in row):
+                continue
+            invoice = _invoice_row(ws, row, idx, columns, company, template_mode)
+            if invoice.number in seen:
+                raise InputError(f"发票号码重复「{invoice.number}」；请先去重，禁止重复计入")
+            seen.add(invoice.number)
+            invoices.append(invoice)
+    return invoices
+
+
+def _invoice_metrics(company: Company, invoices: list[_Invoice]) -> dict[str, Metric]:
+    if not invoices:
+        return {}
+    audit_period = _parse_period(company.period, "企业信息核对所属期")
+    totals = {kind: {"amount": Decimal(0), "tax": Decimal(0), "count": 0, "red": 0, "void": 0}
+              for kind in ("销项", "采购")}
+    deductible_total, deductible_count = Decimal(0), 0
+    seen, sources = set(), []
+    for invoice in invoices:
+        if invoice.number in seen:
+            raise InputError(f"发票号码重复「{invoice.number}」；请先去重，禁止重复计入")
+        seen.add(invoice.number)
+        issued_on = date.fromisoformat(invoice.issued_on)
+        if not audit_period.start <= issued_on <= audit_period.end:
+            raise InputError(
+                f"发票「{invoice.number}」开票日期 {invoice.issued_on} 不在核对期间 {company.period} 内；"
+                "请拆分期间或更正核对所属期"
+            )
+        kind = invoice.kind or _invoice_kind("", "XML 发票", invoice.seller_id, invoice.buyer_id, company)
+        if not kind:
+            raise InputError(
+                f"发票「{invoice.number}」无法根据购销双方税号与企业纳税人识别号判定销项/采购"
+            )
+        bucket = totals[kind]
+        if invoice.status == "作废":
+            bucket["void"] += 1
             continue
-        sign = Decimal(-1) if status == "红字" else Decimal(1)
-        totals[kind] += sign * abs(amount)
-        counts[kind] += 1
-        if kind == "采购":
-            tax_total += sign * abs(tax)
-    for kind, key in (("销项", "发票.销项净额"), ("采购", "发票.采购不含税净额")):
-        if counts[kind]:
-            metrics[key] = Metric(key, totals[kind], f"发票明细—{kind}有效发票（含红字、剔除作废）", f"{counts[kind]} 张净额合计 {totals[kind]:,.2f}")
-    if counts["采购"]:
+        sign = Decimal(-1) if invoice.status == "红字" else Decimal(1)
+        bucket["amount"] += sign * invoice.amount
+        bucket["tax"] += sign * invoice.tax
+        bucket["count"] += 1
+        bucket["red"] += invoice.status == "红字"
+        sources.append(invoice.source)
+        if kind == "采购" and invoice.deductible_tax is not None:
+            in_period = True
+            if invoice.deductible_period:
+                confirmation = _parse_period(invoice.deductible_period, f"发票「{invoice.number}」抵扣所属期")
+                in_period = audit_period.start <= confirmation.start and confirmation.end <= audit_period.end
+            if in_period:
+                deductible_total += sign * invoice.deductible_tax
+                deductible_count += 1
+    source = "；".join(dict.fromkeys(sources)) or "发票明细"
+    metrics = {}
+    for kind, amount_key, tax_key in (
+        ("销项", "发票.销项净额", "发票.销项税额净额"),
+        ("采购", "发票.采购不含税净额", "发票.采购税额净额"),
+    ):
+        bucket = totals[kind]
+        if bucket["count"]:
+            detail = (
+                f"{bucket['count']} 张有效票（红字 {bucket['red']} 张、另剔除作废 {bucket['void']} 张）；"
+                f"不含税净额 {bucket['amount']:,.2f}；税额净额 {bucket['tax']:,.2f}"
+            )
+            metrics[amount_key] = Metric(amount_key, bucket["amount"], source + f" / {kind}有效发票", detail)
+            metrics[tax_key] = Metric(tax_key, bucket["tax"], source + f" / {kind}有效发票税额", detail)
+    if deductible_count:
         metrics["凭证.本期确认抵扣税额"] = Metric(
-            "凭证.本期确认抵扣税额", tax_total,
-            "发票明细—采购发票税额（仅作为本期确认抵扣清单）", f"采购有效发票税额净计 {tax_total:,.2f}",
+            "凭证.本期确认抵扣税额", deductible_total,
+            source + " / 已明确确认抵扣且抵扣所属期落在本期的采购发票",
+            f"{deductible_count} 张确认抵扣发票税额净计 {deductible_total:,.2f}；未确认用途的采购税额不计入",
         )
+    return metrics
 
 
-def _read_bank(wb, metrics):
-    if config.SHEET_BANK not in wb.sheetnames:
-        return
-    ws = _sheet(wb, config.SHEET_BANK, config.COL_BANK)
-    receipts, payments, count = Decimal(0), Decimal(0), 0
-    for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
-        if all(value is None for value in row):
+_BANK_HEADERS = {
+    "transaction_id": {"流水号", "交易流水号", "交易序号", "唯一编号", "主机流水号", "银行流水号", "transactionid"},
+    "date": {"交易日期", "记账日期", "入账日期", "交易时间", "交易日", "transactiondate"},
+    "summary": {"摘要", "交易摘要", "用途", "附言", "备注", "交易备注", "description"},
+    "income": {"收入金额", "收入", "贷方发生额", "贷方金额", "转入金额", "creditamount"},
+    "expense": {"支出金额", "支出", "借方发生额", "借方金额", "转出金额", "debitamount"},
+    "amount": {"交易金额", "发生额", "金额", "transactionamount"},
+    "direction": {"收支方向", "交易方向", "借贷标志", "借贷方向", "方向", "debitcreditindicator"},
+    "category": {"分类", "业务分类", "核对分类"},
+    "currency": {"币别", "币种", "货币", "currency"},
+    "counterparty": {"对方户名", "对方名称", "交易对手名称", "counterpartyname"},
+    "account": {"账号", "本方账号", "交易账号", "accountnumber"},
+    "counterparty_account": {"对方账号", "交易对手账号", "counterpartyaccount"},
+    "balance": {"余额", "账户余额", "balance"},
+}
+
+_BANK_HEADER_TOKENS = {
+    field: {_header_token(alias) for alias in aliases}
+    for field, aliases in _BANK_HEADERS.items()
+}
+
+_BANK_LINKED_CATEGORIES = {
+    "经营回款", "借款", "内部转账", "资本金", "往来款", "预收款", "保证金", "退款", "其他非经营",
+}
+_BANK_STANDALONE_CATEGORIES = {
+    "现金收入补计", "应收收入补计", "跨期收入补计", "跨期收入扣减", "退款折让扣减", "其他有据调节",
+}
+
+
+def _bank_header(ws) -> tuple[int, dict[str, int]] | None:
+    """Locate a flat bank-export header in the first 30 rows."""
+
+    best = None
+    for row_index in range(1, min(ws.max_row, 30) + 1):
+        columns = {}
+        for index, cell in enumerate(ws[row_index]):
+            token = _header_token(cell.value)
+            for field, aliases in _BANK_HEADER_TOKENS.items():
+                if token in aliases:
+                    if field in columns:
+                        raise InputError(f"{ws.title} 第 {row_index} 行存在重复银行字段「{cell.value}」")
+                    columns[field] = index
+                    break
+        money_columns = {"income", "expense"} & columns.keys()
+        has_money = bool(money_columns) or {"amount", "direction"}.issubset(columns)
+        if "date" in columns and has_money and ("transaction_id" in columns or ws.title == config.SHEET_BANK):
+            score = len(columns)
+            if best is None or score > best[0]:
+                best = (score, row_index, columns)
+    return (best[1], best[2]) if best else None
+
+
+def _bank_identifier(value: object, location: str) -> str:
+    if isinstance(value, bool):
+        raise InputError(f"{location}：编号格式无效")
+    if isinstance(value, float) and value.is_integer():
+        value = format(value, ".0f")
+    text = str(value or "").strip()
+    if not text or len(text) > 128 or any(char in text for char in "\r\n\t"):
+        raise InputError(f"{location}：编号为空或格式无效")
+    return re.sub(r"\s+", "", text).upper()
+
+
+def _bank_date(value: object, location: str) -> str:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d{8}", text):
+        text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
+    match = re.match(r"^(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})(?:日|[ T].*)?$", text)
+    if not match:
+        raise InputError(f"{location}：交易日期须为完整日期")
+    try:
+        return date(*(int(part) for part in match.groups())).isoformat()
+    except ValueError:
+        raise InputError(f"{location}：交易日期无效「{text}」") from None
+
+
+def _bank_number(value: object, location: str) -> Decimal | None:
+    if isinstance(value, str):
+        value = value.strip().replace(",", "").replace("￥", "").replace("¥", "")
+    return _number(value, location)
+
+
+def _bank_direction(value: object, location: str) -> str:
+    text = str(value or "").strip().lower()
+    if text in {"收入", "收", "转入", "入账", "贷", "贷方", "c", "credit"}:
+        return "收入"
+    if text in {"支出", "付", "转出", "出账", "借", "借方", "d", "debit"}:
+        return "支出"
+    raise InputError(f"{location}：无法识别收支方向「{value}」")
+
+
+def _bank_currency(value: object, location: str) -> str:
+    text = str(value or "").strip().upper().replace(" ", "")
+    if text in {"", "人民币", "人民币元", "CNY", "RMB", "156"}:
+        return "CNY"
+    raise InputError(f"{location}：当前仅支持人民币流水，实际为「{value}」")
+
+
+def _mask_account(value: object) -> str:
+    text = re.sub(r"\s+", "", str(value or ""))
+    return ("*" * min(max(len(text) - 4, 0), 8) + text[-4:]) if text else ""
+
+
+def _read_bank_transactions(wb) -> list[_BankTransaction]:
+    known = {
+        config.SHEET_COMPANY, config.SHEET_ACCOUNTS, config.SHEET_DECLARATION,
+        config.SHEET_INCOME, config.SHEET_BALANCE, config.SHEET_CASHFLOW,
+        config.SHEET_HISTORY, config.SHEET_INVOICES, config.SHEET_BANK_ADJUSTMENTS,
+        config.SHEET_SUPPLEMENT,
+    }
+    candidates = []
+    for ws in wb.worksheets:
+        if ws.title in known:
             continue
-        income = _number(row[2], f"银行流水 C{idx}") or Decimal(0)
-        expense = _number(row[3], f"银行流水 D{idx}") or Decimal(0)
-        category = str(row[4] or "").strip()
-        if not category:
-            raise InputError(f"银行流水 E{idx}：必须填写分类，避免把借款或内部转账误当收入")
-        if income < 0 or expense < 0 or (income > 0 and expense > 0):
-            raise InputError(f"银行流水第 {idx} 行：收支须为非负数，且不能同时大于零")
-        receipts += income
-        payments += expense
-        count += 1
-    if count:
-        metrics["银行.收入流水合计"] = Metric("银行.收入流水合计", receipts, "银行流水—收入金额列", f"{count} 行流水；收入合计 {receipts:,.2f}")
-        metrics["银行.支出流水合计"] = Metric("银行.支出流水合计", payments, "银行流水—支出金额列", f"{count} 行流水；支出合计 {payments:,.2f}")
+        header = _bank_header(ws)
+        if ws.title == config.SHEET_BANK and header is None:
+            raise InputError(
+                f"「{config.SHEET_BANK}」表头不符；须包含交易日期及收入/支出金额，"
+                "来源导出表还须包含唯一编号或交易流水号"
+            )
+        if header is not None:
+            candidates.append((ws, *header))
+
+    seen, transactions = set(), []
+    for ws, header_row, columns in candidates:
+        header_values = [cell.value for cell in ws[header_row]]
+        legacy = header_row == 1 and header_values[:len(config.COL_BANK)] == config.COL_BANK
+
+        def value(row, field):
+            column = columns.get(field)
+            return row[column] if column is not None and column < len(row) else None
+
+        for idx, row in enumerate(ws.iter_rows(min_row=header_row + 1, values_only=True), header_row + 1):
+            if all(item is None or isinstance(item, str) and not item.strip() for item in row):
+                continue
+            row_text = "".join(str(item or "") for item in row)
+            if not value(row, "date") and not value(row, "transaction_id") and "合计" in row_text:
+                continue
+            location = f"{ws.title}第 {idx} 行"
+            explicit_id = value(row, "transaction_id") not in {None, ""}
+            if not explicit_id and not legacy:
+                raise InputError(f"{location}：来源银行流水必须提供唯一编号或交易流水号")
+            transaction_id = (
+                _bank_identifier(value(row, "transaction_id"), f"{location}流水号")
+                if explicit_id else f"{ws.title}-{idx}"
+            )
+            key = ("ID:" if explicit_id else "LEGACY:") + transaction_id
+            if key in seen:
+                raise InputError(f"银行流水号重复「{transaction_id}」；请先去重，禁止重复计入")
+            seen.add(key)
+            transacted_on = _bank_date(value(row, "date"), f"{location}交易日期")
+            income = expense = Decimal(0)
+            if "income" in columns or "expense" in columns:
+                income = _bank_number(value(row, "income"), f"{location}收入金额") or Decimal(0)
+                expense = _bank_number(value(row, "expense"), f"{location}支出金额") or Decimal(0)
+                if income < 0 or expense < 0:
+                    raise InputError(f"{location}：收入和支出金额须为非负数")
+            else:
+                amount = _bank_number(value(row, "amount"), f"{location}交易金额")
+                if amount is None or amount == 0:
+                    raise InputError(f"{location}：交易金额不能为空或零")
+                direction = _bank_direction(value(row, "direction"), f"{location}收支方向")
+                if direction == "收入":
+                    income = abs(amount)
+                else:
+                    expense = abs(amount)
+            if (income > 0) == (expense > 0):
+                raise InputError(f"{location}：收入和支出必须且只能有一项大于零")
+            category = str(value(row, "category") or "").strip()
+            if legacy and not category:
+                raise InputError(f"{location}：统一模板必须填写分类，避免把借款或内部转账误当收入")
+            currency = _bank_currency(value(row, "currency"), f"{location}币种")
+            summary = str(value(row, "summary") or "").strip()
+            counterparty = str(value(row, "counterparty") or "").strip()
+            account_hint = _mask_account(value(row, "account"))
+            counterparty_hint = _mask_account(value(row, "counterparty_account"))
+            detail = (
+                f"{transacted_on}；{'收入' if income else '支出'} {(income or expense):,.2f}；"
+                f"分类 {category or '待调节底稿复核'}；币种 {currency}"
+            )
+            if counterparty:
+                detail += f"；对方 {counterparty}"
+            if counterparty_hint:
+                detail += f"（账号尾号 {counterparty_hint}）"
+            transactions.append(_BankTransaction(
+                key, transaction_id, transacted_on, summary, income, expense, category, currency,
+                counterparty, account_hint, explicit_id, f"{ws.title}!第{idx}行", detail,
+            ))
+    return transactions
+
+
+def _bank_reviewed(value: object, location: str) -> bool:
+    text = str(value or "").strip().lower()
+    if value is True or text in {"已复核", "复核通过", "是", "true", "1", "yes"}:
+        return True
+    if value is False or text in {"", "待复核", "未复核", "否", "false", "0", "no"}:
+        return False
+    raise InputError(f"{location}：复核状态无法识别「{value}」")
+
+
+def _read_bank_adjustments(wb) -> list[_BankAdjustment]:
+    if config.SHEET_BANK_ADJUSTMENTS not in wb.sheetnames:
+        return []
+    ws = _sheet(wb, config.SHEET_BANK_ADJUSTMENTS, config.COL_BANK_ADJUSTMENTS)
+    adjustments, seen = [], set()
+    for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+        if all(value is None or isinstance(value, str) and not value.strip() for value in row):
+            continue
+        location = f"{config.SHEET_BANK_ADJUSTMENTS}第 {idx} 行"
+        number = _bank_identifier(row[0], f"{location}调节编号")
+        if number in seen:
+            raise InputError(f"{location}：调节编号重复「{number}」")
+        seen.add(number)
+        transaction_id = _bank_identifier(row[1], f"{location}流水号") if str(row[1] or "").strip() else ""
+        category = str(row[2] or "").strip()
+        if category not in _BANK_LINKED_CATEGORIES | _BANK_STANDALONE_CATEGORIES:
+            allowed = "、".join(sorted(_BANK_LINKED_CATEGORIES | _BANK_STANDALONE_CATEGORIES))
+            raise InputError(f"{location}：分类「{category}」无效；支持 {allowed}")
+        period = str(row[3] or "").strip()
+        _parse_period(period, f"{location}权责所属期")
+        recognized = _number(row[4], f"{location}本期不含税收入")
+        amount = _number(row[5], f"{location}调节金额")
+        direction_raw = str(row[6] or "").strip()
+        direction = ""
+        if direction_raw:
+            if direction_raw in {"加计", "增加", "+"}:
+                direction = "加计"
+            elif direction_raw in {"扣减", "减少", "-"}:
+                direction = "扣减"
+            else:
+                raise InputError(f"{location}：调节方向仅支持加计或扣减")
+        workpaper = str(row[7] or "").strip()
+        detail = str(row[9] or "").strip()
+        if not workpaper or not detail:
+            raise InputError(f"{location}：必须填写底稿编号和说明")
+        if len(workpaper) > 128 or len(detail) > 2000:
+            raise InputError(f"{location}：底稿编号或说明过长")
+        adjustments.append(_BankAdjustment(
+            number, transaction_id, category, period, recognized, amount, direction, workpaper,
+            _bank_reviewed(row[8], f"{location}复核状态"), detail, f"{ws.title}!第{idx}行",
+        ))
+    return adjustments
+
+
+def _bank_metrics(
+    company: Company,
+    transactions: list[_BankTransaction],
+    adjustments: list[_BankAdjustment],
+) -> dict[str, Metric]:
+    if not transactions and not adjustments:
+        return {}
+    if adjustments and not transactions:
+        raise InputError("银行调节存在但没有原始银行流水；请同时上传来源流水")
+    audit_period = _parse_period(company.period, "企业信息核对所属期")
+    receipts = payments = Decimal(0)
+    sources, by_id, seen_keys = [], {}, set()
+    for transaction in transactions:
+        if transaction.key in seen_keys:
+            raise InputError(f"银行流水重复「{transaction.transaction_id}」；请先去重，禁止重复计入")
+        seen_keys.add(transaction.key)
+        transacted_on = date.fromisoformat(transaction.transacted_on)
+        if not audit_period.start <= transacted_on <= audit_period.end:
+            raise InputError(
+                f"银行流水「{transaction.transaction_id}」交易日期 {transaction.transacted_on} "
+                f"不在核对期间 {company.period} 内；请拆分期间或更正核对所属期"
+            )
+        receipts += transaction.income
+        payments += transaction.expense
+        sources.append(transaction.source)
+        if transaction.explicit_id:
+            if transaction.transaction_id in by_id:
+                raise InputError(f"银行流水号重复「{transaction.transaction_id}」；请先去重，禁止重复计入")
+            by_id[transaction.transaction_id] = transaction
+    raw_source = "；".join(dict.fromkeys(sources)) or "银行流水"
+    metrics = {
+        "银行.收入流水合计": Metric(
+            "银行.收入流水合计", receipts, raw_source + " / 原始入账流水",
+            f"{len(transactions)} 行已入账人民币流水；收入合计 {receipts:,.2f}；不得直接作为营业收入",
+        ),
+        "银行.支出流水合计": Metric(
+            "银行.支出流水合计", payments, raw_source + " / 原始出账流水",
+            f"{len(transactions)} 行已入账人民币流水；支出合计 {payments:,.2f}",
+        ),
+    }
+    if not adjustments:
+        return metrics
+    if any(not transaction.explicit_id and transaction.income > 0 for transaction in transactions):
+        raise InputError("生成银行收入调节数前，每笔收入流水必须具有银行唯一编号或交易流水号")
+
+    classified, adjustment_numbers = set(), set()
+    recognized_total = adjustment_total = Decimal(0)
+    categories, workpapers, adjustment_sources = {}, [], []
+    for adjustment in adjustments:
+        if adjustment.number in adjustment_numbers:
+            raise InputError(f"银行调节编号重复「{adjustment.number}」")
+        adjustment_numbers.add(adjustment.number)
+        if not adjustment.reviewed:
+            raise InputError(f"银行调节「{adjustment.number}」尚未复核，不能生成调节后收入")
+        period = _parse_period(adjustment.period, f"银行调节「{adjustment.number}」权责所属期")
+        in_period = audit_period.start <= period.start and period.end <= audit_period.end
+        workpapers.append(adjustment.workpaper)
+        adjustment_sources.append(adjustment.source)
+        categories[adjustment.category] = categories.get(adjustment.category, 0) + 1
+        if adjustment.transaction_id:
+            if adjustment.category not in _BANK_LINKED_CATEGORIES:
+                raise InputError(f"银行调节「{adjustment.number}」：带流水号时必须使用流水分类")
+            transaction = by_id.get(adjustment.transaction_id)
+            if transaction is None:
+                raise InputError(f"银行调节「{adjustment.number}」引用不存在的流水号「{adjustment.transaction_id}」")
+            if transaction.income <= 0:
+                raise InputError(f"银行调节「{adjustment.number}」只能关联收入流水")
+            if adjustment.transaction_id in classified:
+                raise InputError(f"收入流水「{adjustment.transaction_id}」被重复分类")
+            classified.add(adjustment.transaction_id)
+            recognized = adjustment.recognized_amount
+            if recognized is None or recognized < 0 or recognized > transaction.income:
+                raise InputError(
+                    f"银行调节「{adjustment.number}」本期不含税收入须明确填写，且在 0 与该笔收入流水之间"
+                )
+            if adjustment.adjustment_amount not in {None, Decimal(0)} or adjustment.direction:
+                raise InputError(f"银行调节「{adjustment.number}」关联流水时不得同时填写独立调节金额或方向")
+            if adjustment.category != "经营回款" and recognized != 0:
+                raise InputError(f"银行调节「{adjustment.number}」非经营/往来分类的本期不含税收入必须为 0")
+            if not in_period and recognized != 0:
+                raise InputError(f"银行调节「{adjustment.number}」权责所属期不在本期时，本期不含税收入必须为 0")
+            if in_period:
+                recognized_total += recognized
+        else:
+            if adjustment.category not in _BANK_STANDALONE_CATEGORIES:
+                raise InputError(f"银行调节「{adjustment.number}」：无流水号时必须使用独立调节分类")
+            if adjustment.recognized_amount not in {None, Decimal(0)}:
+                raise InputError(f"银行调节「{adjustment.number}」独立调节不得填写本期不含税收入")
+            if adjustment.adjustment_amount is None or adjustment.adjustment_amount <= 0 or not adjustment.direction:
+                raise InputError(f"银行调节「{adjustment.number}」须填写正数调节金额及加计/扣减方向")
+            if not in_period:
+                raise InputError(f"银行调节「{adjustment.number}」独立调节的权责所属期必须落在本核对期")
+            adjustment_total += adjustment.adjustment_amount * (Decimal(1) if adjustment.direction == "加计" else Decimal(-1))
+
+    unclassified = sorted(
+        transaction.transaction_id for transaction in transactions
+        if transaction.income > 0 and transaction.transaction_id not in classified
+    )
+    if unclassified:
+        shown = "、".join(unclassified[:5]) + ("……" if len(unclassified) > 5 else "")
+        raise InputError(f"仍有 {len(unclassified)} 笔收入流水未在银行调节底稿分类：{shown}")
+    final = recognized_total + adjustment_total
+    if final < 0:
+        raise InputError("银行调节后不含税收入不能为负数，请复核扣减项")
+    bridge_source = "；".join(dict.fromkeys(adjustment_sources))
+    category_detail = "、".join(f"{name}{count}笔" for name, count in sorted(categories.items()))
+    workpaper_detail = "、".join(dict.fromkeys(workpapers))
+    metrics["银行.经营回款已复核不含税额"] = Metric(
+        "银行.经营回款已复核不含税额", recognized_total,
+        raw_source + "；" + bridge_source + " / 逐笔分类与价税复核",
+        f"逐笔确认的本期经营回款不含税额 {recognized_total:,.2f}；分类：{category_detail}；底稿：{workpaper_detail}",
+    )
+    metrics["银行.权责口径调节额"] = Metric(
+        "银行.权责口径调节额", adjustment_total,
+        bridge_source + " / 现金、往来及跨期调节",
+        f"独立加减调节净额 {adjustment_total:,.2f}；底稿：{workpaper_detail}",
+    )
+    metrics["银行.调节后不含税收入"] = Metric(
+        "银行.调节后不含税收入", final,
+        raw_source + "；" + bridge_source + " / 已复核收入调节桥",
+        f"已复核经营回款不含税额 {recognized_total:,.2f} + 权责口径调节额 {adjustment_total:,.2f} = {final:,.2f}；"
+        f"原始收入流水 {receipts:,.2f} 仅作对照，不直接作为收入；底稿：{workpaper_detail}",
+    )
+    return metrics
 
 
 def _from_workbook(wb) -> Dataset:
@@ -242,9 +1084,17 @@ def _from_workbook(wb) -> Dataset:
         _read_statement(wb, config.SHEET_INCOME, "利润表", metrics)
         _read_statement(wb, config.SHEET_BALANCE, "资产负债表", metrics)
         _read_statement(wb, config.SHEET_CASHFLOW, "现金流量表", metrics)
-        _read_history(wb, metrics)
-        _read_invoices(wb, metrics)
-        _read_bank(wb, metrics)
+        _read_history(wb, company, metrics)
+        invoice_metrics = _invoice_metrics(company, _read_invoices(wb, company))
+        for key, metric in invoice_metrics.items():
+            if key in metrics and metrics[key].value != metric.value:
+                raise InputError(f"指标「{key}」与发票明细计算值冲突")
+            metrics[key] = metric
+        bank_metrics = _bank_metrics(company, _read_bank_transactions(wb), _read_bank_adjustments(wb))
+        for key, metric in bank_metrics.items():
+            if key in metrics and metrics[key].value != metric.value:
+                raise InputError(f"指标「{key}」与银行流水/调节底稿计算值冲突")
+            metrics[key] = metric
         _read_supplement(wb, company, metrics)
         return Dataset(company, accounts, declarations, metrics)
     finally:

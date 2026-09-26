@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha256
 from io import BytesIO
 from pathlib import PurePosixPath
 import re
+from xml.etree import ElementTree
 from zipfile import ZipFile, BadZipFile
 
 import pdfplumber
@@ -30,6 +32,8 @@ def _text(value):
 def _serial(value):
     if isinstance(value, Decimal):
         return str(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
     if isinstance(value, dict):
         return {k: _serial(v) for k, v in value.items()}
     if isinstance(value, list):
@@ -109,17 +113,168 @@ def _excel(data, doc):
         metrics = {}
         for sheet in (config.SHEET_INCOME, config.SHEET_BALANCE, config.SHEET_CASHFLOW):
             loader._read_statement(wb, sheet, sheet, metrics)
-        loader._read_history(wb, metrics)
-        loader._read_invoices(wb, metrics)
-        loader._read_bank(wb, metrics)
+        period_series = loader._read_history(wb, company, metrics)
+        invoices = loader._read_invoices(wb, company)
+        bank_transactions = loader._read_bank_transactions(wb)
+        bank_adjustments = loader._read_bank_adjustments(wb)
         loader._read_supplement(wb, company, metrics)
-        if not accounts and not declarations and not metrics:
+        if (not accounts and not declarations and not metrics and not period_series and not invoices
+                and not bank_transactions and not bank_adjustments):
             raise InputError("没有找到支持的账表；请保留标准工作表名称和列名。")
+        serialized_series = [
+            {
+                "name": name,
+                "value": str(item.metric.value),
+                "source": item.metric.source,
+                "period": item.period.label,
+                "detail": item.metric.detail,
+            }
+            for name, values in period_series.items()
+            for item in values.values()
+        ]
         doc.update(company=asdict(company), accounts=_serial([asdict(a) for a in accounts]),
-                   declarations=_serial(declarations), rows=[_serial(asdict(m)) for m in metrics.values()])
-        doc["summary"] = f"{len(accounts)} 行科目、{len(declarations)} 项申报、{len(metrics)} 项补充/报表指标"
+                   declarations=_serial(declarations), rows=[_serial(asdict(m)) for m in metrics.values()],
+                   period_series=serialized_series, invoices=_serial([asdict(invoice) for invoice in invoices]),
+                   bank_transactions=_serial([asdict(item) for item in bank_transactions]),
+                   bank_adjustments=_serial([asdict(item) for item in bank_adjustments]))
+        doc["summary"] = (
+            f"{len(accounts)} 行科目、{len(declarations)} 项申报、{len(metrics)} 项补充/报表指标、"
+            f"{len(serialized_series)} 条期间序列、{len(invoices)} 张发票、"
+            f"{len(bank_transactions)} 笔银行流水、{len(bank_adjustments)} 条银行调节"
+        )
     finally:
         wb.close()
+
+
+def _xml_values(root) -> dict[str, list[str]]:
+    values = {}
+    count = 0
+    stack = [(root, 1)]
+    while stack:
+        element, depth = stack.pop()
+        count += 1
+        if count > 5000 or depth > 40:
+            raise InputError("XML 元素数量或嵌套深度超过限制。")
+        local = element.tag.rsplit("}", 1)[-1]
+        text = (element.text or "").strip()
+        if text:
+            values.setdefault(loader._header_token(local), []).append(text)
+        stack.extend((child, depth + 1) for child in element)
+    return values
+
+
+def _xml_value(values, *aliases, required=False, label="字段"):
+    found = []
+    for alias in aliases:
+        found.extend(values.get(loader._header_token(alias), []))
+    found = list(dict.fromkeys(found))
+    if len(found) > 1:
+        raise InputError(f"XML 中{label}存在冲突值：{'、'.join(found)}")
+    if required and not found:
+        raise InputError(f"XML 缺少{label}。")
+    return found[0] if found else ""
+
+
+def _xml(data, doc):
+    if re.search(br"<!\s*(?:DOCTYPE|ENTITY)\b", data, re.IGNORECASE):
+        raise InputError("XML 不允许 DTD 或实体声明。")
+    try:
+        root = ElementTree.fromstring(data)
+    except ElementTree.ParseError as exc:
+        raise InputError(f"XML 无法解析：{exc}") from exc
+    root_name = root.tag.rsplit("}", 1)[-1].lower()
+    mof_namespace = "http://xbrl.mof.gov.cn/taxonomy/"
+    if root_name != "xbrl" or not any(
+        isinstance(element.tag, str) and element.tag.startswith("{" + mof_namespace)
+        for element in root.iter()
+    ):
+        raise InputError("XML 不是财政部电子凭证会计数据标准的数电发票 XBRL 实例。")
+    values = _xml_values(root)
+    number = loader._invoice_number(
+        _xml_value(values, "InvoiceNumber", "Fphm", "InvoiceNo", "发票号码", required=True, label="发票号码"),
+        "XML 发票号码",
+    )
+    issued_on = loader._invoice_date(
+        _xml_value(values, "RequestTime", "IssueDate", "Kprq", "开票日期", required=True, label="开票日期"),
+        f"XML 发票「{number}」",
+    )
+    amount = loader._number(
+        _xml_value(values, "TotalAmWithoutTax", "AmountWithoutTax", "Hjje", "不含税金额合计", required=True, label="不含税金额合计"),
+        f"XML 发票「{number}」不含税金额",
+    )
+    tax = loader._number(
+        _xml_value(values, "TotalTaxAm", "TotalTaxAmount", "Hjse", "合计税额", required=True, label="合计税额"),
+        f"XML 发票「{number}」税额",
+    )
+    total = loader._number(
+        _xml_value(values, "TotalTax-includedAmount", "TotalTaxIncludedAmount", "Jshj", "价税合计小写", label="价税合计"),
+        f"XML 发票「{number}」价税合计",
+    )
+    if amount is None or tax is None:
+        raise InputError(f"XML 发票「{number}」不含税金额和税额不能为空。")
+    if total is not None and abs(abs(total) - abs(amount) - abs(tax)) > Decimal("0.01"):
+        raise InputError(f"XML 发票「{number}」价税合计与不含税金额加税额不一致。")
+    red = loader._invoice_bool(
+        _xml_value(values, "WhetherEinvoiceIsRedEinvoice", "IsRedInvoice", "红字发票标志", label="红字标志"),
+        f"XML 发票「{number}」红字标志",
+    )
+    void = loader._invoice_bool(
+        _xml_value(values, "WhetherEinvoiceIsVoided", "IsVoid", "作废标志", label="作废标志"),
+        f"XML 发票「{number}」作废标志",
+    )
+    raw_status = _xml_value(values, "InvoiceStatus", "Status", "发票状态", label="发票状态")
+    if void:
+        raw_status = "作废"
+    elif red:
+        raw_status = "红字"
+    status = loader._invoice_status(raw_status, amount, tax, f"XML 发票「{number}」")
+    seller_id = _xml_value(values, "SellerIdNum", "SellerTaxpayerId", "XsfNsrsbh", "销售方纳税人识别号", label="销售方税号")
+    buyer_id = _xml_value(values, "BuyerIdNum", "PurchaserIdNum", "GmfNsrsbh", "购买方纳税人识别号", label="购买方税号")
+    accounting_id = _xml_value(
+        values, "UnifiedSocialCreditCodeOfAccountingEntity", "AccountingEntityId", label="会计主体统一社会信用代码"
+    )
+    accounting_name = _xml_value(values, "NameOfAccountingEntity", "AccountingEntityName", label="会计主体名称")
+    if not buyer_id and accounting_id and accounting_id != seller_id:
+        buyer_id = accounting_id
+    if accounting_id:
+        doc["company"]["taxpayer_id"] = accounting_id
+    if accounting_name:
+        doc["company"]["name"] = accounting_name
+    explicit_kind = _xml_value(values, "InvoiceDirection", "BusinessDirection", "发票方向", label="发票方向")
+    company = Company(doc["company"]["name"], doc["company"]["taxpayer_id"], "", "")
+    kind = loader._invoice_kind(explicit_kind, "XML 发票", seller_id, buyer_id, company)
+    confirmed = loader._invoice_bool(
+        _xml_value(values, "WhetherEinvoiceUsageHasBeenConfirmed", "UsageConfirmed", "用途确认状态", label="用途确认状态"),
+        f"XML 发票「{number}」用途确认状态",
+    )
+    usage = _xml_value(values, "UsageConfirmation", "DeductionUsage", "用途确认", label="用途确认")
+    transferred = loader._invoice_bool(
+        _xml_value(values, "WhetherInputVatHasBeenTransferredOut", "InputVatTransferredOut", "进项转出标志", label="进项转出标志"),
+        f"XML 发票「{number}」进项转出标志",
+    )
+    transferred_tax = loader._number(
+        _xml_value(values, "AmountOfTransferredOutInputVat", "TransferredOutInputVat", "进项转出税额", label="进项转出税额"),
+        f"XML 发票「{number}」进项转出税额",
+    )
+    deductible_tax = None
+    if kind in {"", "采购"} and status != "作废" and confirmed is True and (not usage or "抵扣" in usage):
+        deductible_tax = abs(tax)
+        if transferred:
+            transferred_tax = abs(transferred_tax or Decimal(0))
+            if transferred_tax > deductible_tax:
+                raise InputError(f"XML 发票「{number}」进项转出税额不能大于发票税额。")
+            deductible_tax -= transferred_tax
+    detail = f"XML 数电发票；{kind or '待按企业税号判定方向'}{status}；不含税 {abs(amount):,.2f}；税额 {abs(tax):,.2f}"
+    if total is not None:
+        detail += f"；价税合计 {abs(total):,.2f}"
+    invoice = loader._Invoice(
+        number, issued_on, kind, abs(amount), abs(tax), status, deductible_tax,
+        _xml_value(values, "PeriodOfUsageConfirmation", "DeductionPeriod", "抵扣所属期", label="抵扣所属期"),
+        seller_id, buyer_id, "XML 数电发票结构化元素", detail,
+    )
+    doc["invoices"] = [_serial(asdict(invoice))]
+    doc["warnings"].append("XML 已按结构化字段解析；当前不代替电子税务局验真或数字签名验证。")
+    doc["summary"] = f"1 张 XML 数电发票：{number}，{kind or '购销方向提交时按企业税号判定'}，{status}"
 
 
 def _pdf(data, doc, keys):
@@ -186,7 +341,8 @@ def _unmapped_excel(data, doc):
     """Expose cell addresses for AI without bypassing standard-table validation."""
     known = {config.SHEET_ACCOUNTS, config.SHEET_COMPANY, config.SHEET_DECLARATION,
              config.SHEET_INCOME, config.SHEET_BALANCE, config.SHEET_CASHFLOW,
-             config.SHEET_HISTORY, config.SHEET_INVOICES, config.SHEET_BANK, config.SHEET_SUPPLEMENT}
+             config.SHEET_HISTORY, config.SHEET_INVOICES, config.SHEET_BANK,
+             config.SHEET_BANK_ADJUSTMENTS, config.SHEET_SUPPLEMENT}
     with ZipFile(BytesIO(data)) as archive:
         if sum(i.file_size for i in archive.infolist()) > MAX_TOTAL or len(archive.infolist()) > 1000:
             raise InputError("Excel 解压内容超过限制。")
@@ -219,9 +375,12 @@ def _unmapped_excel(data, doc):
 def preview(files, keys, extractor=None):
     docs = []
     for index, (name, data) in enumerate(expand_uploads(files)):
+        suffix = name.lower().rsplit(".", 1)[-1] if "." in name else ""
         doc = {"id": str(index), "name": name, "fingerprint": sha256(data).hexdigest()[:16],
-               "kind": "pdf" if name.lower().endswith(".pdf") else "xlsx", "company": dict.fromkeys(COMPANY_KEYS, ""),
-               "accounts": [], "declarations": {}, "rows": [], "pages": [], "warnings": [], "error": "",
+               "kind": suffix, "company": dict.fromkeys(COMPANY_KEYS, ""),
+               "accounts": [], "declarations": {}, "rows": [], "period_series": [], "invoices": [],
+               "bank_transactions": [], "bank_adjustments": [],
+               "pages": [], "warnings": [], "error": "",
                "extraction": {"method": "local"}}
         try:
             if name.lower().endswith(".xlsx"):
@@ -232,6 +391,8 @@ def preview(files, keys, extractor=None):
                         raise
                     _unmapped_excel(data, doc)
                     extractor.enrich(doc, data)
+            elif name.lower().endswith(".xml"):
+                _xml(data, doc)
             elif name.lower().endswith(".pdf"):
                 _pdf(data, doc, keys)
                 if extractor is not None:
@@ -241,7 +402,7 @@ def preview(files, keys, extractor=None):
                         doc["extraction"] = {"method": "ai_failed"}
                         doc["warnings"].insert(0, f"AI 未完成：{exc} 当前仅显示本地解析候选，需人工核对或重新上传。")
             else:
-                raise InputError("不支持此文件类型；请选择 .xlsx 或 .pdf（也可放入 ZIP）。")
+                raise InputError("不支持此文件类型；请选择 .xlsx、.xml 或 .pdf（也可放入 ZIP）。")
         except InputError as exc:
             doc["error"] = str(exc)
         except ExtractionError as exc:
@@ -261,7 +422,8 @@ def _merge_value(target, key, value, location):
 
 def build_dataset(documents, selections, company_override, keys):
     """Validate edits server-side and merge same-scope evidence without summation."""
-    company_data, accounts, declarations, metrics = {}, {}, {}, {}
+    company_data, accounts, declarations, metrics, period_series, invoices = {}, {}, {}, {}, {}, {}
+    bank_transactions, bank_adjustments, unkeyed_bank_docs = {}, {}, set()
     account_sources, declaration_sources = {}, {}
     for doc in documents:
         selection = selections[doc["id"]]
@@ -282,6 +444,101 @@ def build_dataset(documents, selections, company_override, keys):
             if company[key]:
                 _merge_value(company_data, key, company[key], "企业或期间不一致")
         source = f"{doc['name']} [SHA256:{doc['fingerprint']}]"
+        for raw in doc.get("invoices", []):
+            if not isinstance(raw, dict):
+                raise InputError(f"{source}：发票记录格式错误")
+            number = loader._invoice_number(raw.get("number"), f"{source} 发票号码")
+            issued_on = loader._invoice_date(raw.get("issued_on"), f"{source} 发票「{number}」")
+            kind = _text(raw.get("kind"))
+            status = _text(raw.get("status"))
+            if kind not in {"", "销项", "采购"} or status not in {"正常", "红字", "作废"}:
+                raise InputError(f"{source}：发票「{number}」方向或状态无效")
+            amount = loader._number(raw.get("amount"), f"{source} 发票「{number}」不含税金额")
+            tax = loader._number(raw.get("tax"), f"{source} 发票「{number}」税额")
+            deductible_tax = loader._number(raw.get("deductible_tax"), f"{source} 发票「{number}」抵扣税额")
+            if amount is None or tax is None or amount < 0 or tax < 0:
+                raise InputError(f"{source}：发票「{number}」标准化金额须为非负数")
+            if deductible_tax is not None and (deductible_tax < 0 or deductible_tax > tax):
+                raise InputError(f"{source}：发票「{number}」抵扣税额须在 0 与发票税额之间")
+            if number in invoices:
+                raise InputError(f"发票号码重复「{number}」；请先去重，禁止跨文件重复计入")
+            invoices[number] = loader._Invoice(
+                number, issued_on, kind, amount, tax, status, deductible_tax,
+                _text(raw.get("deductible_period")), _text(raw.get("seller_id")), _text(raw.get("buyer_id")),
+                f"{source} / {_text(raw.get('source'))}", _text(raw.get("detail")),
+            )
+        for raw in doc.get("bank_transactions", []):
+            if not isinstance(raw, dict):
+                raise InputError(f"{source}：银行流水记录格式错误")
+            explicit_id = raw.get("explicit_id") is True
+            transaction_id = loader._bank_identifier(raw.get("transaction_id"), f"{source} 银行流水号")
+            transacted_on = loader._bank_date(raw.get("transacted_on"), f"{source} 银行流水「{transaction_id}」")
+            income = loader._number(raw.get("income"), f"{source} 银行流水「{transaction_id}」收入金额")
+            expense = loader._number(raw.get("expense"), f"{source} 银行流水「{transaction_id}」支出金额")
+            if income is None or expense is None or income < 0 or expense < 0 or (income > 0) == (expense > 0):
+                raise InputError(f"{source}：银行流水「{transaction_id}」收支金额无效")
+            currency = loader._bank_currency(raw.get("currency"), f"{source} 银行流水「{transaction_id}」币种")
+            if explicit_id:
+                key = "ID:" + transaction_id
+            else:
+                unkeyed_bank_docs.add(doc["id"])
+                key = f"LEGACY:{doc['id']}:{_text(raw.get('key')) or transaction_id}"
+            if key in bank_transactions:
+                raise InputError(f"银行流水号重复「{transaction_id}」；请先去重，禁止跨文件重复计入")
+            bank_transactions[key] = loader._BankTransaction(
+                key, transaction_id, transacted_on, _text(raw.get("summary")), income, expense,
+                _text(raw.get("category")), currency, _text(raw.get("counterparty")),
+                _text(raw.get("account_hint")), explicit_id,
+                f"{source} / {_text(raw.get('source'))}", _text(raw.get("detail")),
+            )
+        for raw in doc.get("bank_adjustments", []):
+            if not isinstance(raw, dict):
+                raise InputError(f"{source}：银行调节记录格式错误")
+            number = loader._bank_identifier(raw.get("number"), f"{source} 银行调节编号")
+            if number in bank_adjustments:
+                raise InputError(f"银行调节编号重复「{number}」；请先去重")
+            transaction_id = (
+                loader._bank_identifier(raw.get("transaction_id"), f"{source} 银行调节「{number}」流水号")
+                if _text(raw.get("transaction_id")) else ""
+            )
+            category = _text(raw.get("category"))
+            if category not in loader._BANK_LINKED_CATEGORIES | loader._BANK_STANDALONE_CATEGORIES:
+                raise InputError(f"{source}：银行调节「{number}」分类无效")
+            period = _text(raw.get("period"))
+            loader._parse_period(period, f"{source} 银行调节「{number}」权责所属期")
+            recognized = loader._number(raw.get("recognized_amount"), f"{source} 银行调节「{number}」本期不含税收入")
+            amount = loader._number(raw.get("adjustment_amount"), f"{source} 银行调节「{number}」调节金额")
+            reviewed = raw.get("reviewed")
+            if type(reviewed) is not bool:
+                raise InputError(f"{source}：银行调节「{number}」复核状态无效")
+            bank_adjustments[number] = loader._BankAdjustment(
+                number, transaction_id, category, period, recognized, amount, _text(raw.get("direction")),
+                _text(raw.get("workpaper")), reviewed, _text(raw.get("detail")),
+                f"{source} / {_text(raw.get('source'))}",
+            )
+        for raw in doc.get("period_series", []):
+            key = _text(raw.get("name"))
+            if key not in config.PERIOD_SERIES:
+                raise InputError(f"{source}：不支持的期间序列指标「{key}」")
+            period = loader._parse_period(raw.get("period"), f"{source} 期间序列")
+            value = loader._number(raw.get("value"), f"{source} 期间序列")
+            if value is None:
+                continue
+            metric = Metric(
+                key,
+                value,
+                f"{source} / {_text(raw.get('source'))}",
+                _text(raw.get("detail")),
+            )
+            values = period_series.setdefault(key, {})
+            existing = values.get(period.key)
+            if existing and existing.metric.value != value:
+                raise InputError(f"期间序列「{key}」在「{period.label}」存在冲突值，请核对后重选材料。")
+            if existing:
+                metric.source = existing.metric.source + "；" + metric.source
+                metric.detail = existing.metric.detail or metric.detail
+                period = existing.period
+            values[period.key] = loader._PeriodValue(period, metric, existing.row if existing else 0)
         for row in doc["accounts"]:
             account = Account(row["code"], row["name"], *(loader._number(row[k], source) for k in ("opening", "debit", "credit", "closing")))
             _merge_value(accounts, account.code, account, source)
@@ -346,6 +603,24 @@ def build_dataset(documents, selections, company_override, keys):
                 raise InputError(f"指标「{key}」与原始账表计算值冲突，请核对。")
             metric.source += "；" + metrics[key].source
         metrics[key] = metric
+    company = Company(*(company_data[k] for k in COMPANY_KEYS))
+    for key, metric in loader._invoice_metrics(company, list(invoices.values())).items():
+        if key in metrics:
+            if metrics[key].value != metric.value:
+                raise InputError(f"指标「{key}」与发票明细计算值冲突，请核对。")
+            metric.source += "；" + metrics[key].source
+        metrics[key] = metric
+    if len(unkeyed_bank_docs) > 1:
+        raise InputError("多份银行流水合并时，每笔流水必须提供银行唯一编号或交易流水号，不能仅按行号去重")
+    for key, metric in loader._bank_metrics(
+        company, list(bank_transactions.values()), list(bank_adjustments.values())
+    ).items():
+        if key in metrics:
+            if metrics[key].value != metric.value:
+                raise InputError(f"指标「{key}」与银行流水/调节底稿计算值冲突，请核对。")
+            metric.source += "；" + metrics[key].source
+        metrics[key] = metric
+    loader._derive_period_metrics(company, metrics, period_series)
     if not metrics:
         raise InputError("没有可执行核对的指标；请补充至少一个有效指标，缺失值不会当成零。")
-    return Dataset(Company(*(company_data[k] for k in COMPANY_KEYS)), list(accounts.values()), declarations, metrics)
+    return Dataset(company, list(accounts.values()), declarations, metrics)

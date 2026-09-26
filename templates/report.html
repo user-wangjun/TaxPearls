@@ -35,6 +35,15 @@
     font-weight: 500;
   }
 
+  .cover-logo {
+    display: block;
+    max-width: 56mm;
+    max-height: 24mm;
+    object-fit: contain;
+    object-position: left center;
+    margin: 0 0 6mm 0;
+  }
+
   .cover-rule {
     width: 26mm; height: 2.2pt;
     background: #185FA5;
@@ -334,6 +343,7 @@
 
 <!-- ======================== 封面 ======================== -->
 <section class="cover">
+  {% if logo_data_uri %}<img class="cover-logo" src="{{ logo_data_uri }}" alt="{{ org_name }} Logo">{% endif %}
   <div class="cover-brand">{{ org_name }}</div>
   <div class="cover-rule"></div>
 
