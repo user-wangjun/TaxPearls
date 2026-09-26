@@ -1,0 +1,9 @@
+# 税海拾珠 · MVP 依赖
+# 输入解析
+openpyxl>=3.1.0
+# 规则库
+PyYAML>=6.0
+# 报告模板
+Jinja2>=3.1.0
+# HTML -> PDF（驱动本机 Chrome，无需下载 Chromium）
+playwright>=1.40.0

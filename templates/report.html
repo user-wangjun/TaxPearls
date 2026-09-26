@@ -1,0 +1,529 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>税务风险审计报告 · {{ company.name }}</title>
+<style>
+  @page { size: A4; }
+
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  body {
+    margin: 0;
+    /* ⚠️ 本机仅安装 Source Han Serif SC 的 Heavy 字重，若置于首位会导致正文异常加粗。
+       改用可变字体 Noto Serif SC（覆盖 200–900 全字重），并以宋体兜底。 */
+    font-family: "Noto Serif SC", "NotoSerifSC", "Source Han Serif SC", "SimSun", "宋体", serif;
+    font-weight: 400;
+    font-size: 10.5pt;
+    line-height: 1.75;
+    color: #1F2328;
+    text-align: justify;
+    text-justify: inter-ideograph;
+  }
+
+  h1, h2, h3, h4, .sans {
+    font-family: "Noto Sans SC", "NotoSansSC", "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+
+  /* ============================ 封面 ============================ */
+  .cover { break-after: page; padding-top: 34mm; }
+
+  .cover-brand {
+    font-size: 12pt;
+    letter-spacing: 0.42em;
+    color: #185FA5;
+    font-weight: 500;
+  }
+
+  .cover-rule {
+    width: 26mm; height: 2.2pt;
+    background: #185FA5;
+    margin: 4mm 0 26mm 0;
+  }
+
+  .cover-title {
+    font-size: 25pt;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    margin: 0 0 3mm 0;
+    color: #0F1B2D;
+    line-height: 1.35;
+  }
+
+  .cover-en {
+    font-size: 9.5pt;
+    color: #8A94A6;
+    letter-spacing: 0.14em;
+    margin-bottom: 22mm;
+  }
+
+  .cover-meta {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 10.5pt;
+  }
+
+  .cover-meta td {
+    padding: 3.4mm 0;
+    border-bottom: 0.5pt solid #E3E6EB;
+    vertical-align: top;
+  }
+
+  .cover-meta td.k {
+    width: 30mm;
+    color: #6B7280;
+    letter-spacing: 0.24em;
+  }
+
+  .cover-meta td.v { font-weight: 500; }
+
+  .cover-foot {
+    margin-top: 34mm;
+    padding-top: 5mm;
+    border-top: 0.5pt solid #E3E6EB;
+    font-size: 8.5pt;
+    color: #8A94A6;
+    line-height: 1.9;
+  }
+
+  /* ============================ 正文 ============================ */
+  h2 {
+    font-size: 14pt;
+    font-weight: 500;
+    color: #0F1B2D;
+    margin: 7mm 0 4mm 0;
+    padding-bottom: 2.2mm;
+    border-bottom: 1pt solid #185FA5;
+    break-after: avoid;
+    letter-spacing: 0.04em;
+  }
+
+  h2:first-child { margin-top: 0; }
+
+  h3 {
+    font-size: 11.5pt;
+    font-weight: 500;
+    color: #185FA5;
+    margin: 6mm 0 2.6mm 0;
+    break-after: avoid;
+  }
+
+  p { margin: 0 0 2.4mm 0; }
+
+  p.indent { text-indent: 2em; }
+
+  .muted { color: #6B7280; }
+  .small { font-size: 9pt; }
+
+  /* ============================ 数据表 ============================ */
+  table.data {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9.5pt;
+    margin: 3mm 0 5mm 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  table.data th {
+    background: #F2F5F9;
+    color: #33415C;
+    font-weight: 500;
+    text-align: left;
+    padding: 2.6mm 3mm;
+    border: 0.5pt solid #D8DEE7;
+    font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+
+  table.data td {
+    padding: 2.6mm 3mm;
+    border: 0.5pt solid #D8DEE7;
+  }
+
+  table.data td.num { text-align: right; }
+  table.data tr.total td { background: #F7F9FC; font-weight: 500; }
+
+  /* ============================ 统计条 ============================ */
+  .stats { display: flex; gap: 4mm; margin: 3mm 0 4.5mm 0; }
+
+  .stat {
+    flex: 1;
+    border: 0.5pt solid #D8DEE7;
+    border-radius: 2mm;
+    padding: 3mm 2.6mm;
+    text-align: center;
+  }
+
+  .stat .n {
+    font-size: 19pt;
+    font-weight: 500;
+    line-height: 1.1;
+    font-variant-numeric: tabular-nums;
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  }
+
+  .stat .l { font-size: 8.5pt; color: #6B7280; margin-top: 1.4mm; letter-spacing: 0.06em; }
+
+  .stat.hit .n { color: #B42318; }
+  .stat.pass .n { color: #067647; }
+  .stat.skip .n { color: #667085; }
+
+  /* ============================ 风险事项 ============================ */
+  .finding {
+    break-inside: avoid;
+    border: 0.5pt solid #D8DEE7;
+    border-left: 3pt solid #B42318;
+    border-radius: 0 1.5mm 1.5mm 0;
+    padding: 3mm 3.6mm;
+    margin-bottom: 2.4mm;
+  }
+
+  .finding.sev-high { border-left-color: #B42318; }
+  .finding.sev-medium { border-left-color: #B54708; }
+  .finding.sev-low { border-left-color: #175CD3; }
+
+  .finding-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 2.4mm;
+    gap: 4mm;
+  }
+
+  .finding-title {
+    font-size: 12pt;
+    font-weight: 500;
+    color: #0F1B2D;
+    font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
+  }
+
+  .finding-code {
+    font-size: 9pt;
+    color: #8A94A6;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .tag {
+    display: inline-block;
+    font-size: 8.5pt;
+    padding: 0.8mm 2.4mm;
+    border-radius: 1mm;
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    margin-right: 1.6mm;
+  }
+
+  .tag.sev-high { background: #FEF3F2; color: #B42318; border: 0.5pt solid #FDA29B; }
+  .tag.sev-medium { background: #FFFAEB; color: #B54708; border: 0.5pt solid #FEC84B; }
+  .tag.sev-low { background: #EFF8FF; color: #175CD3; border: 0.5pt solid #84CAFF; }
+  .tag.cat { background: #F2F5F9; color: #475467; border: 0.5pt solid #D8DEE7; }
+
+  .conclusion {
+    font-weight: 500;
+    margin: 1.5mm 0 1.8mm 0;
+    padding-left: 3mm;
+    border-left: 2pt solid #E3E6EB;
+  }
+
+  .calc {
+    font-size: 9pt;
+    color: #475467;
+    background: #F7F9FC;
+    border: 0.5pt solid #E3E6EB;
+    border-radius: 1.5mm;
+    padding: 1.5mm 3mm;
+    margin: 1.5mm 0 1.6mm 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .calc b { font-weight: 500; color: #33415C; }
+
+  .evidence-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9pt;
+    margin: 2.2mm 0 2.4mm 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .evidence-table th {
+    text-align: left;
+    font-weight: 500;
+    color: #6B7280;
+    font-size: 8pt;
+    padding: 1.4mm 3mm;
+    border-bottom: 0.5pt solid #D8DEE7;
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    letter-spacing: 0.06em;
+  }
+
+  .evidence-table td {
+    padding: 1mm 3mm;
+    border-bottom: 0.5pt solid #EDF0F4;
+    vertical-align: top;
+  }
+
+  .evidence-table td.val { text-align: right; white-space: nowrap; }
+  .evidence-table td.val.em { font-weight: 500; color: #0F1B2D; }
+  .evidence-table td.src { font-size: 8pt; color: #8A94A6; }
+
+  .block { margin-top: 1.6mm; }
+
+  .block-label {
+    font-size: 8.5pt;
+    color: #6B7280;
+    letter-spacing: 0.16em;
+    margin-bottom: 1mm;
+    font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  }
+
+  .legal {
+    font-size: 8.5pt;
+    color: #33415C;
+    line-height: 1.65;
+  }
+
+  .legal div { padding-left: 2em; text-indent: -2em; }
+
+  .suggestion { font-size: 9pt; color: #33415C; }
+
+  .skip-note {
+    font-size: 9.5pt;
+    color: #667085;
+    background: #F9FAFB;
+    border: 0.5pt dashed #D8DEE7;
+    border-radius: 1.5mm;
+    padding: 3mm;
+  }
+
+  /* ============================ 未命中 / 未执行 ============================ */
+  .mini {
+    break-inside: avoid;
+    border: 0.5pt solid #E3E6EB;
+    border-radius: 1.5mm;
+    padding: 3mm 4mm;
+    margin-bottom: 2.6mm;
+    font-size: 9.5pt;
+  }
+
+  .mini .t { font-weight: 500; }
+  .mini .d { color: #6B7280; font-size: 9pt; margin-top: 0.8mm; }
+
+  /* ============================ 声明 ============================ */
+  .disclaimer {
+    margin-top: 8mm;
+    padding: 4mm;
+    background: #F9FAFB;
+    border: 0.5pt solid #E3E6EB;
+    border-radius: 1.5mm;
+    font-size: 8.5pt;
+    color: #6B7280;
+    line-height: 1.85;
+  }
+
+  .sign {
+    margin-top: 12mm;
+    width: 100%;
+    font-size: 9.5pt;
+  }
+
+  .sign td { padding: 3mm 0; color: #6B7280; }
+  .sign td.line { border-bottom: 0.5pt solid #B4B2A9; width: 46mm; }
+</style>
+</head>
+<body>
+
+<!-- ======================== 封面 ======================== -->
+<section class="cover">
+  <div class="cover-brand">税海拾珠</div>
+  <div class="cover-rule"></div>
+
+  <h1 class="cover-title">税务风险审计报告</h1>
+  <div class="cover-en">TAX RISK AUDIT REPORT</div>
+
+  <table class="cover-meta">
+    <tr><td class="k">被审计单位</td><td class="v">{{ company.name }}</td></tr>
+    <tr><td class="k">纳税人识别号</td><td class="v">{{ company.taxpayer_id }}</td></tr>
+    <tr><td class="k">所属行业</td><td class="v">{{ company.industry }}</td></tr>
+    <tr><td class="k">审计期间</td><td class="v">{{ company.period }}</td></tr>
+    <tr><td class="k">报告编号</td><td class="v">{{ report_no }}</td></tr>
+    <tr><td class="k">出具日期</td><td class="v">{{ generated_date }}</td></tr>
+  </table>
+
+  <div class="cover-foot">
+    本报告由税海拾珠税务风险审计引擎依据被审计单位提供的资料自动生成，共执行 {{ summary.total }} 项风险检查规则。<br>
+    报告结论基于所提供资料的真实、完整与合法，仅供内部风险管理与教学演示使用。
+  </div>
+</section>
+
+<!-- ======================== 一、审计概况 ======================== -->
+<h2>一、审计概况</h2>
+
+<p class="indent">
+  本次审计针对 {{ company.name }}（{{ company.period }}）提供的科目余额表与增值税纳税申报表开展，
+  资料经标准化处理后执行 {{ summary.total }} 项税务风险检查规则，覆盖收入完整性、税会勾稽、指标偏离
+  及外部数据交叉四类检查维度。全部判定均由确定性规则计算得出，每项结论均附触发明细、计算过程与
+  法律依据，可供人工复核。
+</p>
+
+<table class="data">
+  <tr><th style="width:26%">项目</th><th>说明</th></tr>
+  <tr><td>资料来源</td><td>{{ sources | join("、") }}</td></tr>
+  <tr><td>判定方式</td><td>确定性规则引擎自动判定，未使用生成式模型进行风险识别</td></tr>
+  <tr><td>执行规则数</td><td>{{ summary.total }} 项（命中 {{ summary.hit }} 项，通过 {{ summary.pass }} 项，未执行 {{ summary.skipped }} 项）</td></tr>
+</table>
+
+<!-- ======================== 二、审计结论 ======================== -->
+<h2>二、审计结论摘要</h2>
+
+<div class="stats">
+  <div class="stat hit"><div class="n">{{ summary.hit }}</div><div class="l">命中风险</div></div>
+  <div class="stat pass"><div class="n">{{ summary.pass }}</div><div class="l">检查通过</div></div>
+  <div class="stat skip"><div class="n">{{ summary.skipped }}</div><div class="l">未能执行</div></div>
+</div>
+
+{% if summary.hit > 0 %}
+<p class="indent">
+  本次审计共发现 <b>{{ summary.hit }}</b> 项税务风险事项，其中高风险 {{ summary.high }} 项、中风险 {{ summary.medium }} 项、低风险 {{ summary.low }} 项。
+  风险事项明细及其依据详见第三部分。
+</p>
+{% else %}
+<p class="indent">
+  本次审计未发现超出阈值的税务风险事项。
+</p>
+{% endif %}
+
+{% if summary.skipped > 0 %}
+<p class="indent muted">
+  另有 {{ summary.skipped }} 项检查因资料不足未能执行，相关事项不构成「已通过」结论，详见第五部分。
+</p>
+{% endif %}
+
+<div class="block-label" style="margin-top:5mm">本次执行规则清单（审计范围）</div>
+<table class="data">
+  <tr>
+    <th style="width:13%">规则编号</th>
+    <th style="width:32%">检查事项</th>
+    <th style="width:14%">检查类别</th>
+    <th style="width:12%">涉及税种</th>
+    <th style="width:14%">风险等级</th>
+    <th style="width:15%">执行结果</th>
+  </tr>
+  {% for f in findings | sort(attribute='id') %}
+  <tr>
+    <td>{{ f.id }}</td>
+    <td>{{ f.name }}</td>
+    <td>{{ f.category }}</td>
+    <td>{{ f.tax_type }}</td>
+    <td>{{ f.severity_label }}</td>
+    <td>{{ f.status_label }}</td>
+  </tr>
+  {% endfor %}
+</table>
+<p class="small muted">
+  上表列示本次审计实际执行的检查规则及其结果。「未执行」表示被审计单位未提供该项检查所需资料，
+  并非检查通过。
+</p>
+
+<!-- ======================== 三、风险事项明细 ======================== -->
+{% if hit_findings %}
+<h2>三、风险事项明细</h2>
+
+{% for f in hit_findings %}
+<div class="finding sev-{{ f.severity }}">
+  <div class="finding-head">
+    <div class="finding-title">{{ loop.index }}. {{ f.name }}</div>
+    <div class="finding-code">{{ f.id }}</div>
+  </div>
+
+  <div>
+    <span class="tag sev-{{ f.severity }}">{{ f.severity_label }}</span>
+    <span class="tag cat">{{ f.category }}</span>
+    <span class="tag cat">{{ f.tax_type }}</span>
+  </div>
+
+  <div class="conclusion">{{ f.conclusion }}</div>
+
+  <div class="calc">
+    <b>计算过程　</b>{{ f.calculation }}
+  </div>
+
+  <table class="evidence-table">
+    <tr><th style="width:36%">项目</th><th style="width:26%">金额 / 数值</th><th>取数来源</th></tr>
+    {% for e in f.evidence %}
+    <tr>
+      <td>{{ e.label }}</td>
+      <td class="val{% if e.emphasis %} em{% endif %}">{{ e.value }}</td>
+      <td class="src">{{ e.source }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <div class="block">
+    <div class="block-label">法律依据</div>
+    <div class="legal">
+      {% for lb in f.legal_basis %}<div>{{ lb }}</div>{% endfor %}
+    </div>
+  </div>
+
+  <div class="block">
+    <div class="block-label">整改建议</div>
+    <div class="suggestion">{{ f.suggestion | trim }}</div>
+  </div>
+</div>
+{% endfor %}
+{% endif %}
+
+<!-- ======================== 四、检查通过事项 ======================== -->
+{% if pass_findings %}
+<h2>四、检查通过事项</h2>
+<p class="small muted">下列事项经检查未发现超出阈值的情形。</p>
+{% for f in pass_findings %}
+<div class="mini">
+  <div class="t">{{ f.id }}　{{ f.name }}</div>
+  <div class="d">{{ f.conclusion }}{% if f.calculation %}　（{{ f.calculation }}）{% endif %}</div>
+</div>
+{% endfor %}
+{% endif %}
+
+<!-- ======================== 五、未能执行事项 ======================== -->
+{% if skipped_findings %}
+<h2>五、未能执行事项</h2>
+<p class="small muted">下列检查因被审计单位未提供相应资料而未能执行，不构成「已通过」结论，建议补充资料后重新检查。</p>
+{% for f in skipped_findings %}
+<div class="mini">
+  <div class="t">{{ f.id }}　{{ f.name }}</div>
+  <div class="d">{{ f.skip_reason }}</div>
+</div>
+{% endfor %}
+{% endif %}
+
+<!-- ======================== 六、声明 ======================== -->
+<h2>六、报告声明</h2>
+
+<div class="disclaimer">
+  <b>一、判定方式。</b>本报告全部风险判定由确定性规则计算得出，未使用生成式模型进行风险识别。
+  每条结论均提供计算过程、触发明细与法律依据，任何结论均可由人工逐步复核。<br>
+  <b>二、资料责任。</b>报告结论的可靠性取决于被审计单位所提供资料的真实性、完整性与合法性。资料存在遗漏或错误时，结论可能失真。<br>
+  <b>三、参考值说明。</b>涉及行业税负率等对比性指标时，所用参考区间为示意值，正式使用前须按当地税务机关公布的行业预警值或企业实际经营情况校准。<br>
+  <b>四、法条时效。</b>《中华人民共和国增值税法》自 2026 年 1 月 1 日起施行，《中华人民共和国增值税暂行条例》同时废止。
+  引用的法律条款须结合业务实际发生时点复核其适用性。<br>
+  <b>五、用途限制。</b>本报告不构成税务鉴证、涉税鉴证或法律意见，不能替代税务机关的认定结论，不能作为纳税申报的唯一依据。
+</div>
+
+<table class="sign">
+  <tr>
+    <td style="width:16%">编制人</td><td class="line"></td>
+    <td style="width:16%">复核人</td><td class="line"></td>
+  </tr>
+  <tr>
+    <td>出具日期</td><td class="line">{{ generated_date }}</td>
+    <td>报告编号</td><td class="line">{{ report_no }}</td>
+  </tr>
+</table>
+
+<div class="cover-foot" style="margin-top:10mm">
+  税海拾珠 · AI 税务审计引擎 v{{ engine_version }}　|　本报告由系统自动生成，共 {{ summary.total }} 项规则判定
+</div>
+
+</body>
+</html>
