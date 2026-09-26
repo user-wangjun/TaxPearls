@@ -11,7 +11,7 @@ RUN sed -i 's|^URIs: http://deb.debian.org/|URIs: https://mirrors.aliyun.com/|' 
 COPY requirements.txt .
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --timeout 120 --retries 10 \
-        -i https://pypi.tuna.tsinghua.edu.cn/simple \
+        -i https://mirrors.aliyun.com/pypi/simple/ \
         -r requirements.txt \
     && python -m playwright install --with-deps chromium \
     && apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk \
@@ -23,6 +23,7 @@ COPY webapp ./webapp
 COPY rules ./rules
 COPY templates ./templates
 COPY logo ./logo
+COPY scripts/ops_db.py ./scripts/ops_db.py
 ENV TAXPEARLS_HOST=0.0.0.0 TAXPEARLS_PORT=8000 TAXPEARLS_DB=/data/taxpearls.db TAXPEARLS_PDF_BROWSER=chromium
 USER taxpearls
 EXPOSE 8000

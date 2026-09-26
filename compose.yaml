@@ -1,6 +1,7 @@
 services:
   taxpearls:
     build: .
+    image: taxpearls:${TAXPEARLS_IMAGE_TAG:-current}
     env_file: .env
     environment:
       TAXPEARLS_HOST: 0.0.0.0
