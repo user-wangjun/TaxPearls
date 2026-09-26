@@ -1,0 +1,44 @@
+# ---- OS ----
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ---- Editor / IDE ----
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# ---- 运行时与依赖 ----
+node_modules/
+.pnpm-store/
+dist/
+build/
+out/
+.next/
+.nuxt/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# ---- 环境变量与密钥（绝不入库）----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ---- 数据与产物 ----
+*.log
+logs/
+data/uploads/
+data/exports/
+tmp/
+.cache/
+
+# ---- WorkBuddy 本地工作区状态 ----
+.workbuddy/
