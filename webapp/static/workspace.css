@@ -106,7 +106,7 @@ main>.wrap>.panel{width:100%;max-width:2300px;margin-left:auto;margin-right:auto
 #dashboardPanel>.sheet.row #dashboardUpdated{align-self:center;white-space:nowrap;padding-top:22px}
 .field label{font-size:14px;margin-bottom:8px}.field input,.field select,.field textarea{font-size:16px;min-height:48px;padding:12px 14px}
 .kpi-grid{gap:20px;margin-bottom:22px}.kpi{padding:26px 28px;min-height:138px}.kpi .value{font-size:32px;line-height:1.25;margin:14px 0 5px}.kpi .unit{font-size:14px;margin-left:7px}
-.dash-grid{grid-template-columns:minmax(0,1.35fr) minmax(420px,.85fr);gap:22px;align-items:start}.chart{height:auto}.chart-label{font-size:13px}.legend{font-size:14px}
+.dash-grid{grid-template-columns:minmax(0,1.35fr) minmax(420px,.85fr);gap:22px;align-items:stretch}.chart{height:auto}.chart-empty-title{font-size:13px;fill:#7a879b;font-weight:500}.chart-empty-sub{font-size:10.5px;fill:#98a3b5}.chart-label{font-size:13px}.legend{font-size:14px}
 .empty{font-size:15px;padding:44px 22px}.summary-grid{gap:18px;margin:24px 0}.summary-grid strong{font-size:28px}.summary-grid span{font-size:14px}
 .risk-distribution{gap:28px;margin:24px 0}.risk-donut{width:184px;flex-basis:184px}.risk-total{font-size:32px}.risk-center-label{font-size:13px}.risk-legend-row{font-size:14px;padding:13px 0}.risk-detail{font-size:14px;line-height:1.8}.risk-detail strong{font-size:15px}
 .data-item{font-size:15px;padding:17px 2px}.data-item button{font-size:14px;padding:8px 13px}.source-note{font-size:13px}
@@ -193,3 +193,35 @@ footer{font-size:13.5px}
 .kpi .unit{font-size:15px}
 .risk-hover-card{font-size:14px}
 .risk-hover-heading>span{font-size:13px}
+
+/* 可读性第三轮：侧栏加宽 50% + 工作台字体再上调（2026-09-22）。 */
+body{--sidebar-width:366px;font-size:17px}
+body:has(.nav-collapsed){--sidebar-width:108px}
+.nav-collapsed .nav{width:108px}
+@media(max-width:1050px){body{--sidebar-width:300px}}
+@media(min-width:1800px){body{--sidebar-width:400px}}
+.nav{padding:28px 16px}
+.nav-caption{font-size:14px}
+.nav button[data-panel]{min-height:54px;padding:15px 14px;font-size:17px}
+.nav-icon{width:24px;height:24px}
+.muted{font-size:16px}
+.sheet h2{font-size:23px}
+.kpi .value{font-size:35px}
+.kpi .unit{font-size:16px}
+.data-item{font-size:17px}
+.data-item button{font-size:15px}
+.summary-grid strong{font-size:30px}
+.summary-grid span{font-size:16px}
+.risk-legend-row{font-size:16px}
+.risk-detail{font-size:16px}
+.risk-detail strong{font-size:17px}
+.risk-center-label{font-size:15px}
+.risk-hover-card{font-size:15px}
+.risk-hover-heading>span{font-size:14px}
+.field label{font-size:16px}
+.field input,.field select,.field textarea{font-size:17px}
+.legend{font-size:15px}
+.chart-label{font-size:15px}
+.source-note{font-size:15px}
+.empty{font-size:16px}
+.page-head>.btn,.top-tools button{font-size:16px}
