@@ -1,9 +1,20 @@
 # 税海拾珠 · MVP 依赖
 # 输入解析
 openpyxl>=3.1.0
+pdfplumber>=0.11,<0.12
+python-dotenv>=1.0,<2
+pypdfium2>=4.30,<6
 # 规则库
 PyYAML>=6.0
 # 报告模板
 Jinja2>=3.1.0
 # HTML -> PDF（驱动本机 Chrome，无需下载 Chromium）
 playwright>=1.40.0
+# Web 端证据链页面（FR-G01，FastAPI + 原生前端，无构建链路）
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+python-multipart>=0.0.9
+# P1 真实鉴权：Argon2id 加盐哈希（禁止明文、MD5、SHA1）
+argon2-cffi>=23.1.0
+# 回归测试使用 FastAPI/Starlette TestClient
+httpx2>=2.13.0

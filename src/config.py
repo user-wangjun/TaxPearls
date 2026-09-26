@@ -1,10 +1,9 @@
-"""科目映射与行业参考值。
+"""科目映射；行业参考值通过带来源的补充指标提供。
 
 这里是「标准化」落地的位置：各家财务软件的科目编码与口径不同，
 统一在此映射为标准指标，规则引擎只认标准指标，不认原始科目。
 
-⚠️ 行业参考值（税负率区间等）为演示用示意值，正式使用前须按
-   当地税务机关公布的行业预警值 / 企业实际经营情况校准。
+映射只支持明确列出的科目；多科目聚合须全部提供（无发生额也应填零）。
 """
 from __future__ import annotations
 
@@ -12,6 +11,12 @@ from __future__ import annotations
 SHEET_COMPANY = "企业信息"
 SHEET_ACCOUNTS = "科目余额表"
 SHEET_DECLARATION = "增值税申报"
+SHEET_INCOME = "利润表"
+SHEET_BALANCE = "资产负债表"
+SHEET_CASHFLOW = "现金流量表"
+SHEET_HISTORY = "历史指标"
+SHEET_INVOICES = "发票明细"
+SHEET_BANK = "银行流水"
 
 # 科目余额表列名
 COL_ACCOUNTS = ["科目编码", "科目名称", "期初余额", "本期借方", "本期贷方", "期末余额"]
@@ -53,25 +58,13 @@ DECLARATION_ITEMS: dict[str, str] = {
     "增值税.期末留抵税额": "期末留抵税额",
 }
 
-# ---------------------------------------------------------------- 派生指标
-DERIVED: dict[str, dict] = {
-    "账面.应纳税额": {
-        "deps": ["账面.销项税额", "账面.进项税额"],
-        "fn": lambda a, b: a - b,
-        "source": "账面销项税额 − 账面进项税额",
-        "detail": "账面销项税额 {a} − 账面进项税额 {b}",
-    },
-}
+# 可选：人工整理的标准指标，不冒充外部系统自动采集。
+SHEET_SUPPLEMENT = "补充指标"
+COL_SUPPLEMENT = ["指标", "数值", "来源", "所属期", "口径说明"]
 
-# ---------------------------------------------------------------- 行业参考值
-INDUSTRY_REFERENCE: dict[str, dict] = {
-    "批发和零售业": {"tax_burden_min": 0.010, "tax_burden_max": 0.045},
-    "制造业": {"tax_burden_min": 0.020, "tax_burden_max": 0.060},
-    "建筑业": {"tax_burden_min": 0.020, "tax_burden_max": 0.055},
-    "服务业": {"tax_burden_min": 0.015, "tax_burden_max": 0.050},
-    "default": {"tax_burden_min": 0.010, "tax_burden_max": 0.050},
-}
-
-
-def industry_reference(industry: str) -> dict:
-    return INDUSTRY_REFERENCE.get(industry, INDUSTRY_REFERENCE["default"])
+# P1 结构化数据适配。三大报表统一使用「项目 / 本期金额」，原项目名
+# 会加表名前缀成为规则指标（例如 利润表.营业收入）。
+COL_STATEMENT = ["项目", "本期金额"]
+COL_HISTORY = ["指标", "数值", "来源", "所属期", "口径说明"]
+COL_INVOICES = ["发票号码", "开票日期", "类型", "不含税金额", "税额", "状态"]
+COL_BANK = ["交易日期", "摘要", "收入金额", "支出金额", "分类"]

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 
@@ -25,10 +26,10 @@ class Account:
 
     code: str
     name: str
-    opening: float
-    debit: float
-    credit: float
-    closing: float
+    opening: Decimal | None
+    debit: Decimal | None
+    credit: Decimal | None
+    closing: Decimal | None
 
 
 @dataclass
@@ -40,7 +41,7 @@ class Metric:
     """
 
     name: str
-    value: float
+    value: Decimal | float
     source: str
     detail: str = ""
 
@@ -51,14 +52,14 @@ class Dataset:
 
     company: Company
     accounts: list[Account]
-    declarations: dict[str, float]
+    declarations: dict[str, Decimal | float]
     metrics: dict[str, Metric]
 
-    def values(self) -> dict[str, float]:
+    def values(self) -> dict[str, Decimal | float]:
         """供规则引擎求值用的扁平数值表。"""
         return {k: m.value for k, m in self.metrics.items()}
 
-    def get(self, key: str) -> float | None:
+    def get(self, key: str) -> Decimal | float | None:
         m = self.metrics.get(key)
         return m.value if m else None
 
@@ -86,6 +87,11 @@ class Rule:
     suggestion: str
     description: str = ""
     source_file: str = ""
+    inputs: dict[str, str] = field(default_factory=dict)
+    scope: str = ""
+    threshold_basis: str = ""
+    references: list[str] = field(default_factory=list)
+    version: str = "1.0"
 
 
 @dataclass

@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+.venv
+venv
+__pycache__
+**/__pycache__
+*.pyc
+instance
+output
+samples
+tests
+.playwright-cli
+.workbuddy
+node_modules
+prototype
+*.log

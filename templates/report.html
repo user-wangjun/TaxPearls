@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>税务风险审计报告 · {{ company.name }}</title>
+<title>{{ report_title }} · {{ company.name }}</title>
 <style>
   @page { size: A4; }
 
@@ -334,10 +334,10 @@
 
 <!-- ======================== 封面 ======================== -->
 <section class="cover">
-  <div class="cover-brand">税海拾珠</div>
+  <div class="cover-brand">{{ org_name }}</div>
   <div class="cover-rule"></div>
 
-  <h1 class="cover-title">税务风险审计报告</h1>
+  <h1 class="cover-title">{{ report_title }}</h1>
   <div class="cover-en">TAX RISK AUDIT REPORT</div>
 
   <table class="cover-meta">
@@ -350,7 +350,7 @@
   </table>
 
   <div class="cover-foot">
-    本报告由税海拾珠税务风险审计引擎依据被审计单位提供的资料自动生成，共执行 {{ summary.total }} 项风险检查规则。<br>
+    本报告由{{ org_name }}税务风险审计引擎依据被审计单位提供的资料自动生成，共执行 {{ summary.total }} 项风险检查规则。<br>
     报告结论基于所提供资料的真实、完整与合法，仅供内部风险管理与教学演示使用。
   </div>
 </section>
@@ -442,6 +442,7 @@
   </div>
 
   <div class="conclusion">{{ f.conclusion }}</div>
+  <div class="block"><b>适用范围　</b>{{ f.scope }}（规则版本 {{ f.version }}）</div>
 
   <div class="calc">
     <b>计算过程　</b>{{ f.calculation }}
@@ -462,6 +463,7 @@
     <div class="block-label">法律依据</div>
     <div class="legal">
       {% for lb in f.legal_basis %}<div>{{ lb }}</div>{% endfor %}
+      {% for url in f.references %}<div><a href="{{ url }}">官方依据 {{ loop.index }}</a></div>{% endfor %}
     </div>
   </div>
 
@@ -522,7 +524,7 @@
 </table>
 
 <div class="cover-foot" style="margin-top:10mm">
-  税海拾珠 · AI 税务审计引擎 v{{ engine_version }}　|　本报告由系统自动生成，共 {{ summary.total }} 项规则判定
+  {{ org_name }} · AI 税务审计引擎 v{{ engine_version }}　|　本报告由系统自动生成，共 {{ summary.total }} 项规则判定{% if footer_text %}　|　{{ footer_text }}{% endif %}
 </div>
 
 </body>

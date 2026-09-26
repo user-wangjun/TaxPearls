@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -65,6 +66,10 @@ def _finding_dict(f: Finding) -> dict:
         "calculation": f.calculation,
         "threshold_desc": f.threshold_desc,
         "description": f.rule.description,
+        "scope": f.rule.scope,
+        "threshold_basis": f.rule.threshold_basis,
+        "references": f.rule.references,
+        "version": f.rule.version,
         "evidence": _evidence_dict(f),
         "legal_basis": f.rule.legal_basis,
         "suggestion": f.rule.suggestion,
@@ -84,7 +89,10 @@ def build_view_model(dataset: Dataset, findings: list[Finding]) -> dict:
         "hit_findings": hit,
         "pass_findings": passed,
         "skipped_findings": skipped,
-        "sources": ["科目余额表", "增值税纳税申报表"],
+        "sources": ["科目余额表", "增值税纳税申报表"] + (
+            ["补充指标（人工整理，来源见证据卡）"]
+            if any(m.source.startswith("补充指标!") for m in dataset.metrics.values()) else []
+        ),
         "summary": {
             "total": len(vm_findings),
             "hit": len(hit),
@@ -98,8 +106,18 @@ def build_view_model(dataset: Dataset, findings: list[Finding]) -> dict:
     }
 
 
-def render_html(dataset: Dataset, findings: list[Finding], when: datetime | None = None) -> tuple[str, Path]:
-    """渲染报告 HTML，同时落盘供浏览器预览。返回 (html, 路径)。"""
+def render_html(
+    dataset: Dataset,
+    findings: list[Finding],
+    when: datetime | None = None,
+    write: bool = True,
+    org_name: str = "税海拾珠",
+    report_title: str = "税务风险审计报告",
+    footer_text: str = "",
+) -> tuple[str, Path | None]:
+    """渲染报告 HTML。write=True 时落盘供浏览器预览（CLI 路径），
+    write=False 仅返回 HTML 字符串（Web 路径：产物按需生成，不覆盖已有预览）。
+    org_name / report_title 来自机构设置（org_settings），缺省用平台默认抬头。"""
     when = when or datetime.now()
     env = Environment(
         loader=FileSystemLoader(str(TEMPLATE_DIR)),
@@ -113,8 +131,14 @@ def render_html(dataset: Dataset, findings: list[Finding], when: datetime | None
     vm["report_no"] = make_report_no(dataset.company.name, when)
     vm["generated_date"] = f"{when:%Y年%m月%d日}"
     vm["generated_at"] = f"{when:%Y-%m-%d %H:%M:%S}"
+    vm["org_name"] = org_name
+    vm["report_title"] = report_title
+    vm["footer_text"] = footer_text
 
     html = tpl.render(**vm)
+
+    if not write:
+        return html, None
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     html_path = OUTPUT_DIR / "report.html"
@@ -131,13 +155,14 @@ def _header_template() -> str:
     return '<div style="height:0"></div>'
 
 
-def _footer_template(report_no: str) -> str:
+def _footer_template(report_no: str, footer_text: str = "") -> str:
     # ⚠️ Chromium 要求页码模板必须显式声明 font-size，否则文字不可见
+    suffix = f"　{footer_text}" if footer_text else ""
     return (
         '<div style="width:100%;padding:0 20mm;font-size:8pt;color:#8A94A6;'
         "font-family:'Microsoft YaHei','PingFang SC',sans-serif;"
         'display:flex;justify-content:space-between;">'
-        f"<span>税海拾珠 · 税务风险审计报告　{report_no}</span>"
+        f"<span>税海拾珠 · 税务风险审计报告　{report_no}{suffix}</span>"
         '<span>第 <span class="pageNumber"></span> 页 / 共 <span class="totalPages"></span> 页</span>'
         "</div>"
     )
@@ -147,8 +172,9 @@ def export_pdf(
     html: str,
     out_path: str | Path,
     report_no: str = "",
+    footer_text: str = "",
 ) -> Path:
-    """用 Playwright 驱动本机已安装的 Chrome 渲染 PDF（无需下载 Chromium）。"""
+    """Use installed Chrome locally or bundled Chromium in the deployment image."""
     from playwright.sync_api import sync_playwright
 
     out_path = Path(out_path)
@@ -156,11 +182,14 @@ def export_pdf(
 
     with sync_playwright() as p:
         try:
-            browser = p.chromium.launch(channel="chrome", headless=True)
+            browser_kind = os.getenv("TAXPEARLS_PDF_BROWSER", "chrome" if os.name == "nt" else "chromium")
+            if browser_kind not in {"chrome", "chromium"}:
+                raise ValueError("TAXPEARLS_PDF_BROWSER 仅支持 chrome / chromium")
+            browser = p.chromium.launch(**({"channel": "chrome"} if browser_kind == "chrome" else {}), headless=True)
         except Exception as e:  # noqa: BLE001
             raise RuntimeError(
-                "未能启动本机 Chrome。请确认已安装 Google Chrome；"
-                f"若需改用 Playwright 自带 Chromium，请执行 playwright install chromium。原始错误：{e}"
+                "未能启动报告浏览器。Chrome 模式需安装 Google Chrome；"
+                f"Chromium 模式需执行 python -m playwright install chromium。原始错误：{e}"
             ) from e
 
         try:
@@ -175,7 +204,7 @@ def export_pdf(
                 print_background=True,
                 display_header_footer=True,
                 header_template=_header_template(),
-                footer_template=_footer_template(report_no),
+                footer_template=_footer_template(report_no, footer_text),
                 margin={"top": "18mm", "bottom": "18mm", "left": "20mm", "right": "20mm"},
             )
         finally:

@@ -1,0 +1,69 @@
+[
+  {
+    "path": "01-嘉元科技\\问询回复.pdf",
+    "url": "https://static.sse.com.cn/stock/disclosure/announcement/c/201905/000116_20190530_70V5.pdf",
+    "final_url": "https://static.sse.com.cn/stock/disclosure/announcement/c/201905/000116_20190530_70V5.pdf",
+    "bytes": 1637278,
+    "sha256": "6eb5f03df794e80b2c923df638e52e5ab358bafb06f6ad9f54bbde0233b02791",
+    "content_type": "application/pdf",
+    "retrieved_date": "2026-09-21"
+  },
+  {
+    "url": "https://www.bse.cn/disclosure/2026/2026-07-31/f6ac79d03e1d4be598e1b30f3c34d30f.pdf",
+    "error": "HTTP Error 302: The HTTP server returned a redirect error that would lead to an infinite loop.\nThe last 30x error message was:\nMoved Temporarily"
+  },
+  {
+    "path": "03-春风船舶\\官方案情.html",
+    "url": "https://www.chinatax.gov.cn/chinatax/n810219/c102025/c5247588/content.html",
+    "final_url": "https://www.chinatax.gov.cn/chinatax/n810219/c102025/c5247588/content.html",
+    "bytes": 31653,
+    "sha256": "151c59621e820c461c7183931d7db600a36d3085c0021262aa81d3180dfb221a",
+    "content_type": "text/html",
+    "retrieved_date": "2026-09-21"
+  },
+  {
+    "path": "04-星印网络\\官方案情.html",
+    "url": "https://www.chinatax.gov.cn/chinatax/n810219/c102025/c5247586/content.html",
+    "final_url": "https://www.chinatax.gov.cn/chinatax/n810219/c102025/c5247586/content.html",
+    "bytes": 32991,
+    "sha256": "3a38473e96420b9d7405d3e042e098303a51d0c447bc698f0e700dad4e43afb1",
+    "content_type": "text/html",
+    "retrieved_date": "2026-09-21"
+  },
+  {
+    "path": "05-慧业医药\\官方案情.html",
+    "url": "https://www.chinatax.gov.cn/chinatax/n810219/c102025/c5247591/content.html",
+    "final_url": "https://www.chinatax.gov.cn/chinatax/n810219/c102025/c5247591/content.html",
+    "bytes": 32555,
+    "sha256": "fb2f776247ec2e41871595d644849e2f99a42f389d6e3b054cd7cce688e7641a",
+    "content_type": "text/html",
+    "retrieved_date": "2026-09-21"
+  },
+  {
+    "path": "06-隆旭煤炭\\处罚决定.html",
+    "url": "https://neimenggu.chinatax.gov.cn/sjpd/eeds/tzgghhht/202507/t20250704_805538.html",
+    "final_url": "https://neimenggu.chinatax.gov.cn/sjpd/eeds/tzgghhht/202507/t20250704_805538.html",
+    "bytes": 27716,
+    "sha256": "175c05770991c1c1c03e64517790b52520a6c983249d4916e5e55e3bbb5d6389",
+    "content_type": "text/html",
+    "retrieved_date": "2026-09-21"
+  },
+  {
+    "path": "来源附件\\四案处理结果.html",
+    "url": "https://www.chinatax.gov.cn/chinatax/n810219/c102025/c5247596/content.html",
+    "final_url": "https://www.chinatax.gov.cn/chinatax/n810219/c102025/c5247596/content.html",
+    "bytes": 30135,
+    "sha256": "7b24f179007773258cefea2de5d184ecdc002480b3bc89853e249e80f4658a03",
+    "content_type": "text/html",
+    "retrieved_date": "2026-09-21"
+  },
+  {
+    "path": "02-唯都股份\\补充法律意见书.pdf",
+    "url": "https://reportdocs.static.szse.cn/UpFiles/rasinfodisc1/202204/RAS_202204_0001803A75D8D83FEC8BB797E701313F.pdf",
+    "final_url": "https://reportdocs.static.szse.cn/UpFiles/rasinfodisc1/202204/RAS_202204_0001803A75D8D83FEC8BB797E701313F.pdf",
+    "bytes": 1249051,
+    "sha256": "11277f2987657d8c7f183c078b3940399bf45282edf8a72c864a8004d6995e78",
+    "content_type": "application/pdf",
+    "retrieved_date": "2026-09-21"
+  }
+]

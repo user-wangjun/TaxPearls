@@ -1,0 +1,1902 @@
+{
+  "verified_date": "2026-09-21",
+  "case_count": 6,
+  "facts": 83,
+  "complete_importable_ledger_sets": 0,
+  "checks_passed": 365,
+  "checks": [
+    {
+      "name": "\u6765\u6e90\u6587\u4ef6SHA256\uff1a01-\u5609\u5143\u79d1\u6280\\\u95ee\u8be2\u56de\u590d.pdf",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u6765\u6e90\u6587\u4ef6SHA256\uff1a03-\u6625\u98ce\u8239\u8236\\\u5b98\u65b9\u6848\u60c5.html",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u6765\u6e90\u6587\u4ef6SHA256\uff1a04-\u661f\u5370\u7f51\u7edc\\\u5b98\u65b9\u6848\u60c5.html",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u6765\u6e90\u6587\u4ef6SHA256\uff1a05-\u6167\u4e1a\u533b\u836f\\\u5b98\u65b9\u6848\u60c5.html",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u6765\u6e90\u6587\u4ef6SHA256\uff1a06-\u9686\u65ed\u7164\u70ad\\\u5904\u7f5a\u51b3\u5b9a.html",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u6765\u6e90\u6587\u4ef6SHA256\uff1a\u6765\u6e90\u9644\u4ef6\\\u56db\u6848\u5904\u7406\u7ed3\u679c.html",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u6765\u6e90\u6587\u4ef6SHA256\uff1a02-\u552f\u90fd\u80a1\u4efd\\\u8865\u5145\u6cd5\u5f8b\u610f\u89c1\u4e66.pdf",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01\u4e0d\u4f2a\u88c5\u4e3a\u5b8c\u6574\u8d26\u5957",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-001\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-001JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-001Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-001\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-002\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-002JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-002Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-002\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-003\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-003JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-003Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-003\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-004\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-004JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-004Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-004\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-005\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-005JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-005Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-005\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-006\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-006\u7f3a\u9879\u4fdd\u6301\u7a7a\u767d",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-006\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-007\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-007JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-007Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-007\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-008\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-008JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-008Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-008\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-009\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-009\u7f3a\u9879\u4fdd\u6301\u7a7a\u767d",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-009\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-010\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-010JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-010Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-010\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-011\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-011JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-011Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-011\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-012\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-012JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-012Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-012\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-013\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-013JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-013Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-013\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-014\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-014JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-014Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-014\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-015\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-015JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-015Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-015\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-016\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-016\u7f3a\u9879\u4fdd\u6301\u7a7a\u767d",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-016\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-017\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-017JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-017Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-017\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-018\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-018JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-018Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-018\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-019\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-019JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-019Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-019\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-020\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-020JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-020Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-020\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-021\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-021JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-021Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-021\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-022\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-022JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-022Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-022\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-023\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-023JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-023Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-023\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-024\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-024JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-024Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-024\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-025\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-025JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-025Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-025\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-026\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-026JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-026Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-026\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-027\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-027JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-027Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-027\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-028\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-028JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-028Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-028\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-029\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-029\u7f3a\u9879\u4fdd\u6301\u7a7a\u767d",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-029\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-030\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-030JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-030Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-030\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-031\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-031JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-031Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-031\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-032\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-032JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-032Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-032\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-033\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-033JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-033Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "01-033\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02\u4e0d\u4f2a\u88c5\u4e3a\u5b8c\u6574\u8d26\u5957",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-001\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-001JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-001Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-001\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-002\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-002JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-002Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-002\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-003\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-003JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-003Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-003\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-004\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-004JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-004Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-004\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-005\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-005JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-005Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-005\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-006\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-006JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-006Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "02-006\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03\u4e0d\u4f2a\u88c5\u4e3a\u5b8c\u6574\u8d26\u5957",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-001\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-001JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-001Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-001\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-002\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-002JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-002Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-002\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-003\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-003JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-003Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-003\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-004\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-004JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-004Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-004\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-005\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-005JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-005Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-005\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-006\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-006JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-006Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-006\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-007\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-007JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-007Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-007\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-008\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-008JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-008Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-008\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-009\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-009JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-009Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "03-009\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04\u4e0d\u4f2a\u88c5\u4e3a\u5b8c\u6574\u8d26\u5957",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-001\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-001JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-001Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-001\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-002\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-002JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-002Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-002\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-003\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-003JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-003Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-003\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-004\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-004JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-004Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-004\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-005\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-005JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-005Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-005\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-006\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-006JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-006Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-006\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-007\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-007JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-007Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "04-007\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05\u4e0d\u4f2a\u88c5\u4e3a\u5b8c\u6574\u8d26\u5957",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-001\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-001JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-001Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-001\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-002\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-002JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-002Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-002\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-003\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-003JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-003Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-003\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-004\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-004JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-004Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-004\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-005\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-005JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-005Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-005\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-006\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-006JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-006Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-006\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-007\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-007JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-007Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-007\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-008\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-008JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-008Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "05-008\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06\u4e0d\u4f2a\u88c5\u4e3a\u5b8c\u6574\u8d26\u5957",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-001\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-001JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-001Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-001\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-002\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-002JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-002Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-002\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-003\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-003JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-003Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-003\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-004\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-004JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-004Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-004\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-005\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-005JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-005Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-005\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-006\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-006JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-006Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-006\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-007\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-007JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-007Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-007\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-008\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-008JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-008Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-008\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-009\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-009JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-009Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-009\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-010\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-010JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-010Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-010\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-011\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-011JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-011Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-011\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-012\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-012JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-012Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-012\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-013\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-013JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-013Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-013\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-014\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-014JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-014Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-014\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-015\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-015JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-015Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-015\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-016\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-016JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-016Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-016\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-017\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-017JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-017Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-017\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-018\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-018JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-018Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-018\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-019\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-019JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-019Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-019\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-020\u539f\u503c\u4e00\u81f4",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-020JSON\u5355\u4f4d\u6362\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-020Excel\u516c\u5f0f\u53ca\u7f13\u5b58",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "06-020\u5b9a\u4f4d\u5b8c\u6574",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u5609\u51432016\u6536\u5165\u5dee\u989d",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u5609\u51432017\u6536\u5165\u5dee\u989d",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u5609\u51432018\u6536\u5165\u5dee\u989d",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u5609\u51432018\u589e\u503c\u7a0e\u542b\u8f6c\u51fa\u53ca\u4e0a\u671f\u7559\u62b5",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u661f\u5370\u67e5\u5b9e\u6536\u5165\u51cf\u7533\u62a5\u6536\u5165",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u6625\u98ce\u4eba\u6570\u5dee\uff08\u5b9e\u9645\u7528\u5de5\u53e3\u5f84\uff09",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u7981\u6b62\u5b9e\u9645\u4eba\u6570\u4ee3\u66ff\u793e\u4fdd",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u9686\u65ed\u53d1\u7968\u6279\u6b21\u4efd\u6570",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u9686\u65ed\u4ef7\u7a0e\u5408\u8ba1\uff1a\u5305\u5934\u5e02\u6e90\u5f18\u6da6\u77ff\u4e1a\u6709\u9650\u516c\u53f8",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u9686\u65ed\u4ef7\u7a0e\u5408\u8ba1\uff1a\u5305\u5934\u5e02\u5bcc\u987a\u5eb7\u77ff\u4e1a\u6709\u9650\u516c\u53f8",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u9686\u65ed\u4ef7\u7a0e\u5408\u8ba1\uff1a\u5305\u5934\u5e02\u5353\u5c79\u77ff\u4e1a\u6709\u9650\u516c\u53f8",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u53d1\u7968\u4ee3\u7801\u6587\u672c\u4fdd\u771f\uff1a\u5305\u5934\u5e02\u6e90\u5f18\u6da6\u77ff\u4e1a\u6709\u9650\u516c\u53f8",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u53d1\u7968\u53f7\u7801\u524d\u5bfc\u96f6\u4fdd\u771f\uff1a\u5305\u5934\u5e02\u6e90\u5f18\u6da6\u77ff\u4e1a\u6709\u9650\u516c\u53f8",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u53d1\u7968\u4ee3\u7801\u6587\u672c\u4fdd\u771f\uff1a\u5305\u5934\u5e02\u5bcc\u987a\u5eb7\u77ff\u4e1a\u6709\u9650\u516c\u53f8",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u53d1\u7968\u53f7\u7801\u524d\u5bfc\u96f6\u4fdd\u771f\uff1a\u5305\u5934\u5e02\u5bcc\u987a\u5eb7\u77ff\u4e1a\u6709\u9650\u516c\u53f8",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u53d1\u7968\u4ee3\u7801\u6587\u672c\u4fdd\u771f\uff1a\u5305\u5934\u5e02\u5353\u5c79\u77ff\u4e1a\u6709\u9650\u516c\u53f8",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u53d1\u7968\u53f7\u7801\u524d\u5bfc\u96f6\u4fdd\u771f\uff1a\u5305\u5934\u5e02\u5353\u5c79\u77ff\u4e1a\u6709\u9650\u516c\u53f8",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u9686\u65ed\u6279\u6b21\u8fdb\u9879\u7a0e\u989d\u5408\u8ba1",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u9686\u65ed\u7a0e\u8d39\u5408\u8ba1",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u9686\u65ed\u51b2\u7a81\u4fdd\u7559",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u5609\u51432016\u72ec\u7acb\u504f\u79bb\u5ea6\u590d\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u5609\u51432017\u72ec\u7acb\u504f\u79bb\u5ea6\u590d\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u5609\u51432018\u72ec\u7acb\u504f\u79bb\u5ea6\u590d\u7b97",
+      "passed": true,
+      "details": ""
+    },
+    {
+      "name": "\u603b\u8868\u672a\u4f2a\u88c5MVP\u4e09\u5de5\u4f5c\u8868",
+      "passed": true,
+      "details": ""
+    }
+  ],
+  "engine_syntax_at_verification": {
+    "passed": true,
+    "details": "\u4ec5\u8bed\u6cd5\u7f16\u8bd1\uff1b\u672a\u6267\u884c\u7aef\u5230\u7aef\u6216\u89c4\u5219\u5f15\u64ce\u96c6\u6210\u6d4b\u8bd5"
+  },
+  "engine_scope": "\u672a\u5b8c\u6210\u5b9e\u9645\u5f15\u64ce\u53ca\u7aef\u5230\u7aef\u9a8c\u8bc1\uff1b\u6570\u636e\u4e0d\u6ee1\u8db3\u73b0\u6709\u5b8c\u6574\u8d26\u5957\u5165\u53e3\u3002",
+  "independent_arithmetic": [
+    {
+      "case_id": "01",
+      "period": "2016",
+      "formula": "abs(\u62ab\u9732\u8425\u4e1a\u6536\u5165-\u7533\u62a5\u9500\u552e\u989d)/abs(\u7533\u62a5\u9500\u552e\u989d)",
+      "result": 0.01487934701374479,
+      "threshold": 0.1,
+      "above_threshold": false,
+      "status": "\u72ec\u7acb\u7b97\u672f\u590d\u6838\uff0c\u975e\u8c03\u7528\u9879\u76ee\u89c4\u5219\u5f15\u64ce"
+    },
+    {
+      "case_id": "01",
+      "period": "2017",
+      "formula": "abs(\u62ab\u9732\u8425\u4e1a\u6536\u5165-\u7533\u62a5\u9500\u552e\u989d)/abs(\u7533\u62a5\u9500\u552e\u989d)",
+      "result": 0.0006409645818912219,
+      "threshold": 0.1,
+      "above_threshold": false,
+      "status": "\u72ec\u7acb\u7b97\u672f\u590d\u6838\uff0c\u975e\u8c03\u7528\u9879\u76ee\u89c4\u5219\u5f15\u64ce"
+    },
+    {
+      "case_id": "01",
+      "period": "2018",
+      "formula": "abs(\u62ab\u9732\u8425\u4e1a\u6536\u5165-\u7533\u62a5\u9500\u552e\u989d)/abs(\u7533\u62a5\u9500\u552e\u989d)",
+      "result": 0.0024474793257619493,
+      "threshold": 0.1,
+      "above_threshold": false,
+      "status": "\u72ec\u7acb\u7b97\u672f\u590d\u6838\uff0c\u975e\u8c03\u7528\u9879\u76ee\u89c4\u5219\u5f15\u64ce"
+    }
+  ],
+  "code_sha256": {
+    "src\\engine.py": "911836a49b04fa973a3abe961c9f81fbd73757e200b9dbd5339cb8580ff4b360",
+    "src\\loader.py": "d8865659f3c3f6546aa16a81a3df5c462150195a830437da4487e3135275fed8",
+    "src\\config.py": "4b5cdb409af77036de0eca6c3d3c20f343772166f70f26e1137e5f693782c124",
+    "rules\\R-001-\u6536\u5165\u672a\u8db3\u989d\u7533\u62a5.yaml": "25dbf568840392fe331da989aef31b653d1acc58cb449c82fd471520404fac00",
+    "rules\\R-002-\u589e\u503c\u7a0e\u8d26\u7533\u52fe\u7a3d\u4e0d\u7b26.yaml": "c8a0b3fa042d7f6806d1a1c12f5bf235a5e9897a71a35b1c3524d437b41ace7b",
+    "rules\\R-003-\u589e\u503c\u7a0e\u7a0e\u8d1f\u7387\u5f02\u5e38.yaml": "34b5e9d0c97beb28736959bd87ad968896085fa3a08328580f27e64fe62e347d",
+    "rules\\R-004-\u4e2a\u7a0e\u793e\u4fdd\u4eba\u6570\u4e0d\u5339\u914d.yaml": "a9776716947316cf5f98657f1e84a281efa305c989ae44b2cef6bc1848a5635c",
+    "rules\\R-005-\u9500\u9879\u7a0e\u989d\u8d26\u7533\u5dee\u5f02.yaml": "a7d2cc6c03b59802fc0bcfac165b4e4c62a23ccd6c9fed496c39b2f68473418c",
+    "rules\\R-006-\u8fdb\u9879\u7a0e\u989d\u8d26\u7533\u5dee\u5f02.yaml": "e23d003045e1fd66497d3da3a99c54363f76e5b04c42fece4b8392d5842b425c",
+    "rules\\R-007-\u5229\u6da6\u8868\u6536\u5165\u4e0e\u603b\u8d26\u6536\u5165\u4e0d\u7b26.yaml": "d1485951e225cb08bb989d6824b1ca1100de271bdcbae094dfa2e86d3ce06094",
+    "rules\\R-008-\u5229\u6da6\u8868\u6210\u672c\u4e0e\u603b\u8d26\u6210\u672c\u4e0d\u7b26.yaml": "6331a5208cc8f34a97c07e0ddad2ab037d4ad095e40ea4940af322750060592e",
+    "rules\\R-009-\u8d44\u4ea7\u8d1f\u503a\u8868\u5e73\u8861\u5173\u7cfb\u4e0d\u7b26.yaml": "e7b18ea29c902d240c48e0e888853a5f059c9c39c5b1ce4847f8a29306a110ad",
+    "rules\\R-010-\u51c0\u5229\u6da6\u4e0e\u5229\u6da6\u603b\u989d\u6240\u5f97\u7a0e\u52fe\u7a3d\u4e0d\u7b26.yaml": "d4789c7def35cb7f56b48a6720fc3598169d9ff442dd7ba151a6f03e8b2ae0bf",
+    "rules\\R-011-\u672a\u5206\u914d\u5229\u6da6\u53d8\u52a8\u52fe\u7a3d\u4e0d\u7b26.yaml": "85a994bc7b7025794f59ad7add97cc2a43f3839f37cd448ffbad588b525d9e84",
+    "rules\\R-012-\u73b0\u91d1\u6d41\u91cf\u51c0\u589e\u52a0\u989d\u52fe\u7a3d\u4e0d\u7b26.yaml": "a0a6653f264c548bc6c4755b9ff5584ab9578b7fdad79c9af6cdfd27172c8dac",
+    "rules\\R-013-\u5b58\u8d27\u6536\u53d1\u5b58\u91d1\u989d\u52fe\u7a3d\u4e0d\u7b26.yaml": "64c610a1da88e4ed1fd116202ff1293ea2e1b3f8a5fa9f16777fad567383fe5f",
+    "rules\\R-014-\u5b58\u8d27\u91c7\u8d2d\u8fdb\u9879\u4e0e\u91c7\u8d2d\u6210\u672c\u7a0e\u7387\u4e0d\u7b26.yaml": "42ed61b1e5ae9985242d55484f6f6c80b7e89d0e96d099d93c8b32b8047f536c",
+    "rules\\R-015-\u8d26\u9762\u6536\u5165\u4e0e\u94f6\u884c\u56de\u6b3e\u8c03\u8282\u4e0d\u7b26.yaml": "b26f527a83046a770e02171eb1925b33e18fb52acc7c44ab1e78cb0caf925891",
+    "rules\\R-016-\u7533\u62a5\u9500\u552e\u989d\u4e0e\u5f00\u7968\u8c03\u8282\u4e0d\u7b26.yaml": "5c8953aeea1a3cb8c192734b3426247b6075bade793e790a6a961fd859078b22",
+    "rules\\R-017-\u7533\u62a5\u8fdb\u9879\u4e0e\u62b5\u6263\u51ed\u8bc1\u8c03\u8282\u4e0d\u7b26.yaml": "0bd526a8103a8253b5df137c7a6da284e9a485aeee7afc46f36cf3c190d61926",
+    "rules\\R-018-\u5de5\u8d44\u8868\u4e0e\u4e2a\u7a0e\u5de5\u8d44\u7533\u62a5\u5dee\u5f02.yaml": "ab4d6aa35cfb8b4a7be2667aef0fd6de4f8d3db722f04aed557449d0a42af684",
+    "rules\\R-019-\u91c7\u8d2d\u5f00\u7968\u4e0e\u9500\u9879\u5f00\u7968\u89c4\u6a21\u504f\u79bb.yaml": "9675df2ad306cc9334e05ffbd1d37746381595e948692103b1935992026f2660",
+    "rules\\R-020-\u6bdb\u5229\u7387\u540c\u6bd4\u53d8\u52a8\u8d85\u8fc7\u9608\u503c.yaml": "48696934410c8d09a653244d405c751e9c4d47a9c0e40d1e2f59099b3386f104",
+    "rules\\R-021-\u6bdb\u5229\u7387\u504f\u79bb\u53c2\u8003\u533a\u95f4.yaml": "eb05e182ee3efb66ca422930bc5d95cba7c6602e6ed2bf778fb2c68527f8e2ac",
+    "rules\\R-022-\u8425\u4e1a\u6536\u5165\u540c\u6bd4\u5f02\u5e38\u6ce2\u52a8.yaml": "5dda38b21df582f4e943be528f5967a94ca7a6ea73ce64cc012db23bb474c9cf",
+    "rules\\R-023-\u671f\u95f4\u8d39\u7528\u6536\u5165\u6bd4\u5f02\u5e38.yaml": "c01a9f080674b6da7dcccf05734e4ebac87d2d564061e39fa7a925e4e46df85e",
+    "rules\\R-024-\u8fde\u7eed\u4e8f\u635f\u4e14\u8d44\u4ea7\u6301\u7eed\u6269\u5f20.yaml": "a2d8fbbf6a658c00c18cb7092d9e3ec26f7f70d8fdac81746c05789a2dbfcfa8"
+  },
+  "caveats": [
+    "\u5386\u53f2\u62ab\u9732\u4e0d\u9a8c\u8bc12026\u5e74\u9002\u7528\u6cd5\u89c4\u3002",
+    "\u6240\u6709\u6848\u4f8b\u7f3a\u539f\u59cb\u8d26\u5957\uff0c\u4e0d\u662f\u516d\u5957\u7aef\u5230\u7aef\u8f93\u5165\u3002",
+    "R-003\u901a\u8fc7\u4ec5\u8bf4\u660e\u5f53\u524d\u6f14\u793a\u533a\u95f4\u5185\uff0c\u4e0d\u80fd\u4f5c\u4e3a\u5236\u9020\u4e1a\u771f\u5b9e\u8d1f\u4f8b\u3002"
+  ]
+}

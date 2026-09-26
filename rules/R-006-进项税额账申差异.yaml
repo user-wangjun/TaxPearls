@@ -1,0 +1,28 @@
+id: R-006
+version: '2.0'
+name: 进项税额账申差异
+category: 内部勾稽
+tax_type: 增值税
+severity: medium
+description: 进项税额账申差异；命中仅表示触发核对条件，不等同于税务违法或补税结论。
+scope: 账面确认与申报抵扣可能跨期；本规则仅筛查差异，不能据此认定多抵进项。
+inputs:
+  账面.进项税额: 科目余额表22210101本期借方发生额；需核实与实际准予抵扣口径差异。
+  增值税.进项税额: 增值税申报工作表进项税额；同一期申报口径。
+logic:
+  type: amount_mismatch
+  left: 账面.进项税额
+  right: 增值税.进项税额
+  tolerance: 100
+  direction: absolute
+evidence:
+- 账面.进项税额
+- 增值税.进项税额
+threshold_basis: 金额差额容差100元为本项目示意核对参数，不是税法规定的重要性标准；等于容差不命中。
+legal_basis:
+- 《中华人民共和国增值税法》第十四条、第十六条、第二十一条、第二十八条：一般计税、进项抵扣和纳税义务时间；适用于2026年起。
+- 《中华人民共和国税收征收管理法》第二十五条：如实申报义务；差异本身不能认定少缴税。
+references:
+- https://fgk.chinatax.gov.cn/zcfgk/c100009/c5237365/content.html
+- https://12366.chinatax.gov.cn/bzds/120/120-1-4.html
+suggestion: 按适用范围逐项复核原始报表和调节底稿，解释合理差异；确认数据或申报错误后再更正，并保留复核记录。

@@ -42,6 +42,9 @@ tmp/
 
 # ---- 生成产物（报告与预览图，不入库）----
 output/
+instance/
+.playwright-cli/
+.wrangler/
 
 # ---- WorkBuddy 本地工作区状态 ----
 .workbuddy/
