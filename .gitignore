@@ -54,3 +54,6 @@ backups/
 
 # ---- WorkBuddy 本地工作区状态 ----
 .workbuddy/
+
+docs/04*
+docs/06*

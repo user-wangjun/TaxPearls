@@ -8,11 +8,11 @@ RUN sed -i 's|^URIs: http://deb.debian.org/|URIs: https://mirrors.aliyun.com/|' 
         /etc/apt/sources.list.d/debian.sources \
     && apt-get update
 
-COPY requirements.txt .
+COPY requirements.txt requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --timeout 120 --retries 10 \
         -i https://mirrors.aliyun.com/pypi/simple/ \
-        -r requirements.txt \
+        -r requirements.lock \
     && python -m playwright install --with-deps chromium \
     && apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/* \
