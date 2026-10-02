@@ -1,0 +1,26 @@
+id: R-007
+version: '2.0'
+name: 利润表收入与总账收入不符
+category: 内部勾稽
+tax_type: 综合
+severity: medium
+description: 利润表收入与总账收入不符；命中仅表示触发核对条件，不等同于税务违法或补税结论。
+scope: 同一期累计收入；科目发生额应已排除结转、冲回等口径差异。
+inputs:
+  利润表.营业收入: 利润表对应原始报表/明细台账—营业收入；同一主体、规则指定期间，金额单位元（比率用小数）；填具体表名、栏次/底稿编号。
+  营业收入: 科目余额表6001、6051本期贷方发生额，均须提供；不含税、剔除结转等非经营发生额。
+logic:
+  type: amount_mismatch
+  left: 利润表.营业收入
+  right: 营业收入
+  tolerance: 100
+  direction: absolute
+evidence:
+- 利润表.营业收入
+- 营业收入
+threshold_basis: 金额差额容差100元为本项目示意核对参数，不是税法规定的重要性标准；等于容差不命中。
+legal_basis:
+- 《中华人民共和国会计法》（2024年）第九条、第二十条：核算及报表编制义务；不规定本规则数值阈值。
+references:
+- https://kjs.mof.gov.cn/zt/kjfxcgc/kjfqw/202408/t20240814_3941788.htm
+suggestion: 按适用范围逐项复核原始报表和调节底稿，解释合理差异；确认数据或申报错误后再更正，并保留复核记录。

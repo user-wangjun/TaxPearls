@@ -1,0 +1,564 @@
+description: 全部为人工构造仿真数值；baseline为本条规则的独立底稿，set覆盖，remove删除；期望值手工计算。
+groups:
+- rule_id: R-001
+  baseline:
+    营业收入: 1000000
+    增值税.销售额: 1000000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      营业收入: 1200000
+    expected: hit
+    measured: 0.2
+  - name: 恰好达到边界
+    set:
+      营业收入: 1100000
+    expected: pass
+    measured: 0.1
+  - name: 缺少必要证据
+    remove:
+    - 营业收入
+    expected: skipped
+- rule_id: R-002
+  baseline:
+    账面.销项税额: 130000
+    账面.进项税额: 100000
+    增值税.期初留抵税额: 10000
+    账面.抵扣调整: 0
+    账面.进项转出: 5000
+    增值税.一般计税应纳税额: 25000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      增值税.一般计税应纳税额: 20000
+    expected: hit
+    measured: 5000
+  - name: 恰好达到边界
+    set:
+      增值税.一般计税应纳税额: 24900
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 账面.销项税额
+    expected: skipped
+- rule_id: R-003
+  baseline:
+    增值税.应纳税额: 30000
+    增值税.销售额: 1000000
+    参考.税负率下限: 0.01
+    参考.税负率上限: 0.045
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0.03
+  - name: 触发核对条件
+    set:
+      增值税.应纳税额: 5000
+    expected: hit
+    measured: 0.005
+  - name: 恰好达到边界
+    set:
+      增值税.应纳税额: 10000
+    expected: pass
+    measured: 0.01
+  - name: 缺少必要证据
+    remove:
+    - 增值税.应纳税额
+    expected: skipped
+- rule_id: R-004
+  baseline:
+    人力.个税申报人数: 100
+    人力.社保参保人数: 100
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      人力.个税申报人数: 120
+    expected: hit
+    measured: 0.2
+  - name: 恰好达到边界
+    set:
+      人力.个税申报人数: 110
+    expected: pass
+    measured: 0.1
+  - name: 缺少必要证据
+    remove:
+    - 人力.个税申报人数
+    expected: skipped
+- rule_id: R-005
+  baseline:
+    账面.销项税额: 130000
+    增值税.销项税额: 130000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      增值税.销项税额: 120000
+    expected: hit
+    measured: 10000
+  - name: 恰好达到边界
+    set:
+      增值税.销项税额: 129900
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 账面.销项税额
+    expected: skipped
+- rule_id: R-006
+  baseline:
+    账面.进项税额: 100000
+    增值税.进项税额: 100000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      增值税.进项税额: 90000
+    expected: hit
+    measured: 10000
+  - name: 恰好达到边界
+    set:
+      增值税.进项税额: 99900
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 账面.进项税额
+    expected: skipped
+- rule_id: R-007
+  baseline:
+    利润表.营业收入: 1000000
+    营业收入: 1000000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      利润表.营业收入: 1010000
+    expected: hit
+    measured: 10000
+  - name: 恰好达到边界
+    set:
+      利润表.营业收入: 1000100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 利润表.营业收入
+    expected: skipped
+- rule_id: R-008
+  baseline:
+    利润表.营业成本: 700000
+    营业成本: 700000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      利润表.营业成本: 710000
+    expected: hit
+    measured: 10000
+  - name: 恰好达到边界
+    set:
+      利润表.营业成本: 700100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 利润表.营业成本
+    expected: skipped
+- rule_id: R-009
+  baseline:
+    资产负债表.资产总额: 1000000
+    资产负债表.负债总额: 600000
+    资产负债表.所有者权益: 400000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      资产负债表.资产总额: 1010000
+    expected: hit
+    measured: 10000
+  - name: 恰好达到边界
+    set:
+      资产负债表.资产总额: 1000100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 资产负债表.资产总额
+    expected: skipped
+- rule_id: R-010
+  baseline:
+    利润表.净利润: 75000
+    利润表.利润总额: 100000
+    利润表.所得税费用: 25000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      利润表.净利润: 70000
+    expected: hit
+    measured: 5000
+  - name: 恰好达到边界
+    set:
+      利润表.净利润: 75100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 利润表.净利润
+    expected: skipped
+- rule_id: R-011
+  baseline:
+    权益.期末未分配利润: 160000
+    权益.期初未分配利润: 100000
+    利润表.净利润: 100000
+    权益.本期利润分配: 30000
+    权益.提取盈余公积: 10000
+    权益.其他调整: 0
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      权益.期末未分配利润: 150000
+    expected: hit
+    measured: 10000
+  - name: 恰好达到边界
+    set:
+      权益.期末未分配利润: 160100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 权益.期末未分配利润
+    expected: skipped
+- rule_id: R-012
+  baseline:
+    现金.期末现金及等价物: 150000
+    现金.期初现金及等价物: 100000
+    现金流量表.经营净额: 100000
+    现金流量表.投资净额: -80000
+    现金流量表.筹资净额: 25000
+    现金流量表.汇率影响: 5000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      现金.期末现金及等价物: 140000
+    expected: hit
+    measured: 10000
+  - name: 恰好达到边界
+    set:
+      现金.期末现金及等价物: 150100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 现金.期末现金及等价物
+    expected: skipped
+- rule_id: R-013
+  baseline:
+    存货.期末余额: 500000
+    存货.期初余额: 300000
+    存货.本期入库成本: 900000
+    存货.本期出库成本: 700000
+    存货.其他调整: 0
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      存货.期末余额: 490000
+    expected: hit
+    measured: 10000
+  - name: 恰好达到边界
+    set:
+      存货.期末余额: 500100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 存货.期末余额
+    expected: skipped
+- rule_id: R-014
+  baseline:
+    存货.采购可抵扣进项: 13000
+    存货.可抵扣采购不含税金额: 100000
+    存货.采购加权税率: 0.13
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      存货.采购可抵扣进项: 15000
+    expected: hit
+    measured: 2000
+  - name: 恰好达到边界
+    set:
+      存货.采购可抵扣进项: 13100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 存货.采购可抵扣进项
+    expected: skipped
+- rule_id: R-015
+  baseline:
+    营业收入: 1000000
+    银行.调节后不含税收入: 1000000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      银行.调节后不含税收入: 1100000
+    expected: hit
+    measured: 100000
+  - name: 恰好达到边界
+    set:
+      银行.调节后不含税收入: 1000100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 营业收入
+    expected: skipped
+- rule_id: R-016
+  baseline:
+    增值税.销售额: 1000000
+    发票.销项净额: 900000
+    销售.未开票申报额: 100000
+    销售.其他调节: 0
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      发票.销项净额: 950000
+    expected: hit
+    measured: 50000
+  - name: 恰好达到边界
+    set:
+      发票.销项净额: 900100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 增值税.销售额
+    expected: skipped
+- rule_id: R-017
+  baseline:
+    增值税.进项税额: 100000
+    凭证.本期确认抵扣税额: 95000
+    凭证.其他抵扣调整: 5000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      凭证.本期确认抵扣税额: 100000
+    expected: hit
+    measured: 5000
+  - name: 恰好达到边界
+    set:
+      凭证.本期确认抵扣税额: 95100
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 增值税.进项税额
+    expected: skipped
+- rule_id: R-018
+  baseline:
+    薪酬.本期应申报工资薪金: 100000
+    个税.工资薪金申报收入: 100000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      个税.工资薪金申报收入: 90000
+    expected: hit
+    measured: 10000
+  - name: 恰好达到边界
+    set:
+      个税.工资薪金申报收入: 99900
+    expected: pass
+    measured: 100
+  - name: 缺少必要证据
+    remove:
+    - 薪酬.本期应申报工资薪金
+    expected: skipped
+- rule_id: R-019
+  baseline:
+    发票.采购不含税净额: 700000
+    发票.销项净额: 1000000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0.7
+  - name: 触发核对条件
+    set:
+      发票.采购不含税净额: 1600000
+    expected: hit
+    measured: 1.6
+  - name: 恰好达到边界
+    set:
+      发票.采购不含税净额: 1500000
+    expected: pass
+    measured: 1.5
+  - name: 缺少必要证据
+    remove:
+    - 发票.采购不含税净额
+    expected: skipped
+- rule_id: R-020
+  baseline:
+    利润表.营业收入: 1000000
+    利润表.营业成本: 700000
+    历史.上年同期收入: 1000000
+    历史.上年同期成本: 700000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      利润表.营业成本: 500000
+    expected: hit
+    measured: 0.2
+  - name: 恰好达到边界
+    set:
+      利润表.营业成本: 600000
+    expected: pass
+    measured: 0.1
+  - name: 缺少必要证据
+    remove:
+    - 利润表.营业收入
+    expected: skipped
+- rule_id: R-021
+  baseline:
+    利润表.营业收入: 1000000
+    利润表.营业成本: 700000
+    参考.毛利率下限: 0.1
+    参考.毛利率上限: 0.5
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0.3
+  - name: 触发核对条件
+    set:
+      利润表.营业成本: 950000
+    expected: hit
+    measured: 0.05
+  - name: 恰好达到边界
+    set:
+      利润表.营业成本: 900000
+    expected: pass
+    measured: 0.1
+  - name: 缺少必要证据
+    remove:
+    - 利润表.营业收入
+    expected: skipped
+- rule_id: R-022
+  baseline:
+    利润表.营业收入: 1000000
+    历史.上年同期收入: 1000000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0
+  - name: 触发核对条件
+    set:
+      利润表.营业收入: 1500000
+    expected: hit
+    measured: 0.5
+  - name: 恰好达到边界
+    set:
+      利润表.营业收入: 1300000
+    expected: pass
+    measured: 0.3
+  - name: 缺少必要证据
+    remove:
+    - 利润表.营业收入
+    expected: skipped
+- rule_id: R-023
+  baseline:
+    利润表.销售费用: 50000
+    利润表.管理费用: 100000
+    利润表.财务费用: 50000
+    利润表.营业收入: 1000000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: 0.2
+  - name: 触发核对条件
+    set:
+      利润表.管理费用: 300000
+    expected: hit
+    measured: 0.4
+  - name: 恰好达到边界
+    set:
+      利润表.管理费用: 200000
+    expected: pass
+    measured: 0.3
+  - name: 缺少必要证据
+    remove:
+    - 利润表.销售费用
+    expected: skipped
+- rule_id: R-024
+  baseline:
+    年度.本年净利润: -10000
+    年度.上年净利润: -10000
+    年度.前年净利润: 10000
+    年度.本年末资产: 1600000
+    年度.上年末资产: 1250000
+    年度.前年末资产: 1000000
+  cases:
+  - name: 一致或参考范围内
+    expected: pass
+    measured: null
+  - name: 触发核对条件
+    set:
+      年度.前年净利润: -10000
+    expected: hit
+    measured: null
+  - name: 恰好达到边界
+    set:
+      年度.前年净利润: -10000
+      年度.本年末资产: 1500000
+    expected: pass
+    measured: null
+  - name: 缺少必要证据
+    remove:
+    - 年度.本年净利润
+    expected: skipped
