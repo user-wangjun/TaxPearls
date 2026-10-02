@@ -43,8 +43,19 @@ tmp/
 # ---- 生成产物（报告与预览图，不入库）----
 output/
 
-# ---- 本地工作区状态 ----
-
 # 本地业务数据与浏览器检查状态
 instance/
 .playwright-cli/
+
+# 本地数据库、备份与私密凭据
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+backups/
+*.p12
+*.pfx

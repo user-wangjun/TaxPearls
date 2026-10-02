@@ -121,7 +121,18 @@ raw_value保留原始数值，不做单位换算。负数保留符号，百分�
 需要汇总计算、缺组成科目、合计口径不明时，raw_value填null并标uncertain；不自行猜算。
 quote必须是同一页/工作表中连续的逐字原文，不能拼凑。页码必须使用输入编号。
 图片取数时quote抄录原图数字和字段名。无法辨认、多个值不能确定、企业/期间混杂时明确写warnings。
+发票票面金额仅可映射发票类指标；票面税额不是增值税申报表销项税额，也不是账面销项税额。
+普通发票票面税额不能证明可抵扣进项，不能据此填可抵扣采购或进项指标。
 company.period填核对期，历史指标的实际期间写入detail。同指标有冲突保留各行，不擅自覆盖。"""
+
+
+def _source_issue(row):
+    """Reject an invoice-only citation masquerading as a declaration or ledger value."""
+    source = row.detail + " " + row.quote
+    invoice_only = any(marker in source for marker in ("发票号码", "票面税额", "纸质增值税普通发票", "纸质增值税专用发票"))
+    if invoice_only and row.name.startswith(("增值税.", "账面.")):
+        return "发票票面数值不能直接作为申报表或账面指标"
+    return ""
 
 
 class AIExtractor:
@@ -197,8 +208,11 @@ class AIExtractor:
                     issues.append("原文引用需对照页面图片确认" if row.page in image_pages else "引用未匹配提取原文")
                 if number is not None and not _number_in_quote(row.raw_value, row.quote):
                     issues.append("原文引用中未找到该数值")
+                source_issue = _source_issue(row)
+                if source_issue:
+                    issues.append(source_issue)
                 # Unverified text-only facts are withheld. Images always remain human-reviewed.
-                blocked = row.uncertain or unit not in factors or (not text_verified and row.page not in image_pages) or (number is not None and not _number_in_quote(row.raw_value, row.quote))
+                blocked = row.uncertain or unit not in factors or source_issue or (not text_verified and row.page not in image_pages) or (number is not None and not _number_in_quote(row.raw_value, row.quote))
                 value = "" if number is None or blocked else str(number * factors[unit])
                 detail = f"{row.detail}；原值 {row.raw_value} {unit}；原文：{row.quote}"
                 rows.append({"name": row.name, "value": value, "page": row.page, "detail": detail,
