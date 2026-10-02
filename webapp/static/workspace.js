@@ -19,21 +19,100 @@ navToggle.addEventListener("click", () => {
   setNavCollapsed(collapsed);
   try { localStorage.setItem("taxpearls.navCollapsed", String(collapsed)); } catch (_) {}
 });
-let dashboardData = {records:[],history:[]}, knowledgeRules = [], selectedKnowledge = "";
+let dashboardData = {records:[],history:[],clients:[]}, knowledgeRules = [], selectedKnowledge = "";
+/* ---------- 数字滚动（count-up）----------
+   进视口才播；prefers-reduced-motion 时直接落终值。
+   缓动 ease-out cubic：开头快、结尾慢停，符合"结果导向"。 */
+const REDUCED_MOTION = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+function formatNumber(target,decimals){
+  return Number(target).toLocaleString("zh-CN",{minimumFractionDigits:decimals,maximumFractionDigits:decimals});
+}
+function countUpText(node,target,{decimals=0,duration=950}={}){
+  if(!Number.isFinite(target)){node.textContent=String(target);return;}
+  const started=performance.now(),ease=t=>1-Math.pow(1-t,3);
+  (function tick(now){
+    const p=Math.min(((now||performance.now())-started)/duration,1);
+    node.textContent=formatNumber(target*ease(p),decimals);
+    if(p<1)requestAnimationFrame(tick);
+  })();
+}
+function countUpWhenVisible(watch,node,target,{decimals=0,duration=950,delay=0}={}){
+  if(REDUCED_MOTION||!("IntersectionObserver" in window)){
+    node.textContent=formatNumber(Number.isFinite(target)?target:0,decimals);return;
+  }
+  const io=new IntersectionObserver(entries=>{
+    if(entries.some(e=>e.isIntersecting)){io.disconnect();setTimeout(()=>countUpText(node,target,{decimals,duration}),delay);}
+  },{threshold:.35});
+  io.observe(watch);
+}
 const companyKey = r => r.taxpayer_id || r.company_name;
 const metricSpecs = [["营业收入","营业收入"],["营业成本","营业成本"],["净利润","利润表.净利润"],["增值税应纳税额","增值税.应纳税额"]];
 const metricOf = (r,key) => r.metrics[key];
 const amount = m => m ? Number(m.value).toLocaleString("zh-CN", {minimumFractionDigits:2,maximumFractionDigits:2}) : "未提供";
 function option(select,value,label) { const o=el("option",null,label);o.value=value;select.append(o); }
+/* ---------- 自绘下拉：弹层最多显示 10 项，超出出滚动条 ----------
+   原生 <select> 的弹出列表由浏览器渲染，无法限制可见条数。
+   做法：隐藏原生 select（仍是唯一数据源），套一层按钮 + 列表面板；
+   select 的 options 被重建时由 MutationObserver 自动同步，调用方零改动。 */
+const DROPDOWN_VISIBLE_ITEMS = 10;
+function enhanceSelect(select){
+  if (select.closest(".dropdown")) return;
+  const wrap = document.createElement("div"); wrap.className = "dropdown";
+  select.parentNode.insertBefore(wrap, select); wrap.append(select);
+  select.style.display = "none";
+  const toggle = document.createElement("button");
+  toggle.type = "button"; toggle.className = "dropdown-toggle";
+  toggle.setAttribute("aria-haspopup", "listbox"); toggle.setAttribute("aria-expanded", "false");
+  const menu = document.createElement("div");
+  menu.className = "dropdown-menu"; menu.setAttribute("role", "listbox");
+  wrap.append(toggle, menu);
+  const close = () => { wrap.classList.remove("open"); toggle.setAttribute("aria-expanded", "false"); };
+  toggle.addEventListener("click", e => {
+    e.stopPropagation();
+    const willOpen = !wrap.classList.contains("open");
+    document.querySelectorAll(".dropdown.open").forEach(d => { d.classList.remove("open"); d.querySelector(".dropdown-toggle")?.setAttribute("aria-expanded", "false"); });
+    if (willOpen) {
+      wrap.classList.add("open"); toggle.setAttribute("aria-expanded", "true");
+      menu.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+    }
+  });
+  menu.addEventListener("click", e => {
+    e.stopPropagation();
+    const item = e.target.closest(".dropdown-item"); if (!item) return;
+    if (select.value !== item.dataset.value) { select.value = item.dataset.value; select.dispatchEvent(new Event("change", { bubbles: true })); }
+    close(); refresh();
+  });
+  document.addEventListener("click", close);
+  document.addEventListener("keydown", e => { if (e.key === "Escape") close(); });
+  function refresh() {
+    toggle.textContent = select.selectedOptions[0]?.textContent ?? "";
+    menu.replaceChildren(...Array.from(select.options).map(o => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "dropdown-item"; b.dataset.value = o.value;
+      b.textContent = o.textContent; b.setAttribute("role", "option");
+      b.setAttribute("aria-selected", String(o.value === select.value));
+      return b;
+    }));
+  }
+  new MutationObserver(refresh).observe(select, { childList: true });
+  refresh();
+}
+enhanceSelect($("dashboardCompany"));
+enhanceSelect($("dashboardPeriod"));
 function action(label,fn) { const b=el("button","btn re",label);b.addEventListener("click",fn);return b; }
 async function openAudit(id) { try {renderResult(await api("/api/audits/"+id));} catch(e){showError(e.message);} }
-$("dashboardUpload").addEventListener("click",()=>switchPanel("uploadPanel"));
+function startClientUpload(){
+  const client=dashboardData.clients.find(c=>c.taxpayer_id===$("dashboardCompany").value);
+  selectedClientId=client?.id||"";switchPanel("uploadPanel");
+}
+$("dashboardUpload").addEventListener("click",startClientUpload);
 async function loadDashboard() {
   const body=$("dashboardBody");body.replaceChildren(el("div","empty","正在读取企业业务数据……"));
   try {
     dashboardData=await api("/api/dashboard");
     const select=$("dashboardCompany"),previous=select.value;select.textContent="";
-    const companies=new Map(dashboardData.records.map(r=>[companyKey(r),r.company_name]));
+    const companies=new Map((dashboardData.clients||[]).map(c=>[c.taxpayer_id,c.name]));
+    for(const r of dashboardData.records)companies.set(companyKey(r),r.company_name);
     for(const [key,name] of companies) option(select,key,name);
     if(companies.has(previous)) select.value=previous;
     if(!companies.size) option(select,"","暂无企业数据");
@@ -56,15 +135,29 @@ function renderDashboard(){
   const rows=dashboardData.records.filter(r=>companyKey(r)===$("dashboardCompany").value);
   const r=rows.find(r=>r.period===$("dashboardPeriod").value);
   $("dashboardUpdated").textContent=r?"最近更新 "+r.audited_at:"";
-  if(!r){const s=section("从第一份企业材料开始");s.append(el("p","empty","上传并完成审计后，这里会展示经营指标、风险概况和历史记录。"),action("上传材料",()=>switchPanel("uploadPanel")));box.append(s);return;}
+  if(!r){const client=dashboardData.clients.find(c=>c.taxpayer_id===$("dashboardCompany").value),s=section(client?"为该客户完成首次审计":"从第一份企业材料开始");s.append(el("p","empty",client?"客户档案已建立。上传匹配该纳税人识别号的材料后，这里会展示经营指标、风险概况和历史记录。":"上传并完成审计后，这里会展示经营指标、风险概况和历史记录。"),action(client?"上传该客户材料":"上传材料",startClientUpload));box.append(s);return;}
   const kpis=el("div","kpi-grid");
-  for(const [label,key] of metricSpecs){const m=metricOf(r,key),c=el("div","kpi");c.append(el("p","muted",label));const v=el("div","value",amount(m));if(m)v.append(el("span","unit","元"));c.append(v);kpis.append(c);}box.append(kpis);
+  metricSpecs.forEach(([label,key],i)=>{
+    const m=metricOf(r,key),c=el("div","kpi");c.append(el("p","muted",label));
+    const v=el("div","value");
+    if(m){
+      const num=el("span",null,"0");num.style.fontVariantNumeric="tabular-nums";
+      v.append(num,el("span","unit","元"));
+      countUpWhenVisible(v,num,Number(m.value),{decimals:2,delay:i*90});
+    } else v.textContent=amount(m);
+    c.append(v);kpis.append(c);
+  });box.append(kpis);
   const grid=el("div","dash-grid"),trend=section("经营数据趋势"),risk=section("风险分布");
   trend.append(el("p","muted","按业务所属期间展示 · 每期采用最新审计数据"));
   renderTrend(trend,rows);
   renderRiskDistribution(risk,r);grid.append(trend,risk);box.append(grid);
   const overview=section("审计概况"),stats=el("div","summary-grid");
-  for(const [key,label]of [["hit","风险命中"],["high","其中高风险"],["pass","检查通过"],["skipped","未执行"]]){const c=el("div");c.append(el("strong",null,r.summary[key]??0),el("span","muted",label));stats.append(c);}overview.append(stats);
+  [["hit","风险命中"],["high","其中高风险"],["pass","检查通过"],["skipped","未执行"]].forEach(([key,label],i)=>{
+    const c=el("div"),strong=el("strong",null,"0");
+    strong.style.fontVariantNumeric="tabular-nums";
+    c.append(strong,el("span","muted",label));stats.append(c);
+    countUpWhenVisible(strong,strong,r.summary[key]??0,{delay:i*70});
+  });overview.append(stats);
   const executed=r.summary.hit+r.summary.pass;overview.append(el("p","muted","检查通过率："+(executed?(r.summary.pass/executed*100).toFixed(1)+"%":"暂无已执行检查")+" · 分母为已执行规则数，未执行项单独列示。"));box.append(overview);
   const attention=section("需关注事项");
   for(const f of r.risks.slice().sort((a,b)=>(a.status==="skipped")-(b.status==="skipped")).slice(0,5)){
@@ -109,14 +202,20 @@ function renderRiskDistribution(box,record){
   const svg=svgNode("svg",{viewBox:"0 0 180 180",role:"img","aria-label":total?"风险分布，共 "+total+" 项命中":"暂无命中风险"});
   svg.append(svgNode("circle",{cx:90,cy:90,r:70,fill:"none",stroke:"#eef2f7","stroke-width":32}));
   const legend=el("div","risk-breakdown"),details=el("div","risk-details");
-  let offset=0;
+  let offset=0,segCount=0;
   for(const [key,label,color,advice] of levels){
     const findings=hits.filter(f=>f.severity===key),count=findings.length,share=total?count/total*100:0;
     const percent=Number(share.toFixed(1))+"%";
     let segment=null;
     if(count){
       segment=svgNode("circle",{cx:90,cy:90,r:70,fill:"none",stroke:color,"stroke-width":32,pathLength:100,"stroke-dasharray":share+" "+(100-share),"stroke-dashoffset":-offset,transform:"rotate(-90 90 90)",class:"risk-segment","aria-label":label+"："+count+" 项，占 "+percent});
-      bindTooltip(segment,label,color,findings,percent,segment);svg.append(segment);offset+=share;
+      if(!REDUCED_MOTION){
+        /* 描边生长：先归零，进帧后过渡到目标弧长，多段依次错峰展开。 */
+        segment.style.strokeDasharray="0 100";
+        segment.style.transition="stroke-dasharray .8s cubic-bezier(0.22,1,0.36,1) "+(segCount*140)+"ms, opacity .15s";
+        requestAnimationFrame(()=>requestAnimationFrame(()=>{segment.style.strokeDasharray=share+" "+(100-share);}));
+      }
+      bindTooltip(segment,label,color,findings,percent,segment);svg.append(segment);offset+=share;segCount++;
     }
     const row=el("div","risk-legend-row"),labelNode=el("span","risk-label",label);labelNode.style.setProperty("--risk-color",color);
     row.append(labelNode,el("strong",null,count+" 项"),el("span","risk-percent",percent));legend.append(row);
@@ -126,7 +225,10 @@ function renderRiskDistribution(box,record){
       detail.append(heading,el("p","risk-findings",findings.slice(0,2).map(f=>f.name).join("；")+(count>2?"等 "+count+" 项":"")),el("p","muted",advice));details.append(detail);
     }
   }
-  svg.append(svgNode("text",{x:90,y:88,"text-anchor":"middle",class:"risk-total"},total),svgNode("text",{x:90,y:112,"text-anchor":"middle",class:"risk-center-label"},"命中事项"));
+  const totalText=svgNode("text",{x:90,y:88,"text-anchor":"middle",class:"risk-total"},"0");
+  totalText.style.fontVariantNumeric="tabular-nums";
+  svg.append(totalText,svgNode("text",{x:90,y:112,"text-anchor":"middle",class:"risk-center-label"},"命中事项"));
+  if(total)countUpWhenVisible(svg,totalText,total,{duration:800});
   chart.append(svg);layout.append(chart,legend);box.append(layout);
   if(total)box.append(details,action("查看风险证据",()=>openAudit(record.id)));
   else box.append(el("p","risk-empty","当前没有命中的风险事项。"));
@@ -151,13 +253,21 @@ function periodInfo(value){
   m=value.match(/^(\d{4})[- ]?H([12])$/i);if(m)return{group:"half",order:+m[1]*2+ +m[2]};
   m=value.match(/^(\d{4})年?$/);return m?{group:"year",order:+m[1]}:null;
 }
+function emptyChart(title,sub){
+  /* 空状态占位图：与真实图表同尺寸同网格，明示"这里是空的"。 */
+  const svg=svgNode("svg",{viewBox:"0 0 620 240",class:"chart",role:"img","aria-label":title});
+  for(let i=0;i<4;i++)svg.append(svgNode("line",{x1:65,y1:30+i*53.3,x2:590,y2:30+i*53.3,stroke:"#edf0f6"}));
+  svg.append(svgNode("text",{x:327,y:112,"text-anchor":"middle",class:"chart-empty-title"},title));
+  svg.append(svgNode("text",{x:327,y:138,"text-anchor":"middle",class:"chart-empty-sub"},sub));
+  return svg;
+}
 function renderTrend(box,rows){
   const selected=periodInfo($("dashboardPeriod").value);
   const data=selected?rows.filter(r=>periodInfo(r.period)?.group===selected.group).sort((a,b)=>periodInfo(a.period).order-periodInfo(b.period).order).slice(-8):[];
-  if(data.length<2){box.append(el("p","empty","暂无可比较的跨期趋势\n需要同一企业至少两个相同粒度的明确期间。"));return;}
+  if(data.length<2){box.append(emptyChart("暂无可比较的跨期数据","同一企业至少两个相同粒度的明确期间，才能连线比较"));return;}
   const svg=svgNode("svg",{viewBox:"0 0 620 240",class:"chart",role:"img","aria-label":"营业收入与营业成本趋势，单位元"});
   const values=data.flatMap(r=>["营业收入","营业成本"].map(k=>metricOf(r,k)).filter(Boolean).map(m=>Number(m.value)));
-  if(!values.length){box.append(el("p","empty","所选期间没有收入或成本数据。"));return;}
+  if(!values.length){box.append(emptyChart("所选期间没有收入或成本数据","上传含利润表的材料后，这里会展示趋势折线图"));return;}
   const low=Math.min(0,...values),high=Math.max(1,...values),x=i=>65+i*520/(data.length-1),y=v=>190-(v-low)/(high-low)*160;
   for(let i=0;i<4;i++){const v=low+(high-low)*i/3,yy=y(v);svg.append(svgNode("line",{x1:65,y1:yy,x2:590,y2:yy,stroke:"#edf0f6"}),svgNode("text",{x:57,y:yy+4,"text-anchor":"end",class:"chart-label"},(v/10000).toFixed(1)+"万"));}
   for(const [key,color]of [["营业收入","#2865e8"],["营业成本","#6bbda9"]]){

@@ -184,6 +184,25 @@ def load_rules(rules_dir: str | Path) -> list[Rule]:
     return rules
 
 
+def validate_rule_update(rule: Rule) -> Rule:
+    """Validate a runtime rule update against the immutable rule contract.
+
+    Runtime editing may change the declarative logic, version and threshold
+    explanation, but it may not silently add/remove source metrics.  This keeps
+    material mapping and evidence requirements aligned with the reviewed YAML
+    rule while still allowing no-code parameter tuning.
+    """
+    if not isinstance(rule.version, str) or not rule.version.strip():
+        raise RuleError("version 必须是非空字符串")
+    if not isinstance(rule.threshold_basis, str) or not rule.threshold_basis.strip():
+        raise RuleError("threshold_basis 必须是非空字符串")
+    deps = _validate_logic(rule.logic)
+    expected = set(rule.inputs)
+    if deps != expected or deps != set(rule.evidence):
+        raise RuleError("公式依赖、inputs、evidence 必须一致，不能新增未知指标或移除必需指标")
+    return rule
+
+
 def _need(dataset, key, rule):
     value = dataset.get(key)
     source = rule.inputs.get(key, "对应科目或申报表项目")

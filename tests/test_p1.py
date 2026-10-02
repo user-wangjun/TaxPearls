@@ -97,14 +97,14 @@ class P1WebFlow(unittest.TestCase):
                 with TestClient(app_module.app) as client:
                     setup = client.post("/api/setup", json={
                         "username": "rootadmin", "password": "platform-pass-2026",
-                        "display_name": "平台管理员", "org_id": "school-a",
+                        "display_name": "平台管理员", "org_id": "org-a",
                     })
                     self.assertEqual(setup.status_code, 200, setup.text)
                     self.assertEqual(client.post("/api/login", json={"username": "rootadmin", "password": "platform-pass-2026"}).status_code, 200)
                     for username, role in (("teacher1", "teacher"), ("student1", "student")):
                         response = client.post("/api/users", json={
                             "username": username, "password": f"{username}-pass-2026",
-                            "display_name": username, "role": role, "org_id": "school-a",
+                            "display_name": username, "role": role, "org_id": "org-a",
                         })
                         self.assertEqual(response.status_code, 200, response.text)
                     client.post("/api/logout")
@@ -146,7 +146,7 @@ class P1WebFlow(unittest.TestCase):
                 with TestClient(app_module.app) as client:
                     client.post("/api/setup", json={
                         "username": "rootadmin", "password": "platform-pass-2026",
-                        "display_name": "平台管理员", "org_id": "school-a",
+                        "display_name": "平台管理员", "org_id": "org-a",
                     })
                     self.assertEqual(client.post("/api/login", json={
                         "username": "rootadmin", "password": "platform-pass-2026",
@@ -155,12 +155,13 @@ class P1WebFlow(unittest.TestCase):
                     for username, role in (("orgadmin", "org_admin"), ("accountant1", "accountant"), ("accountant2", "accountant")):
                         response = client.post("/api/users", json={
                             "username": username, "password": f"{username}-pass-2026",
-                            "display_name": username, "role": role, "org_id": "school-a",
+                            "display_name": username, "role": role, "org_id": "org-a",
                         })
                         self.assertEqual(response.status_code, 200, response.text)
                         created[username] = response.json()
+                    sample = loader.load(ROOT / "samples" / "样例企业-审计材料.xlsx")
                     customer = client.post("/api/clients", json={
-                        "name": "仿真客户", "taxpayer_id": "TEST-CLIENT",
+                        "name": "仿真客户", "taxpayer_id": sample.company.taxpayer_id,
                         "accountant_id": created["accountant1"]["id"],
                     })
                     self.assertEqual(customer.status_code, 200, customer.text)
@@ -178,7 +179,7 @@ class P1WebFlow(unittest.TestCase):
                     }).status_code, 200)
                     denied = client.post("/api/users", json={
                         "username": "forbidden-teacher", "password": "teacher-pass-2026",
-                        "display_name": "越权教师", "role": "teacher", "org_id": "school-a",
+                        "display_name": "越权教师", "role": "teacher", "org_id": "org-a",
                     })
                     self.assertEqual(denied.status_code, 403)
                     client.post("/api/logout")

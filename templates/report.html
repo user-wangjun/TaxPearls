@@ -10,8 +10,7 @@
 
   body {
     margin: 0;
-    /* ⚠️ 本机仅安装 Source Han Serif SC 的 Heavy 字重，若置于首位会导致正文异常加粗。
-       改用可变字体 Noto Serif SC（覆盖 200–900 全字重），并以宋体兜底。 */
+    /* 正文优先使用覆盖常用字重的字体，并以宋体兜底。 */
     font-family: "Noto Serif SC", "NotoSerifSC", "Source Han Serif SC", "SimSun", "宋体", serif;
     font-weight: 400;
     font-size: 10.5pt;
@@ -33,6 +32,15 @@
     letter-spacing: 0.42em;
     color: #185FA5;
     font-weight: 500;
+  }
+
+  .cover-logo {
+    display: block;
+    max-width: 56mm;
+    max-height: 24mm;
+    object-fit: contain;
+    object-position: left center;
+    margin: 0 0 6mm 0;
   }
 
   .cover-rule {
@@ -67,6 +75,7 @@
     padding: 3.4mm 0;
     border-bottom: 0.5pt solid #E3E6EB;
     vertical-align: top;
+    overflow-wrap: anywhere;
   }
 
   .cover-meta td.k {
@@ -239,6 +248,7 @@
 
   .evidence-table {
     width: 100%;
+    table-layout: fixed;
     border-collapse: collapse;
     font-size: 9pt;
     margin: 2.2mm 0 2.4mm 0;
@@ -260,9 +270,10 @@
     padding: 1mm 3mm;
     border-bottom: 0.5pt solid #EDF0F4;
     vertical-align: top;
+    overflow-wrap: anywhere;
   }
 
-  .evidence-table td.val { text-align: right; white-space: nowrap; }
+  .evidence-table td.val { text-align: right; white-space: normal; }
   .evidence-table td.val.em { font-weight: 500; color: #0F1B2D; }
   .evidence-table td.src { font-size: 8pt; color: #8A94A6; }
 
@@ -334,6 +345,7 @@
 
 <!-- ======================== 封面 ======================== -->
 <section class="cover">
+  {% if logo_data_uri %}<img class="cover-logo" src="{{ logo_data_uri }}" alt="{{ org_name }} Logo">{% endif %}
   <div class="cover-brand">{{ org_name }}</div>
   <div class="cover-rule"></div>
 
@@ -398,6 +410,22 @@
 </p>
 {% endif %}
 
+{% if ai_narrative %}
+<div class="conclusion" style="margin-top:5mm">
+  <div class="block-label">AI 辅助总体评价（仅汇总 Finding，不参与风险判定）</div>
+  {% for paragraph in ai_narrative.overall_assessment %}
+  <p class="indent">{{ paragraph.text }}</p>
+  <p class="small muted">来源规则：{{ paragraph.citations | join("、") }}</p>
+  {% endfor %}
+  <div class="block-label" style="margin-top:3mm">AI 辅助处理建议</div>
+  {% for paragraph in ai_narrative.recommendations %}
+  <p class="indent">{{ paragraph.text }}</p>
+  <p class="small muted">来源规则：{{ paragraph.citations | join("、") }}</p>
+  {% endfor %}
+  <p class="small muted">规则统计已锁定：命中 {{ ai_narrative.summary.hit }} 项、通过 {{ ai_narrative.summary.pass }} 项、未执行 {{ ai_narrative.summary.skipped }} 项。模型 {{ ai_narrative.model }}，证据版本 {{ ai_narrative.evidence_hash[:12] }}。</p>
+</div>
+{% endif %}
+
 <div class="block-label" style="margin-top:5mm">本次执行规则清单（审计范围）</div>
 <table class="data">
   <tr>
@@ -449,7 +477,7 @@
   </div>
 
   <table class="evidence-table">
-    <tr><th style="width:36%">项目</th><th style="width:26%">金额 / 数值</th><th>取数来源</th></tr>
+    <tr><th style="width:24%">项目</th><th style="width:26%">金额 / 数值</th><th style="width:50%">取数来源</th></tr>
     {% for e in f.evidence %}
     <tr>
       <td>{{ e.label }}</td>
@@ -503,7 +531,7 @@
 <h2>六、报告声明</h2>
 
 <div class="disclaimer">
-  <b>一、判定方式。</b>本报告全部风险判定由确定性规则计算得出，未使用生成式模型进行风险识别。
+  <b>一、判定方式。</b>本报告全部风险判定由确定性规则计算得出，未使用生成式模型进行风险识别；如报告含 AI 辅助总体评价，其仅汇总已冻结的 Finding，不改变任何规则结论。
   每条结论均提供计算过程、触发明细与法律依据，任何结论均可由人工逐步复核。<br>
   <b>二、资料责任。</b>报告结论的可靠性取决于被审计单位所提供资料的真实性、完整性与合法性。资料存在遗漏或错误时，结论可能失真。<br>
   <b>三、参考值说明。</b>涉及行业税负率等对比性指标时，所用参考区间为示意值，正式使用前须按当地税务机关公布的行业预警值或企业实际经营情况校准。<br>

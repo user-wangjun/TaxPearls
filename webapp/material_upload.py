@@ -174,12 +174,18 @@ def register(app, get_user, allow, save_audit, rules_dir):
             if mode == "merge" and body.get("same_scope") is not True:
                 raise HTTPException(422, "合并前请确认所有材料属于同一企业、同一核对期间。")
             groups = [docs] if mode == "merge" else [[doc] for doc in docs]
+            client_id = body.get("client_id")
+            if client_id is not None and not isinstance(client_id, str):
+                raise HTTPException(422, "客户档案编号格式错误。")
+            client_id = client_id or None
+            if client_id and len(groups) != 1:
+                raise HTTPException(422, "关联客户档案时请合并为一次审计，或每次只提交一份材料。")
             results, errors = [], []
             for group in groups:
                 names = [d["name"] for d in group]
                 try:
                     dataset = materials.build_dataset(group, selections, company if mode == "merge" else {}, set(draft["catalog"]))
-                    response = save_audit(dataset, user)
+                    response = save_audit(dataset, user, client_id)
                     results.append({"files": names, "audit": response})
                 except (materials.InputError, HTTPException) as exc:
                     errors.append({"files": names, "detail": exc.detail if isinstance(exc, HTTPException) else str(exc)})
