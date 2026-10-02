@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -983,7 +984,14 @@ class Store:
     def _enqueue_audit_notifications(self, db, org_id: str, client_id: str | None,
                                      audit_id: str, findings: list[Finding], when: str) -> None:
         from webapp.notifications import RECIPIENT_ROLES, safe_summary, email_content
-        from src.mailer import _from_header
+        from src.mailer import MailError, _from_header
+
+        from_header = None
+        if os.getenv("TAXPEARLS_NOTIFICATION_EMAIL_ENABLED", "") == "1":
+            try:
+                from_header = _from_header()
+            except MailError:
+                logging.getLogger(__name__).warning("Notification email configuration unavailable; email skipped")
 
         members = db.execute("""SELECT u.id,u.role,u.email,p.audit_completed,p.high_risk,p.email_enabled
                               FROM notification_preferences p JOIN users u ON u.id=p.user_id
@@ -1003,9 +1011,9 @@ class Store:
                 created = _now()
                 db.execute("""INSERT OR IGNORE INTO notifications VALUES (?,?,?,?,?,?,?,NULL)""",
                            (key, member["id"], org_id, audit_id, event, _json(summary), created))
-                if member["email_enabled"] and member["email"]:
+                if from_header and member["email_enabled"] and member["email"]:
                     subject, html, text = email_content(summary)
-                    payload = {"subject": subject, "html": html, "text": text, "from_header": _from_header()}
+                    payload = {"subject": subject, "html": html, "text": text, "from_header": from_header}
                     db.execute("""INSERT OR IGNORE INTO notification_deliveries
                                (notification_id,recipient_email,created_at,updated_at,payload_json) VALUES (?,?,?,?,?)""",
                                (key, member["email"], created, created, _json(payload)))
@@ -1020,7 +1028,12 @@ class Store:
                  _json(serialize_dataset(dataset)), _json(serialize_findings(findings)),
                  _json(summary), audited_at),
             )
-            self._enqueue_audit_notifications(db, user["org_id"], client_id, audit_id, findings, audited_at)
+        # Commit the audit before notification work so notification failures cannot undo it.
+        try:
+            with self.connect() as db:
+                self._enqueue_audit_notifications(db, user["org_id"], client_id, audit_id, findings, audited_at)
+        except Exception:
+            logging.getLogger(__name__).warning("Audit notification creation failed; audit remains saved")
 
     def get_audit(self, audit_id: str) -> dict[str, Any] | None:
         with self.connect() as db:

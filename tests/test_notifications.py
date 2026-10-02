@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 import time
@@ -23,7 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class NotificationTests(unittest.TestCase):
     def setUp(self):
-        self.env = patch.dict("os.environ", {"TAXPEARLS_NOTIFICATION_EMAIL_ENABLED": "0", "TAXPEARLS_EMAIL_FROM_ADDRESS": "sender@example.test"})
+        self.env = patch.dict("os.environ", {"TAXPEARLS_NOTIFICATION_EMAIL_ENABLED": "1",
+                                           "TAXPEARLS_RESEND_API_KEY": "",
+                                           "TAXPEARLS_EMAIL_FROM_ADDRESS": "sender@example.test"})
         self.env.start()
         self.tmp = tempfile.TemporaryDirectory()
         self.old_store = app_module.store
@@ -41,6 +44,47 @@ class NotificationTests(unittest.TestCase):
         app_module.store = self.old_store
         self.tmp.cleanup()
         self.env.stop()
+
+    def test_disabled_email_preserves_audit_and_station_notifications(self):
+        self.store.set_notification_preferences(self.accountant, self.accountant["id"], True, True, True)
+        with patch.dict("os.environ", {"TAXPEARLS_NOTIFICATION_EMAIL_ENABLED": "0",
+                                       "TAXPEARLS_EMAIL_FROM_ADDRESS": ""}), \
+                patch.object(mailer, "_from_header") as from_header:
+            result = app_module._save_audit(self.dataset, self.admin, self.client["id"])
+            from_header.assert_not_called()
+        self.assertIsNotNone(self.store.get_audit(result["audit_id"]))
+        messages = self.store.list_notifications(self.accountant)
+        self.assertEqual({item["event"] for item in messages}, {"audit_completed", "high_risk"})
+        self.assertTrue(all(item["email_status"] is None for item in messages))
+        self.assertIsNone(self.store.claim_notification_delivery())
+
+    def test_missing_sender_preserves_audit_and_station_notifications(self):
+        self.store.set_notification_preferences(self.accountant, self.accountant["id"], True, True, True)
+        with patch.dict("os.environ", {"TAXPEARLS_EMAIL_FROM_ADDRESS": ""}), \
+                self.assertLogs("webapp.storage", level="WARNING") as logs:
+            result = app_module._save_audit(self.dataset, self.admin, self.client["id"])
+        self.assertIsNotNone(self.store.get_audit(result["audit_id"]))
+        messages = self.store.list_notifications(self.accountant)
+        self.assertEqual(len(messages), 2)
+        self.assertTrue(all(item["email_status"] is None for item in messages))
+        self.assertIsNone(self.store.claim_notification_delivery())
+        self.assertNotIn(self.accountant["email"], "".join(logs.output))
+
+    def test_notification_transaction_failure_does_not_undo_audit(self):
+        self.store.set_notification_preferences(self.accountant, self.accountant["id"], True, False, True)
+        enqueue = self.store._enqueue_audit_notifications
+
+        def fail_after_enqueue(*args):
+            enqueue(*args)
+            raise sqlite3.OperationalError("private notification error")
+
+        with patch.object(self.store, "_enqueue_audit_notifications", side_effect=fail_after_enqueue), \
+                self.assertLogs("webapp.storage", level="WARNING") as logs:
+            result = app_module._save_audit(self.dataset, self.admin, self.client["id"])
+        self.assertIsNotNone(self.store.get_audit(result["audit_id"]))
+        self.assertEqual(self.store.list_notifications(self.accountant), [])
+        self.assertIsNone(self.store.claim_notification_delivery())
+        self.assertNotIn("private notification error", "".join(logs.output))
 
     def test_local_http_worker_drains_restart_queue_and_never_resends_accepted(self):
         received = []
@@ -113,10 +157,11 @@ class NotificationTests(unittest.TestCase):
 
     def test_provider_rejection_then_unsubscribe_cancels_retry(self):
         self.store.set_notification_preferences(self.accountant, self.accountant["id"], True, False, True)
-        app_module._save_audit(self.dataset, self.admin, self.client["id"])
+        result = app_module._save_audit(self.dataset, self.admin, self.client["id"])
         def reject(**kwargs):
             raise mailer.MailError("private rejection body", status=422)
         deliver_pending(self.store, sender=reject)
+        self.assertIsNotNone(self.store.get_audit(result["audit_id"]))
         notice = self.store.list_notifications(self.accountant)[0]
         self.assertEqual(notice["email_status"], "failed")
         self.assertTrue(self.store.retry_notification_delivery(self.accountant, notice["id"]))
@@ -156,7 +201,7 @@ class NotificationTests(unittest.TestCase):
         finally:
             sink.shutdown(); sink.server_close(); thread.join(timeout=2)
 
-    def test_audit_atomic_notifications_summary_only_and_unsubscribe(self):
+    def test_audit_notifications_summary_only_and_unsubscribe(self):
         for user in (self.admin, self.accountant, self.other):
             self.store.set_notification_preferences(user, user["id"], True, True, True)
         result = app_module._save_audit(self.dataset, self.admin, self.client["id"])
@@ -259,13 +304,17 @@ class NotificationTests(unittest.TestCase):
             self.assertNotIn("attachments", payload)
             self.assertNotIn(self.dataset.company.taxpayer_id, json.dumps(payload, ensure_ascii=False))
 
-    def test_notification_failure_rolls_back_audit_transaction(self):
+    def test_audit_storage_failure_is_reported_before_notifications(self):
         findings = engine.run(engine.load_rules(ROOT / "rules"), self.dataset)
         summary = render.build_view_model(self.dataset, findings)["summary"]
-        with patch.object(self.store, "_enqueue_audit_notifications", side_effect=RuntimeError("test rollback")):
-            with self.assertRaisesRegex(RuntimeError, "test rollback"):
-                self.store.save_audit("rollback-audit", self.admin, self.client["id"], self.dataset, findings, summary, "2026-01-01")
-        self.assertIsNone(self.store.get_audit("rollback-audit"))
+        with self.store.connect() as db:
+            db.execute("""CREATE TRIGGER reject_audit BEFORE INSERT ON audits
+                          BEGIN SELECT RAISE(ABORT, 'audit storage unavailable'); END""")
+        with patch.object(self.store, "_enqueue_audit_notifications") as enqueue:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "audit storage unavailable"):
+                self.store.save_audit("failed-audit", self.admin, self.client["id"], self.dataset, findings, summary, "2026-01-01")
+            enqueue.assert_not_called()
+        self.assertIsNone(self.store.get_audit("failed-audit"))
 
     def test_email_html_escapes_rule_names_and_ignores_unapproved_fields(self):
         findings = engine.run(engine.load_rules(ROOT / "rules"), self.dataset)
