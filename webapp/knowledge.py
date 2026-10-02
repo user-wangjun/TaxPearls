@@ -6,8 +6,10 @@ import json
 import re
 import urllib.error
 import urllib.request
+from itertools import islice
 
 from fastapi import HTTPException
+from src import related_graph
 from src.settings import AISettings
 
 
@@ -58,11 +60,41 @@ def build_graph(rules, entry=None):
         if rule.id in findings:
             finding = findings[rule.id]
             fid = add("risk", finding.rule.name, id="finding:"+rule.id,
-                      status=finding.status, severity=rule.severity,
+                      status=finding.status, severity=rule.severity, category=rule.category,
                       conclusion=finding.conclusion, calculation=finding.calculation,
                       reason=finding.skip_reason, rule_id=rid)
             link(company, fid, "核对结果")
             link(fid, rid, "由规则判定")
+    if entry and entry["dataset"].related_graph:
+        dataset = entry["dataset"]
+        graph = dataset.related_graph
+        subjects = {item.key: item for item in graph.subjects}
+        audited = next(item for item in graph.subjects if item.taxpayer_id == dataset.company.taxpayer_id)
+        for share, control, trade in islice(related_graph.candidate_paths(dataset), 50):
+            owner = subjects[share.owner_key]
+            other = subjects[control.company_key]
+            owner_id = add("entity", owner.name, id="related:subject:" + owner.key,
+                           category="关联方图", source=owner.source, kind_label=owner.kind)
+            other_id = add("entity", other.name, id="related:subject:" + other.key,
+                           category="关联方图", source=other.source, kind_label=other.kind)
+            share_id = add("relation", "股东关系 " + share.key, id="related:relation:" + share.key,
+                           category="关联方图", source=share.source, requirement=share.basis,
+                           period=f"{share.start_on} 至 {share.end_on or '持续'}")
+            control_id = add("relation", "控制关系 " + control.key, id="related:relation:" + control.key,
+                             category="关联方图", source=control.source, requirement=control.basis,
+                             period=f"{control.start_on} 至 {control.end_on or '持续'}")
+            trade_id = add("trade", "关联交易 " + trade.key, id="related:trade:" + trade.key,
+                           category="关联方图", source=trade.source, value=str(trade.amount),
+                           requirement=trade.anomaly_basis or "未提供异常依据",
+                           status="hit" if trade.reviewed and trade.anomaly_basis else "skipped")
+            link(owner_id, share_id, "股东")
+            link(share_id, company, "持股")
+            link(owner_id, control_id, "控制")
+            link(control_id, other_id, "控制企业")
+            link(company, trade_id, "销售方" if trade.seller_key == audited.key else "购买方")
+            link(trade_id, other_id, "购买方" if trade.seller_key == audited.key else "销售方")
+            if trade.reviewed and trade.anomaly_basis and "finding:G-001" in nodes:
+                link(trade_id, "finding:G-001", "关联方图规则命中")
     return {"nodes": list(nodes.values()), "edges": edges,
             "audit_id": entry["id"] if entry else None}
 

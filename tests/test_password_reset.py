@@ -61,7 +61,7 @@ class PasswordResetTests(unittest.TestCase):
         from src import mailer
 
         with patch.dict(os.environ, {"TAXPEARLS_RESEND_API_KEY": "test-api-key"}, clear=True):
-            with patch.object(mailer.urllib.request, "urlopen") as network:
+            with patch.object(mailer, "_open_request") as network:
                 with self.assertRaises(mailer.MailError):
                     mailer.send_email(to="recipient@example.com", subject="配置验证", html="<p>测试</p>")
                 network.assert_not_called()
@@ -74,7 +74,7 @@ class PasswordResetTests(unittest.TestCase):
             "TAXPEARLS_EMAIL_FROM_NAME": "测试发件配置",
         }
         with patch.dict(os.environ, configuration, clear=True):
-            with patch.object(mailer.urllib.request, "urlopen", return_value=response) as network:
+            with patch.object(mailer, "_open_request", return_value=response) as network:
                 result = mailer.send_email(to="recipient@example.com", subject="配置验证", html="<p>测试</p>")
                 self.assertEqual(result, "synthetic-mail-id")
                 payload = json.loads(network.call_args.args[0].data)

@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from src import engine, loader, render  # noqa: E402
+from src import engine, loader, related_graph, render  # noqa: E402
 from src.models import SEVERITY_LABEL, STATUS_LABEL  # noqa: E402
 
 DEFAULT_INPUT = ROOT / "samples" / "样例企业-审计材料.xlsx"
@@ -95,6 +95,8 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         findings = engine.run(rules, dataset)
+        findings.extend(related_graph.run(dataset))
+        findings.sort(key=lambda f: ({"hit": 0, "pass": 1, "skipped": 2}[f.status], -f.severity_rank, f.rule.id))
     except engine.RuleError as e:
         print(f"\n[规则求值失败] {e}\n", file=sys.stderr)
         return 4
