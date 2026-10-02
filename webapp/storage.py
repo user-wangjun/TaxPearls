@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 from dataclasses import asdict
@@ -29,6 +30,11 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = ROOT / "instance" / "taxpearls.db"
 SESSION_HOURS = 12
 ROLES = {"teacher", "student", "org_admin", "accountant", "platform_admin"}
+COMMON_PASSWORDS = {"password123!", "admin123456!", "1234567890a!", "qwerty12345!"}
+
+
+class SetupAlreadyInitialized(Exception):
+    pass
 
 _passwords = PasswordHasher()
 
@@ -43,6 +49,36 @@ def _json(value: Any) -> str:
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _validate_password(password: str) -> None:
+    if not isinstance(password, str) or not 10 <= len(password) <= 128:
+        raise ValueError("密码长度须为 10–128 位")
+    classes = sum(bool(re.search(pattern, password)) for pattern in
+                  (r"[a-z]", r"[A-Z]", r"[0-9]", r"[^A-Za-z0-9]"))
+    if classes < 3 or password.lower() in COMMON_PASSWORDS:
+        raise ValueError("密码须包含至少三类字符，且不能使用常见弱口令")
+
+
+def _normalize_email(email: str) -> str:
+    """邮箱归一化：去空格 + 转小写（docs/06 3.2）。同一邮箱只允许一个账号。"""
+    return (email or "").strip().lower()
+
+
+def _validate_email(email: str) -> str:
+    """校验并归一化邮箱；允许为空（邮箱是可选绑定项），非法格式直接拒绝。"""
+    address = _normalize_email(email)
+    if not address:
+        return ""
+    if " " in address or address.count("@") != 1 or len(address) > 254:
+        raise ValueError("邮箱格式不正确")
+    local, _, domain = address.partition("@")
+    if not local or not domain or "." not in domain or domain.startswith(".") or domain.endswith("."):
+        raise ValueError("邮箱格式不正确")
+    return address
+
+
+PASSWORD_RESET_MINUTES = 10
 
 
 def serialize_dataset(dataset: Dataset) -> dict[str, Any]:
@@ -215,6 +251,30 @@ class Store:
             ):
                 if name not in columns:
                     db.execute(f"ALTER TABLE org_settings ADD COLUMN {name} {sql_type}")
+            # 注册与开户（FR-G10/G11）：用户绑定邮箱。email 可空但唯一（部分唯一索引）。
+            # 因「用户自设密码」，password_hash 保持 NOT NULL——仅需加列，无需重建表。
+            user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+            if "email" not in user_columns:
+                db.execute("ALTER TABLE users ADD COLUMN email TEXT")
+            db.execute("""CREATE TABLE IF NOT EXISTS email_tokens (
+                    token_hash TEXT PRIMARY KEY,
+                    email TEXT NOT NULL,
+                    purpose TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    session_key TEXT,
+                    code_hash TEXT,
+                    expires_at TEXT NOT NULL,
+                    used_at TEXT,
+                    created_at TEXT NOT NULL
+                )""")
+            db.execute("CREATE INDEX IF NOT EXISTS idx_email_tokens_email ON email_tokens(email, purpose)")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email "
+                       "ON users(email) WHERE email IS NOT NULL AND email <> ''")
+            count = db.execute("SELECT COUNT(*) FROM users WHERE role='platform_admin'").fetchone()[0]
+            if count > 1:
+                raise RuntimeError("现有数据库含多个平台管理员，需人工确认归并后才能安装唯一约束；未自动删除账号。")
+            db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_platform_admin "
+                       "ON users(role) WHERE role='platform_admin'")
 
     def has_users(self) -> bool:
         with self.connect() as db:
@@ -291,35 +351,136 @@ class Store:
             )
         return self.get_org_settings(org_id)
 
-    def create_user(self, username: str, password: str, display_name: str, role: str, org_id: str) -> dict[str, Any]:
+    def create_user(self, username: str, password: str, display_name: str, role: str,
+                    org_id: str, email: str = "") -> dict[str, Any]:
         username = username.strip().lower()
         if role not in ROLES:
             raise ValueError("无效角色")
-        if len(username) < 3 or not password.strip() or not display_name.strip() or not org_id.strip():
-            raise ValueError("用户名至少3位，密码、姓名和机构不能为空")
+        if len(username) < 3 or not display_name.strip() or not org_id.strip():
+            raise ValueError("用户名至少3位，姓名和机构不能为空")
+        _validate_password(password)
+        address = _validate_email(email)  # 可选；非法格式拒绝，空则不绑定
         user_id = secrets.token_hex(12)
         with self.connect() as db:
             db.execute(
-                "INSERT INTO users VALUES (?,?,?,?,?,?,1,?)",
-                (user_id, username, _passwords.hash(password), display_name.strip(), role, org_id.strip(), _now()),
+                """INSERT INTO users (id,username,password_hash,display_name,role,org_id,active,email,created_at)
+                   VALUES (?,?,?,?,?,?,1,?,?)""",
+                (user_id, username, _passwords.hash(password), display_name.strip(), role,
+                 org_id.strip(), address or None, _now()),
             )
         return self.get_user(user_id)
+
+    def create_initial_admin(self, username: str, password: str, display_name: str,
+                             org_id: str, email: str = "") -> dict[str, Any]:
+        username = username.strip().lower()
+        if len(username) < 3 or not display_name.strip() or not org_id.strip():
+            raise ValueError("用户名至少3位，姓名和机构不能为空")
+        _validate_password(password)
+        address = _validate_email(email)
+        user_id = secrets.token_hex(12)
+        password_hash = _passwords.hash(password)
+        with self._lock:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if db.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+                    raise SetupAlreadyInitialized()
+                db.execute(
+                    """INSERT INTO users (id,username,password_hash,display_name,role,org_id,active,email,created_at)
+                       VALUES (?,?,?,?,?,?,1,?,?)""",
+                    (user_id, username, password_hash, display_name.strip(), "platform_admin",
+                     org_id.strip(), address or None, _now()),
+                )
+        user = self.get_user(user_id)
+        assert user is not None
+        return user
+
+    @staticmethod
+    def _with_email(row: dict[str, Any]) -> dict[str, Any]:
+        # 对外统一为空字符串，避免前端把未绑定邮箱渲染成 null。
+        row["email"] = row.get("email") or ""
+        return row
 
     def get_user(self, user_id: str) -> dict[str, Any] | None:
         with self.connect() as db:
             row = db.execute(
-                "SELECT id,username,display_name,role,org_id,active,created_at FROM users WHERE id=?", (user_id,)
+                "SELECT id,username,display_name,role,org_id,active,created_at,email FROM users WHERE id=?", (user_id,)
             ).fetchone()
-        return dict(row) if row else None
+        return self._with_email(dict(row)) if row else None
 
     def list_users(self, org_id: str | None = None) -> list[dict[str, Any]]:
-        sql = "SELECT id,username,display_name,role,org_id,active,created_at FROM users"
+        sql = "SELECT id,username,display_name,role,org_id,active,created_at,email FROM users"
         args: tuple[Any, ...] = ()
         if org_id:
             sql += " WHERE org_id=?"
             args = (org_id,)
         with self.connect() as db:
-            return [dict(row) for row in db.execute(sql + " ORDER BY created_at", args)]
+            return [self._with_email(dict(row)) for row in db.execute(sql + " ORDER BY created_at", args)]
+
+    def get_user_by_email(self, email: str) -> dict[str, Any] | None:
+        address = _normalize_email(email)
+        if not address:
+            return None
+        with self.connect() as db:
+            row = db.execute(
+                """SELECT id,username,display_name,role,org_id,active,created_at,email
+                   FROM users WHERE email=? AND active=1""",
+                (address,),
+            ).fetchone()
+        return self._with_email(dict(row)) if row else None
+
+    def create_password_reset(self, email: str) -> str | None:
+        """为已激活用户生成一次性重置令牌；邮箱不存在时返回 None。
+
+        调用方必须保证：无论返回令牌还是 None，对外的响应完全一致（防账号枚举，docs/06 3.5）。
+        同一邮箱同时只保留一张未使用的重置令牌，新申请会作废旧令牌。
+        """
+        address = _normalize_email(email)
+        if not address or not self.get_user_by_email(address):
+            return None
+        token = secrets.token_urlsafe(32)
+        expires = (datetime.now(UTC) + timedelta(minutes=PASSWORD_RESET_MINUTES)).isoformat(timespec="seconds")
+        with self._lock:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                db.execute("DELETE FROM email_tokens WHERE email=? AND purpose='reset' AND used_at IS NULL",
+                           (address,))
+                db.execute(
+                    """INSERT INTO email_tokens (token_hash,email,purpose,attempts,expires_at,used_at,created_at)
+                       VALUES (?,?,?,0,?,NULL,?)""",
+                    (_hash_token(token), address, "reset", expires, _now()),
+                )
+        return token
+
+    def redeem_password_reset(self, token: str, new_password: str) -> dict[str, Any]:
+        """用一次性重置令牌设置新密码；成功后该账号全部历史会话失效（docs/06 3.5）。"""
+        _validate_password(new_password)
+        token_hash = _hash_token((token or "").strip())
+        now = _now()
+        with self._lock:
+            with self.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT email,expires_at,used_at FROM email_tokens WHERE token_hash=? AND purpose='reset'",
+                    (token_hash,),
+                ).fetchone()
+                if not row or row["used_at"] or row["expires_at"] < now:
+                    raise ValueError("重置链接无效或已过期，请重新申请。")
+                user = db.execute(
+                    """SELECT id,username,display_name,role,org_id,active,created_at,email
+                       FROM users WHERE email=? AND active=1""",
+                    (row["email"],),
+                ).fetchone()
+                if not user:
+                    raise ValueError("重置链接无效或已过期，请重新申请。")
+                db.execute("UPDATE users SET password_hash=? WHERE id=?",
+                           (_passwords.hash(new_password), user["id"]))
+                db.execute("UPDATE email_tokens SET used_at=? WHERE token_hash=?", (now, token_hash))
+                db.execute("DELETE FROM sessions WHERE user_id=?", (user["id"],))
+        record = {"id": user["id"], "org_id": user["org_id"]}
+        self.log(record, "password_reset", "user", user["id"])
+        result = self.get_user(user["id"])
+        assert result is not None
+        return result
 
     def authenticate(self, username: str, password: str) -> tuple[dict[str, Any], str] | None:
         with self.connect() as db:

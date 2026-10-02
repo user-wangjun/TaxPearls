@@ -59,3 +59,8 @@ instance/
 backups/
 *.p12
 *.pfx
+*.sqlite-wal
+*.sqlite-shm
+*.db.manifest.json
+*.sqlite.manifest.json
+*.sqlite3.manifest.json

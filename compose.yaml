@@ -1,0 +1,20 @@
+services:
+  taxpearls:
+    build: .
+    image: taxpearls:${TAXPEARLS_IMAGE_TAG:-current}
+    env_file: .env
+    environment:
+      TAXPEARLS_HOST: 0.0.0.0
+      TAXPEARLS_PORT: 8000
+      TAXPEARLS_DB: /data/taxpearls.db
+      TAXPEARLS_PDF_BROWSER: chromium
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - taxpearls-data:/data
+    restart: unless-stopped
+    init: true
+    shm_size: 256mb
+
+volumes:
+  taxpearls-data:
