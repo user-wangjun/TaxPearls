@@ -219,3 +219,5 @@ def initialize(store) -> None:
                    "ON users(role) WHERE role='platform_admin'")
         classroom.migrate(db)
         members.migrate(db)
+        from webapp import material_batches
+        material_batches.migrate(db)
