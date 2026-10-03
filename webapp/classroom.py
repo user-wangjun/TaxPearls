@@ -13,6 +13,7 @@ from fastapi import Cookie, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
+from webapp import training_profiles, training_stats
 from webapp.access import audit_row, current_actor
 
 
@@ -221,8 +222,46 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
             return {'id':sid,'revision':1}
         return checked(create)
 
+    @app.get("/api/classes/{class_id}/statistics")
+    def class_statistics(class_id: str, include_withdrawn: bool = False,
+                         session: str | None = Cookie(default=None,alias=cookie_name)):
+        who = user(session,True)
+        def get():
+            with store_provider().connect() as db:
+                db.execute("BEGIN")
+                item = owned_class(db,class_id,who)
+                return training_stats.collect(db,item,include_withdrawn)
+        return checked(get)
 
+    @app.get("/api/training/profile")
+    def own_profile(session: str | None = Cookie(default=None,alias=cookie_name)):
+        who = user_for_session(session)
+        allow(who,'student')
+        def get():
+            with store_provider().connect() as db:
+                db.execute("BEGIN")
+                person = db.execute("SELECT * FROM users WHERE id=? AND org_id=? AND role='student' AND active=1",
+                                    (who['id'],who['org_id'])).fetchone()
+                if not person:
+                    raise ClassroomError("学生不存在。",404)
+                return training_profiles.collect(db,dict(person))
+        return checked(get)
 
+    @app.get("/api/classes/{class_id}/students/{student_id}/profile")
+    def student_profile(class_id: str, student_id: str, include_withdrawn: bool = False,
+                        session: str | None = Cookie(default=None,alias=cookie_name)):
+        who = user(session,True)
+        def get():
+            with store_provider().connect() as db:
+                db.execute("BEGIN")
+                item = owned_class(db,class_id,who)
+                person = db.execute("""SELECT u.* FROM users u JOIN training_class_members m ON m.student_id=u.id
+                    WHERE m.class_id=? AND u.id=? AND u.org_id=? AND u.role='student' AND u.active=1""",
+                    (class_id,student_id,who['org_id'])).fetchone()
+                if not person:
+                    raise ClassroomError("学生不存在。",404)
+                return training_profiles.collect(db,dict(person),item,include_withdrawn)
+        return checked(get)
 
     @app.put("/api/classes/{class_id}")
     def update_class(class_id: str,body: ClassUpdate,session: str | None = Cookie(default=None,alias=cookie_name)):

@@ -20,7 +20,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 from contextlib import contextmanager
-from webapp import classroom, members, invitations, email_auth
+from webapp import classroom, members, invitations, email_auth, mistake_book
 from webapp.access import AccessDenied, audit_row, audit_scope, current_actor, is_teaching_dataset
 
 from argon2 import PasswordHasher
@@ -1401,6 +1401,7 @@ class Store:
                      adjusted_score=NULL, feedback=NULL, reviewed_by=NULL""",
                 (submission_id, assignment_id, student_id, _json(answers), score, _json(details), _now()),
             )
+            mistake_book.capture(db, assignment_id, student_id, force=True)
             self._log(db, user or dict(account), "submit_assignment", "assignment", assignment_id, f"score={score}")
         return submission_id
 

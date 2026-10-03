@@ -158,5 +158,37 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   assert.equal(evidenceBox.children[2].children[1].textContent,'待完善 1 份');
   evidenceCtx.renderMaterialEvidence([]);
   assert.equal(evidenceBox.hidden,true);assert.equal(evidenceBox.children.length,0);
-  console.log("Frontend syntax, role, material evidence and notification/rule/material race contracts passed.");
+  // Run the mistake controller against reordered API replies and revoked UI ownership.
+  const mistakeNodes = new Map(), mistakeCalls = [];
+  const mistakeNode = (tag, cls, text) => ({...node(), tag, textContent:text || "", value:"", hidden:false,
+    setAttribute(){}, scrollIntoView(){}});
+  let mistakeUser = {id:"student-a", role:"student"};
+  const mistakeCtx = {window:{}, document:{getElementById:id=>{
+    if (!mistakeNodes.has(id)) mistakeNodes.set(id,mistakeNode()); return mistakeNodes.get(id);
+  }}};
+  vm.createContext(mistakeCtx);
+  vm.runInContext(fs.readFileSync("webapp/static/mistake-book.js", "utf8"), mistakeCtx);
+  const controller = mistakeCtx.window.createMistakeBook({el:mistakeNode, getUser:()=>mistakeUser,
+    api:url=>new Promise((resolve,reject)=>mistakeCalls.push({url,resolve,reject}))});
+  const staleMistakes = controller.load(), staleMistakeCall = mistakeCalls.shift();
+  const freshMistakes = controller.load();
+  mistakeCalls.shift().resolve({cases:[{id:"current", title:"Current student case", available:false, status:"unavailable", errors:[]}], method:"current"});
+  await freshMistakes;
+  staleMistakeCall.resolve({cases:[{id:"private", title:"Stale private case", available:false, status:"unavailable", errors:[]}], method:"stale"});
+  await staleMistakes;
+  assert.equal(mistakeNodes.get("mistakeList").children[0].children[0].textContent,"Current student case");
+  const revokedMistakes = controller.load(), revokedCall = mistakeCalls.shift();
+  controller.reset(); mistakeUser = {id:"student-b", role:"student"};
+  revokedCall.resolve({cases:[],method:"private"}); await revokedMistakes;
+  assert.equal(mistakeNodes.get("mistakeBook").hidden,true);
+  assert.equal(mistakeNodes.get("mistakeStatus").textContent,"");
+  // A cancelled sync must not start a follow-up list read or display an old failure.
+  const staleSync = controller.load(true), syncCall = mistakeCalls.shift();
+  controller.invalidate(); syncCall.resolve({added:1,updated:0,unchanged:0,invalid:0}); await staleSync;
+  assert.equal(mistakeCalls.length,0);
+  const lostRole = controller.load(), lostRoleCall = mistakeCalls.shift();
+  mistakeUser = {id:"student-b",role:"teacher"};
+  lostRoleCall.reject(new Error("private failure")); await lostRole;
+  assert.ok(!mistakeNodes.get("mistakeStatus").textContent.includes("private failure"));
+  console.log("Frontend syntax, role, evidence and notification/rule/material/mistake race contracts passed.");
 })().catch(error => {console.error(error); process.exitCode = 1;});

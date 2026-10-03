@@ -516,6 +516,11 @@ def workspace_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "workspace.js", media_type="text/javascript")
 
 
+@app.get("/mistake-book.js")
+def mistake_book_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "mistake-book.js", media_type="text/javascript")
+
+
 @app.get("/classroom.js")
 def classroom_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "classroom.js", media_type="text/javascript")
@@ -1088,6 +1093,8 @@ from webapp.exercises import register as register_exercises
 register_exercises(app, lambda: store, _user, _allow, _audit_or_404, lambda data, enabled: _audit_rules(data,enabled),
                    _save_audit, _trial_payload, COOKIE_NAME)
 classroom.register(app,lambda: store,_user,_allow,_is_synthetic_dataset,COOKIE_NAME)
+from webapp.mistake_book import register as register_mistake_book
+register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
 
 
