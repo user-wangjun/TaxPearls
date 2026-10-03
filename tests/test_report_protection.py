@@ -99,7 +99,7 @@ class ReportProtectionTests(unittest.TestCase):
         self.store.upsert_client(self.admin,self.customer["name"],self.customer["taxpayer_id"],replacement["id"])
         self.assertEqual(self.client.get("/api/report-verification/"+self.identifier).status_code,404)
         self.assertEqual(self.check(self.identifier,b"anything").status_code,404)
-        for role,org,expected in (("org_admin","org-b",404),("platform_admin","org-b",404),("student","org-a",403)):
+        for role,org,expected in (("org_admin","org-b",404),("platform_admin","org-b",403),("student","org-a",403)):
             user=self.store.create_user(role+org,self.password,role,role,org);self.login(user)
             self.assertEqual(self.client.get("/api/report-verification/"+self.identifier).status_code,expected)
             self.assertEqual(self.check(self.identifier,b"anything").status_code,expected)
