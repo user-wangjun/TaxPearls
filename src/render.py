@@ -119,6 +119,8 @@ def render_html(
     footer_text: str = "",
     logo_data_uri: str = "",
     ai_narrative: dict | None = None,
+    template_source: str | None = None,
+    protect: bool = True,
 ) -> tuple[str, Path | None]:
     """渲染报告 HTML。write=True 时落盘供浏览器预览（CLI 路径），
     write=False 仅返回 HTML 字符串（Web 路径：产物按需生成，不覆盖已有预览）。
@@ -130,7 +132,7 @@ def render_html(
         trim_blocks=True,
         lstrip_blocks=True,
     )
-    tpl = env.get_template("report.html")
+    tpl = env.from_string(template_source) if template_source is not None else env.get_template("report.html")
 
     vm = build_view_model(dataset, findings)
     vm["report_no"] = make_report_no(dataset.company.name, when)
@@ -143,6 +145,9 @@ def render_html(
     vm["ai_narrative"] = ai_narrative
 
     html = tpl.render(**vm)
+    if protect:
+        from .report_protection import protect_html
+        html, _ = protect_html(html,dataset.company.name,when.date().isoformat(),vm["report_no"])
 
     if not write:
         return html, None
@@ -153,13 +158,18 @@ def render_html(
     return html, html_path
 
 
-def _header_template() -> str:
-    """页眉留空。
+def _header_template(verification_id: str = "") -> str:
+    """D08 traceability belongs in the reserved print margin on every page.
 
-    Chromium 的页眉模板对所有页生效，无法排除封面页；而正式报告的封面不应带页眉，
-    因此整体不使用页眉，页脚保留报告编号与页码用于追溯。
+    Legacy HTML has no mark and keeps the original empty header.
     """
-    return '<div style="height:0"></div>'
+    if not verification_id:
+        return '<div style="height:0"></div>'
+    note=("登录工作台核对原件；标识/水印可复制，不是第三方签名，不能阻止转发。"
+          if verification_id.startswith("TPV-") else "本地文件未登记服务器原件；不是服务器来源认证。")
+    return ('<div style="width:100%;padding:0 20mm;font-size:7pt;color:#63758b;'
+            'font-family:Microsoft YaHei,sans-serif;">'
+            f'追溯标识 {escape(verification_id)}<br>{note}</div>')
 
 
 def _footer_template(report_no: str, footer_text: str = "") -> str:
@@ -184,6 +194,7 @@ def export_pdf(
 ) -> Path:
     """Use installed Chrome locally or bundled Chromium in the deployment image."""
     from playwright.sync_api import sync_playwright
+    from .report_protection import verification_id_from_html
 
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -211,7 +222,7 @@ def export_pdf(
                 format="A4",
                 print_background=True,
                 display_header_footer=True,
-                header_template=_header_template(),
+                header_template=_header_template(verification_id_from_html(html)),
                 footer_template=_footer_template(report_no, footer_text),
                 margin={"top": "18mm", "bottom": "18mm", "left": "20mm", "right": "20mm"},
             )

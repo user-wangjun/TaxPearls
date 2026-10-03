@@ -28,6 +28,8 @@ env/
 .env
 .env.*
 !.env.example
+.envrc
+.direnv/
 *.pem
 *.key
 secrets/
@@ -40,11 +42,27 @@ data/exports/
 tmp/
 .cache/
 
+# ---- 测试、覆盖率与静态检查产物 ----
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+playwright-report/
+test-results/
+blob-report/
+
 # ---- 生成产物（报告与预览图，不入库）----
 output/
 
 # 本地业务数据与浏览器检查状态
 instance/
+backups/
+*.tpbackup
 .playwright-cli/
 
 # 本地数据库、备份与私密凭据
@@ -52,8 +70,11 @@ instance/
 *.db-wal
 *.db-shm
 *.db-journal
+*.db-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 *.sqlite3-wal
 *.sqlite3-shm
 backups/

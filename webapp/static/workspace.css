@@ -258,5 +258,4 @@ body:has(.nav-collapsed){--sidebar-width:76px}
 
 /* 长列表（操作日志、通知、各类台账）在卡片内部滚动，不再把页面撑得很长 */
 .data-list{max-height:520px;overflow-y:auto;overscroll-behavior:contain;overflow-wrap:anywhere;scrollbar-width:thin;scrollbar-color:#c7d6ec transparent}
-
 @media(max-width:600px){.stat-row{grid-template-columns:repeat(2,minmax(0,1fr))}.stat .l{line-height:1.5}}

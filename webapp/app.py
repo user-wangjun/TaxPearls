@@ -18,18 +18,20 @@ import uuid
 from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Annotated, Literal
+from urllib.parse import quote
 
-from fastapi import BackgroundTasks, Cookie, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import BackgroundTasks, Cookie, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict, AwareDatetime
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from src import engine, loader, render, training
+from src import engine, loader, render, training, sandbox_feedback
 from src import settings  # Load .env before Store and route initialization.
 from src.mailer import MailError, send_password_reset_email, send_registration_code_email
 from src.models import Dataset, Rule
-from webapp import captcha
+from webapp import captcha, classroom
 from webapp.notifications import NotificationWorker, email_delivery_enabled
 from webapp.storage import SetupAlreadyInitialized, Store
 from webapp.login_guard import LoginGuard, RateLimiter
@@ -59,6 +61,15 @@ async def lifespan(application):
 
 
 app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def invalid_request(_request: Request, exc: RequestValidationError):
+    # Do not echo credentials/raw request data, including JSON NaN/Infinity
+    # which the default validation response cannot safely JSON-encode.
+    return JSONResponse(status_code=422,content={"detail":[
+        {"loc":error["loc"],"type":error["type"],"msg":error["msg"]} for error in exc.errors()
+    ]},headers={"Cache-Control":"no-store"})
 store = Store()
 login_guard = LoginGuard()
 reset_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})
@@ -115,9 +126,10 @@ class RegisterCompleteBody(BaseModel):
 
 
 class InviteBody(BaseModel):
+    """创始码只捆机构名称：一码一位、私聊交付，邮箱不绑定（注册侧有邮箱验证码兜底）。"""
     org_name: str = Field(min_length=1, max_length=120)
-    seats: int = Field(ge=1, le=200)
-    bound_email: str
+    seats: int = Field(default=1, ge=1, le=200)
+    bound_email: str = ""
     expires_days: int = Field(default=7, ge=1, le=30)
 
 
@@ -128,16 +140,30 @@ class ClientBody(BaseModel):
 
 
 class AssignmentBody(BaseModel):
-    title: str
-    audit_id: str
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1,max_length=200)
+    audit_id: str = Field(min_length=1,max_length=64)
     target_student_id: str | None = None
-    weights: dict[str, float] = Field(default_factory=dict)
-    false_positive_penalty: float = Field(default=5.0, ge=0, le=100)
+    weights: dict[str, classroom.Weight] = Field(default_factory=dict)
+    false_positive_penalty: float = Field(default=5.0, ge=0, le=100,allow_inf_nan=False)
     published: bool = True
+    class_id: str | None = Field(default=None,min_length=1,max_length=64)
+    deadline_at: AwareDatetime | None = None
 
 
 class SubmissionBody(BaseModel):
     selected_rule_ids: list[str]
+
+
+class SandboxFeedbackBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["mark_risk", "calculate"]
+    rule_id: str | None = Field(default=None, max_length=32)
+    evidence_metrics: list[Annotated[str, Field(max_length=160, strict=True)]] = Field(default_factory=list, max_length=100)
+    left: str | None = Field(default=None, max_length=160)
+    right: str | None = Field(default=None, max_length=160)
+    operation: Literal["difference", "ratio"] = "difference"
+    period_mode: Literal["same_period", "year_on_year"] = "same_period"
 
 
 class ReviewBody(BaseModel):
@@ -451,6 +477,11 @@ def workspace_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "workspace.js", media_type="text/javascript")
 
 
+@app.get("/classroom.js")
+def classroom_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "classroom.js", media_type="text/javascript")
+
+
 @app.get("/workspace.css")
 def workspace_styles() -> FileResponse:
     return FileResponse(STATIC_DIR / "workspace.css", media_type="text/css")
@@ -480,6 +511,13 @@ def dashboard(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> 
                        for f in entry["findings"] if f.status != "pass"]})
     clients = [] if user["role"] == "teacher" else store.list_clients(user)
     return {"records": records, "history": history, "clients": clients}
+
+
+from webapp.org_reports import register as register_org_reports
+register_org_reports(app, lambda: store, _user, _allow, COOKIE_NAME)
+
+from webapp.report_verification import register as register_report_verification
+register_report_verification(app, lambda: store, _user, _allow, _audit_or_404, COOKIE_NAME)
 
 
 @app.get("/api/knowledge")
@@ -672,7 +710,7 @@ def password_reset_confirm(body: PasswordResetConfirmBody) -> dict[str, Any]:
 
 @app.get("/api/auth/captcha")
 def auth_captcha() -> dict[str, str]:
-    """签发算术人机验证题。"""
+    """签发图片人机验证码（PNG data URL）。"""
     return captcha.issue()
 
 
@@ -913,7 +951,8 @@ async def audit(
     return JSONResponse(_save_audit(dataset, user, client_id))
 
 
-def _save_audit(dataset: Dataset, user: dict[str, Any], client_id: str | None = None) -> dict[str, Any]:
+def _save_audit(dataset: Dataset, user: dict[str, Any], client_id: str | None = None,
+                *, frozen_rules: list[Rule] | None = None, exercise_metadata: dict | None = None) -> dict[str, Any]:
     if user["role"] == "teacher" and not _is_synthetic_dataset(dataset):
         raise HTTPException(403, "教师只能导入明确标记为仿真样例的教学数据，严禁使用真实企业账套。")
     if client_id:
@@ -929,7 +968,7 @@ def _save_audit(dataset: Dataset, user: dict[str, Any], client_id: str | None = 
         client_id = store.upsert_client(user, dataset.company.name, dataset.company.taxpayer_id, assigned)["id"]
     try:
         enabled = store.enabled_rule_ids()
-        rules = _audit_rules(dataset, enabled)
+        rules = _audit_rules(dataset, enabled) if frozen_rules is None else frozen_rules
         findings = engine.run(rules, dataset)
         # FR-B09 is a separate relationship traversal, not a YAML condition.
         from src import related_graph
@@ -940,7 +979,11 @@ def _save_audit(dataset: Dataset, user: dict[str, Any], client_id: str | None = 
     audit_id = uuid.uuid4().hex
     when = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
     vm = render.build_view_model(dataset, findings)
-    store.save_audit(audit_id, user, client_id, dataset, findings, vm["summary"], when)
+    from webapp.report_archive import build_snapshot
+    snapshot = build_snapshot({"id": audit_id, "org_id": user["org_id"], "audited_at": when,
+                               "dataset": dataset, "findings": findings}, _org_branding(user["org_id"]))
+    store.save_audit(audit_id, user, client_id, dataset, findings, vm["summary"], when,
+                     report_snapshot=snapshot, exercise_metadata=exercise_metadata)
     store.log(user, "create_audit", "audit", audit_id, f"{dataset.company.name}; rules={len(findings)}")
     entry = store.get_audit(audit_id)
     assert entry is not None
@@ -949,6 +992,11 @@ def _save_audit(dataset: Dataset, user: dict[str, Any], client_id: str | None = 
 
 from webapp.material_upload import register as register_material_upload
 register_material_upload(app, _user, _allow, _save_audit, RULES_DIR)
+
+from webapp.exercises import register as register_exercises
+register_exercises(app, lambda: store, _user, _allow, _audit_or_404, lambda data, enabled: _audit_rules(data,enabled),
+                   _save_audit, _trial_payload, COOKIE_NAME)
+classroom.register(app,lambda: store,_user,_allow,_is_synthetic_dataset,COOKIE_NAME)
 
 
 @app.get("/api/audits")
@@ -969,59 +1017,131 @@ def audit_detail(audit_id: str, session: str | None = Cookie(default=None, alias
     return _result(entry)
 
 
+@app.get("/api/audits/{audit_id}/changes")
+def audit_changes(audit_id: str, baseline_id: str | None = None,
+                  session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
+    from src import risk_changes
+
+    user = _user(session)
+    _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
+    current = _audit_or_404(audit_id, user)
+    candidates = risk_changes.baseline_candidates(store.audit_history_for_comparison(current), current, latest_only=False)
+    choices = [{key: row[key] for key in ("id", "period", "audited_at")} for row in candidates]
+    if baseline_id:
+        # Check access before identity/period validation; do not reveal foreign IDs.
+        baseline = _audit_or_404(baseline_id, user)
+    elif candidates:
+        baseline = _audit_or_404(candidates[0]["id"], user)
+    else:
+        return {"status": "no_baseline", "current": {key: current[key] for key in ("id", "period", "audited_at")},
+                "baselines": [], "items": [], "counts": {},
+                "message": "无可比基期：须同机构/客户/税号且有更早、同粒度的明确期间。首期不推断新增风险。"}
+    try:
+        result = risk_changes.compare(baseline, current)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    store.log(user, "view_risk_changes", "audit", audit_id, f"baseline={baseline['id']}")
+    return {**result, "baselines": choices}
+
+
+def _archived_report(entry, user, version=None):
+    from webapp.report_archive import build_snapshot
+
+    try:
+        if version is None:
+            narrative = store.get_audit_narrative(entry["id"], audit_narrative_hash(entry["findings"]))
+            snapshot = build_snapshot(entry, _org_branding(entry["org_id"]), narrative)
+            version, created = store.archive_report(entry["id"], user, snapshot)
+            if created:
+                store.log(user, "archive_report", "audit", entry["id"], f"version={version}")
+        result = store.get_report_version(entry["id"], version)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    if not result:
+        raise HTTPException(404, "归档报告版本不存在。")
+    return result
+
+
+@app.get("/api/archive")
+def archive_search(q: str = Query(default="", max_length=120), period: str = Query(default="", max_length=80),
+                   date_from: date | None = None, date_to: date | None = None,
+                   risk: str = Query(default="all", pattern="^(all|hit|high)$"),
+                   page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100),
+                   session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(422, "审计日期起始日不能晚于截止日。")
+    return store.search_audits(user, q.strip(), period.strip(), date_from.isoformat() if date_from else None,
+                             date_to.isoformat() if date_to else None, risk, page, page_size)
+
+
+@app.get("/api/audits/{audit_id}/report-versions")
+def report_versions(audit_id: str, session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
+    _audit_or_404(audit_id, user)
+    try:
+        return store.report_versions(audit_id)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@app.post("/api/audits/{audit_id}/report-versions")
+def archive_current_report(audit_id: str, session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
+    result = _archived_report(_audit_or_404(audit_id, user), user)
+    return {key: result[key] for key in ("version", "html_sha256", "content_sha256", "created_at", "manifest")}
+
+
 @app.get("/api/report/{audit_id}")
 def report(
     audit_id: str, background: BackgroundTasks, confirm: bool = False,
     session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+    version: int | None = Query(default=None, ge=1),
 ) -> Any:
     user = _user(session)
     _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
     if user["role"] == "accountant" and not confirm:
         raise HTTPException(status_code=409, detail="会计导出需二次确认，请确认报告用途后重试。")
     entry = _audit_or_404(audit_id, user)
-    dataset, findings = entry["dataset"], entry["findings"]
-    narrative = store.get_audit_narrative(audit_id, audit_narrative_hash(findings))
-    org = _org_branding(entry["org_id"])
+    archived = _archived_report(entry, user, version)
+    manifest = archived["manifest"]
     try:
-        when = datetime.fromisoformat(entry["audited_at"])
-        html, _ = render.render_html(
-            dataset, findings, when=when, write=False,
-            org_name=org["display_name"], report_title=org["report_title"],
-            footer_text=org["footer_text"], logo_data_uri=org["logo_data_uri"],
-            ai_narrative=narrative,
-        )
-        report_no = render.make_report_no(dataset.company.name, when)
-        short = _safe_filename_component(dataset.company.name.replace("（仿真样例）", "")[:12])
-        title = _safe_filename_component(org["report_title"])
-        pdf_name = f"{title}-{short}-{entry['audited_at'][:10].replace('-', '')}.pdf"
-        fd, tmp = tempfile.mkstemp(suffix=".pdf")
-        os.close(fd)
-        render.export_pdf(html, tmp, report_no=report_no, footer_text=org["footer_text"])
+        if archived["pdf_bytes"] is None:
+            fd, tmp = tempfile.mkstemp(suffix=".pdf")
+            os.close(fd)
+            try:
+                render.export_pdf(archived["html"], tmp, report_no=manifest["report_no"], footer_text=manifest["footer_text"])
+                archived = store.attach_report_pdf(audit_id, archived["version"], Path(tmp).read_bytes())
+            finally:
+                Path(tmp).unlink(missing_ok=True)
     except RuntimeError as exc:
         return _err(500, str(exc))
-    store.log(user, "export_report", "audit", audit_id)
-    background.add_task(os.remove, tmp)
-    return FileResponse(tmp, media_type="application/pdf", filename=pdf_name, background=background)
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    short = _safe_filename_component(entry["company_name"].replace("（仿真样例）", "")[:12])
+    title = _safe_filename_component(manifest["report_title"])
+    pdf_name = f"{title}-{short}-{entry['audited_at'][:10].replace('-', '')}-v{archived['version']}.pdf"
+    store.log(user, "export_report", "audit", audit_id, f"version={archived['version']}")
+    return Response(content=archived["pdf_bytes"], media_type="application/pdf", headers={
+        "Content-Disposition": "attachment; filename*=UTF-8''" + quote(pdf_name),
+        "X-TaxPearls-Report-Version": str(archived["version"]), "X-TaxPearls-SHA256": archived["pdf_sha256"],
+        "Cache-Control": "private, no-store"})
 
 
 @app.get("/api/report/{audit_id}/html")
-def report_html(audit_id: str, session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
+def report_html(audit_id: str, session: str | None = Cookie(default=None, alias=COOKIE_NAME),
+                version: int | None = Query(default=None, ge=1)) -> Response:
     user = _user(session)
     _allow(user, "org_admin", "accountant", "teacher", "platform_admin")
     entry = _audit_or_404(audit_id, user)
-    org = _org_branding(entry["org_id"])
-    narrative = store.get_audit_narrative(
-        audit_id, audit_narrative_hash(entry["findings"]),
-    )
-    html, _ = render.render_html(
-        entry["dataset"], entry["findings"],
-        when=datetime.fromisoformat(entry["audited_at"]), write=False,
-        org_name=org["display_name"], report_title=org["report_title"],
-        footer_text=org["footer_text"], logo_data_uri=org["logo_data_uri"],
-        ai_narrative=narrative,
-    )
-    store.log(user, "view_report", "audit", audit_id)
-    return Response(content=html, media_type="text/html")
+    archived = _archived_report(entry, user, version)
+    store.log(user, "view_report", "audit", audit_id, f"version={archived['version']}")
+    return Response(content=archived["html"], media_type="text/html", headers={
+        "X-TaxPearls-Report-Version": str(archived["version"]), "X-TaxPearls-SHA256": archived["html_sha256"],
+        "Cache-Control": "private, no-store"})
 
 
 @app.get("/api/org/settings")
@@ -1188,12 +1308,15 @@ def create_assignment(body: AssignmentBody,
         raise HTTPException(status_code=422, detail="权重只能配置该案例实际命中的规则。")
     if body.target_student_id:
         student = store.get_user(body.target_student_id)
-        if not student or student["role"] != "student" or student["org_id"] != user["org_id"]:
+        if not student or not student["active"] or student["role"] != "student" or student["org_id"] != user["org_id"]:
             raise HTTPException(status_code=422, detail="指定学生不存在或不属于当前机构。")
-    assignment_id = store.create_assignment(
-        user, body.title.strip(), body.audit_id, body.target_student_id,
-        body.weights, body.false_positive_penalty, body.published,
-    )
+    try:
+        assignment_id = store.create_assignment(
+            user, body.title.strip(), body.audit_id, body.target_student_id,
+            body.weights, body.false_positive_penalty, body.published,body.class_id,body.deadline_at,
+        )
+    except classroom.ClassroomError as exc:
+        raise HTTPException(exc.status,str(exc)) from None
     store.log(user, "create_assignment", "assignment", assignment_id, body.audit_id)
     return {"id": assignment_id}
 
@@ -1210,22 +1333,29 @@ def assignment_detail(assignment_id: str,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
     user = _user(session)
     _allow(user, "teacher", "student")
-    assignment = store.get_assignment(assignment_id)
-    if not assignment or assignment["org_id"] != user["org_id"]:
-        raise HTTPException(status_code=404, detail="作业不存在。")
-    if user["role"] == "student" and (not assignment["published"] or assignment["target_student_id"] not in (None, user["id"])):
+    assignment = store.get_assignment_for_user(assignment_id,user)
+    if not assignment:
         raise HTTPException(status_code=404, detail="作业不存在。")
     entry = store.get_audit(assignment["audit_id"])
-    assert entry is not None
+    if not entry or entry["org_id"] != user["org_id"]:
+        raise HTTPException(404,"作业材料不存在。")
     dataset: Dataset = entry["dataset"]
+    public_assignment=dict(assignment)
+    if user["role"] == "student":
+        public_assignment.pop("weights",None)
     return {
-        **assignment, "company": _company_dict(dataset),
+        **public_assignment, "company": _company_dict(dataset),
+        "generated_material_available": store.has_generated_exercise(assignment["audit_id"], user["org_id"]),
         "accounts": [
             {"code": a.code, "name": a.name, "opening": str(a.opening), "debit": str(a.debit),
              "credit": str(a.credit), "closing": str(a.closing)} for a in dataset.accounts
         ],
         "declarations": {k: str(v) for k, v in dataset.declarations.items()},
-        "rules": [{"id": f.rule.id, "name": f.rule.name, "category": f.rule.category} for f in entry["findings"]],
+        "metrics": [{"name":m.name,"value":str(m.value),"source":m.source,"detail":m.detail}
+                    for m in dataset.metrics.values()],
+        # Answer options must not inherit the audit's hit-first ordering.
+        "rules": [{"id": f.rule.id, "name": f.rule.name, "category": f.rule.category}
+                  for f in sorted(entry["findings"], key=lambda finding: finding.rule.id)],
         "submission": store.get_submission(assignment_id, user["id"]) if user["role"] == "student" else None,
     }
 
@@ -1235,12 +1365,14 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
     user = _user(session)
     _allow(user, "student")
-    assignment = store.get_assignment(assignment_id)
-    if (not assignment or assignment["org_id"] != user["org_id"] or not assignment["published"]
-            or assignment["target_student_id"] not in (None, user["id"])):
+    assignment = store.get_assignment_for_user(assignment_id,user)
+    if not assignment:
         raise HTTPException(status_code=404, detail="作业不存在。")
+    if not assignment["can_submit"]:
+        raise HTTPException(409,"已到截止时间，不能提交或覆盖已有成绩。")
     entry = store.get_audit(assignment["audit_id"])
-    assert entry is not None
+    if not entry or entry["org_id"] != user["org_id"]:
+        raise HTTPException(404,"作业材料不存在。")
     try:
         result = training.score_submission(
             entry["findings"], body.selected_rule_ids,
@@ -1248,9 +1380,30 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    store.save_submission(assignment_id, user["id"], body.selected_rule_ids, result["score"], result)
+    try:
+        store.save_submission(assignment_id, user["id"], body.selected_rule_ids, result["score"], result,user=user)
+    except classroom.ClassroomError as exc:
+        raise HTTPException(exc.status,str(exc)) from None
     store.log(user, "submit_assignment", "assignment", assignment_id, f"score={result['score']}")
     return result
+
+
+@app.post("/api/assignments/{assignment_id}/feedback")
+def teaching_feedback(assignment_id: str, body: SandboxFeedbackBody,
+                      session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "student", "teacher")
+    assignment = store.get_assignment_for_user(assignment_id,user)
+    if not assignment:
+        raise HTTPException(404, "作业不存在。")
+    entry = store.get_audit(assignment["audit_id"])
+    if not entry or entry["org_id"] != user["org_id"]:
+        raise HTTPException(404, "作业材料不存在。")
+    try:
+        result = sandbox_feedback.feedback(entry["dataset"], [f.rule for f in entry["findings"]], **body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return JSONResponse(result, headers={"Cache-Control":"private, no-store"})
 
 
 @app.put("/api/submissions/{submission_id}/review")
@@ -1258,7 +1411,7 @@ def review_submission(submission_id: str, body: ReviewBody,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
     user = _user(session)
     _allow(user, "teacher")
-    if store.submission_org(submission_id) != user["org_id"]:
+    if store.submission_org(submission_id,user=user) != user["org_id"]:
         raise HTTPException(status_code=404, detail="提交记录不存在。")
     store.review_submission(submission_id, user["id"], body.adjusted_score, body.feedback.strip())
     store.log(user, "review_submission", "submission", submission_id, f"score={body.adjusted_score}")
@@ -1270,7 +1423,7 @@ def submissions(assignment_id: str | None = None,
                 session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
     user = _user(session)
     _allow(user, "teacher")
-    return store.list_submissions(user["org_id"], assignment_id)
+    return store.list_submissions(user["org_id"], assignment_id,user_id=user["id"])
 
 
 @app.get("/api/audit-log")

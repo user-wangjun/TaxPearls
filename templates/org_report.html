@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>机构风险总览 · {{ report.branding.display_name }}</title>
+<style>
+@page{size:A4}*{box-sizing:border-box}body{margin:0;color:#25334a;font:10pt/1.65 'Microsoft YaHei','PingFang SC',sans-serif;background:white}h1{font-size:24pt;margin:16px 0}h2{font-size:15pt;color:#244d81;border-bottom:1px solid #8ca9cc;padding-bottom:6px;margin:24px 0 12px;break-after:avoid}h3{font-size:12pt;margin:6px 0}.brand{color:#527297;font-size:12pt}.logo{max-width:140px;max-height:60px}.muted{color:#68778a;font-size:9pt}.note{border:1px solid #cbd9e9;background:#f3f7fc;padding:12px;margin:12px 0}.stats{display:flex;gap:10px;flex-wrap:wrap}.stat{flex:1;min-width:100px;border:1px solid #dce5f0;padding:10px;text-align:center}.stat strong{display:block;font-size:22pt}table{width:100%;border-collapse:collapse;table-layout:fixed;margin:10px 0;font-size:9pt}th,td{border:1px solid #dce5f0;padding:7px;vertical-align:top;overflow-wrap:anywhere}th{background:#f0f4f9;text-align:left}thead{display:table-header-group}tr{break-inside:avoid}.client{border:1px solid #dce5f0;padding:12px;margin:14px 0;break-inside:avoid}.hash{font-family:monospace;font-size:8pt;overflow-wrap:anywhere}.high{color:#a92727}.footer{margin-top:24px;font-size:9pt;color:#68778a}
+.client-watermark{font-size:9pt;color:#7189a0;opacity:.6;overflow-wrap:anywhere}
+</style></head><body>
+{% if report.branding.logo_data_uri %}<img class="logo" src="{{ report.branding.logo_data_uri }}" alt="机构 Logo">{% endif %}
+<div class="brand">{{ report.branding.display_name }}</div><h1>机构级多客户风险总览</h1>
+<p>{{ report.branding.report_title }} · {{ report.report_no }}</p>
+<p class="muted">生成时间 {{ report.created_at }} · 范围 {{ report.scope }} · 期间策略 {{ report.period }}</p>
+<div class="note">每个所选客户只取一份冻结审计：指定业务期间取该期最新保存版本；默认按业务期间结束日选择最新期，同结束日优先较短期间。期间别名按相同日历区间归一。统计是规则检查条目，不是税款、财务合并报表或客户法律风险评级。未命中但缺材料不算全部通过。</div>
+{% if report.mixed_periods %}<p class="high">客户业务期间不同：以下仅作当前风险线索汇总，不用于同期财务比较。</p>{% endif %}
+{% if report.mixed_rule_sets %}<p class="high">客户规则集合或版本/定义不同：按各自冻结口径统计，不比较命中率；规则分布按定义指纹分别列示。</p>{% endif %}
+<h2>一、范围与检查统计</h2><div class="stats">
+<div class="stat"><strong>{{ report.totals.clients }}</strong>所选客户</div><div class="stat"><strong>{{ report.totals.audited }}</strong>有匹配审计</div><div class="stat"><strong>{{ report.totals.no_audit }}</strong>无匹配审计</div><div class="stat"><strong>{{ report.totals.high }}</strong>有高等级命中</div></div>
+<p>合计命中 {{ report.totals.hit }} 条、通过 {{ report.totals.pass }} 条、未执行 {{ report.totals.skipped }} 条；本次检查全部通过的客户 {{ report.totals['clear'] }} 家，未命中但材料不足 {{ report.totals.incomplete }} 家。</p>
+<p class="muted">机构历史未纳入候选的审计：未关联当前客户档案 {{ report.excluded_audits.unlinked }} 份、主体不匹配 {{ report.excluded_audits.identity_mismatch }} 份、期间无法识别 {{ report.excluded_audits.invalid_period }} 份。该计数是机构级历史说明，不表示所选客户都已完成审计。</p>
+<h2>二、客户风险清单</h2>
+<table><colgroup><col style="width:30%"><col style="width:25%"><col style="width:25%"><col style="width:20%"></colgroup><thead><tr><th>客户 / 税号</th><th>审计期间 / 负责会计</th><th>检查状态</th><th>命中 / 通过 / 未执行</th></tr></thead><tbody>
+{% for row in report.rows %}<tr><td>{{ row.name }}<br><span class="muted">{{ row.taxpayer_id }}</span></td><td>{{ row.period or '无匹配期间' }}<br>{{ row.accountant }}</td><td>{{ row.state_label }}</td><td>{{ row.counts.hit }} / {{ row.counts.pass }} / {{ row.counts.skipped }}</td></tr>{% endfor %}
+</tbody></table>
+<h2>三、规则分布（按冻结定义分别统计）</h2>
+{% if report.rule_distribution %}<table><colgroup><col style="width:60%"><col style="width:40%"></colgroup><thead><tr><th>规则 / 版本 / 定义指纹</th><th>命中 / 通过 / 未执行客户数</th></tr></thead><tbody>
+{% for rule in report.rule_distribution %}<tr><td>{{ rule.id }} v{{ rule.version }} · {{ rule.name }}<br><span class="hash">{{ rule.definition_sha256 }}</span></td><td>{{ rule.hit }} / {{ rule.pass }} / {{ rule.skipped }}</td></tr>{% endfor %}</tbody></table>
+{% else %}<p>所选客户没有匹配审计，无法汇总规则分布。</p>{% endif %}
+<h2>四、客户线索与快照追溯</h2>
+{% for row in report.rows %}<section class="client"><p class="client-watermark">{{ row.name }} · 报告日期 {{ report.created_at[:10] }} · 仅限授权用途</p><h3>{{ loop.index }}. {{ row.name }}</h3><p>{{ row.state_label }} · {{ row.period or '无匹配审计' }}</p>
+{% if row.audit_id %}<p class="muted">审计时名称 {{ row.audit_company_name }} · 保存 {{ row.audited_at }}<br>审计编号 {{ row.audit_id }}</p>
+{% for hit in row.hits %}<p><strong>{{ hit.id }} v{{ hit.version }} · {{ hit.name }}（{{ hit.severity }}）</strong><br>{{ hit.explanation }}<br>建议 {{ hit.suggestion }}</p>{% endfor %}
+{% if row.missing %}<p>未执行项，须补齐材料再核对：</p>{% for missing in row.missing %}<p class="muted">{{ missing.id }} v{{ missing.version }} · {{ missing.name }}：{{ missing.reason }}</p>{% endfor %}{% endif %}
+<p class="hash">审计 SHA-256 {{ row.audit_sha256 }}</p><p class="muted">冻结规则：{% for rule in row.rules %}{{ rule.id }} v{{ rule.version }}{% if not loop.last %}、{% endif %}{% endfor %}</p>
+{% else %}<p>该客户没有本次期间策略所要求的审计，不推断风险为零。</p>{% endif %}</section>{% endfor %}
+<div class="footer">本报告为机构内部风险线索汇总，不构成税务鉴证或法律意见。核查依据为各客户审计证据快照；本报告不替代逐户材料复核。SHA-256 用于完整性核对，不等同于防伪签名。<br>{{ report.branding.footer_text }}</div>
+</body></html>
