@@ -14,9 +14,7 @@ import os
 import re
 import secrets
 import sqlite3
-from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -26,9 +24,10 @@ from webapp import classroom
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
 
-from src.models import (
-    Account, Company, Dataset, EvidenceItem, Finding, Metric, RelatedGraph,
-    RelatedRelation, RelatedSubject, RelatedTrade, Rule,
+from src.models import Dataset, Finding
+from src.snapshots import (
+    serialize_dataset, deserialize_dataset, serialize_findings,
+    deserialize_findings as deserialize_findings,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -112,76 +111,6 @@ def _username_from_email(email: str, db) -> str:
         if not db.execute("SELECT 1 FROM users WHERE username=?", (candidate,)).fetchone():
             return candidate
     return f"{base}{secrets.token_hex(4)}"
-
-
-def serialize_dataset(dataset: Dataset) -> dict[str, Any]:
-    return {
-        "company": asdict(dataset.company),
-        "accounts": [
-            {k: (str(v) if isinstance(v, Decimal) else v) for k, v in asdict(a).items()}
-            for a in dataset.accounts
-        ],
-        "declarations": {k: str(v) for k, v in dataset.declarations.items()},
-        "metrics": {
-            k: {"name": m.name, "value": str(m.value), "source": m.source, "detail": m.detail}
-            for k, m in dataset.metrics.items()
-        },
-        "related_graph": None if dataset.related_graph is None else {
-            "subjects": [asdict(item) for item in dataset.related_graph.subjects],
-            "relations": [asdict(item) for item in dataset.related_graph.relations],
-            "trades": [{**asdict(item), "amount": str(item.amount)} for item in dataset.related_graph.trades],
-        },
-    }
-
-
-def deserialize_dataset(data: dict[str, Any]) -> Dataset:
-    def dec(value: Any) -> Decimal | None:
-        return None if value is None else Decimal(str(value))
-
-    return Dataset(
-        company=Company(**data["company"]),
-        accounts=[
-            Account(
-                code=a["code"], name=a["name"], opening=dec(a["opening"]),
-                debit=dec(a["debit"]), credit=dec(a["credit"]), closing=dec(a["closing"]),
-            )
-            for a in data["accounts"]
-        ],
-        declarations={k: Decimal(v) for k, v in data["declarations"].items()},
-        metrics={
-            k: Metric(name=m["name"], value=Decimal(m["value"]), source=m["source"], detail=m["detail"])
-            for k, m in data["metrics"].items()
-        },
-        related_graph=(RelatedGraph(
-            subjects=[RelatedSubject(**item) for item in data["related_graph"]["subjects"]],
-            relations=[RelatedRelation(**item) for item in data["related_graph"]["relations"]],
-            trades=[RelatedTrade(**{**item, "amount": Decimal(item["amount"])})
-                    for item in data["related_graph"]["trades"]],
-        ) if data.get("related_graph") is not None else None),
-    )
-
-
-def serialize_findings(findings: list[Finding]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for finding in findings:
-        item = asdict(finding)
-        item["measured"] = finding.measured
-        out.append(item)
-    return out
-
-
-def deserialize_findings(data: list[dict[str, Any]]) -> list[Finding]:
-    findings: list[Finding] = []
-    for item in data:
-        rule = Rule(**item["rule"])
-        evidence = [EvidenceItem(**row) for row in item.get("evidence", [])]
-        findings.append(Finding(
-            rule=rule, status=item["status"], measured=item.get("measured"),
-            threshold_desc=item.get("threshold_desc", ""), conclusion=item.get("conclusion", ""),
-            evidence=evidence, calculation=item.get("calculation", ""),
-            skip_reason=item.get("skip_reason", ""),
-        ))
-    return findings
 
 
 class Store:
@@ -377,7 +306,7 @@ class Store:
                 if name not in columns:
                     db.execute(f"ALTER TABLE org_settings ADD COLUMN {name} {sql_type}")
             # 注册与开户（FR-G10/G11）：用户绑定邮箱。email 可空但唯一（部分唯一索引）。
-            # 因「用户自设密码」，password_hash 保持 NOT NULL——仅需加列，无需重建表。
+            # 用户自设密码，password_hash 保持 NOT NULL；只添加所需列。
             user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
             if "email" not in user_columns:
                 db.execute("ALTER TABLE users ADD COLUMN email TEXT")

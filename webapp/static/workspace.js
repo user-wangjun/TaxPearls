@@ -53,7 +53,7 @@ function option(select,value,label) { const o=el("option",null,label);o.value=va
 /* ---------- 自绘下拉：弹层最多显示 10 项，超出出滚动条 ----------
    原生 <select> 的弹出列表由浏览器渲染，无法限制可见条数。
    做法：隐藏原生 select（仍是唯一数据源），套一层按钮 + 列表面板；
-   select 的 options 被重建时由 MutationObserver 自动同步，调用方零改动。 */
+   select 的 options 重新生成时由 MutationObserver 自动同步，调用方零改动。 */
 const DROPDOWN_VISIBLE_ITEMS = 10;
 function enhanceSelect(select){
   if (select.closest(".dropdown")) return;

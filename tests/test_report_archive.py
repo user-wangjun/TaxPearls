@@ -49,7 +49,9 @@ class ReportArchiveTests(unittest.TestCase):
         result = module._save_audit(self.data, self.admin)
         versions = self.store.report_versions(result["audit_id"])
         self.assertEqual([v["version"] for v in versions], [1])
-        frozen_rules = self.store.get_audit(result["audit_id"])["findings"]
+        stored_audit = self.store.get_audit(result["audit_id"])
+        self.assertEqual(stored_audit["dataset"].sources, self.data.sources)
+        frozen_rules = stored_audit["findings"]
         self.assertEqual(len(versions[0]["manifest"]["rules"]), len(frozen_rules))
         self.assertIn("R-001", {r["id"] for r in versions[0]["manifest"]["rules"]})
         response = self.client.post(f"/api/audits/{result['audit_id']}/report-versions")

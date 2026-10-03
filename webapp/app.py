@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field, ConfigDict, AwareDatetime
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from src import engine, loader, render, training, sandbox_feedback
-from src import settings  # Load .env before Store and route initialization.
+from src import settings as _settings  # noqa: F401 - load .env before Store and route initialization
 from src.mailer import MailError, send_password_reset_email, send_registration_code_email
 from src.models import Dataset, Rule
 from webapp import captcha, classroom

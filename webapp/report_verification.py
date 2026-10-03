@@ -59,7 +59,7 @@ def register(app, store_provider, user_for_session, allow, audit_for_user, cooki
         user,result=original(identifier,session)
         expected=result[body.format+"_sha256"]
         if expected is None:
-            raise HTTPException(409,"此版本 PDF 尚未导出存档，不能核验；不会为核验重建文件。")
+            raise HTTPException(409,"此版本 PDF 尚未导出存档，不能核验；核验只读取已存档的原件。")
         matches=hmac.compare_digest(body.sha256,expected)
         store_provider().log(user,"check_report_original","report_protection",identifier,f"format={body.format};match={matches}")
         return JSONResponse({**result,"format":body.format,"sha256_matches":matches,

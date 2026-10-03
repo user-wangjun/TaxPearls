@@ -9,7 +9,7 @@ import unittest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
-from src import config, engine, loader, materials
+from src import config, engine, materials
 from webapp import app as app_module
 from webapp.storage import Store
 
