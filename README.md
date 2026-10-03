@@ -19,7 +19,7 @@ GitHub：[user-wangjun/TaxPearls](https://github.com/user-wangjun/TaxPearls)
 | 账号与机构 | 角色隔离、账号创建、邀请开户、邮箱注册验证与密码重置 | 成员邀请与配额管理扩展、邮箱登录与绑定确认 |
 | 通知 | 站内订阅、已读状态与摘要邮件队列 | 外部通知渠道接入与真实送达验证 |
 | 教学 | 仿真出题、班级组卷、发布提交、评分与沙箱反馈 | 错题本、训练档案、学情统计与真实课堂验证 |
-| 运维与工程 | SQLite 一致性备份、摘要校验、安全副本与恢复工具 | 备份加密、保留策略、统一工程检查与部署验证 |
+| 运维与工程 | SQLite 认证加密备份、停服恢复、保留期预览与销毁回执 | 统一工程检查、容器与生产部署验证 |
 
 ## 核心流程
 
@@ -143,6 +143,7 @@ python -m venv .venv
 | 外部模型 | `TAXPEARLS_AI_ENABLED`、`TAXPEARLS_AI_API_KEY`、`TAXPEARLS_AI_BASE_URL` | 默认关闭，不发送材料 |
 | Resend 邮件 | `TAXPEARLS_RESEND_API_KEY`、`TAXPEARLS_EMAIL_FROM_ADDRESS` | 未配置时不发送邮件 |
 | 审计摘要邮件 | `TAXPEARLS_NOTIFICATION_EMAIL_ENABLED` | 默认关闭，仍保留站内通知 |
+| 加密备份 | `TAXPEARLS_BACKUP_KEY` | 运维脚本从进程环境读取独立密钥，未配置时拒绝加密操作 |
 | 外部访问 | `TAXPEARLS_COOKIE_SECURE`、`TAXPEARLS_TRUSTED_PROXY_IPS` | 本机 HTTP 配置；部署时按实际代理和 HTTPS 调整 |
 
 `.env`、密钥、证书、数据库、备份、上传材料、日志和浏览器检查状态均不进入 Git。邮件发件地址必须已在 Resend 中验证；接口测试使用本地模拟服务，不代表真实邮件送达。
