@@ -19,7 +19,7 @@ GitHub：[user-wangjun/TaxPearls](https://github.com/user-wangjun/TaxPearls)
 | 账号与机构 | 机构与角色隔离、成员管理、邀请配额、邮箱验证码/链接登录及密码重置 | 邮箱密码登录与长期保持登录、外部身份服务接入 |
 | 通知 | 站内订阅、摘要邮件队列、多渠道投递框架与会话绑定基础 | 外部渠道适配、绑定入口及真实送达验证 |
 | 教学 | 仿真出题、班级组卷、发布提交、评分与沙箱反馈 | 错题本、训练档案、学情统计与真实课堂验证 |
-| 运维与工程 | SQLite 认证加密备份、停服恢复、保留期预览与销毁回执 | 统一工程检查、容器与生产部署验证 |
+| 运维与工程 | SQLite 认证加密备份、停服恢复、保留期预览与销毁回执、统一隔离检查入口与 CI 配置 | 容器与生产部署验证 |
 
 ## 核心流程
 
@@ -154,11 +154,14 @@ python -m venv .venv
 `samples/样例企业-审计材料.xlsx` 与 `samples/合成测试数据/` 均为仿真材料。`samples/规则核对样例.yaml` 提供 96 个标注样例。
 
 ```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+.\.venv\Scripts\python.exe -B -X utf8 scripts/check_project.py
 .\.venv\Scripts\python.exe scripts/check_rules.py
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-回归检查应使用独立测试数据库，可通过 `TAXPEARLS_DB` 指定路径。规则测试、接口测试和本机浏览器检查不能代替真实邮件、生产部署或真实企业材料验收。
+统一检查入口执行 Python 语法、依赖一致性、Ruff、前端语法与交互回归，以及完整单元测试。它使用临时数据库，关闭外部 AI 和邮件发送，并比较检查前后的源码指纹；检查失败或源码发生变化时返回非零退出码。
+
+GitHub Actions 在推送和 PR 时使用同一入口检查，安装 Chromium 和中文字体以验证 PDF 导出。CI 配置不包含部署或发布步骤。规则测试、接口测试和本机浏览器检查不能代替真实邮件、生产部署或真实企业材料验收。
 
 ## 项目结构
 
