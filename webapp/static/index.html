@@ -160,6 +160,7 @@
   .auth-card { position:relative; width:100%; min-width:0; min-height:100vh; overflow:hidden; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#fffffffa; border:0; border-left:1px solid #dbe2ec; border-radius:0; padding:32px clamp(32px,4vw,64px); box-shadow:-18px 0 60px #15233d16; animation:auth-card-in .55s cubic-bezier(.22,.8,.25,1) both; }
   .auth-card > * { width:100%; max-width:440px; }
   .auth-card::before { content:""; position:absolute; inset:0 0 auto; height:4px; background:linear-gradient(90deg,#8c6507,#e2b65d,#8c6507); }
+  .auth-screen img { user-select:none; -webkit-user-drag:none; }
   .auth-brand { display:flex; align-items:center; gap:18px; margin:0 0 24px; }
   .auth-brand img { width:72px; flex-shrink:0; }
   .auth-brand-txt { min-width:0; }
@@ -210,6 +211,28 @@
   @keyframes auth-card-in { from { opacity:0; transform:translateY(18px) scale(.985); } to { opacity:1; transform:none; } }
   .auth-link { display:block; background:none; border:none; color:var(--navy); cursor:pointer; font-size:14px; line-height:1.5; padding:0; margin:14px auto 0; text-decoration:underline; text-underline-offset:3px; }
   .auth-link:hover { color:var(--navy-2); }
+  .auth-secondary { display:flex; flex-direction:column; gap:12px; margin-top:18px; }
+  .auth-secondary .auth-link { margin:0; }
+  .auth-secondary > .auth-link { align-self:center; }
+  .auth-secondary-row { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 16px; }
+  .auth-secondary-row .auth-link { text-align:left; }
+  .auth-back-button { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:46px; padding:10px 16px; border:1px solid #c9d4e2; border-radius:8px; background:#f4f7fb; color:var(--navy); font:inherit; font-size:14px; line-height:1.5; cursor:pointer; box-shadow:0 2px 5px #14233f08; transition:background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s cubic-bezier(.2,.8,.2,1); }
+  .auth-back-button svg { flex:none; width:18px; height:18px; transition:transform .18s cubic-bezier(.2,.8,.2,1); }
+  .auth-back-button:hover { background:#eaf0f7; border-color:#9cacc3; box-shadow:0 7px 16px #14233f1a; transform:translateY(-2px); }
+  .auth-back-button:hover svg { transform:translateX(-4px); }
+  .auth-back-button:active { background:#dfe8f3; border-color:#7c90ad; box-shadow:0 1px 3px #14233f14; transform:translateY(0) scale(.985); transition-duration:.08s; }
+  .auth-back-button:active svg { transform:translateX(-2px); }
+  .auth-back-button:focus-visible { outline:2px solid var(--gold-2); outline-offset:2px; }
+  .auth-signup-card { position:relative; display:flex; align-items:center; gap:14px; width:100%; padding:12px 16px 12px 20px; text-align:left; font:inherit; cursor:pointer; background:#fffdf6; border:1px solid #c9a44a; border-radius:12px; transition:border-color .16s, box-shadow .16s, transform .16s; }
+  .auth-signup-card::before { content:""; position:absolute; left:0; top:10px; bottom:10px; width:4px; border-radius:0 4px 4px 0; background:linear-gradient(180deg,#8c6507,#e2b65d); }
+  .auth-signup-card:hover { border-color:#b8860b; box-shadow:0 10px 24px #8c65071f; transform:translateY(-1px); }
+  .auth-signup-card:focus-visible { outline:2px solid var(--gold-2); outline-offset:2px; }
+  .auth-signup-icon { flex:none; width:52px; height:44px; object-fit:contain; filter:drop-shadow(0 4px 8px #8c65072e); }
+  .auth-signup-body { flex:1; min-width:0; }
+  .auth-signup-body strong { display:block; color:var(--navy); font-size:16px; line-height:1.45; letter-spacing:.03em; }
+  .auth-signup-body small { display:block; margin-top:4px; color:#79839a; font-size:13px; line-height:1.6; }
+  .auth-signup-arrow { flex:none; color:#a8790a; font-size:17px; transition:transform .16s; }
+  .auth-signup-card:hover .auth-signup-arrow { transform:translateX(4px); }
   /* .auth-status 已由全局 toast 取代 */
   .auth-step { font-size:13px; color:#8a93a3; margin:12px 0 0; letter-spacing:.02em; }
   .auth-inline-link { background:none; border:none; color:var(--navy); cursor:pointer; font-size:inherit; padding:0; text-decoration:underline; text-underline-offset:3px; }
@@ -313,6 +336,10 @@
     .captcha-image { width:112px; min-width:112px; object-fit:contain; }
     .auth-card .captcha-row input { padding-inline:8px; }
     .captcha-refresh { width:36px; }
+    .auth-signup-card { gap:12px; padding:11px 14px 11px 16px; border-radius:12px; }
+    .auth-signup-icon { width:44px; height:38px; }
+    .auth-signup-body strong { font-size:15px; }
+    .auth-signup-body small { font-size:12.5px; }
   }
   @media (max-width: 360px) {
     .auth-brand { flex-direction:column; align-items:flex-start; gap:12px; }
@@ -321,6 +348,11 @@
   @media (prefers-reduced-motion: reduce) {
     .auth-card,.auth-visual-copy { animation:none; }
     .auth-card .btn,.auth-card .btn::after { transition:none; }
+    .auth-signup-card,.auth-signup-card .auth-signup-arrow { transition:none; }
+    .auth-back-button,.auth-back-button svg { transition:none; }
+    .auth-back-button:hover,.auth-back-button:active,.auth-back-button:hover svg,.auth-back-button:active svg { transform:none; }
+    .auth-signup-card:hover { transform:none; }
+    .auth-signup-card:hover .auth-signup-arrow { transform:none; }
     .auth-pearl { opacity:.82; transform:none; animation:none; }
     .auth-pearl::before,.auth-pearl::after,.auth-pearl-caption { display:none; animation:none; }
   }
@@ -363,10 +395,10 @@
   <aside class="auth-visual" aria-label="税务证据网络动态展示">
     <canvas class="auth-canvas" id="authCanvas" aria-hidden="true"></canvas>
     <div class="auth-pearl" aria-hidden="true">
-      <img src="/auth-pearl-real-v1.webp" alt="">
+      <img src="/auth-pearl-real-v1.webp" alt="" draggable="false">
       <span class="auth-pearl-caption">风险线索已定位</span>
     </div>
-    <div class="auth-visual-mark"><img src="/logo" alt="税海拾珠"><span>AI 税务审计平台</span></div>
+    <div class="auth-visual-mark"><img src="/logo" alt="税海拾珠" draggable="false"><span>AI 税务审计平台</span></div>
     <div class="auth-visual-copy">
       <span class="auth-visual-kicker">TaxPearls</span>
       <h1>从浩瀚数据中，拾取每一条风险线索</h1>
@@ -376,7 +408,7 @@
   </aside>
   <div class="auth-entry">
     <form class="auth-card" id="authForm" data-view="login" novalidate>
-      <div class="auth-brand"><img src="/logo" alt="税海拾珠"><div class="auth-brand-txt"><h2 id="authTitle">登录税海拾珠</h2><p class="auth-step" id="authStep"></p></div></div>
+      <div class="auth-brand"><img src="/logo" alt="税海拾珠" draggable="false"><div class="auth-brand-txt"><h2 id="authTitle">登录税海拾珠</h2><p class="auth-step" id="authStep"></p></div></div>
       <div id="viewLogin">
         <div class="field"><label for="loginUser" id="loginUserLabel">邮箱或用户名</label><input id="loginUser" name="username" autocomplete="username" inputmode="email" placeholder="name@example.com" required></div>
         <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
@@ -406,11 +438,11 @@
           <div class="field"><label for="signupPass">设置密码</label><input id="signupPass" type="password" autocomplete="new-password" aria-describedby="signupPasswordHint" required></div>
           <div class="field"><label for="signupPass2">确认密码</label><input id="signupPass2" type="password" autocomplete="new-password" required></div>
         </div>
-        <p class="auth-help" id="signupPasswordHint">10–128 位，包含大小写字母、数字、符号中的至少三类（空白不算符号）；不能使用常见弱口令或包含邮箱的 @ 前部分。</p>
+        <p class="auth-help" id="signupPasswordHint">10–128 位，大小写字母、数字、符号至少包含三类。</p>
         <p class="auth-help" id="signupProofStatus" hidden>邮箱已验证，请设置密码完成注册；邀请凭证沿用发起验证时的绑定。</p>
         <div id="emailVerificationFields"><div class="field"><label for="captchaAnswer">人机验证</label>
           <div class="captcha-row">
-            <img class="captcha-image" id="captchaImage" alt="人机验证码加载中…" title="看不清？点击图片刷新">
+            <img class="captcha-image" id="captchaImage" alt="人机验证码加载中…" title="看不清？点击图片刷新" draggable="false">
             <input id="captchaAnswer" maxlength="4" placeholder="输入图中字符" autocomplete="off" spellcheck="false" autocapitalize="characters" required>
             <button type="button" class="captcha-refresh" id="captchaRefresh" title="换一张" aria-label="换一张">↻</button>
           </div>
@@ -425,11 +457,22 @@
         </div>
       </div>
       <button class="btn" type="submit" id="authSubmit">登录</button>
-      <button type="button" class="auth-link" id="forgotLink">忘记密码？</button>
-      <button type="button" class="auth-link" id="emailLoginEntryLink">使用邮箱验证码 / 邮件链接登录</button>
-      <button type="button" class="auth-link" id="passwordLoginEntryLink">使用邮箱和密码登录</button>
-      <button type="button" class="auth-link" id="signupEntryLink">有邀请码？前往开户</button>
-      <button type="button" class="auth-link" id="backToLogin" style="display:none">← 返回密码登录</button>
+      <div class="auth-secondary">
+        <div class="auth-secondary-row">
+          <button type="button" class="auth-link" id="forgotLink">忘记密码？</button>
+          <button type="button" class="auth-link" id="emailLoginEntryLink">验证码登录</button>
+          <button type="button" class="auth-link" id="passwordLoginEntryLink">密码登录</button>
+        </div>
+        <button type="button" class="auth-signup-card" id="signupEntryLink">
+          <img class="auth-signup-icon" src="/auth-signup-ticket-v1.png" alt="" draggable="false">
+          <span class="auth-signup-body">
+            <strong>受邀入驻</strong>
+            <small>从你的邀请码开始，让每一条风险结论有源可溯</small>
+          </span>
+          <span class="auth-signup-arrow" aria-hidden="true">→</span>
+        </button>
+        <button type="button" class="auth-back-button" id="backToLogin" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5m7-7-7 7 7 7"/></svg><span>返回密码登录</span></button>
+      </div>
     </form>
   </div>
 </section>
@@ -860,7 +903,7 @@
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/enterprise.js?v=enterprise-review-1"></script>
-<script src="/console.js?v=platform-materials-1"></script>
+<script src="/console.js?v=auth-feedback-20261004-2"></script>
 <script src="/workspace.js?v=platform-access-1"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>

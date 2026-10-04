@@ -519,6 +519,11 @@ def auth_pearl_visual() -> FileResponse:
     return FileResponse(STATIC_DIR / "auth-pearl-real-v1.webp", media_type="image/webp")
 
 
+@app.get("/auth-signup-ticket-v1.png")
+def auth_signup_ticket() -> FileResponse:
+    return FileResponse(STATIC_DIR / "auth-signup-ticket-v1.png", media_type="image/png")
+
+
 @app.get("/workspace.js")
 def workspace_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "workspace.js", media_type="text/javascript")

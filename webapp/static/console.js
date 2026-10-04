@@ -758,6 +758,7 @@ $("signupSendBtn").addEventListener("click", async () => {
       return;
     }
     $("signupEmailHint").textContent = result.message || "验证码已发送，10 分钟内有效，输错 5 次作废。";
+    showToast(purpose==="register"?"验证邮件已发送，请查收邮箱。":"验证申请已提交，请查收邮箱。", "success", 6000);
     startCooldown(60);
     loadCaptcha();
   } catch (err) {
@@ -771,6 +772,7 @@ $("authForm").addEventListener("submit", async (e) => {
   const form = e.currentTarget;
   const view = form.dataset.view || "login";
   const version=authViewVersion;
+  const submitLabel=$("authSubmit").textContent;
   authSubmitBusy=true;$("authSubmit").disabled=true;
   try {
     if(view==="emailMagic"){
@@ -786,8 +788,10 @@ $("authForm").addEventListener("submit", async (e) => {
       if(version===authViewVersion)enterApp(result.user);return;
     }
     if (view === "forgot") {
-      const result = await api("/api/auth/password/reset", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({email:$("resetEmail").value})});
-      if(version===authViewVersion)showToast(result.message || "已提交，请查收邮箱。", "success");
+      $("authSubmit").textContent="正在提交…";
+      const resetEmail=$("resetEmail").value.trim();
+      await api("/api/auth/password/reset", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({email:resetEmail})});
+      if(version===authViewVersion&&resetEmail===$("resetEmail").value.trim())showToast("重置申请已提交，请查收邮箱。", "success", 6000);
       return;
     }
     if (view === "reset") {
@@ -819,7 +823,7 @@ $("authForm").addEventListener("submit", async (e) => {
     $("loginPass").value = "";
     if(version===authViewVersion)enterApp(user);
   } catch (err) { if(version===authViewVersion)showToast(err.message); }
-  finally{authSubmitBusy=false;$("authSubmit").disabled=false;}
+  finally{authSubmitBusy=false;$("authSubmit").disabled=false;if(version===authViewVersion)$("authSubmit").textContent=submitLabel;}
 });
 
 function enterApp(user) {
