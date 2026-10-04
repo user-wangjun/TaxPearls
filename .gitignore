@@ -77,7 +77,6 @@ backups/
 *.sqlite3-*
 *.sqlite3-wal
 *.sqlite3-shm
-backups/
 *.p12
 *.pfx
 *.sqlite-wal
