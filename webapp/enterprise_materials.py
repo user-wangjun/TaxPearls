@@ -392,6 +392,10 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         view = batches.read(store, user, batch_id)
         latest = _latest(view)
         if view['revision'] != revision or latest['revision'] != revision:
+            # A concurrent confirmation may have advanced the batch after the first lookup.
+            existing = batches.execution(store, user, batch_id, revision)
+            if existing:
+                return audit_result(existing, user)
             raise AccessDenied('材料已变化，请重新核对并确认当前分析。', 409)
         payload = latest['payload']
         if payload['analysis']['can_confirm'] is not True:

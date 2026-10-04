@@ -642,6 +642,47 @@ class EnterpriseMaterialTests(unittest.TestCase):
         self.assertEqual(results[0].json()['audit_id'], results[1].json()['audit_id'])
         self.assertEqual(self.counts()['audits'], 1)
 
+    def test_confirmation_between_execution_lookup_and_read_reuses_audit(self):
+        item = self.upload()
+        cookie = self.client.cookies.get(module.COOKIE_NAME)
+        read = material_batches.read
+        winner = []
+
+        def confirm_before_read(store, actor, batch_id):
+            if not winner:
+                winner.append(None)
+                with TestClient(module.app, raise_server_exceptions=False) as client:
+                    client.cookies.set(module.COOKIE_NAME, cookie)
+                    winner[0] = client.post(self.url(item, '/confirm'), json={'expected_revision': 1})
+            return read(store, actor, batch_id)
+
+        with patch.object(material_batches, 'read', side_effect=confirm_before_read):
+            response = self.confirm(item)
+        self.assertEqual(winner[0].status_code, 200, winner[0].text)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['audit_id'], winner[0].json()['audit_id'])
+        self.assertEqual(self.counts()['audits'], 1)
+
+    def test_analysis_change_between_execution_lookup_and_read_still_conflicts(self):
+        item = self.upload()
+        cookie = self.client.cookies.get(module.COOKIE_NAME)
+        read = material_batches.read
+        changed = []
+
+        def analyze_before_read(store, actor, batch_id):
+            if not changed:
+                changed.append(None)
+                with TestClient(module.app, raise_server_exceptions=False) as client:
+                    client.cookies.set(module.COOKIE_NAME, cookie)
+                    changed[0] = client.post(self.url(item, '/analyze'), json={'expected_revision': 1})
+            return read(store, actor, batch_id)
+
+        with patch.object(material_batches, 'read', side_effect=analyze_before_read):
+            response = self.confirm(item)
+        self.assertEqual(changed[0].status_code, 200, changed[0].text)
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(self.counts()['audits'], 0)
+
     def test_deletion_impact_lists_results_and_blocks_stale_candidate(self):
         item = self.upload()
         result = self.confirm(item)
