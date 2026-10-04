@@ -1,7 +1,7 @@
 """P1 persistence, authentication and audit trail.
 
-Only normalized audit results are persisted.  Uploaded workbooks are parsed in
-memory and are never written to disk.  Passwords use Argon2id and session
+Enterprise originals and sensitive evidence are authenticated-encrypted before
+persistence using independent keys.  Passwords use Argon2id and session
 tokens are stored as SHA-256 digests so a database copy cannot be used as a
 logged-in browser session.
 """
@@ -20,6 +20,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 from contextlib import contextmanager
+from webapp import sensitive_storage
 from webapp import classroom, members, invitations, email_auth
 from webapp.access import AccessDenied, audit_row, audit_scope, current_actor, is_teaching_dataset
 
@@ -135,13 +136,22 @@ class Store:
         self.path = p if p.is_absolute() else (ROOT / p).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        self._field_codec = sensitive_storage.Codec(sensitive_storage.configured_key())
+        self._fields_ready = False
+        with self.connect() as db:
+            sensitive_storage.verify_state(db, self._field_codec)
         self._init_schema()
+        with self.connect() as db:
+            sensitive_storage.migrate(db, self._field_codec)
+        self._fields_ready = True
 
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.path, timeout=10)
+        db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
         try:
-            db.row_factory = sqlite3.Row
+            sensitive_storage.attach(db, self._field_codec)
+            if not self._fields_ready:
+                db.row_factory = sqlite3.Row
             db.execute("PRAGMA foreign_keys=ON")
             # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
             # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
@@ -547,9 +557,14 @@ class Store:
 
     @staticmethod
     def _log(db, user, action, target_type, target_id, detail=""):
+        if not db.in_transaction:
+            db.execute('BEGIN IMMEDIATE')
+        log_id = db.execute("SELECT MAX(COALESCE((SELECT MAX(id) FROM audit_log),0),"
+                            "COALESCE((SELECT seq FROM sqlite_sequence WHERE name='audit_log'),0))+1").fetchone()[0]
+        detail = db.field_codec.seal(detail, 'audit_log', 'detail', log_id)
         db.execute(
-            "INSERT INTO audit_log(user_id,org_id,action,target_type,target_id,detail,created_at) VALUES (?,?,?,?,?,?,?)",
-            (user["id"] if user else None, user["org_id"] if user else "system", action, target_type, target_id, detail, _now()),
+            "INSERT INTO audit_log(id,user_id,org_id,action,target_type,target_id,detail,created_at) VALUES (?,?,?,?,?,?,?,?)",
+            (log_id, user["id"] if user else None, user["org_id"] if user else "system", action, target_type, target_id, detail, _now()),
         )
 
     def list_logs(self, user: dict[str, Any]) -> list[dict[str, Any]]:
@@ -599,7 +614,8 @@ class Store:
                 raise AccessDenied('负责人必须是本机构有效会计。', 422)
         if user['role'] == 'accountant' and accountant_id not in (None, user['id']):
             raise AccessDenied('会计不能指派客户负责人。', 403)
-        row = db.execute("SELECT * FROM clients WHERE org_id=? AND taxpayer_id=?", (user["org_id"], taxpayer_id)).fetchone()
+        lookup = self._field_codec.taxpayer_lookup(user['org_id'], taxpayer_id)
+        row = db.execute("SELECT * FROM clients WHERE org_id=? AND taxpayer_lookup=?", (user["org_id"], lookup)).fetchone()
         if row:
             if user['role'] == 'accountant':
                 if row['accountant_id'] != user['id']:
@@ -610,7 +626,8 @@ class Store:
         else:
             client_id = secrets.token_hex(12)
             assigned = user['id'] if user['role'] == 'accountant' else accountant_id
-            db.execute("INSERT INTO clients VALUES (?,?,?,?,?,?)", (client_id, user["org_id"], name, taxpayer_id, assigned, _now()))
+            db.execute("INSERT INTO clients (id,org_id,name,taxpayer_id,accountant_id,created_at,taxpayer_lookup) VALUES (?,?,?,?,?,?,?)",
+                       (client_id, user["org_id"], name, self._field_codec.seal(taxpayer_id, 'clients', 'taxpayer_id', client_id), assigned, _now(), lookup))
         result = dict(db.execute('SELECT * FROM clients WHERE id=? AND org_id=?', (client_id, user['org_id'])).fetchone())
         return result
 
@@ -908,11 +925,12 @@ class Store:
             elif user['role'] == 'accountant':
                 raise AccessDenied('会计审计必须关联负责的客户。')
             db.execute(
-                "INSERT INTO audits VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO audits (id,org_id,client_id,created_by,company_name,taxpayer_id,industry,period,dataset_json,findings_json,summary_json,audited_at,taxpayer_lookup) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (audit_id, user["org_id"], client_id, user["id"], dataset.company.name,
-                 dataset.company.taxpayer_id, dataset.company.industry, dataset.company.period,
-                 _json(serialize_dataset(dataset)), _json(serialize_findings(findings)),
-                 _json(summary), audited_at),
+                 self._field_codec.seal(dataset.company.taxpayer_id, 'audits', 'taxpayer_id', audit_id), dataset.company.industry, dataset.company.period,
+                 self._field_codec.seal(_json(serialize_dataset(dataset)), 'audits', 'dataset_json', audit_id),
+                 self._field_codec.seal(_json(serialize_findings(findings)), 'audits', 'findings_json', audit_id),
+                 _json(summary), audited_at, self._field_codec.taxpayer_lookup(user['org_id'], dataset.company.taxpayer_id)),
             )
             if material_context is not None:
                 from webapp.material_batches import record_execution
@@ -926,7 +944,7 @@ class Store:
                     raise ValueError("出题记录与冻结审计答案不一致。")
                 encoded = canonical(exercise_metadata)
                 db.execute("INSERT INTO generated_exercises VALUES (?,?,?,?)",
-                           (audit_id,user["org_id"],encoded,digest(encoded.encode())))
+                           (audit_id,user["org_id"],self._field_codec.seal(encoded, 'generated_exercises', 'metadata_json', audit_id),digest(encoded.encode())))
             self._log(db, user, "create_audit", "audit", audit_id,
                       f"{dataset.company.name}; rules={len(findings)}")
         # Audit records are committed before notification work.
@@ -1016,7 +1034,8 @@ class Store:
         db.execute("""INSERT INTO audit_report_versions
                    (audit_id,version,html,html_sha256,manifest_json,manifest_sha256,content_sha256,created_by,created_at)
                    VALUES (?,?,?,?,?,?,?,?,?)""",
-                   (audit_id, version, html, html_hash, manifest_json, manifest_hash, content_hash, user["id"], _now()))
+                   (audit_id, version, self._field_codec.seal(html, 'audit_report_versions', 'html', audit_id, version), html_hash,
+                    self._field_codec.seal(manifest_json, 'audit_report_versions', 'manifest_json', audit_id, version), manifest_hash, content_hash, user["id"], _now()))
         self._register_report_protection(db,manifest.get("protection"),audit["org_id"],"audit",audit_id,version)
         return version, True
 
@@ -1095,7 +1114,7 @@ class Store:
                 raise AccessDenied()
             db.execute("""UPDATE audit_report_versions SET pdf_bytes=?,pdf_sha256=?,pdf_created_at=?
                           WHERE audit_id=? AND version=? AND pdf_bytes IS NULL""",
-                       (pdf, digest(pdf), _now(), audit_id, version))
+                       (self._field_codec.seal(pdf, 'audit_report_versions', 'pdf_bytes', audit_id, version), digest(pdf), _now(), audit_id, version))
         return self.get_report_version(audit_id, version)
 
     def search_audits(self, user, query="", period="", date_from=None, date_to=None,
@@ -1105,7 +1124,7 @@ class Store:
 
         where, args = audit_scope(user)
         if query:
-            where += " AND (a.company_name LIKE ? ESCAPE '\\' OR a.taxpayer_id LIKE ? ESCAPE '\\' OR a.id LIKE ? ESCAPE '\\')"
+            where += " AND (a.company_name LIKE ? ESCAPE '\\' OR tp_taxpayer_value(a.taxpayer_id,'audits',a.id) LIKE ? ESCAPE '\\' OR a.id LIKE ? ESCAPE '\\')"
             args.extend([literal(query)] * 3)
         if period:
             where += " AND a.period LIKE ? ESCAPE '\\'"
@@ -1164,7 +1183,9 @@ class Store:
             db.execute("""INSERT INTO org_reports
                        (id,org_id,created_by,created_at,snapshot_json,snapshot_sha256,html,html_sha256)
                        VALUES (?,?,?,?,?,?,?,?)""",
-                       (snapshot["id"],user["org_id"],user["id"],snapshot["created_at"],encoded,digest(encoded.encode()),html,digest(html.encode())))
+                       (snapshot["id"],user["org_id"],user["id"],snapshot["created_at"],
+                        self._field_codec.seal(encoded, 'org_reports', 'snapshot_json', snapshot['id']),digest(encoded.encode()),
+                        self._field_codec.seal(html, 'org_reports', 'html', snapshot['id']),digest(html.encode())))
             self._register_report_protection(db,snapshot.get("protection"),user["org_id"],"org",org_report_id=snapshot["id"])
             self._log(db, user, "create_org_report", "org_report", snapshot["id"],
                       f"clients={len(snapshot['rows'])};period={snapshot['period']}")
@@ -1207,7 +1228,8 @@ class Store:
             db.execute("BEGIN IMMEDIATE")
             current_actor(db, user, {'org_admin'})
             db.execute("""UPDATE org_reports SET pdf_bytes=?,pdf_sha256=?,pdf_created_at=?
-                       WHERE id=? AND org_id=? AND pdf_bytes IS NULL""", (pdf,digest(pdf),_now(),report_id,user["org_id"]))
+                       WHERE id=? AND org_id=? AND pdf_bytes IS NULL""",
+                       (self._field_codec.seal(pdf, 'org_reports', 'pdf_bytes', report_id),digest(pdf),_now(),report_id,user["org_id"]))
         return self.get_org_report(report_id, user)
     def get_audit(self, audit_id: str) -> dict[str, Any] | None:
         with self.connect() as db:
@@ -1263,15 +1285,15 @@ class Store:
             return [dict(row) for row in db.execute(
                 f"""SELECT a.id,a.org_id,a.client_id,a.taxpayer_id,a.period,a.audited_at FROM audits a
                    LEFT JOIN clients c ON c.id=a.client_id
-                   WHERE a.org_id=? AND a.client_id IS ? AND a.taxpayer_id=? AND {scope}
+                   WHERE a.org_id=? AND a.client_id IS ? AND a.taxpayer_lookup=? AND {scope}
                    ORDER BY a.audited_at DESC,a.rowid DESC""",
-                [entry["org_id"], entry["client_id"], entry["taxpayer_id"], *args])]
+                [entry["org_id"], entry["client_id"], self._field_codec.taxpayer_lookup(entry['org_id'], entry['taxpayer_id']), *args])]
 
     def get_finding_interpretation(self, audit_id: str, rule_id: str,
                                    evidence_hash: str) -> dict[str, Any] | None:
         with self.connect() as db:
             row = db.execute(
-                """SELECT model,result_json,created_at FROM finding_interpretations
+                """SELECT audit_id,rule_id,evidence_hash,model,result_json,created_at FROM finding_interpretations
                    WHERE audit_id=? AND rule_id=? AND evidence_hash=?""",
                 (audit_id, rule_id, evidence_hash),
             ).fetchone()
@@ -1292,14 +1314,15 @@ class Store:
                 """INSERT OR IGNORE INTO finding_interpretations
                    (audit_id,rule_id,evidence_hash,model,result_json,created_by,created_at)
                    VALUES (?,?,?,?,?,?,?)""",
-                (audit_id, rule_id, evidence_hash, result["model"], _json(stored), user["id"], _now()),
+                (audit_id, rule_id, evidence_hash, result["model"],
+                 self._field_codec.seal(_json(stored), 'finding_interpretations', 'result_json', audit_id, rule_id, evidence_hash), user["id"], _now()),
             )
         return self.get_finding_interpretation(audit_id, rule_id, evidence_hash)
 
     def get_audit_narrative(self, audit_id: str, evidence_hash: str) -> dict[str, Any] | None:
         with self.connect() as db:
             row = db.execute(
-                """SELECT model,result_json,created_at FROM audit_narratives
+                """SELECT audit_id,evidence_hash,model,result_json,created_at FROM audit_narratives
                    WHERE audit_id=? AND evidence_hash=?""",
                 (audit_id, evidence_hash),
             ).fetchone()
@@ -1319,7 +1342,8 @@ class Store:
                 """INSERT OR IGNORE INTO audit_narratives
                    (audit_id,evidence_hash,model,result_json,created_by,created_at)
                    VALUES (?,?,?,?,?,?)""",
-                (audit_id, evidence_hash, result["model"], _json(stored), user["id"], _now()),
+                (audit_id, evidence_hash, result["model"],
+                 self._field_codec.seal(_json(stored), 'audit_narratives', 'result_json', audit_id, evidence_hash), user["id"], _now()),
             )
         return self.get_audit_narrative(audit_id, evidence_hash)
 
@@ -1410,7 +1434,8 @@ class Store:
                      answers_json=excluded.answers_json, score=excluded.score,
                      details_json=excluded.details_json, submitted_at=excluded.submitted_at,
                      adjusted_score=NULL, feedback=NULL, reviewed_by=NULL""",
-                (submission_id, assignment_id, student_id, _json(answers), score, _json(details), _now()),
+                (submission_id, assignment_id, student_id, _json(answers), score,
+                 self._field_codec.seal(_json(details), 'submissions', 'details_json', assignment_id, student_id), _now()),
             )
             self._log(db, user or dict(account), "submit_assignment", "assignment", assignment_id, f"score={score}")
         return submission_id
@@ -1469,8 +1494,10 @@ class Store:
             row = db.execute('SELECT a.* FROM submissions s JOIN assignments a ON a.id=s.assignment_id WHERE s.id=?', (submission_id,)).fetchone()
             if not actor or not row or not classroom.can_access(db, classroom.decorate(db, dict(row)), dict(actor)):
                 raise AccessDenied('提交记录不存在或无权复核。')
+            submission = db.execute('SELECT assignment_id,student_id FROM submissions WHERE id=?', (submission_id,)).fetchone()
             db.execute("UPDATE submissions SET adjusted_score=?,feedback=?,reviewed_by=? WHERE id=?",
-                       (adjusted_score, feedback, teacher_id, submission_id))
+                       (adjusted_score, self._field_codec.seal(feedback, 'submissions', 'feedback',
+                        submission['assignment_id'], submission['student_id']), teacher_id, submission_id))
             self._log(db, dict(actor), "review_submission", "submission", submission_id, f"score={adjusted_score}")
 
     def enabled_rule_ids(self) -> set[str] | None:

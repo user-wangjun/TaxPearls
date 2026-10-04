@@ -48,8 +48,8 @@ def require_slot(db, org_id):
 
 
 def log(db, actor, action, kind, target, detail):
-    db.execute('INSERT INTO audit_log(user_id,org_id,action,target_type,target_id,detail,created_at) VALUES (?,?,?,?,?,?,?)',
-               (actor['id'],actor['org_id'],action,kind,target,detail,now()))
+    from webapp.storage import Store
+    Store._log(db, actor, action, kind, target, detail)
 
 
 def organizations(store, actor):

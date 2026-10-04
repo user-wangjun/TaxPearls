@@ -26,6 +26,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 DEFAULT_DB = ROOT / "instance" / "taxpearls.db"
 MANIFEST_VERSION = 1
 ENCRYPTED_MAGIC = b"TPBACKUP1\n"
@@ -251,6 +253,66 @@ def _closed_database(target):
             raise BackupError("检测到 SQLite 日志文件；请先停止服务并确认连接已关闭。")
 
 
+def _encrypted_fields_snapshot(blob):
+    """Migrate and compact in RAM: no intermediate plaintext database file."""
+    from types import SimpleNamespace
+    from webapp import schema, sensitive_storage
+    codec = sensitive_storage.Codec(sensitive_storage.configured_key())
+    with closing(sqlite3.connect(':memory:', factory=sensitive_storage.Connection)) as db:
+        db.deserialize(blob)
+        sensitive_storage.attach(db, codec)
+        db.row_factory = sqlite3.Row  # trusted pre-migration reads only
+        db.execute('PRAGMA temp_store=MEMORY')
+        db.execute('PRAGMA secure_delete=ON')
+        sensitive_storage.verify_state(db, codec)
+        @contextmanager
+        def connection():
+            yield db
+            db.commit()
+        schema.initialize(SimpleNamespace(connect=connection))
+        sensitive_storage.migrate(db, codec)
+        db.commit()
+        # Authentication is checked even for an already migrated snapshot.
+        for table, (keys, columns) in sensitive_storage.REGISTRY.items():
+            selected = (*keys, *columns, 'org_id', 'taxpayer_lookup') if table in ('clients', 'audits') else (*keys, *columns)
+            for row in db.execute('SELECT ' + ','.join(selected) + ' FROM ' + table):
+                for column in columns:
+                    if row[column] is not None:
+                        plain = codec.open(row[column], table, column, [row[k] for k in keys])[0]
+                        if column == 'taxpayer_id' and row['taxpayer_lookup'] != codec.taxpayer_lookup(row['org_id'], plain):
+                            raise sensitive_storage.SensitiveStorageError('敏感字段查询索引校验失败。')
+        db.execute('VACUUM')
+        return db.serialize()
+
+
+def migrate_sensitive_fields(database, *, safety_retention_days):
+    """Offline copy-on-write upgrade; retain encrypted pre-migration rollback."""
+    target = _database_path(database)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _operation_lock(target.parent, f'.{target.name}.restore-lock'):
+        _closed_database(target)
+        before = _sha256(target)
+        blob = _memory_snapshot(target, offline=True)
+        encrypted = _encrypted_fields_snapshot(blob)  # fail before backup/publish on wrong key
+        safety_path = target.with_name(f'{target.name}.pre-fields-{_utc_stamp()}.tpbackup')
+        safety = _seal_snapshot(blob, safety_path, safety_retention_days, _backup_key())
+        fd, name = tempfile.mkstemp(prefix=f'.{target.name}.', suffix='.fields', dir=target.parent)
+        temporary = Path(name)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(encrypted); stream.flush(); os.fsync(stream.fileno())
+            _check_database(temporary)
+            _closed_database(target)
+            if _sha256(target) != before:
+                raise BackupError('迁移期间数据库变化，已取消替换；请停止服务。')
+            os.replace(temporary, target)
+            return {'database': str(target), 'safety_backup': safety['backup'],
+                    'safety_encrypted': True, 'fields_encrypted': True, 'compacted': True,
+                    'sha256': _sha256(target), **_check_database(target)}
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 @contextmanager
 def _operation_lock(directory, name):
     """Cooperating CLI operations only; not a substitute for stopping the app."""
@@ -273,6 +335,9 @@ def restore_encrypted_backup(backup, database=None, *, safety_retention_days: in
     target = _database_path(database)
     if source == target:
         raise BackupError("恢复源不能与目标数据库相同。")
+    # Authenticate field-key binding before touching the target. Legacy payloads
+    # are migrated/compacted in RAM, never published as plaintext restore files.
+    blob = _encrypted_fields_snapshot(blob)
     target.parent.mkdir(parents=True, exist_ok=True)
     with _operation_lock(target.parent, f".{target.name}.restore-lock"):
         _closed_database(target)
@@ -574,6 +639,10 @@ def _parser() -> argparse.ArgumentParser:
     encrypted_restore.add_argument("--database")
     encrypted_restore.add_argument("--safety-retention-days", type=int, required=True)
     encrypted_restore.add_argument("--yes", action="store_true")
+    fields = commands.add_parser('migrate-fields', help='停服后列级加密和压缩旧库；只生成加密安全备份')
+    fields.add_argument('--database', required=True)
+    fields.add_argument('--safety-retention-days', type=int, required=True)
+    fields.add_argument('--yes', action='store_true')
     retention = commands.add_parser("retention-plan", help="只读预览指定目录的认证到期备份；不递归或删除")
     retention.add_argument("directory")
     destroy = commands.add_parser("destroy-encrypted", help="仅销毁已审阅且到期的单个备份；默认只预览")
@@ -615,6 +684,10 @@ def main(argv: list[str] | None = None) -> int:
             result = restore_encrypted_backup(args.backup, args.database, safety_retention_days=args.safety_retention_days)
         elif args.command == "retention-plan":
             result = retention_plan(args.directory)
+        elif args.command == 'migrate-fields':
+            if not args.yes:
+                parser.error('migrate-fields 会替换数据库，必须显式 --yes 并先停止服务')
+            result = migrate_sensitive_fields(args.database, safety_retention_days=args.safety_retention_days)
         elif args.command == "destroy-encrypted":
             result = destroy_encrypted_backup(args.backup, args.directory, expected_sha256=args.sha256,
                       reason=args.reason, receipt=args.receipt, confirm=args.yes)
@@ -626,7 +699,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.yes or not args.allow_plaintext:
                 parser.error("旧 restore 须显式 --yes --allow-plaintext；加密文件请用 restore-encrypted")
             result = restore_backup(args.backup, args.database, args.manifest)
-    except (BackupError, OSError) as exc:
+    except (BackupError, OSError, RuntimeError, sqlite3.Error) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 1
     print(json.dumps({"ok": True, **result}, ensure_ascii=False, indent=2, sort_keys=True))

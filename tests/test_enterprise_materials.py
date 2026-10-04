@@ -288,8 +288,8 @@ class EnterpriseMaterialTests(unittest.TestCase):
         self.store.upsert_client(self.admin, COMPANY['name'], COMPANY['taxpayer_id'], self.accountant['id'])
         self.assertEqual(self.client.get(url).status_code, 200)
         with self.store.connect() as db:
-            db.execute('UPDATE clients SET accountant_id=NULL WHERE org_id=? AND taxpayer_id=?',
-                       (self.admin['org_id'], COMPANY['taxpayer_id']))
+            db.execute('UPDATE clients SET accountant_id=NULL WHERE org_id=? AND taxpayer_lookup=?',
+                       (self.admin['org_id'], db.field_codec.taxpayer_lookup(self.admin['org_id'], COMPANY['taxpayer_id'])))
         self.assertIn(self.client.get(url).status_code, (403, 404))
         self.login(self.admin)
         with self.store.connect() as db:

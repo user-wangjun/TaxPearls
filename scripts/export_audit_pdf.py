@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src import settings  # noqa: E402,F401 - load environment, no database initialization
 from webapp.storage import Store  # noqa: E402
+from webapp import sensitive_storage  # noqa: E402
 
 
 def main(argv=None):
@@ -40,8 +41,11 @@ def main(argv=None):
             raise ValueError("数据库不存在。")
         if args.version is not None and (args.version < 1 or not args.audit_id):
             raise ValueError("版本须为正整数，并同时指定审计编号。")
-        with closing(sqlite3.connect(path.resolve().as_uri()+"?mode=ro", uri=True)) as db:
-            db.row_factory = sqlite3.Row
+        codec = sensitive_storage.Codec(sensitive_storage.configured_key())
+        with closing(sqlite3.connect(path.resolve().as_uri()+"?mode=ro", uri=True,
+                                     factory=sensitive_storage.Connection)) as db:
+            sensitive_storage.attach(db, codec)
+            sensitive_storage.verify_state(db, codec)
             if args.list:
                 for row in db.execute("SELECT audit_id,version,created_at,pdf_sha256 FROM audit_report_versions ORDER BY created_at DESC,version DESC"):
                     print(row['audit_id'], 'v'+str(row['version']), row['created_at'], 'PDF' if row['pdf_sha256'] else 'HTML only')
@@ -66,7 +70,7 @@ def main(argv=None):
                 stream.write(content)
             print(f"已导出冻结原件：{destination.resolve()}")
         return 0
-    except (ValueError, OSError, sqlite3.Error) as exc:
+    except (ValueError, OSError, sqlite3.Error, sensitive_storage.SensitiveStorageError) as exc:
         print(f"导出失败：{exc}", file=sys.stderr)
         return 1
 

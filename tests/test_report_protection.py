@@ -131,11 +131,11 @@ class ReportProtectionTests(unittest.TestCase):
         with self.store.connect() as db:self.assertEqual(db.execute("SELECT COUNT(*) FROM report_protections WHERE audit_id='old'").fetchone()[0],1)
 
     def test_corrupt_original_and_registry_mismatch_refused_no_rebuild(self):
-        with self.store.connect() as db:db.execute("UPDATE audit_report_versions SET html='tampered' WHERE audit_id='protected'")
+        with self.store.connect() as db:db.execute("UPDATE audit_report_versions SET html=? WHERE audit_id='protected' AND version=1",(db.field_codec.seal('tampered', 'audit_report_versions', 'html', 'protected', 1),))
         with patch.object(render,"export_pdf",side_effect=AssertionError("no rebuild")):
             self.assertEqual(self.client.get("/api/report-verification/"+self.identifier).status_code,409)
             self.assertEqual(self.check(self.identifier,b"anything").status_code,409)
-        with self.store.connect() as db:db.execute("UPDATE audit_report_versions SET html=? WHERE audit_id='protected'",(self.snapshot["html"],))
+        with self.store.connect() as db:db.execute("UPDATE audit_report_versions SET html=? WHERE audit_id='protected' AND version=1",(db.field_codec.seal(self.snapshot["html"], 'audit_report_versions', 'html', 'protected', 1),))
         self.store.update_org_settings("org-a","新机构","不同版本","页脚")
         self.client.post("/api/audits/protected/report-versions")
         with self.store.connect() as db:db.execute("UPDATE report_protections SET version=2 WHERE id=?",(self.identifier,))

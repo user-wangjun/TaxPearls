@@ -218,7 +218,7 @@ class ExerciseWebTests(unittest.TestCase):
              patch("src.exercise_generator.generate",side_effect=AssertionError("no regenerate")):
             self.assertEqual(self.client.get("/api/exercises/"+audit_id).json(),result)
         with module.store.connect() as db:
-            db.execute("UPDATE generated_exercises SET metadata_json='{}' WHERE audit_id=?",(audit_id,))
+            db.execute("UPDATE generated_exercises SET metadata_json=? WHERE audit_id=?",(db.field_codec.seal('{}', 'generated_exercises', 'metadata_json', audit_id),audit_id))
         self.assertEqual(self.client.get("/api/exercises/"+audit_id).status_code,409)
 
     def test_generation_record_failure_rolls_back_audit_report_and_protection(self):
@@ -277,7 +277,7 @@ class ExerciseWebTests(unittest.TestCase):
         self.assertEqual(self.client.get(assignment_url).status_code, 404)
         self.login(self.teacher)
         with module.store.connect() as db:
-            db.execute("UPDATE generated_exercises SET metadata_json='{}' WHERE audit_id=?", (audit_id,))
+            db.execute("UPDATE generated_exercises SET metadata_json=? WHERE audit_id=?", (db.field_codec.seal('{}', 'generated_exercises', 'metadata_json', audit_id),audit_id))
         self.assertEqual(self.client.get(url).status_code, 409)
 
 

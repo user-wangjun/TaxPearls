@@ -35,7 +35,7 @@ def audit_scope(actor):
         # assignments. Legacy assignments are not an institution-wide grant.
         where += """ AND a.client_id IS NULL
             AND (instr(a.company_name,'仿真')>0 OR instr(a.company_name,'纯合成测试')>0
-                 OR instr(upper(a.taxpayer_id),'TEST')>0)
+                 OR instr(upper(tp_taxpayer_value(a.taxpayer_id,'audits',a.id)),'TEST')>0)
             AND (a.created_by=? OR EXISTS (SELECT 1 FROM assignments teaching
                  WHERE teaching.audit_id=a.id AND teaching.org_id=a.org_id AND teaching.created_by=?))"""
         args.extend([actor['id'], actor['id']])

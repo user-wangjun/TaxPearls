@@ -352,7 +352,7 @@ class ClassroomTests(unittest.TestCase):
         entry['dataset'].company.name='真实客户';entry['dataset'].company.taxpayer_id='91440100123456789X'
         with self.store.connect() as db:
             db.execute('UPDATE audits SET dataset_json=? WHERE id=?',
-                       (json.dumps(serialize_dataset(entry['dataset'])),entry['id']))
+                       (db.field_codec.seal(json.dumps(serialize_dataset(entry['dataset'])), 'audits', 'dataset_json', entry['id']),entry['id']))
         self.assertEqual(self.client.post('/api/papers',json={'title':'真实客户卷','items':[{'audit_id':self.cases[0]['audit_id']}]}).status_code,422)
         for value in ['NaN','Infinity','-Infinity']:
             response=self.client.post('/api/papers',json={'title':'非法分值','items':[{'audit_id':self.cases[0]['audit_id'],'points':value}]})

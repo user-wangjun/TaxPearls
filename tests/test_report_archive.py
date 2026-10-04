@@ -176,14 +176,14 @@ class ReportArchiveTests(unittest.TestCase):
         for column, bad in (("html", "tampered"), ("manifest_json", "{}"), ("pdf_bytes", b"%PDF-tampered")):
             if column == "pdf_bytes": self.store.attach_report_pdf("legacy", 1, b"%PDF-original")
             with self.store.connect() as db:
-                original = db.execute(f"SELECT {column} FROM audit_report_versions WHERE audit_id='legacy'").fetchone()[0]
-                db.execute(f"UPDATE audit_report_versions SET {column}=? WHERE audit_id='legacy'", (bad,))
+                original = db.execute(f"SELECT {column},audit_id,version FROM audit_report_versions WHERE audit_id='legacy'").fetchone()[0]
+                db.execute(f"UPDATE audit_report_versions SET {column}=? WHERE audit_id='legacy' AND version=1", (db.field_codec.seal(bad, 'audit_report_versions', column, 'legacy', 1),))
             with patch.object(render, "export_pdf", side_effect=AssertionError("no regeneration")):
                 self.assertEqual(self.client.get("/api/report/legacy/html?version=1").status_code, 409)
                 self.assertEqual(self.client.get("/api/report/legacy?version=1").status_code, 409)
             with self.store.connect() as db:
-                self.assertEqual(db.execute(f"SELECT {column} FROM audit_report_versions WHERE audit_id='legacy'").fetchone()[0], bad)
-                db.execute(f"UPDATE audit_report_versions SET {column}=? WHERE audit_id='legacy'", (original,))
+                self.assertEqual(db.execute(f"SELECT {column},audit_id,version FROM audit_report_versions WHERE audit_id='legacy'").fetchone()[0], bad)
+                db.execute(f"UPDATE audit_report_versions SET {column}=? WHERE audit_id='legacy' AND version=1", (db.field_codec.seal(original, 'audit_report_versions', column, 'legacy', 1),))
 
     def test_real_pdf_first_export_and_byte_identical_restart(self):
         import pypdfium2
