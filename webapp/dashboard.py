@@ -22,7 +22,11 @@ def collect(store, actor, company=None, page=1, page_size=24):
                 'FROM clients c LEFT JOIN users u ON u.id=c.accountant_id AND u.org_id=c.org_id WHERE ' + where,
                 parameters)]
         names = {item['key']:item['name'] for item in companies}
-        names.update({item['taxpayer_id']:item['name'] for item in clients})
+        for item in clients:
+            key, client_name = item['taxpayer_id'], item['name']
+            audit_name = names.get(key)
+            names[key] = (f'{audit_name}（客户档案：{client_name}）'
+                          if audit_name and audit_name != client_name else client_name)
         selected = company if company in names else next(iter(names), '') if company is None else ''
         selected_base = base + ' AND ' + identity + '=?'
         selected_args = [*args, selected]

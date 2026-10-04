@@ -12,6 +12,32 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DashboardTests(unittest.TestCase):
+    def test_client_name_does_not_hide_audit_company_name(self):
+        from webapp.dashboard import collect
+        with TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'test.db')
+            owner = store.create_user('owner', 'Review-Probe-2026!', '机构', 'org_admin', 'a')
+            outsider = store.create_user('other', 'Review-Probe-2026!', '外部', 'org_admin', 'b')
+            data = loader.load(ROOT / 'samples/样例企业-审计材料.xlsx')
+            data.company.name = '仿真审计企业'
+            customer = store.upsert_client(owner, '模拟商贸企业02（纯合成测试）', data.company.taxpayer_id)
+            findings = engine.run(engine.load_rules(ROOT / 'rules'), data)
+            summary = render.build_view_model(data, findings)['summary']
+            for month in range(1, 9):
+                snapshot = deepcopy(data)
+                snapshot.company.period = f'2026-{month:02}'
+                store.save_audit(f'period-{month}', owner, customer['id'], snapshot, findings, summary,
+                                 f'2026-{month:02}-28T12:00:00')
+            result = collect(store, owner, data.company.taxpayer_id)
+            self.assertEqual(result['companies'], [{'key': data.company.taxpayer_id,
+                'name': '仿真审计企业（客户档案：模拟商贸企业02（纯合成测试））'}])
+            self.assertEqual(result['total_periods'], 8)
+            self.assertEqual(len(result['records']), 8)
+            self.assertEqual(collect(store, outsider)['companies'], [])
+            with store.connect() as db:
+                self.assertEqual(db.execute('SELECT name FROM clients WHERE id=?', (customer['id'],)).fetchone()[0],
+                                 '模拟商贸企业02（纯合成测试）')
+
     def test_latest_period_snapshot_and_permissions(self):
         with TemporaryDirectory() as tmp:
             old = module.store
