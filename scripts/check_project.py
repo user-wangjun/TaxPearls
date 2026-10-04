@@ -1,6 +1,7 @@
 """Run repository checks with isolated databases and no external credentials."""
 from pathlib import Path
 import ast
+import base64
 import hashlib
 import os
 import subprocess
@@ -29,7 +30,8 @@ def main():
         os.environ.update(TAXPEARLS_DB=str(Path(directory) / 'bootstrap.db'),
                           TAXPEARLS_AI_ENABLED='0', TAXPEARLS_NOTIFICATION_EMAIL_ENABLED='0',
                           TAXPEARLS_AI_API_KEY='', TAXPEARLS_RESEND_API_KEY='',
-                          TAXPEARLS_BACKUP_KEY='', TAXPEARLS_MATERIAL_KEY='')
+                          TAXPEARLS_BACKUP_KEY='', TAXPEARLS_MATERIAL_KEY='',
+                          TAXPEARLS_FIELD_KEY=base64.b64encode(os.urandom(32)).decode())
         # Multiple explicit patterns let related migrations share one isolated
         # process and the same source-stability/contract checks.
         suite = unittest.TestSuite(unittest.defaultTestLoader.discover('tests', pattern=pattern)

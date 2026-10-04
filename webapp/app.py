@@ -2,7 +2,7 @@
 
 Persistent audits, Argon2 authentication, role-based access control, client
 ownership, audit logs, rule switches and deterministic training/marking.
-Uploaded workbook bytes stay in memory; only normalized evidence is stored.
+Enterprise originals and sensitive evidence use authenticated encryption at rest.
 """
 from __future__ import annotations
 from src import periods
@@ -36,6 +36,7 @@ from src.mailer import MailError, send_password_reset_email, send_registration_c
 from src.models import Dataset, Rule
 from webapp import captcha, classroom, members, email_auth
 from webapp.access import AccessDenied
+from webapp.sensitive_storage import SensitiveStorageError
 from webapp.notifications import NotificationWorker, email_delivery_enabled
 from webapp.storage import SetupAlreadyInitialized, Store, session_max_age
 from webapp.login_guard import LoginGuard, RateLimiter
@@ -73,6 +74,11 @@ app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_
 @app.exception_handler(AccessDenied)
 async def denied_access(_request: Request, exc: AccessDenied):
     return JSONResponse(status_code=exc.status, content={"detail": str(exc)})
+
+
+@app.exception_handler(SensitiveStorageError)
+async def sensitive_storage_failure(_request: Request, exc: SensitiveStorageError):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 
 @app.middleware("http")

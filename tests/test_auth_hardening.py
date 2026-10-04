@@ -143,7 +143,7 @@ class AuthHardeningTests(unittest.TestCase):
                     self.assertEqual(blocked.status_code, 429, blocked.text)
                     self.assertGreaterEqual(int(blocked.headers["Retry-After"]), 1)
                 with app_module.store.connect() as db:
-                    rows = db.execute("SELECT action,target_id,detail FROM audit_log ORDER BY id").fetchall()
+                    rows = db.execute("SELECT action,target_id,detail,id FROM audit_log ORDER BY id").fetchall()
                 self.assertEqual(rows[0]['action'], 'setup')
                 rows = rows[1:]
                 self.assertEqual(len(rows), 5)

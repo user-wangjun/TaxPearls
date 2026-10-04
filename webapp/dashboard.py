@@ -7,7 +7,7 @@ from webapp.access import audit_scope, current_actor
 def collect(store, actor, company=None, page=1, page_size=24):
     scope, args = audit_scope(actor)
     base = ' FROM audits a LEFT JOIN clients c ON c.id=a.client_id WHERE ' + scope
-    identity = "COALESCE(NULLIF(a.taxpayer_id,''),a.company_name)"
+    identity = "COALESCE(NULLIF(tp_taxpayer_value(a.taxpayer_id,'audits',a.id),''),a.company_name)"
     with store.connect() as db:
         db.execute('BEGIN')
         current_actor(db, actor, {'org_admin', 'accountant', 'teacher'})

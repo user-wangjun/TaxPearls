@@ -109,7 +109,7 @@ class PasswordResetTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertEqual(self.sent[0]["to"], "root@example.com")
         with app_module.store.connect() as db:
-            rows = db.execute("SELECT detail FROM audit_log WHERE action='password_reset_sent'").fetchall()
+            rows = db.execute("SELECT detail,id FROM audit_log WHERE action='password_reset_sent'").fetchall()
         self.assertTrue(rows)
         self.assertNotIn("root@example.com", str([tuple(r) for r in rows]))
 

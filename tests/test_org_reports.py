@@ -111,9 +111,9 @@ class OrgReportTests(unittest.TestCase):
         self.assertEqual(quarter["totals"]["audited"],1)
         # Identical version labels with different definitions must not collapse.
         with self.store.connect() as db:
-            encoded=db.execute("SELECT findings_json FROM audits WHERE id='a-month'").fetchone()[0]
+            encoded=db.execute("SELECT findings_json,id FROM audits WHERE id='a-month'").fetchone()[0]
             findings=json.loads(encoded);findings[0]["rule"]["threshold_basis"]="Different reviewed threshold basis"
-            db.execute("UPDATE audits SET findings_json=? WHERE id='a-month'",(json.dumps(findings),))
+            db.execute("UPDATE audits SET findings_json=? WHERE id='a-month'",(db.field_codec.seal(json.dumps(findings), 'audits', 'findings_json', 'a-month'),))
         result=self.client.get("/api/org/overview").json()
         rows=[row for row in result["rule_distribution"] if row["id"]=="R-001"]
         self.assertEqual(len(rows),2);self.assertEqual({row["version"] for row in rows},{"2.0"})
@@ -239,7 +239,7 @@ class OrgReportTests(unittest.TestCase):
             response=self.client.get(f"/api/org/reports/{report_id}/pdf")
         self.assertEqual(response.status_code,500);self.assertNotIn("private-detail",response.text);self.assertFalse(temp.exists())
         self.assertIsNone(self.store.get_org_report(report_id,self.admin)["pdf_bytes"])
-        with self.store.connect() as db:db.execute("UPDATE org_reports SET html='tampered' WHERE id=?",(report_id,))
+        with self.store.connect() as db:db.execute("UPDATE org_reports SET html=? WHERE id=?",(db.field_codec.seal('tampered', 'org_reports', 'html', report_id),report_id))
         with patch.object(render,"export_pdf",side_effect=AssertionError("must not regenerate corrupted archive")):
             for suffix in ("","/html","/pdf"):self.assertEqual(self.client.get(f"/api/org/reports/{report_id}"+suffix).status_code,409)
 
