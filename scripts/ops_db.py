@@ -253,11 +253,12 @@ def _closed_database(target):
             raise BackupError("检测到 SQLite 日志文件；请先停止服务并确认连接已关闭。")
 
 
-def _encrypted_fields_snapshot(blob):
+def _encrypted_fields_snapshot(blob, *, bind_environment=False):
     """Migrate and compact in RAM: no intermediate plaintext database file."""
     from types import SimpleNamespace
-    from webapp import schema, sensitive_storage
+    from webapp import schema, sensitive_storage, deployment
     codec = sensitive_storage.Codec(sensitive_storage.configured_key())
+    identity = deployment.configured()
     with closing(sqlite3.connect(':memory:', factory=sensitive_storage.Connection)) as db:
         db.deserialize(blob)
         sensitive_storage.attach(db, codec)
@@ -265,12 +266,14 @@ def _encrypted_fields_snapshot(blob):
         db.execute('PRAGMA temp_store=MEMORY')
         db.execute('PRAGMA secure_delete=ON')
         sensitive_storage.verify_state(db, codec)
+        deployment.verify(db, identity, codec, explicit_bind=bind_environment)
         @contextmanager
         def connection():
             yield db
             db.commit()
         schema.initialize(SimpleNamespace(connect=connection))
         sensitive_storage.migrate(db, codec)
+        deployment.install(db, identity, codec, explicit_bind=bind_environment)
         db.commit()
         # Authentication is checked even for an already migrated snapshot.
         for table, (keys, columns) in sensitive_storage.REGISTRY.items():
@@ -285,7 +288,7 @@ def _encrypted_fields_snapshot(blob):
         return db.serialize()
 
 
-def migrate_sensitive_fields(database, *, safety_retention_days):
+def migrate_sensitive_fields(database, *, safety_retention_days, bind_environment=False):
     """Offline copy-on-write upgrade; retain encrypted pre-migration rollback."""
     target = _database_path(database)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -293,7 +296,7 @@ def migrate_sensitive_fields(database, *, safety_retention_days):
         _closed_database(target)
         before = _sha256(target)
         blob = _memory_snapshot(target, offline=True)
-        encrypted = _encrypted_fields_snapshot(blob)  # fail before backup/publish on wrong key
+        encrypted = _encrypted_fields_snapshot(blob, bind_environment=bind_environment)
         safety_path = target.with_name(f'{target.name}.pre-fields-{_utc_stamp()}.tpbackup')
         safety = _seal_snapshot(blob, safety_path, safety_retention_days, _backup_key())
         fd, name = tempfile.mkstemp(prefix=f'.{target.name}.', suffix='.fields', dir=target.parent)
@@ -308,9 +311,45 @@ def migrate_sensitive_fields(database, *, safety_retention_days):
             os.replace(temporary, target)
             return {'database': str(target), 'safety_backup': safety['backup'],
                     'safety_encrypted': True, 'fields_encrypted': True, 'compacted': True,
+                    'environment_bound': bind_environment,
                     'sha256': _sha256(target), **_check_database(target)}
         finally:
             temporary.unlink(missing_ok=True)
+
+
+def checkpoint_database(database):
+    """After operator-confirmed shutdown, reconcile WAL through SQLite, not unlink.
+
+    An idle application can have no active SQLite lock; a successful checkpoint
+    is not proof that the application is stopped. The maintenance window remains
+    a required external condition, and callers should have an encrypted backup.
+    """
+    from webapp import deployment, sensitive_storage
+    target = _database_path(database)
+    if not target.is_file():
+        raise BackupError('检查点目标数据库不存在。')
+    codec = sensitive_storage.Codec(sensitive_storage.configured_key())
+    identity = deployment.configured()
+    with _operation_lock(target.parent, f'.{target.name}.restore-lock'):
+        # Check identity without opening a writable foreign database first.
+        with closing(sqlite3.connect(target.as_uri() + '?mode=ro', uri=True, timeout=3)) as read:
+            read.row_factory = sqlite3.Row
+            sensitive_storage.verify_state(read, codec)
+            deployment.verify(read, identity, codec)
+        with closing(sqlite3.connect(target.as_uri() + '?mode=rw', uri=True, timeout=3)) as db:
+            db.row_factory = sqlite3.Row
+            sensitive_storage.verify_state(db, codec)
+            deployment.verify(db, identity, codec)
+            if db.execute('PRAGMA quick_check').fetchone()[0] != 'ok':
+                raise BackupError('检查点前数据库完整性校验失败。')
+            result = db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
+            if result[0] != 0:
+                raise BackupError('SQLite 检查点被活动连接阻塞，请停止所有服务和连接后重试。')
+            if db.execute('PRAGMA journal_mode=DELETE').fetchone()[0] != 'delete':
+                raise BackupError('SQLite 未能关闭 WAL 模式，请检查活动连接。')
+        _closed_database(target)
+        return {'database': str(target), 'checkpointed': True, 'journal_mode': 'delete',
+                'application_stopped_verified': False, **_check_database(target)}
 
 
 @contextmanager
@@ -344,6 +383,12 @@ def restore_encrypted_backup(backup, database=None, *, safety_retention_days: in
         before = _sha256(target) if target.exists() else None
         safety = None
         if before is not None:
+            # Never overwrite another installation's database, even when the
+            # incoming source and backup key are valid for this environment.
+            from webapp import deployment, sensitive_storage
+            with closing(sqlite3.connect(target.as_uri() + '?mode=ro&immutable=1', uri=True)) as current:
+                current.row_factory = sqlite3.Row
+                deployment.verify(current, deployment.configured(), sensitive_storage.Codec(sensitive_storage.configured_key()))
             safety_path = target.with_name(f"{target.name}.pre-restore-{_utc_stamp()}.tpbackup")
             # No WAL/journal exists and maintenance was explicitly confirmed.
             # immutable=1 prevents a read-only safety snapshot creating sidecars.
@@ -643,6 +688,13 @@ def _parser() -> argparse.ArgumentParser:
     fields.add_argument('--database', required=True)
     fields.add_argument('--safety-retention-days', type=int, required=True)
     fields.add_argument('--yes', action='store_true')
+    binding = commands.add_parser('bind-environment', help='停服后首次绑定旧库到部署身份；不能重标其他非本地环境')
+    binding.add_argument('--database', required=True)
+    binding.add_argument('--safety-retention-days', type=int, required=True)
+    binding.add_argument('--yes', action='store_true')
+    checkpoint = commands.add_parser('checkpoint', help='停服后通过 SQLite 收敛 WAL，禁止手工删除日志文件')
+    checkpoint.add_argument('--database', required=True)
+    checkpoint.add_argument('--yes', action='store_true', help='确认已停止所有应用和数据库连接')
     retention = commands.add_parser("retention-plan", help="只读预览指定目录的认证到期备份；不递归或删除")
     retention.add_argument("directory")
     destroy = commands.add_parser("destroy-encrypted", help="仅销毁已审阅且到期的单个备份；默认只预览")
@@ -684,10 +736,15 @@ def main(argv: list[str] | None = None) -> int:
             result = restore_encrypted_backup(args.backup, args.database, safety_retention_days=args.safety_retention_days)
         elif args.command == "retention-plan":
             result = retention_plan(args.directory)
-        elif args.command == 'migrate-fields':
+        elif args.command in ('migrate-fields', 'bind-environment'):
             if not args.yes:
-                parser.error('migrate-fields 会替换数据库，必须显式 --yes 并先停止服务')
-            result = migrate_sensitive_fields(args.database, safety_retention_days=args.safety_retention_days)
+                parser.error('迁移/绑定会替换数据库，必须显式 --yes 并先停止服务')
+            result = migrate_sensitive_fields(args.database, safety_retention_days=args.safety_retention_days,
+                                             bind_environment=args.command == 'bind-environment')
+        elif args.command == 'checkpoint':
+            if not args.yes:
+                parser.error('checkpoint 须显式 --yes 确认所有应用和 SQLite 连接已停止')
+            result = checkpoint_database(args.database)
         elif args.command == "destroy-encrypted":
             result = destroy_encrypted_backup(args.backup, args.directory, expected_sha256=args.sha256,
                       reason=args.reason, receipt=args.receipt, confirm=args.yes)

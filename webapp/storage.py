@@ -20,7 +20,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 from contextlib import contextmanager
-from webapp import sensitive_storage
+from webapp import sensitive_storage, deployment
 from webapp import classroom, members, invitations, email_auth
 from webapp.access import AccessDenied, audit_row, audit_scope, current_actor, is_teaching_dataset
 
@@ -142,12 +142,15 @@ class Store:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
         self._field_codec = sensitive_storage.Codec(sensitive_storage.configured_key())
+        self.deployment = deployment.configured()
         self._fields_ready = False
         with self.connect() as db:
             sensitive_storage.verify_state(db, self._field_codec)
+            deployment.verify(db, self.deployment, self._field_codec)
         self._init_schema()
         with self.connect() as db:
             sensitive_storage.migrate(db, self._field_codec)
+            deployment.install(db, self.deployment, self._field_codec)
         self._fields_ready = True
 
     @contextmanager
@@ -157,6 +160,9 @@ class Store:
             sensitive_storage.attach(db, self._field_codec)
             if not self._fields_ready:
                 db.row_factory = sqlite3.Row
+            else:
+                sensitive_storage.verify_state(db, self._field_codec)
+                deployment.verify(db, self.deployment, self._field_codec, require_bound=True)
             db.execute("PRAGMA foreign_keys=ON")
             # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
             # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以

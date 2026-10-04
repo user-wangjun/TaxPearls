@@ -1,4 +1,5 @@
 FROM python:3.13-slim
+ARG PIP_INDEX_URL=https://pypi.org/simple
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 WORKDIR /app
@@ -11,7 +12,7 @@ RUN sed -i 's|^URIs: http://deb.debian.org/|URIs: https://mirrors.aliyun.com/|' 
 COPY requirements.txt requirements.lock ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --timeout 120 --retries 10 \
-        -i https://mirrors.aliyun.com/pypi/simple/ \
+        -i "${PIP_INDEX_URL}" \
         -r requirements.lock \
     && python -m playwright install --with-deps chromium \
     && apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk \

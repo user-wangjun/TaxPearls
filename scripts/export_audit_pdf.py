@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from src import settings  # noqa: E402,F401 - load environment, no database initialization
 from webapp.storage import Store  # noqa: E402
-from webapp import sensitive_storage  # noqa: E402
+from webapp import sensitive_storage, deployment  # noqa: E402
 
 
 def main(argv=None):
@@ -46,6 +46,7 @@ def main(argv=None):
                                      factory=sensitive_storage.Connection)) as db:
             sensitive_storage.attach(db, codec)
             sensitive_storage.verify_state(db, codec)
+            deployment.verify(db, deployment.configured(), codec)
             if args.list:
                 for row in db.execute("SELECT audit_id,version,created_at,pdf_sha256 FROM audit_report_versions ORDER BY created_at DESC,version DESC"):
                     print(row['audit_id'], 'v'+str(row['version']), row['created_at'], 'PDF' if row['pdf_sha256'] else 'HTML only')

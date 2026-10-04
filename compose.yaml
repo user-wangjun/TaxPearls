@@ -1,20 +1,29 @@
+name: ${TAXPEARLS_INSTANCE_ID:?Specify a unique installation ID}
 services:
   taxpearls:
-    build: .
-    image: taxpearls:${TAXPEARLS_IMAGE_TAG:-current}
-    env_file: .env
+    build:
+      context: .
+      args:
+        PIP_INDEX_URL: ${TAXPEARLS_PIP_INDEX_URL:-https://pypi.org/simple}
+    image: taxpearls:${TAXPEARLS_IMAGE_TAG:?Specify an immutable release tag}
+    env_file: ${TAXPEARLS_ENV_FILE:?Specify this installations external config file}
     environment:
+      TAXPEARLS_ENVIRONMENT: ${TAXPEARLS_ENVIRONMENT:?Specify local training or production}
+      TAXPEARLS_INSTANCE_ID: ${TAXPEARLS_INSTANCE_ID}
       TAXPEARLS_HOST: 0.0.0.0
       TAXPEARLS_PORT: 8000
       TAXPEARLS_DB: /data/taxpearls.db
       TAXPEARLS_PDF_BROWSER: chromium
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${TAXPEARLS_BIND_PORT:?Specify this installations loopback port}:8000"
     volumes:
       - taxpearls-data:/data
     restart: unless-stopped
     init: true
     shm_size: 256mb
+    labels:
+      taxpearls.environment: ${TAXPEARLS_ENVIRONMENT}
+      taxpearls.instance: ${TAXPEARLS_INSTANCE_ID}
 
 volumes:
   taxpearls-data:

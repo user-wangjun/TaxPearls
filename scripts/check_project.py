@@ -28,6 +28,7 @@ def main():
     subprocess.run(['node', 'scripts/check_enterprise_frontend.cjs'], check=True)
     with tempfile.TemporaryDirectory(prefix='taxpearls-check-') as directory:
         os.environ.update(TAXPEARLS_DB=str(Path(directory) / 'bootstrap.db'),
+                          TAXPEARLS_ENVIRONMENT='local', TAXPEARLS_INSTANCE_ID='local',
                           TAXPEARLS_AI_ENABLED='0', TAXPEARLS_NOTIFICATION_EMAIL_ENABLED='0',
                           TAXPEARLS_AI_API_KEY='', TAXPEARLS_RESEND_API_KEY='',
                           TAXPEARLS_BACKUP_KEY='', TAXPEARLS_MATERIAL_KEY='',
