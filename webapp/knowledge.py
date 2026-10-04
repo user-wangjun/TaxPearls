@@ -124,7 +124,11 @@ def _chat_json(system_prompt, user_payload, failure_message):
         if not isinstance(answer, dict):
             raise ValueError("Invalid answer schema")
         return answer, settings.effective_model
-    except (TransportError, ValueError, KeyError, IndexError, TypeError):
+    except TransportError as exc:
+        if exc.kind == "keys_unavailable" or (exc.kind == "http" and exc.status in {401, 402}):
+            raise HTTPException(502, "AI 密钥暂不可用（密钥无效或余额不足）；请检查主用及备用密钥和余额。备用列表中的失败密钥五分钟后可重试，重启服务可立即重试。") from None
+        raise HTTPException(502, failure_message) from None
+    except (ValueError, KeyError, IndexError, TypeError):
         raise HTTPException(502, failure_message) from None
 
 
