@@ -2,7 +2,7 @@
 
 
 def initialize(store) -> None:
-    from webapp import classroom, members, email_auth, oauth
+    from webapp import classroom, members, email_auth, oauth, mistake_book
     with store.connect() as db:
         # WAL 一次设置、持久化于库文件
         db.execute("PRAGMA journal_mode=WAL")
@@ -218,6 +218,7 @@ def initialize(store) -> None:
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_platform_admin "
                    "ON users(role) WHERE role='platform_admin'")
         classroom.migrate(db)
+        mistake_book.migrate(db)
         members.migrate(db)
         from webapp import material_batches
         material_batches.migrate(db)

@@ -89,7 +89,7 @@ class ClassroomTests(unittest.TestCase):
              {'adjusted_score': 75, 'feedback': '人工复核'}, 'review_submission'),
         ]
         tables = ('training_classes', 'training_class_members', 'training_papers', 'assignments',
-                  'training_assignment_settings', 'submissions', 'audit_log')
+                  'training_assignment_settings', 'submissions', 'training_mistake_cases', 'audit_log')
         def state():
             with self.store.connect() as db:
                 return {table: [tuple(row) for row in db.execute(f'SELECT * FROM {table} ORDER BY rowid')]

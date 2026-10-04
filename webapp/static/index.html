@@ -787,11 +787,41 @@
       <div class="sheet" id="paperComposer" hidden><h2>多案例组卷</h2><p class="muted">题目按顺序与分值汇总。案例须为仿真；保存后组成冻结，修改题目须新建试卷。未全部提交时不显示最终总评分。</p><fieldset id="paperComposerControls"><div class="row"><div class="field"><label for="paperTitle">试卷标题</label><input id="paperTitle" maxlength="200" value="税务风险综合实训"></div><div class="field"><label for="paperClass">试卷发布范围</label><select id="paperClass"><option value="__choose__">请选择发布范围</option><option value="">全机构学生（不限制班级）</option></select></div><div class="field"><label for="paperDeadline">试卷截止时间（本机时区，留空为不限）</label><input id="paperDeadline" type="datetime-local"></div></div><div class="row"><div class="field"><label for="paperAudit">组卷仿真案例</label><select id="paperAudit"><option value="">请选择仿真案例</option></select></div><div class="field"><label for="paperPoints">本题分值</label><input id="paperPoints" type="number" min="0.01" max="1000000" step="any" value="100"></div><div class="field"><label for="paperPenalty">本题每项误报扣分</label><input id="paperPenalty" type="number" min="0" max="100" step="any" value="5"></div><button type="button" id="btnAddPaperCase">添加到试卷</button></div><div id="paperDraft"></div><div class="training-actions"><button type="button" id="btnSavePaperDraft">保存试卷草稿</button><button class="btn pdf" type="button" id="btnPublishPaper">保存并发布试卷</button><button type="button" id="btnClearPaper">清空组卷选择</button></div></fieldset><p class="muted" id="paperComposeStatus" role="status"></p></div>
       <div class="sheet"><h2>我的班级</h2><div id="classList"></div></div>
 
+      <div class="sheet" id="classStatistics" hidden>
+        <h2>班级学情统计</h2>
+        <div class="training-actions">
+          <div class="field"><label for="statisticsClass">统计班级</label><select id="statisticsClass"><option value="">请选择班级</option></select></div>
+          <label><input id="statisticsWithdrawn" type="checkbox"> 纳入有提交的撤回作业</label>
+          <button type="button" id="btnRefreshClassStatistics">刷新学情</button>
+        </div>
+        <p class="muted" id="classStatisticsStatus" role="status">请选择班级查看学情。</p>
+        <div id="classStatisticsResult"></div>
+      </div>
       <div class="sheet"><h2>组卷作业</h2><button type="button" id="btnRefreshTraining">刷新作业与进度</button><div id="paperList"></div></div>
 
+      <div class="sheet" id="studentProfile" hidden>
+        <h2>个人能力画像</h2>
+        <div id="profileTeacherControls" hidden>
+          <div class="row">
+            <div class="field"><label for="profileClass">画像班级</label><select id="profileClass"><option value="">请选择班级</option></select></div>
+            <div class="field"><label for="profileStudent">画像学生</label><select id="profileStudent"><option value="">请选择学生</option></select></div>
+          </div>
+          <label><input type="checkbox" id="profileWithdrawn"> 纳入该学生有提交的撤回作业</label>
+        </div>
+        <div class="training-actions"><button type="button" id="btnRefreshProfile">刷新画像</button></div>
+        <p id="studentProfileStatus" class="muted" role="status">请选择班级和学生查看画像。</p>
+        <div id="studentProfileResult"></div>
+      </div>
       <div class="sheet" id="paperDetail" hidden></div>
       <div class="sheet"><h2>实训作业</h2><div class="data-list" id="assignmentList"></div></div>
 
+      <div class="sheet" id="mistakeBook" hidden>
+        <h2>我的错题本</h2><p class="muted" id="mistakeMethod"></p>
+        <div class="training-actions"><button type="button" id="btnRefreshMistakes">刷新错题本</button><button type="button" id="btnSyncMistakes">同步已有作业最新提交</button></div>
+        <div class="row"><div class="field"><label for="mistakeState">订正状态</label><select id="mistakeState"><option value="">全部</option><option value="pending">待订正</option><option value="corrected">本轮已订正</option><option value="unavailable">暂不可用</option></select></div>
+          <div class="field"><label for="mistakeKind">错项类型</label><select id="mistakeKind"><option value="">全部</option><option value="missed">漏检</option><option value="false_positive">误报</option><option value="unsupported">材料不足仍标风险</option></select></div></div>
+        <p class="muted" id="mistakeStatus" role="status"></p><div id="mistakeList"></div><div id="mistakeDetail" hidden></div>
+      </div>
       <div class="sheet" id="exerciseBox" style="display:none"><h2 id="exerciseTitle"></h2><p class="muted" id="exerciseCompany"></p><p class="muted" id="exerciseDeadlineStatus" role="status"></p><div id="exerciseData"></div><div class="ev-title">标注你认为命中的风险</div><div class="check-grid" id="exerciseRules"></div><button class="btn pdf" id="btnSubmitExercise">提交答案并评分</button><div id="scoreResult"></div></div>
       <div class="sheet" id="reviewBox" style="display:none"><h2>学生提交与人工复核</h2><div class="data-list" id="submissionList"></div></div>
     </section>
@@ -827,7 +857,8 @@
   </div>
 </footer>
 
-<script src="/classroom.js?v=platform-access-1"></script>
+<script src="/mistake-book.js?v=teaching-storage-1"></script>
+<script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/enterprise.js?v=enterprise-review-1"></script>
 <script src="/console.js?v=platform-materials-1"></script>
 <script src="/workspace.js?v=platform-access-1"></script>
