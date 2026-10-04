@@ -43,12 +43,14 @@ class AISettings:
     max_tokens: int = 8192
     max_pages: int = 12
     max_calls: int = 20
+    backup_api_keys: tuple[str, ...] = field(default=(), repr=False)
 
     @classmethod
     def from_env(cls):
         return cls(enabled=flag("TAXPEARLS_AI_ENABLED"),
                    base_url=os.getenv("TAXPEARLS_AI_BASE_URL", "https://api.deepseek.com").strip().rstrip("/"),
                    api_key=os.getenv("TAXPEARLS_AI_API_KEY", "").strip(),
+                   backup_api_keys=tuple(os.getenv("TAXPEARLS_AI_BACKUP_API_KEYS", "").split(",")),
                    model=os.getenv("TAXPEARLS_AI_MODEL", "ds-v4.1f").strip(),
                    vision=flag("TAXPEARLS_AI_VISION", True),
                    json_mode=flag("TAXPEARLS_AI_JSON_MODE", True),
@@ -58,6 +60,11 @@ class AISettings:
                    max_tokens=integer("TAXPEARLS_AI_MAX_TOKENS", 8192, 1024, 32768),
                    max_pages=integer("TAXPEARLS_AI_MAX_PAGES", 12, 1, 50),
                    max_calls=integer("TAXPEARLS_AI_MAX_CALLS", 20, 1, 100))
+
+    @property
+    def api_keys(self):
+        # Preserve priority, ignoring blank entries and duplicate credentials.
+        return tuple(dict.fromkeys(key.strip() for key in (self.api_key, *self.backup_api_keys) if key.strip()))
 
     @property
     def effective_model(self):
@@ -70,6 +77,10 @@ class AISettings:
             return "AI 提取未启用；当前使用本地解析。"
         if not self.api_key or not self.base_url or not self.model:
             return "AI 未配置完整：请填写 .env 中的 API_KEY、BASE_URL 和 MODEL 后重启服务。"
+        if len(self.api_keys) > 10:
+            return "AI 主用与备用密钥去重后合计最多 10 把。"
+        if any(any(ord(char) < 33 or ord(char) > 126 for char in key) for key in self.api_keys):
+            return "AI 密钥格式错误：密钥须为不含空白的 ASCII 字符串。"
         try:
             parsed = urlsplit(self.base_url)
             _ = parsed.port
@@ -87,4 +98,5 @@ class AISettings:
         problem = self.problem()
         return {"enabled": self.enabled, "ready": not problem, "model": self.model,
                 "effective_model": self.effective_model, "vision": self.vision,
+                "backup_key_count": max(0, len(self.api_keys) - 1),
                 "message": problem or f"AI 已配置：{self.model}；所选材料的文字及页面图片会发送给配置的模型服务。"}

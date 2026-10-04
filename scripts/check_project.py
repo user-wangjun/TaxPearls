@@ -30,7 +30,7 @@ def main():
         os.environ.update(TAXPEARLS_DB=str(Path(directory) / 'bootstrap.db'),
                           TAXPEARLS_ENVIRONMENT='local', TAXPEARLS_INSTANCE_ID='local',
                           TAXPEARLS_AI_ENABLED='0', TAXPEARLS_NOTIFICATION_EMAIL_ENABLED='0',
-                          TAXPEARLS_AI_API_KEY='', TAXPEARLS_RESEND_API_KEY='',
+                          TAXPEARLS_AI_API_KEY='', TAXPEARLS_AI_BACKUP_API_KEYS='', TAXPEARLS_RESEND_API_KEY='',
                           TAXPEARLS_BACKUP_KEY='', TAXPEARLS_MATERIAL_KEY='',
                           TAXPEARLS_FIELD_KEY=base64.b64encode(os.urandom(32)).decode())
         # Multiple explicit patterns let related migrations share one isolated

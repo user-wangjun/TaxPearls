@@ -47,9 +47,11 @@ def call_model(settings, messages, timeout):
     try:
         return Extraction.model_validate_json(chat_content(settings, messages, timeout))
     except TransportError as exc:
+        if exc.kind == "keys_unavailable":
+            raise ExtractionError("AI 主用及备用密钥均暂不可用（密钥无效或余额不足）；请检查密钥及余额，等待五分钟或重启服务后再试。", code='http') from None
         if exc.kind == "http":
-            hints = {401: "密钥无效", 403: "接口无权限", 404: "地址或模型名不存在", 429: "限流或额度不足"}
-            raise ExtractionError(f"AI 接口失败：HTTP {exc.status}（{hints.get(exc.status, '请检查接口配置')}）。未自动重试。", code='http') from None
+            hints = {401: "密钥无效", 402: "余额不足", 403: "接口无权限", 404: "地址或模型名不存在", 429: "限流或额度不足"}
+            raise ExtractionError(f"AI 接口失败：HTTP {exc.status}（{hints.get(exc.status, '请检查接口配置')}）。已停止本次请求。", code='http') from None
         errors = {"timeout":"AI 提取超时，未自动重试。", "network":"AI 服务无法连接，请检查网络和证书。",
                   "oversized":"AI 响应超过 2MB，已拒绝。", "incomplete":"AI 输出未完整结束，本次结果未采用。"}
         raise ExtractionError(errors.get(exc.kind, "AI 返回的 JSON 不符合提取契约，本次结果未采用。"), code=exc.kind) from None
