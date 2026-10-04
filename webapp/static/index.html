@@ -186,6 +186,10 @@
   .auth-card .field { min-width:0; margin:0 0 16px; }
   .auth-card .field label { font-size:14px; line-height:1.5; margin-bottom:6px; }
   .auth-card .field input { min-width:0; min-height:46px; border-radius:8px; padding:11px 13px; font-size:16px; line-height:1.4; }
+  .auth-remember { margin:0 0 16px; }
+  .auth-remember label { display:flex; align-items:center; gap:8px; font-size:14px; line-height:1.5; cursor:pointer; }
+  .auth-remember input { width:18px; height:18px; margin:0; flex:0 0 auto; accent-color:var(--navy); }
+  .auth-remember p { margin:4px 0 0 26px; font-size:12px; color:var(--ink-2); }
   .auth-password-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
   .auth-card .auth-password-row .field { margin-bottom:0; }
   .auth-card .auth-help { font-size:12px; line-height:1.6; margin:6px 0 16px; color:var(--ink-2); }
@@ -374,10 +378,12 @@
     <form class="auth-card" id="authForm" data-view="login" novalidate>
       <div class="auth-brand"><img src="/logo" alt="税海拾珠"><div class="auth-brand-txt"><h2 id="authTitle">登录税海拾珠</h2><p class="auth-step" id="authStep"></p></div></div>
       <div id="viewLogin">
-        <div class="field"><label for="loginUser">用户名</label><input id="loginUser" name="username" autocomplete="username" required></div>
+        <div class="field"><label for="loginUser" id="loginUserLabel">邮箱或用户名</label><input id="loginUser" name="username" autocomplete="username" inputmode="email" placeholder="name@example.com" required></div>
         <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
-        <label class="auth-remember"><input id="rememberLogin" type="checkbox" aria-describedby="rememberHint">记住账号</label>
-        <p class="auth-remember-hint" id="rememberHint" role="status">下次登录自动填写账号</p>
+      </div>
+      <div class="auth-remember" id="loginRememberField">
+        <label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">在此设备保持登录 30 天</label>
+        <p id="loginRememberHint">公共电脑请勿勾选</p>
       </div>
       <div id="viewForgot" style="display:none">
         <div class="field"><label for="resetEmail">账号绑定的邮箱</label><input id="resetEmail" type="email" autocomplete="email" placeholder="name@example.com" required></div>
@@ -421,9 +427,9 @@
       <button class="btn" type="submit" id="authSubmit">登录</button>
       <button type="button" class="auth-link" id="forgotLink">忘记密码？</button>
       <button type="button" class="auth-link" id="emailLoginEntryLink">使用邮箱验证码 / 邮件链接登录</button>
-      <button type="button" class="auth-link" id="passwordLoginEntryLink">使用用户名和密码登录</button>
+      <button type="button" class="auth-link" id="passwordLoginEntryLink">使用邮箱和密码登录</button>
       <button type="button" class="auth-link" id="signupEntryLink">有邀请码？前往开户</button>
-      <button type="button" class="auth-link" id="backToLogin" style="display:none">← 返回邮箱登录</button>
+      <button type="button" class="auth-link" id="backToLogin" style="display:none">← 返回密码登录</button>
     </form>
   </div>
 </section>
@@ -792,7 +798,7 @@
 
     <section class="panel" id="adminPanel">
       <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
-      <div class="sheet" id="inviteAdmin" style="display:none"><h2>签发机构创始码</h2><p class="muted">为企业和高校的管理员签发一次性注册码：码只与机构名称捆绑，一码一位、私聊交付，不绑定邮箱；注册时仍须通过邮箱验证码核验。明文只在签发时显示一次，系统中仅存哈希。</p><div class="row"><div class="field"><label for="inviteOrgName">企业 / 高校名称</label><input id="inviteOrgName" maxlength="120" placeholder="例如：东莞市某某税务师事务所"></div><button class="btn pdf" id="btnCreateInvite" type="button">签发邀请码</button></div><div class="data-item" id="inviteReveal" hidden><div><div id="inviteRevealCode" class="invite-code"></div><p class="muted">仅显示这一次，关闭后无法找回，请立即复制并私聊交付给机构负责人。</p></div><div class="row"><button id="btnCopyInvite" type="button">复制</button><button id="btnHideInvite" type="button">我已保存</button></div></div><h3>邀请码台账</h3><div class="data-list" id="inviteList"></div></div>
+      <div class="sheet" id="inviteAdmin" style="display:none"><h2>签发机构创始码</h2><p class="muted">为企业和高校的管理员签发一次性注册码：码只与机构名称捆绑，一码一位、私聊交付，不绑定邮箱；注册时仍须通过邮箱验证码核验。明文只在签发时显示一次，系统中仅存哈希。</p><div class="row"><div class="field"><label for="inviteOrgName">企业 / 高校名称</label><input id="inviteOrgName" maxlength="120" placeholder="例如：东莞市某某税务师事务所"></div><div class="field"><label for="inviteSeats">机构总席位（含管理员）</label><select id="inviteSeats"><option value="5" selected>小型 · 5 席</option><option value="20">中型 · 20 席</option><option value="50">大型 · 50 席</option></select></div><button class="btn pdf" id="btnCreateInvite" type="button">签发邀请码</button></div><div class="data-item" id="inviteReveal" hidden><div><div id="inviteRevealCode" class="invite-code"></div><p class="muted" id="inviteRevealSeats"></p><p class="muted">仅显示这一次，关闭后无法找回，请立即复制并私聊交付给机构负责人。</p></div><div class="row"><button id="btnCopyInvite" type="button">复制</button><button id="btnHideInvite" type="button">我已保存</button></div></div><h3>邀请码台账</h3><div class="data-list" id="inviteList"></div></div>
       <div class="sheet" id="userAdmin"><h2>账号与成员管理</h2><p class="muted" id="userAdminHint">机构管理员可创建本机构会计；平台只能签发创始码，不手动开户。席位按当前在岗成员计算（含机构管理员，不含平台管理员）；停用释放席位并撤销会话，恢复后须重新登录，不删除历史业务。</p>
         <div class="row"><div class="field"><label for="memberOrg">管理机构</label><select id="memberOrg"></select></div><button class="btn" id="btnRefreshMembers">刷新成员</button></div>
         <p class="muted" id="memberQuotaStatus" role="status">尚未加载成员信息。</p>
@@ -823,7 +829,7 @@
 
 <script src="/classroom.js?v=platform-access-1"></script>
 <script src="/enterprise.js?v=enterprise-review-1"></script>
-<script src="/console.js?v=enterprise-review-1"></script>
+<script src="/console.js?v=platform-materials-1"></script>
 <script src="/workspace.js?v=platform-access-1"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>

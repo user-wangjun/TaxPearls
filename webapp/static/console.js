@@ -629,7 +629,7 @@ async function bootstrap() {
   if (pendingEmailToken && !setup) return showAuthView("emailMagic");
   if (s.user) return enterApp(s.user);
   if (inviteCode && !setup) return showAuthView("signup");
-  showAuthView(setup ? "login" : "emailLogin");
+  showAuthView("login");
 }
 
 const authViews = ["viewLogin", "viewForgot", "viewReset", "viewSignup", "viewEmailLogin", "viewEmailMagic"];
@@ -650,6 +650,11 @@ function showAuthView(view) {
   const form = $("authForm");
   const setup = form.dataset.setup === "1";
   const [title, submitText, step] = authViewLabels[view] || authViewLabels.login;
+  $("loginUserLabel").textContent = setup ? "用户名" : "邮箱或用户名";
+  $("loginUser").placeholder = setup ? "设置管理员用户名" : "name@example.com";
+  $("loginUser").inputMode = setup ? "text" : "email";
+  $("loginRememberField").hidden = setup || view !== "login";
+  $("loginRemember").disabled = setup || view !== "login";
   (view==="emailLogin"?$("emailLoginVerification"):$("viewSignup")).append($("emailVerificationFields"));
   authViews.forEach((id) => {
     const on = id === authViewMap[view];
@@ -686,7 +691,7 @@ $("forgotLink").addEventListener("click", () => showAuthView("forgot"));
 $("signupEntryLink").addEventListener("click", () => {emailRegistrationProof=null;showAuthView("signup");});
 $("emailLoginEntryLink").addEventListener("click",()=>showAuthView("emailLogin"));
 $("passwordLoginEntryLink").addEventListener("click",()=>showAuthView("login"));
-$("backToLogin").addEventListener("click", () => {emailRegistrationProof=null;authResetProof="";pendingEmailToken="";showAuthView("emailLogin");});
+$("backToLogin").addEventListener("click", () => {emailRegistrationProof=null;authResetProof="";pendingEmailToken="";showAuthView("login");});
 
 let captchaBusy = false;
 async function loadCaptcha() {
@@ -791,7 +796,7 @@ $("authForm").addEventListener("submit", async (e) => {
       if(version!==authViewVersion)return;
       history.replaceState(null, "", location.pathname);
       authResetProof="";$("newPass").value="";$("newPass2").value="";
-      showAuthView("emailLogin");
+      showAuthView("login");
       showToast("密码已重置，请使用新密码登录。", "success");
       return;
     }
@@ -806,7 +811,7 @@ $("authForm").addEventListener("submit", async (e) => {
       return;
     }
     const setup = form.dataset.setup === "1";
-    const body = {username: $("loginUser").value, password: $("loginPass").value};
+    const body = {username: $("loginUser").value.trim(), password: $("loginPass").value, remember: !setup && $("loginRemember").checked};
     if (setup) body.display_name = body.username;
     await api(setup ? "/api/setup" : "/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
     if (setup) { form.dataset.setup = "0"; await api("/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({username:body.username,password:body.password})}); }
@@ -818,6 +823,7 @@ $("authForm").addEventListener("submit", async (e) => {
 });
 
 function enterApp(user) {
+  $("loginRemember").checked = false;
   authViewVersion++;pendingEmailToken="";emailRegistrationProof=null;authResetProof="";
   for(const id of ["signupPass","signupPass2","newPass","newPass2","signupEmailCode","loginPass"])$(id).value="";
   trainingLoadRequest++; exerciseOpenRequest++; sandboxFeedbackRequest++; openAssignmentId=null;
@@ -1642,7 +1648,7 @@ async function loadAdmin() {
       for(const inv of invites){
         const state=inv.revoked?"已吊销":inv.redeemed_by?"已注册":(new Date(inv.expires_at).getTime()<nowMs?"已过期":"未使用");
         const item=el("div","data-item"),text=el("div");
-        const detail=["签发："+(inv.created_at||"—"),"有效期至："+inv.expires_at];
+        const detail=["机构总席位："+inv.seats,"签发："+(inv.created_at||"—"),"有效期至："+inv.expires_at];
         if(inv.redeemed_email)detail.push("注册人："+inv.redeemed_email+(inv.redeemed_at?" · 注册时间："+inv.redeemed_at:""));
         text.append(el("div",null,inv.org_name),el("p","muted",detail.join(" · ")));
         item.append(text,el("span","role-chip",state));ib.append(item);
@@ -1665,7 +1671,7 @@ async function loadAdmin() {
 }
 
 $("btnCreateUser").addEventListener("click",async()=>{const uid=currentUser?.id;$("btnCreateUser").disabled=true;try{await api("/api/users",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:$("newUsername").value,password:$("newPassword").value,display_name:$("newDisplayName").value,role:$("newRole").value})});if(currentUser?.id===uid){$("newPassword").value="";await loadAdmin();}}catch(err){if(currentUser?.id===uid)showError(err.message);}finally{$("btnCreateUser").disabled=false;}});
-$("btnCreateInvite").addEventListener("click",async()=>{try{const org=$("inviteOrgName").value.trim();if(!org)throw new Error("请填写企业/高校名称。");const inv=await api("/api/invites",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({org_name:org})});$("inviteOrgName").value="";$("inviteRevealCode").textContent=inv.code;$("inviteReveal").hidden=false;await loadAdmin();}catch(err){showError(err.message);}});
+$("btnCreateInvite").addEventListener("click",async()=>{try{const org=$("inviteOrgName").value.trim(),seats=Number($("inviteSeats").value);if(!org)throw new Error("请填写企业/高校名称。");const inv=await api("/api/invites",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({org_name:org,seats})});$("inviteOrgName").value="";$("inviteSeats").value="5";$("inviteRevealCode").textContent=inv.code;$("inviteRevealSeats").textContent="机构总席位："+inv.seats+" 席（含管理员）";$("inviteReveal").hidden=false;await loadAdmin();}catch(err){showError(err.message);}});
 $("btnCopyInvite").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("inviteRevealCode").textContent);showToast("邀请码已复制");}catch(err){showError("复制失败，请手动选中复制。");}});
 $("btnHideInvite").addEventListener("click",()=>{$("inviteReveal").hidden=true;$("inviteRevealCode").textContent="";});
 $("btnCreateClient").addEventListener("click",async()=>{try{const client=await api("/api/clients",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:$("clientName").value,taxpayer_id:$("clientTaxpayerId").value,accountant_id:$("clientAccountant").value||null})});selectedClientId=client.id;$("clientName").value="";$("clientTaxpayerId").value="";await loadAdmin();}catch(err){showError(err.message);}});

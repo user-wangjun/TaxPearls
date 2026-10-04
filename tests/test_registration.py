@@ -230,7 +230,7 @@ class RegistrationTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200, result.text)
         invite = result.json()
         self.assertEqual(invite["bound_email"], "")  # 不绑邮箱
-        self.assertEqual(invite["seats"], 1)  # 默认 1 席
+        self.assertEqual(invite["seats"], 5)  # 默认小型 5 席
 
         client = self._client()
         self._start(client, "dean@example.edu")
@@ -239,6 +239,14 @@ class RegistrationTests(unittest.TestCase):
             "invite_code": invite["code"], "password": "founder-pass-2026"})
         self.assertEqual(done.status_code, 200, done.text)
         self.assertEqual(done.json()["user"]["role"], "org_admin")
+        with app_module.store.connect() as db:
+            quota = db.execute("SELECT seats FROM org_quota WHERE org_id=?",
+                               (done.json()["org_id"],)).fetchone()
+        self.assertEqual(quota["seats"], 5)
+        overview = client.get("/api/members/" + done.json()["org_id"])
+        self.assertEqual(overview.status_code, 200, overview.text)
+        self.assertEqual(overview.json()["quota"]["used"], 1)
+        self.assertEqual(overview.json()["quota"]["remaining"], 4)
 
         # 一码一位：第二个邮箱再来 → 已被使用
         self._start(self._client(), "late@example.edu")
@@ -252,6 +260,7 @@ class RegistrationTests(unittest.TestCase):
         ledger = admin.get("/api/invites")
         self.assertEqual(ledger.status_code, 200)
         row = next(r for r in ledger.json() if r["org_name"] == "示例培训机构")
+        self.assertEqual(row["seats"], 5)
         self.assertEqual(row["redeemed_email"], "dean@example.edu")
         self.assertTrue(row["redeemed_by"])
         self.assertTrue(row["redeemed_at"])
