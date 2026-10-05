@@ -23,7 +23,7 @@ from src.input_errors import InputError
 from src.models import Rule
 from src.settings import AISettings
 from src.snapshots import deserialize_dataset
-from webapp import enterprise_analysis, material_batches as batches, material_operations
+from webapp import enterprise_analysis, enterprise_scope, material_batches as batches, material_operations
 from webapp.access import AccessDenied
 from webapp import material_jobs
 from webapp.uploads import bounded_stream, multipart
@@ -36,7 +36,7 @@ def _latest(view):
     return records[-1]
 
 
-def _analysis_payload(documents, company, selections, base_rules, rules_for_dataset):
+def _analysis_payload(documents, company, selections, base_rules, rules_for_dataset, scope_context=None):
     selections = deepcopy(selections)
     for document in documents:
         selection = selections.get(document['id'], {})
@@ -45,6 +45,7 @@ def _analysis_payload(documents, company, selections, base_rules, rules_for_data
         if 'standard_edits' in selection:
             selection['standard_edits'] = material_review.normalize(document, selection['standard_edits'])
     analysis = enterprise_analysis.analyze(documents, company, selections, base_rules)
+    company = analysis['company']
     selected = base_rules
     if analysis['dataset'] is not None:
         try:
@@ -68,10 +69,10 @@ def _analysis_payload(documents, company, selections, base_rules, rules_for_data
                 if problems:
                     analysis['feedback']['limited'].append({'code': 'check_unavailable', 'message': '；'.join(problems),
                         'file_id': None, 'impact': rule.id + ' ' + rule.name, 'required': '；'.join(rule.inputs.values())})
-    return {'documents': documents, 'company': company, 'selections': selections, 'analysis': analysis,
+    return enterprise_scope.decorate({'documents': documents, 'company': company, 'selections': selections, 'analysis': analysis,
             'rules': [asdict(r) for r in selected], 'graph_rule': asdict(related_graph.definition()),
             'parser_version': 'enterprise-materials-v2',
-            'fields': {key: detail for rule in base_rules for key, detail in rule.inputs.items()}}
+            'fields': {key: detail for rule in base_rules for key, detail in rule.inputs.items()}}, scope_context)
 
 
 def _field_changes(previous, current):
@@ -115,7 +116,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         allow(user, 'org_admin', 'accountant')
         return user
 
-    def project(view):
+    def project(view, user):
         settings = AISettings.from_env()
         ai = {**settings.public_status(), 'max_pages': settings.max_pages,
               'queue_enabled': material_jobs.QueueSettings.from_env().enabled}
@@ -125,7 +126,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
             return {'id':view['id'], 'revision':view['revision'], 'analysis_revision':None,
                 'files':view['files'], 'jobs':jobs, 'ai':ai, 'documents':[], 'company':{}, 'selections':{},
                 'analysis':{'can_confirm':False,'feedback':{'blocking':[],'limited':[],'suggested':[]},'checks':[]},
-                'metrics':[], 'fields':{}, 'executions':view['executions']}
+                'metrics':[], 'fields':{}, 'executions':view['executions'], 'client_id':view['client_id']}
         latest = records[-1]
         # Keep the raw grids server-side; only authorized, addressable numeric
         # cells needed for review are projected. Originals remain immutable.
@@ -152,6 +153,11 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                         scope = {}
                 doc['ai_period'] = {key: scope.get(key, '') for key in ('period_start', 'period_end')}
         analysis = deepcopy(latest['payload']['analysis'])
+        matched = None
+        if not view['client_id']:
+            tax = enterprise_scope.identity(latest['payload']['company'].get('taxpayer_id'))
+            matched = next(({'client_id': c['id'], 'name': c['name'], 'taxpayer_id': c['taxpayer_id']}
+                            for c in get_store().list_clients(user) if tax and enterprise_scope.identity(c['taxpayer_id']) == tax), None)
         # Older frozen analyses may contain readiness computed before the gate.
         blockers = enterprise_analysis.extraction_blockers(latest['payload']['documents'], latest['payload']['selections'], latest['payload']['company'])
         if blockers:
@@ -164,6 +170,8 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         return {'id': view['id'], 'revision': view['revision'], 'analysis_revision': latest['revision'],
                 'files': view['files'], 'jobs': jobs, 'ai': ai, 'documents': documents,
                 'company': latest['payload']['company'], 'selections': latest['payload']['selections'],
+                'client_id': view['client_id'], 'scope_context': latest['payload'].get('scope_context'),
+                'existing_match': matched,
                 'analysis': {k: v for k, v in analysis.items() if k != 'dataset'},
                 'metrics': list(dataset.get('metrics', {}).values()),
                 'fields': latest['payload'].get('fields', {}), 'executions': view['executions']}
@@ -198,13 +206,14 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
             doc['original_upload_name'] = source
         return documents, base_rules
 
-    def upload_work(user, uploads, mode, client_id):
+    def upload_work(user, uploads, mode, client_id, scope_context):
         batches.authorize_client(get_store(), user, client_id)
         documents, base_rules = parse_uploads(uploads, mode)
-        company = enterprise_analysis.prefill(documents)
-        payload = _analysis_payload(documents, company, {}, base_rules, rules_for_dataset)
+        company, origins = enterprise_scope.prefill(enterprise_analysis.prefill(documents), scope_context)
+        payload = _analysis_payload(documents, company, {}, base_rules, rules_for_dataset, scope_context)
+        payload['scope_context']['prefill_origins'] = origins
         item = batches.create(get_store(), user, uploads, client_id, initial_payload=payload)
-        return project(batches.read(get_store(), user, item['id']))
+        return project(batches.read(get_store(), user, item['id']), user)
 
     def process_job(job, snapshot, previous, documents, uploads):
         configured = AISettings.from_env()
@@ -254,7 +263,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
             selections = deepcopy(previous['selections'])
             selected = selections.setdefault(document_id, {})
             selected['rows'], selected['evidence_reviews'] = deepcopy(candidate['rows']), []
-            payload = _analysis_payload(updated, deepcopy(previous['company']), selections, base_rules, rules_for_dataset)
+            payload = _analysis_payload(updated, deepcopy(previous['company']), selections, base_rules, rules_for_dataset, previous.get('scope_context'))
             payload['changes'] = [{'file_id': document_id, 'field': 'rows',
                 'old': deepcopy(previous['selections'].get(document_id, {}).get('rows', original_document['rows'])),
                 'new': deepcopy(candidate['rows']), 'origin': 'ai', 'source': candidate['name']}]
@@ -268,7 +277,11 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         combined = documents + new_documents
         if len(combined)>20:
             raise InputError('单批次累计最多 20 份解析材料。')
+        scope_context = previous.get('scope_context') if previous else snapshot.get('scope_context')
         company = deepcopy(previous['company']) if previous else enterprise_analysis.prefill(combined)
+        if not previous and scope_context:
+            company, origins = enterprise_scope.prefill(company, scope_context)
+            scope_context = {**scope_context, 'prefill_origins': origins}
         selections = deepcopy(previous['selections']) if previous else {}
         differences = []
         candidate = enterprise_analysis.prefill(new_documents)
@@ -277,7 +290,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                 differences.append({'field':field,'retained':company[field],'new_candidate':value})
             elif value and not company.get(field):
                 company[field] = value
-        payload = _analysis_payload(combined,company,selections,base_rules,rules_for_dataset)
+        payload = _analysis_payload(combined,company,selections,base_rules,rules_for_dataset,scope_context)
         payload['supplement_differences'] = differences
         payload['analysis']['supplement_differences'] = differences
         return payload
@@ -311,19 +324,26 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
     async def upload(request: Request, session: str | None = Cookie(default=None, alias='taxpearls_session')):
         user = actor(session)
         try:
-            async with multipart(request, total_limit=materials.MAX_TOTAL + 1024 * 1024, max_files=20, max_fields=2, material_scope=user['org_id']) as form:
+            async with multipart(request, total_limit=materials.MAX_TOTAL + 1024 * 1024, max_files=20, max_fields=4, material_scope=user['org_id']) as form:
                 uploads = [(v.filename or '未命名', await v.read()) for _, v in form.multi_items() if isinstance(v, UploadFile)]
                 mode, client_id = form.get('extraction', 'local'), form.get('client_id') or None
+                company_mode = form.get('company_mode', 'existing' if client_id else 'new')
+                raw_company = form.get('company', '{}')
+                try:
+                    company = json.loads(raw_company) if isinstance(raw_company, str) and len(raw_company) <= 4096 else None
+                except ValueError:
+                    raise InputError('企业信息JSON格式无效。') from None
                 await form.close()
                 if mode not in {'local', 'auto', 'ai'} or client_id is not None and not isinstance(client_id, str):
                     raise InputError('提取方式或客户档案格式无效。')
+                scope_context = enterprise_scope.context(get_store(), user, company_mode, client_id, company)
                 if material_jobs.QueueSettings.from_env().enabled:
-                    queued = await run_in_threadpool(material_jobs.submit,get_store(),user,uploads,mode,engine.load_rules(rules_dir),client_id=client_id)
-                    return JSONResponse(project(batches.read(get_store(),user,queued['id'])),status_code=202)
+                    queued = await run_in_threadpool(material_jobs.submit,get_store(),user,uploads,mode,engine.load_rules(rules_dir),client_id=client_id,scope_context=scope_context)
+                    return JSONResponse(project(batches.read(get_store(),user,queued['id']),user),status_code=202)
                 if not slots.acquire(blocking=False):
                     raise HTTPException(429, '材料分析任务较多，请稍后重试。')
                 try:
-                    return await run_in_threadpool(upload_work, user, uploads, mode, client_id)
+                    return await run_in_threadpool(upload_work, user, uploads, mode, client_id, scope_context)
                 finally:
                     slots.release()
         except (InputError, batches.MaterialStorageError, MultiPartException) as exc:
@@ -332,6 +352,10 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
     @app.get('/api/enterprise/materials')
     def list_batches(session: str | None = Cookie(default=None, alias='taxpearls_session')):
         return batches.listing(get_store(), actor(session))
+
+    @app.get('/api/enterprise/client-profile/{client_id}')
+    def client_profile(client_id: str, session: str | None = Cookie(default=None, alias='taxpearls_session')):
+        return enterprise_scope.profile(get_store(), actor(session), client_id)
 
     @app.post('/api/enterprise/materials/{batch_id}/retry')
     async def retry_material_job(batch_id: str, request: Request, session: str | None = Cookie(default=None, alias='taxpearls_session')):
@@ -343,7 +367,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
             await run_in_threadpool(material_jobs.retry,get_store(),user,batch_id,value['job_id'],value['expected_revision'],consent=value.get('consent',False))
         except InputError as exc:
             raise HTTPException(422,str(exc)) from None
-        return JSONResponse(project(batches.read(get_store(),user,batch_id)),status_code=202)
+        return JSONResponse(project(batches.read(get_store(),user,batch_id),user),status_code=202)
 
     @app.post('/api/enterprise/materials/{batch_id}/extract')
     async def extract_pdf(batch_id: str, request: Request, session: str | None = Cookie(default=None, alias='taxpearls_session')):
@@ -352,7 +376,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         try:
             await run_in_threadpool(material_jobs.submit_pdf, get_store(), user, batch_id,
                 value['expected_revision'], value, engine.load_rules(rules_dir))
-            return JSONResponse(project(batches.read(get_store(), user, batch_id)), status_code=202)
+            return JSONResponse(project(batches.read(get_store(), user, batch_id), user), status_code=202)
         except (InputError, batches.MaterialStorageError) as exc:
             raise HTTPException(422, str(exc)) from None
 
@@ -360,7 +384,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
     def details(batch_id: str, session: str | None = Cookie(default=None, alias='taxpearls_session')):
         user = actor(session)
         try:
-            return project(batches.read(get_store(), user, batch_id))
+            return project(batches.read(get_store(), user, batch_id), user)
         except batches.MaterialStorageError as exc:
             raise HTTPException(409, str(exc)) from None
 
@@ -456,7 +480,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
             raise AccessDenied('补传材料分析失败，请先重试或继续补传，不能将旧分析保存为新版本。',409)
         previous = upgrade_standard_sources(user, view, _latest(view)['payload'])
         company = {**previous['company'], **value.get('company', {})}
-        if set(company) - {'name', 'taxpayer_id', 'industry', 'period_start', 'period_end'}:
+        if set(company) - set(enterprise_scope.FIELDS):
             raise InputError('企业信息含未知字段。')
         if any(not isinstance(v, str) for v in company.values()):
             raise InputError('企业信息须为文本。')
@@ -549,10 +573,15 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                 if selections.get(doc['id'], {}).get('purpose') != 'excluded':
                     raise AccessDenied('原件已删除，请明确排除关联材料后重新分析。', 409)
         payload = _analysis_payload(previous['documents'], company, selections,
-                                    engine.load_rules(rules_dir), rules_for_dataset)
+                                    engine.load_rules(rules_dir), rules_for_dataset, previous.get('scope_context'))
+        if payload.get('scope_context'):
+            origins = payload['scope_context'].setdefault('prefill_origins', {})
+            for key in value.get('company', {}):
+                if payload['company'].get(key) != original_previous['company'].get(key):
+                    origins[key] = 'user'
         payload['changes'] = _field_changes(original_previous, payload)
         revision = batches.append_revision(get_store(), user, batch_id, view['revision'], 'edit', payload)
-        result = project(batches.read(get_store(), user, batch_id))
+        result = project(batches.read(get_store(), user, batch_id), user)
         if result['revision'] != revision:
             raise AccessDenied('材料随后发生变化，请重新读取。', 409)
         return result
@@ -581,11 +610,11 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                 differences.append({'field': field, 'retained': company[field], 'new_candidate': value})
             elif value and not company.get(field):
                 company[field] = value
-        payload = _analysis_payload(combined, company, selections, base_rules, rules_for_dataset)
+        payload = _analysis_payload(combined, company, selections, base_rules, rules_for_dataset, previous.get('scope_context'))
         payload['supplement_differences'] = differences
         payload['analysis']['supplement_differences'] = differences
         batches.supplement(get_store(), user, batch_id, revision, uploads, payload)
-        return project(batches.read(get_store(), user, batch_id))
+        return project(batches.read(get_store(), user, batch_id), user)
 
     @app.post('/api/enterprise/materials/{batch_id}/supplement')
     async def supplement_materials(batch_id: str, request: Request,
@@ -603,7 +632,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                     raise InputError('补传版本号或提取方式无效。')
                 if material_jobs.QueueSettings.from_env().enabled:
                     queued = await run_in_threadpool(material_jobs.submit,get_store(),user,uploads,mode,engine.load_rules(rules_dir),batch_id=batch_id,revision=int(raw_revision))
-                    return JSONResponse(project(batches.read(get_store(),user,queued['id'])),status_code=202)
+                    return JSONResponse(project(batches.read(get_store(),user,queued['id']),user),status_code=202)
                 if not slots.acquire(blocking=False):
                     raise HTTPException(429, '材料分析任务较多，请稍后重试。')
                 try:

@@ -494,6 +494,11 @@ def record_execution(db, actor, audit_id, client_id, dataset, findings, context)
         raise AccessDenied('执行规则与确认的检查范围不一致。', 409)
     if batch['client_id'] and batch['client_id'] != client_id:
         raise AccessDenied('材料客户归属不匹配。', 409)
+    if client_id:
+        from webapp.enterprise_scope import identity
+        client = db.execute('SELECT id,taxpayer_id FROM clients WHERE id=? AND org_id=?', (client_id, actor['org_id'])).fetchone()
+        if not client or identity(client['taxpayer_id']) != identity(dataset.company.taxpayer_id):
+            raise AccessDenied('企业档案身份已变化，请重新核对材料归属。', 409)
     revision = _append(db, batch, actor, 'confirmation', {'analysis_revision': expected,
                       'analysis_sha256': context['sha256'], 'audit_id': audit_id,
                       'scope': analysis['company'], 'files': analysis['files'],

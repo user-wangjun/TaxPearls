@@ -936,8 +936,27 @@ class Store:
                 if not client or user['role'] == 'accountant' and client['accountant_id'] != user['id']:
                     raise AccessDenied('客户不存在或权限已变化。')
             elif create_client and user['role'] in {'org_admin', 'accountant'}:
-                client_id = self._upsert_client(db, user, dataset.company.name, dataset.company.taxpayer_id,
-                                               user['id'] if user['role'] == 'accountant' else None)['id']
+                lookup = self._field_codec.taxpayer_lookup(user['org_id'], dataset.company.taxpayer_id)
+                existing = db.execute('SELECT id,accountant_id FROM clients WHERE org_id=? AND taxpayer_lookup=?',
+                                      (user['org_id'], lookup)).fetchone()
+                if not existing:
+                    # Legacy archives may retain lowercase/whitespace in their original tax ID.
+                    # Compare canonical identities without rewriting those archives or indexes.
+                    from webapp.enterprise_scope import identity
+                    matches = [row for row in db.execute('SELECT id,taxpayer_id,accountant_id FROM clients WHERE org_id=?',
+                                                          (user['org_id'],))
+                               if identity(row['taxpayer_id']) == identity(dataset.company.taxpayer_id)]
+                    if len(matches) > 1:
+                        raise AccessDenied('税号对应多个旧企业档案，请明确选择已有企业后核对。', 409)
+                    existing = matches[0] if matches else None
+                if existing:
+                    if user['role'] == 'accountant' and existing['accountant_id'] != user['id']:
+                        raise AccessDenied('会计只能审计自己负责的客户。', 403)
+                    # A confirmed upload reuses identity, never silently edits the archive name/assignment.
+                    client_id = existing['id']
+                else:
+                    client_id = self._upsert_client(db, user, dataset.company.name, dataset.company.taxpayer_id,
+                                                   user['id'] if user['role'] == 'accountant' else None)['id']
             elif user['role'] == 'accountant':
                 raise AccessDenied('会计审计必须关联负责的客户。')
             db.execute(

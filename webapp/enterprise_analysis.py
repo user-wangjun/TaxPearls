@@ -10,6 +10,7 @@ import re
 from src import config, engine, materials, periods, related_graph, material_review, material_security, financial_import
 from src.input_errors import InputError
 from src.snapshots import serialize_dataset
+from webapp.enterprise_scope import FIELDS
 
 
 def _text(value):
@@ -39,10 +40,11 @@ def extraction_blockers(documents, selections, company=None):
 def prefill(documents):
     """Only unambiguous material facts are prefilled, never filenames/dates."""
     result = {}
-    for key in ('name', 'taxpayer_id', 'industry'):
+    for key in ('name', 'taxpayer_id', 'industry', 'region', 'taxpayer_type', 'business_scope'):
         values = {_text(d.get('company', {}).get(key)) for d in documents if not d.get('error')}
         values.discard('')
-        result[key] = next(iter(values)) if len(values) == 1 else ''
+        if key in {'name', 'taxpayer_id', 'industry'} or len(values) == 1:
+            result[key] = next(iter(values)) if len(values) == 1 else ''
     intervals = set()
     for doc in documents:
         value = doc.get('company', {}).get('period')
@@ -80,7 +82,9 @@ def analyze(documents, company, selections, rules):
         result['feedback'][level].append({'code': code, 'message': message, 'file_id': file_id,
                                           'impact': impact, 'required': required})
 
-    target = {key: _text(company.get(key)) for key in ('name', 'taxpayer_id', 'industry', 'period_start', 'period_end')}
+    target = {key: _text(company.get(key)) for key in FIELDS}
+    target = {key: value for key, value in target.items()
+              if key not in {'region', 'taxpayer_type', 'business_scope'} or value}
     if any(len(value) > 200 for value in target.values()):
         raise InputError('企业或期间信息过长。')
     target['taxpayer_id'] = _identity(target['taxpayer_id'])
@@ -171,6 +175,11 @@ def analyze(documents, company, selections, rules):
                 continue
             note('suggested', 'name_difference', '材料企业名称与用户指定名称不同。', file_id,
                  '用户指定名称不等于材料已经证实名称。', '核对更名、简称或材料归属。')
+        if purpose == 'current':
+            for field, label in [('industry', '行业'), ('region', '地区'), ('taxpayer_type', '纳税人身份'), ('business_scope', '业务构成')]:
+                if original_scope.get(field) and target.get(field) and _text(original_scope[field]) != target[field]:
+                    note('suggested', 'scope_info_difference', f'材料{label}与本次填写值不同；两者分别保留。', file_id,
+                         '不能将手填或历史预填值当作当前原文事实或政策资格。', '核对实际业务及所属期，修正本次信息；必要时补充材料。')
         doc_period = None
         if original_scope.get('period'):
             try:

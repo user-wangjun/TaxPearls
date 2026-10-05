@@ -86,7 +86,7 @@ def event(db, job, action, detail=None):
                    job_id=job['id'], revision=job['input_revision'], system=True)
 
 
-def submit(store, user, uploads, mode, rules, *, client_id=None, batch_id=None, revision=None):
+def submit(store, user, uploads, mode, rules, *, client_id=None, batch_id=None, revision=None, scope_context=None):
     """Persist originals, version, queue item and request commit in one transaction."""
     format_checks = batches.validate_uploads(uploads)
     names = [name for name, _ in uploads]
@@ -132,6 +132,8 @@ def submit(store, user, uploads, mode, rules, *, client_id=None, batch_id=None, 
         options.pop('backup_api_keys', None)
         payload = {'files': [f['id'] for f in files], 'mode': mode, 'settings': options,
                    'rules': [asdict(rule) for rule in rules]}
+        if scope_context is not None:
+            payload['scope_context'] = deepcopy(scope_context)
         operation = operations.ACTIVE.get()
         db.execute('''INSERT INTO material_jobs
             (id,org_id,batch_id,input_revision,actor_id,actor_role,operation_id,state,available_at,created_at,input_cipher)

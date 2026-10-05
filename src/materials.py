@@ -26,6 +26,7 @@ InputError = loader.InputError
 MAX_TOTAL = MAX_EXPANDED
 MAX_FILES = 20
 COMPANY_KEYS = ("name", "taxpayer_id", "industry", "period")
+SCOPE_FIELDS = {'地区': 'region', '纳税人身份': 'taxpayer_type', '业务构成': 'business_scope'}
 
 
 def _text(value):
@@ -155,6 +156,10 @@ def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False,
                    fulfillments=_serial([asdict(item) for item in fulfillments]),
                    contract_links=_serial([asdict(item) for item in contract_links]),
                    related_graph=_serial(asdict(graph)) if graph else None)
+        if config.SHEET_COMPANY in wb.sheetnames:
+            for row in wb[config.SHEET_COMPANY].iter_rows(min_row=2, values_only=True):
+                if len(row) >= 2 and _text(row[0]) in SCOPE_FIELDS and _text(row[1]):
+                    doc['company'][SCOPE_FIELDS[_text(row[0])]] = _text(row[1])
         if capture_standard:
             doc['standard_tables'] = tables
             material_review.annotate(doc, tables, {})
@@ -450,6 +455,7 @@ def _pdf(data, doc, keys, selected_range=None):
     doc.pop('pdf_statement_basis', None)
     doc.pop('pdf_statements', None)
     aliases = dict(zip(config.COMPANY_FIELDS, COMPANY_KEYS))
+    aliases.update(SCOPE_FIELDS)
     aliases.update({"纳税人名称": "name", "编制单位": "name", "统一社会信用代码": "taxpayer_id", "税号": "taxpayer_id"})
     seen = set()
     with pdfplumber.open(BytesIO(data)) as pdf:
@@ -501,7 +507,7 @@ def _pdf(data, doc, keys, selected_range=None):
                     match = re.fullmatch(r"\s*" + re.escape(label) + r"\s*[:：]\s*(.+?)\s*", line)
                     if match:
                         value = match[1]
-                        if doc["company"][key] and doc["company"][key] != value:
+                        if doc["company"].get(key) and doc["company"][key] != value:
                             raise InputError(f"PDF 中出现不一致的{label}，请拆分为同一企业、同一期间的材料。")
                         doc["company"][key] = value
             # Only extract an explicit single value, never choose between amount columns.

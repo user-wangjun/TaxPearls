@@ -37,7 +37,9 @@ def build_graph(rules, entry=None):
     findings = {f.rule.id: f for f in entry["findings"]} if entry else {}
     if entry:
         dataset = entry["dataset"]
-        company = add("company", dataset.company.name, period=dataset.company.period)
+        company = add("company", dataset.company.name, period=dataset.company.period,
+                      id="client:" + entry['org_id'] + ":" + entry['client_id'] if entry.get('client_id') else node_id('company', dataset.company.taxpayer_id),
+                      client_id=entry.get('client_id'), audit_id=entry['id'])
         # Historical graphs use the rule versions frozen into that audit.
         rules = [f.rule for f in entry["findings"]]
     for rule in rules:
