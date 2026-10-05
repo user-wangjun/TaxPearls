@@ -61,7 +61,8 @@ class EmailAuthApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200, path)
             self.assertTrue(response.headers['content-type'].startswith(media), path)
             self.assertGreater(len(response.content), 100, path)
-        for path in ['/vendor/not-public.mjs', '/vendor/requirements.txt', '/auth-ocean.js']:
+        for path in ['/vendor/not-public.mjs', '/vendor/requirements.txt', '/auth-ocean.js',
+                     '/auth-ocean-data-v1.webp', '/auth-pearl-real-v1.webp']:
             self.assertEqual(self.client.get(path).status_code, 404, path)
 
     def token(self):

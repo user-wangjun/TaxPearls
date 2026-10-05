@@ -509,16 +509,6 @@ def favicon() -> Response:
     return FileResponse(LOGO_SVG, media_type="image/svg+xml")
 
 
-@app.get("/auth-ocean-data-v1.webp")
-def auth_ocean_visual() -> FileResponse:
-    return FileResponse(STATIC_DIR / "auth-ocean-data-v1.webp", media_type="image/webp")
-
-
-@app.get("/auth-pearl-real-v1.webp")
-def auth_pearl_visual() -> FileResponse:
-    return FileResponse(STATIC_DIR / "auth-pearl-real-v1.webp", media_type="image/webp")
-
-
 @app.get("/auth-signup-ticket-v1.png")
 def auth_signup_ticket() -> FileResponse:
     return FileResponse(STATIC_DIR / "auth-signup-ticket-v1.png", media_type="image/png")
