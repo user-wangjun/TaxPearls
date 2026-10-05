@@ -46,6 +46,25 @@ class EmailAuthApiTests(unittest.TestCase):
         return (client or self.client).post('/api/auth/email/start',json={'email':email,'purpose':purpose,
             'invite_code':invite,'captcha_id':challenge['captcha_id'],'captcha_answer':'ab2d'})
 
+    def test_auth_glass_assets_are_public_and_explicitly_allowlisted(self):
+        page = self.client.get('/')
+        self.assertEqual(page.status_code, 200)
+        self.assertIn('id="sceneCanvas"', page.text)
+        self.assertIn('id="authForm"', page.text)
+        self.assertNotIn('id="authCanvas"', page.text)
+        for path, media in [('/auth-glass.css', 'text/css'),
+                            ('/auth-glass.js', 'text/javascript'),
+                            ('/auth-ocean.mjs', 'text/javascript'),
+                            ('/auth-wordmark.png', 'image/png'),
+                            ('/vendor/three.module.mjs', 'text/javascript')]:
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200, path)
+            self.assertTrue(response.headers['content-type'].startswith(media), path)
+            self.assertGreater(len(response.content), 100, path)
+        for path in ['/vendor/not-public.mjs', '/vendor/requirements.txt', '/auth-ocean.js',
+                     '/auth-ocean-data-v1.webp', '/auth-pearl-real-v1.webp']:
+            self.assertEqual(self.client.get(path).status_code, 404, path)
+
     def token(self):
         url=self.mail[-1].get('signup_url') or self.mail[-1]['reset_url']
         self.assertEqual(urlsplit(url).query,'')

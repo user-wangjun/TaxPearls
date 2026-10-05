@@ -509,19 +509,27 @@ def favicon() -> Response:
     return FileResponse(LOGO_SVG, media_type="image/svg+xml")
 
 
-@app.get("/auth-ocean-data-v1.webp")
-def auth_ocean_visual() -> FileResponse:
-    return FileResponse(STATIC_DIR / "auth-ocean-data-v1.webp", media_type="image/webp")
-
-
-@app.get("/auth-pearl-real-v1.webp")
-def auth_pearl_visual() -> FileResponse:
-    return FileResponse(STATIC_DIR / "auth-pearl-real-v1.webp", media_type="image/webp")
-
-
 @app.get("/auth-signup-ticket-v1.png")
 def auth_signup_ticket() -> FileResponse:
     return FileResponse(STATIC_DIR / "auth-signup-ticket-v1.png", media_type="image/png")
+
+
+# Explicit public asset allowlist; no arbitrary static path or directory access.
+@app.get("/auth-glass.css")
+@app.get("/auth-glass.js")
+@app.get("/auth-ocean.mjs")
+@app.get("/auth-wordmark.png")
+@app.get("/vendor/three.module.mjs")
+def auth_glass_asset(request: Request) -> FileResponse:
+    assets = {
+        "/auth-glass.css": ("auth-glass.css", "text/css"),
+        "/auth-glass.js": ("auth-glass.js", "text/javascript"),
+        "/auth-ocean.mjs": ("auth-ocean.mjs", "text/javascript"),
+        "/auth-wordmark.png": ("auth-wordmark.png", "image/png"),
+        "/vendor/three.module.mjs": ("vendor/three.module.mjs", "text/javascript"),
+    }
+    name, media_type = assets[request.url.path]
+    return FileResponse(STATIC_DIR / name, media_type=media_type)
 
 
 @app.get("/workspace.js")

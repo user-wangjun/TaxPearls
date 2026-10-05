@@ -138,35 +138,6 @@
 
   footer { border-top: 1px solid var(--line); padding: 22px 0 40px; color: var(--ink-3); font-size: 12px; line-height: 1.9; }
 
-  .auth-screen { min-height:100vh; display:grid; grid-template-columns:minmax(0,1.2fr) minmax(480px,1fr); padding:0; overflow:hidden; background:#f1f4f9; }
-  .auth-visual { position:relative; min-height:100vh; overflow:hidden; color:#fff; isolation:isolate; background:linear-gradient(180deg,#06162f0a,#03102366),url("/auth-ocean-data-v1.webp") center 43% / cover no-repeat,#06172f; }
-  .auth-visual::after { content:""; position:absolute; inset:0; z-index:1; pointer-events:none; background:linear-gradient(180deg,#0310260d 18%,#0310274d 54%,#020d20d9 100%),linear-gradient(90deg,#020d2052,transparent 48%,#020d2024); }
-  .auth-canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
-  .auth-pearl { position:absolute; z-index:2; left:55%; top:24%; width:108px; aspect-ratio:1; pointer-events:none; opacity:1; transform:translateY(0) scale(1); animation:auth-pearl-float 7s ease-in-out infinite; filter:drop-shadow(0 18px 30px #020912a6); }
-  .auth-pearl > img { position:relative; z-index:2; width:100%; height:100%; display:block; object-fit:contain; filter:saturate(.92) contrast(1.03); }
-  .auth-pearl::before,.auth-pearl::after { content:""; position:absolute; z-index:1; left:50%; top:66%; width:78%; height:22%; border:1px solid #eed59b80; border-radius:50%; opacity:0; transform:translate(-50%,-50%) scale(.4); animation:auth-pearl-ripple 7s ease-out infinite; }
-  .auth-pearl::after { animation-delay:.42s; }
-  .auth-pearl-caption { position:absolute; left:calc(100% + 12px); top:50%; width:max-content; padding:6px 10px; border:1px solid #f2dda73d; border-radius:999px; background:#071a35c7; color:#f2dfaf; font-size:11px; font-weight:600; letter-spacing:.08em; opacity:.88; transform:translateY(-50%); box-shadow:0 10px 24px #020b1866; animation:auth-pearl-caption 7s ease-in-out infinite; }
-  .auth-visual-mark { position:absolute; z-index:3; top:34px; left:42px; display:flex; align-items:center; gap:14px; color:#dbe9fb; font-size:13px; letter-spacing:.16em; }
-  .auth-visual-mark img { width:126px; height:auto; display:block; filter:drop-shadow(0 10px 24px #020b1899); }
-  .auth-visual-copy { position:absolute; z-index:3; left:52px; right:44px; bottom:50px; max-width:650px; animation:auth-copy-in .7s ease-out both; }
-  .auth-visual-kicker { display:inline-flex; padding:7px 11px; border:1px solid #ffffff2e; border-radius:999px; background:#ffffff12; color:#e7f1ff; font-size:11px; font-weight:700; letter-spacing:.14em; }
-  .auth-visual-copy h1 { margin-top:18px; max-width:620px; color:#fff; font-size:clamp(30px,3.5vw,48px); line-height:1.24; letter-spacing:.02em; text-shadow:0 8px 30px #0008; }
-  .auth-visual-copy p { margin-top:14px; max-width:590px; color:#d2def0; font-size:15px; line-height:1.8; text-shadow:0 4px 18px #0008; }
-  .auth-proof { display:flex; align-items:center; gap:10px; margin-top:22px; color:#bdcee4; font-size:12px; }
-  .auth-proof span { padding:6px 10px; border:1px solid #ffffff20; border-radius:999px; background:#ffffff0d; }
-  .auth-proof i { color:#d7aa51; font-style:normal; }
-  .auth-entry { min-height:100vh; display:grid; padding:0; background:radial-gradient(circle at 85% 10%,#fff 0%,transparent 28%),linear-gradient(160deg,#f8fafc 0%,#edf2f7 100%); }
-  .auth-card { position:relative; width:100%; min-width:0; min-height:100vh; overflow:hidden; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#fffffffa; border:0; border-left:1px solid #dbe2ec; border-radius:0; padding:32px clamp(32px,4vw,64px); box-shadow:-18px 0 60px #15233d16; animation:auth-card-in .55s cubic-bezier(.22,.8,.25,1) both; }
-  .auth-card > * { width:100%; max-width:440px; }
-  .auth-card::before { content:""; position:absolute; inset:0 0 auto; height:4px; background:linear-gradient(90deg,#8c6507,#e2b65d,#8c6507); }
-  .auth-screen img { user-select:none; -webkit-user-drag:none; }
-  .auth-brand { display:flex; align-items:center; gap:18px; margin:0 0 24px; }
-  .auth-brand img { width:72px; flex-shrink:0; }
-  .auth-brand-txt { min-width:0; }
-  .auth-brand h2 { font-size:26px; line-height:1.4; }
-  .auth-brand p { color:var(--ink-2); font-size:13px; line-height:1.6; margin-top:6px; }
-  .auth-brand p:empty { display:none; }
   .field { margin:12px 0; }
   .field label { display:block; font-size:12px; color:var(--ink-2); margin-bottom:6px; }
   .field input,.field select,.field textarea { width:100%; border:1px solid var(--line); border-radius:6px; padding:10px 12px; font:inherit; background:#fff; transition:border-color .16s,box-shadow .16s,background .16s; }
@@ -208,7 +179,6 @@
   .auth-card .btn::after { content:""; position:absolute; inset:0; transform:translateX(-120%); background:linear-gradient(110deg,transparent 25%,#ffffff38 50%,transparent 75%); transition:transform .55s ease; }
   .auth-card .btn:hover { transform:translateY(-1px); box-shadow:0 16px 32px #14233f3d; }
   .auth-card .btn:hover::after { transform:translateX(120%); }
-  @keyframes auth-card-in { from { opacity:0; transform:translateY(18px) scale(.985); } to { opacity:1; transform:none; } }
   .auth-link { display:block; background:none; border:none; color:var(--navy); cursor:pointer; font-size:14px; line-height:1.5; padding:0; margin:14px auto 0; text-decoration:underline; text-underline-offset:3px; }
   .auth-link:hover { color:var(--navy-2); }
   .auth-secondary { display:flex; flex-direction:column; gap:12px; margin-top:18px; }
@@ -244,20 +214,6 @@
   .captcha-image { flex-shrink:0; min-width:96px; height:44px; display:block; background:#f4f7fb; border:1px solid #c9d4e2; border-radius:10px; cursor:pointer; user-select:none; }
   .captcha-refresh { flex-shrink:0; width:44px; height:44px; border:1px solid #c9d4e2; border-radius:10px; background:#f4f7fb; color:var(--navy); font-size:18px; cursor:pointer; }
   .captcha-refresh:hover { border-color:#c3942d; background:#fffdf8; }
-  @keyframes auth-copy-in { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
-  @keyframes auth-pearl-float {
-    0%,100% { transform:translateY(0) scale(1); filter:drop-shadow(0 18px 30px #020912a6); }
-    50% { transform:translateY(-7px) scale(1.025); filter:drop-shadow(0 22px 36px #d6a84b40); }
-  }
-  @keyframes auth-pearl-ripple {
-    0%,18% { opacity:0; transform:translate(-50%,-50%) scale(.35); }
-    24% { opacity:.5; }
-    58%,100% { opacity:0; transform:translate(-50%,-50%) scale(2.1); }
-  }
-  @keyframes auth-pearl-caption {
-    0%,100% { opacity:.7; transform:translate(0,-50%); }
-    50% { opacity:1; transform:translate(3px,-50%); }
-  }
   .top-tools { display:flex; align-items:center; gap:10px; font-size:12px; }
   .top-tools button { color:#fff; background:#ffffff18; border:1px solid #ffffff38; padding:6px 10px; border-radius:5px; cursor:pointer; }
   .nav { display:none; gap:8px; margin-bottom:20px; flex-wrap:wrap; }
@@ -317,11 +273,6 @@
   }
   @media (max-width: 900px) {
     .auth-screen { position:relative; display:block; min-height:100vh; overflow:hidden; background:#071b39; }
-    .auth-visual { position:absolute; inset:0; min-height:100%; height:100%; max-height:none; }
-    .auth-canvas { opacity:.5; }
-    .auth-visual-mark,.auth-visual-copy { display:none; }
-    .auth-pearl { left:auto; right:22px; top:34px; width:68px; }
-    .auth-pearl-caption { display:none; }
     .auth-entry { position:relative; z-index:2; min-height:100vh; place-items:center; padding:28px 24px; background:linear-gradient(180deg,#071b393d,#071b398f); }
     .auth-card { width:min(500px,100%); min-height:auto; border:1px solid #dbe2ec; border-radius:24px; padding:34px; box-shadow:0 28px 80px #020b186e; }
   }
@@ -346,15 +297,13 @@
     .auth-card { padding-inline:18px; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .auth-card,.auth-visual-copy { animation:none; }
+    .auth-card { animation:none; }
     .auth-card .btn,.auth-card .btn::after { transition:none; }
     .auth-signup-card,.auth-signup-card .auth-signup-arrow { transition:none; }
     .auth-back-button,.auth-back-button svg { transition:none; }
     .auth-back-button:hover,.auth-back-button:active,.auth-back-button:hover svg,.auth-back-button:active svg { transform:none; }
     .auth-signup-card:hover { transform:none; }
     .auth-signup-card:hover .auth-signup-arrow { transform:none; }
-    .auth-pearl { opacity:.82; transform:none; animation:none; }
-    .auth-pearl::before,.auth-pearl::after,.auth-pearl-caption { display:none; animation:none; }
   }
 
   .material-review { margin:18px 0; padding:20px; background:white; border:1px solid var(--line); border-radius:12px; }
@@ -389,32 +338,23 @@
 
 </style>
 <link rel="stylesheet" href="/workspace.css?v=reports-training">
+<link rel="stylesheet" href="/auth-glass.css?v=20261005-glass-1">
 </head>
 <body>
 <section class="auth-screen" id="authScreen">
-  <aside class="auth-visual" aria-label="税务证据网络动态展示">
-    <canvas class="auth-canvas" id="authCanvas" aria-hidden="true"></canvas>
-    <div class="auth-pearl" aria-hidden="true">
-      <img src="/auth-pearl-real-v1.webp" alt="" draggable="false">
-      <span class="auth-pearl-caption">风险线索已定位</span>
-    </div>
-    <div class="auth-visual-mark"><img src="/logo" alt="税海拾珠" draggable="false"><span>AI 税务审计平台</span></div>
-    <div class="auth-visual-copy">
-      <span class="auth-visual-kicker">TaxPearls</span>
-      <h1>从浩瀚数据中，拾取每一条风险线索</h1>
-      <p>连接账簿、发票、申报与资金证据，让每一条风险结论都有来源、有计算、有依据。</p>
-      <div class="auth-proof"><span>业务数据</span><i>→</i><span>交叉核验</span><i>→</i><span>风险线索</span></div>
-    </div>
-  </aside>
+  <canvas id="sceneCanvas" aria-hidden="true"></canvas>
+  <p id="oceanStatus" class="ocean-status" role="status" hidden></p>
+<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden"><defs><filter id="invite-alpha-clean" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncA type="linear" slope="1.111111" intercept="-.111111"/></feComponentTransfer></filter></defs></svg>
   <div class="auth-entry">
     <form class="auth-card" id="authForm" data-view="login" novalidate>
-      <div class="auth-brand"><img src="/logo" alt="税海拾珠" draggable="false"><div class="auth-brand-txt"><h2 id="authTitle">登录税海拾珠</h2><p class="auth-step" id="authStep"></p></div></div>
+      <div class="auth-brand"><img class="auth-logo" src="/logo" alt="税海拾珠" draggable="false"><div class="auth-brand-txt"><img class="brand-wordmark" src="/auth-wordmark.png" alt="税海拾珠" draggable="false"><span>TAXPEARLS</span></div></div>
+      <div class="auth-intro"><h2 id="authTitle">欢迎回来</h2><p id="authDescription">连接每一份证据，拾取每一条线索。</p><p class="auth-step" id="authStep"></p></div>
       <div id="viewLogin">
         <div class="field"><label for="loginUser" id="loginUserLabel">邮箱或用户名</label><input id="loginUser" name="username" autocomplete="username" inputmode="email" placeholder="name@example.com" required></div>
-        <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+        <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
       </div>
       <div class="auth-remember" id="loginRememberField">
-        <label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">在此设备保持登录 30 天</label>
+        <div class="auth-remember-row"><label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">保持登录 30 天</label></div>
         <p id="loginRememberHint">公共电脑请勿勾选</p>
       </div>
       <div id="viewForgot" style="display:none">
@@ -427,16 +367,16 @@
       </div>
       <div id="viewEmailMagic" style="display:none"><p class="muted">仅在您本人刚刚发起邮箱登录、注册或密码重置时继续。链接须在发起请求的同一浏览器使用；若无效、已使用或过期，请返回重新申请。</p><p id="emailMagicStatus" role="status"></p></div>
       <div id="viewReset" style="display:none">
-        <div class="field"><label for="newPass">新密码</label><input id="newPass" type="password" autocomplete="new-password" required></div>
-        <div class="field"><label for="newPass2">确认新密码</label><input id="newPass2" type="password" autocomplete="new-password" required></div>
+        <div class="field"><label for="newPass">新密码</label><div class="pw-wrap"><input id="newPass" minlength="10" maxlength="128" type="password" autocomplete="new-password" required placeholder="设置新密码"><button type="button" class="pw-toggle" data-password="newPass" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+        <div class="field"><label for="newPass2">确认新密码</label><div class="pw-wrap"><input id="newPass2" minlength="10" maxlength="128" type="password" autocomplete="new-password" required placeholder="再次输入新密码"><button type="button" class="pw-toggle" data-password="newPass2" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
         <p class="muted" style="font-size:14px;margin-top:0">10–128 位，须包含大小写字母、数字、符号中的至少三类（空白不算符号）；不能使用常见弱口令或包含邮箱的 @ 前部分。重置成功后，此账号的所有登录状态将被注销。</p>
       </div>
       <div id="viewSignup" style="display:none">
         <div class="field" id="signupInviteField"><label for="signupCode">邀请码</label><input id="signupCode" maxlength="128" autocomplete="off" spellcheck="false" placeholder="平台或机构管理员提供" required></div>
         <div class="field"><label for="signupEmail">邮箱</label><input id="signupEmail" type="email" autocomplete="email" placeholder="name@example.com" required></div>
         <div class="auth-password-row">
-          <div class="field"><label for="signupPass">设置密码</label><input id="signupPass" type="password" autocomplete="new-password" aria-describedby="signupPasswordHint" required></div>
-          <div class="field"><label for="signupPass2">确认密码</label><input id="signupPass2" type="password" autocomplete="new-password" required></div>
+          <div class="field"><label for="signupPass">设置密码</label><div class="pw-wrap"><input id="signupPass" minlength="10" maxlength="128" type="password" autocomplete="new-password" aria-describedby="signupPasswordHint" required placeholder="设置你的密码"><button type="button" class="pw-toggle" data-password="signupPass" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+          <div class="field"><label for="signupPass2">确认密码</label><div class="pw-wrap"><input id="signupPass2" minlength="10" maxlength="128" type="password" autocomplete="new-password" required placeholder="再次输入密码"><button type="button" class="pw-toggle" data-password="signupPass2" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
         </div>
         <p class="auth-help" id="signupPasswordHint">10–128 位，大小写字母、数字、符号至少包含三类。</p>
         <p class="auth-help" id="signupProofStatus" hidden>邮箱已验证，请设置密码完成注册；邀请凭证沿用发起验证时的绑定。</p>
@@ -452,7 +392,7 @@
             <input id="signupEmailCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" spellcheck="false" placeholder="6 位数字" required>
             <button type="button" class="btn-send" id="signupSendBtn" disabled>获取验证码</button>
           </div>
-          <p class="auth-help auth-verification-help" id="signupEmailHint">完成上方人机验证后获取验证码；10 分钟内有效，输错 5 次作废。</p>
+          <p class="auth-help auth-verification-help" id="signupEmailHint">验证码 10 分钟内有效，输错 5 次作废。</p>
         </div>
         </div>
       </div>
@@ -460,7 +400,7 @@
       <div class="auth-secondary">
         <div class="auth-secondary-row">
           <button type="button" class="auth-link" id="forgotLink">忘记密码？</button>
-          <button type="button" class="auth-link" id="emailLoginEntryLink">验证码登录</button>
+          <button type="button" class="auth-link" id="emailLoginEntryLink">使用邮箱验证码 / 邮件链接登录</button>
           <button type="button" class="auth-link" id="passwordLoginEntryLink">密码登录</button>
         </div>
         <button type="button" class="auth-signup-card" id="signupEntryLink">
@@ -477,156 +417,7 @@
   </div>
 </section>
 
-<script>
-(() => {
-  const canvas = document.getElementById("authCanvas");
-  const screen = document.getElementById("authScreen");
-  if (!canvas || !screen) return;
 
-  const ctx = canvas.getContext("2d");
-  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  const flows = [
-    {kind:"ambient",start:[-.08,.14],c1:[.2,.04],c2:[.67,.24],end:[1.08,.12]},
-    {kind:"ambient",start:[-.08,.42],c1:[.24,.26],c2:[.67,.56],end:[1.08,.34]},
-    {kind:"ambient",start:[-.08,.72],c1:[.25,.58],c2:[.7,.82],end:[1.08,.61]},
-    {kind:"collect",start:[-.08,.24],c1:[.2,.19],c2:[.47,.2]},
-    {kind:"collect",start:[-.08,.55],c1:[.2,.5],c2:[.44,.47]},
-    {kind:"collect",start:[.14,.88],c1:[.29,.72],c2:[.5,.55]},
-    {kind:"collect",start:[.34,-.08],c1:[.39,.1],c2:[.53,.2]}
-  ];
-  const motes = Array.from({length:36},(_,i) => {
-    const hash=n => Math.abs(Math.sin((i+1)*n)*43758.5453)%1;
-    return {x:hash(12.9898),y:hash(78.233),depth:.25+hash(39.425)*.75,phase:hash(93.117)*Math.PI*2};
-  });
-  let width = 0, height = 0, raf = 0, started = performance.now();
-
-  function resize() {
-    const box = canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
-    width = Math.max(1, box.width);
-    height = Math.max(1, box.height);
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(performance.now());
-  }
-
-  function drawParticles(seconds) {
-    motes.forEach((mote,i) => {
-      const x=((mote.x+seconds*(.0018+.0032*mote.depth))%1)*width+Math.sin(seconds*.16+mote.phase)*5*mote.depth;
-      const y=((mote.y-seconds*(.0012+.002*mote.depth)+1)%1)*height+Math.cos(seconds*.2+mote.phase)*4;
-      const pulse=.62+.38*Math.sin(seconds*(.32+mote.depth*.28)+mote.phase);
-      const alpha=(.025+mote.depth*.11)*pulse;
-      const radius=.45+mote.depth*1.25;
-      if (mote.depth>.72 && i%3===0) {
-        const haze=ctx.createRadialGradient(x,y,0,x,y,radius*5.5);
-        haze.addColorStop(0,`rgba(207,239,252,${alpha*.7})`);
-        haze.addColorStop(1,"rgba(111,190,224,0)");
-        ctx.fillStyle=haze; ctx.beginPath(); ctx.arc(x,y,radius*5.5,0,Math.PI*2); ctx.fill();
-      }
-      ctx.fillStyle=`rgba(218,239,249,${alpha})`;
-      ctx.beginPath(); ctx.arc(x,y,radius,0,Math.PI*2); ctx.fill();
-    });
-  }
-  function cubicPoint(p0,p1,p2,p3,t) {
-    const m=1-t, m2=m*m, t2=t*t;
-    return {
-      x:m2*m*p0.x+3*m2*t*p1.x+3*m*t2*p2.x+t2*t*p3.x,
-      y:m2*m*p0.y+3*m2*t*p1.y+3*m*t2*p2.y+t2*t*p3.y
-    };
-  }
-
-  function cubicTangent(p0,p1,p2,p3,t) {
-    const m=1-t;
-    return {
-      x:3*m*m*(p1.x-p0.x)+6*m*t*(p2.x-p1.x)+3*t*t*(p3.x-p2.x),
-      y:3*m*m*(p1.y-p0.y)+6*m*t*(p2.y-p1.y)+3*t*t*(p3.y-p2.y)
-    };
-  }
-
-  function drawPearlHalo(target,seconds) {
-    for (let i=0;i<8;i++) {
-      const angle=seconds*(.16+i*.008)+i*Math.PI*.71;
-      const radius=31+(i%4)*8+Math.sin(seconds*.3+i)*3;
-      const x=target.x+Math.cos(angle)*radius;
-      const y=target.y+Math.sin(angle)*radius*.38;
-      const alpha=.16+.2*(.5+.5*Math.sin(seconds*.7+i));
-      ctx.fillStyle=`rgba(${i%3===0?"249,218,154":"190,233,248"},${alpha})`;
-      ctx.beginPath(); ctx.arc(x,y,.65+(i%3)*.35,0,Math.PI*2); ctx.fill();
-    }
-  }
-
-  function drawDataFlows(seconds) {
-    const mobile=window.innerWidth<=900;
-    const target=mobile ? {x:width-56,y:68} : {x:width*.55+54,y:height*.24+54};
-    flows.forEach((flow,index) => {
-      const start={x:flow.start[0]*width,y:flow.start[1]*height};
-      const c1={x:flow.c1[0]*width,y:flow.c1[1]*height};
-      const c2={x:flow.c2[0]*width,y:flow.c2[1]*height};
-      const end=flow.kind==="collect" ? target : {x:flow.end[0]*width,y:flow.end[1]*height};
-      const stroke=ctx.createLinearGradient(start.x,start.y,end.x,end.y);
-      stroke.addColorStop(0,"rgba(92,183,224,0)");
-      stroke.addColorStop(.48,flow.kind==="collect"?"rgba(121,211,244,.12)":"rgba(121,211,244,.055)");
-      stroke.addColorStop(1,flow.kind==="collect"?"rgba(236,201,126,.18)":"rgba(129,204,235,0)");
-      ctx.beginPath(); ctx.moveTo(start.x,start.y); ctx.bezierCurveTo(c1.x,c1.y,c2.x,c2.y,end.x,end.y);
-      ctx.strokeStyle=stroke; ctx.lineWidth=flow.kind==="collect"?1.05:.72; ctx.lineCap="round"; ctx.stroke();
-
-      const count=flow.kind==="collect"?3:2;
-      for (let particle=0; particle<count; particle++) {
-        const raw=(seconds*(.026+index*.0015)+index*.137+particle/count)%1;
-        const t=raw*raw*(3-2*raw);
-        const point=cubicPoint(start,c1,c2,end,t);
-        const tangent=cubicTangent(start,c1,c2,end,t);
-        const tangentLength=Math.max(1,Math.hypot(tangent.x,tangent.y));
-        const flutter=Math.sin(raw*Math.PI*5+index*1.7+particle)*5*(1-t);
-        point.x+=-tangent.y/tangentLength*flutter;
-        point.y+=tangent.x/tangentLength*flutter;
-        const tail=cubicPoint(start,c1,c2,end,Math.max(0,t-(flow.kind==="collect"?.038:.026)));
-        const absorption=flow.kind==="collect"&&t>.82 ? Math.max(0,(1-t)/.18) : 1;
-        const visibility=Math.sin(Math.PI*raw)*absorption;
-        const radius=(.7+t*1.25)*(.55+.45*absorption);
-        const glow=ctx.createRadialGradient(point.x,point.y,0,point.x,point.y,5+t*6);
-        if (flow.kind==="collect"&&t>.68) {
-          glow.addColorStop(0,`rgba(255,241,200,${.9*visibility})`);
-          glow.addColorStop(1,"rgba(216,163,63,0)");
-        } else {
-          glow.addColorStop(0,`rgba(190,236,255,${(flow.kind==="collect"?.68:.42)*visibility})`);
-          glow.addColorStop(1,"rgba(84,183,229,0)");
-        }
-        ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(point.x,point.y,5+t*6,0,Math.PI*2); ctx.fill();
-        const trail=ctx.createLinearGradient(tail.x,tail.y,point.x,point.y);
-        trail.addColorStop(0,"rgba(150,218,244,0)");
-        trail.addColorStop(1,flow.kind==="collect"&&t>.68?`rgba(248,218,157,${visibility*.42})`:`rgba(168,226,249,${visibility*.28})`);
-        ctx.strokeStyle=trail; ctx.lineWidth=.7+radius*.25; ctx.beginPath(); ctx.moveTo(tail.x,tail.y); ctx.lineTo(point.x,point.y); ctx.stroke();
-        ctx.fillStyle=flow.kind==="collect"&&t>.68?`rgba(255,239,196,${visibility})`:`rgba(202,240,255,${visibility})`;
-        ctx.beginPath(); ctx.arc(point.x,point.y,radius,0,Math.PI*2); ctx.fill();
-      }
-    });
-    drawPearlHalo(target,seconds);
-  }
-
-  function draw(now) {
-    if (!width || !height) return;
-    const seconds = reduced ? 3.6 : (now-started)/1000;
-    ctx.clearRect(0,0,width,height);
-    drawParticles(seconds); drawDataFlows(seconds);
-  }
-
-  function frame(now) {
-    if (document.hidden || screen.style.display === "none") { raf=0; return; }
-    draw(now); raf=requestAnimationFrame(frame);
-  }
-
-  function resume() {
-    if (!reduced && !raf && !document.hidden && screen.style.display !== "none") raf=requestAnimationFrame(frame);
-  }
-
-  new ResizeObserver(resize).observe(screen);
-  document.addEventListener("visibilitychange",resume);
-  resize();
-  if (!reduced) resume();
-})();
-</script>
 
 <header id="appHeader" style="display:none">
   <div class="wrap hdr">
@@ -903,7 +694,8 @@
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/enterprise.js?v=enterprise-review-1"></script>
-<script src="/console.js?v=auth-feedback-20261004-2"></script>
+<script src="/console.js?v=auth-glass-20261005-1"></script>
+<script src="/auth-glass.js?v=20261005-glass-1"></script>
 <script src="/workspace.js?v=platform-access-1"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
