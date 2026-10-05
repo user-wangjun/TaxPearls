@@ -607,6 +607,11 @@ $("pwToggle").addEventListener("click", () => {
 });
 
 let pendingEmailToken="",emailRegistrationProof=null,authResetProof="",authViewVersion=0,authSubmitBusy=false;
+// Opening a mail link in the existing tab can change only the fragment.
+// Reload to show explicit confirmation; GET still never redeems the token.
+window.addEventListener("hashchange", () => {
+  if (new URLSearchParams(location.hash.slice(1)).get("email")) location.reload();
+});
 async function bootstrap() {
   const params = new URLSearchParams(location.search);
   pendingEmailToken = new URLSearchParams(location.hash.slice(1)).get("email") || params.get("reset") || "";
@@ -638,12 +643,12 @@ const authViewMap = {
   emailLogin:"viewEmailLogin",emailMagic:"viewEmailMagic",
 };
 const authViewLabels = {
-  login: ["登录税海拾珠", "登录", ""],
+  login: ["欢迎回来", "登录", ""],
   emailLogin:["邮箱登录","验证并登录","在当前浏览器申请并使用验证码或邮件链接。"],
   emailMagic:["确认邮件验证","确认本人操作并继续","不会在打开链接时自动登录或修改密码。"],
   forgot: ["找回密码", "发送重置邮件", ""],
   reset: ["设置新密码", "设置新密码", ""],
-  signup: ["邀请码开户", "注册", "使用平台或机构管理员提供的邀请码完成注册。"],
+  signup: ["受邀入驻", "创建账号", "使用平台或机构管理员提供的邀请码完成注册。"],
 };
 function showAuthView(view) {
   authViewVersion++;
@@ -651,7 +656,7 @@ function showAuthView(view) {
   const setup = form.dataset.setup === "1";
   const [title, submitText, step] = authViewLabels[view] || authViewLabels.login;
   $("loginUserLabel").textContent = setup ? "用户名" : "邮箱或用户名";
-  $("loginUser").placeholder = setup ? "设置管理员用户名" : "name@example.com";
+  $("loginUser").placeholder = setup ? "设置管理员用户名" : "请输入邮箱或用户名";
   $("loginUser").inputMode = setup ? "text" : "email";
   $("loginRememberField").hidden = setup || view !== "login";
   $("loginRemember").disabled = setup || view !== "login";
@@ -668,6 +673,9 @@ function showAuthView(view) {
   $("backToLogin").style.display = ["login","emailLogin"].includes(view) ? "none" : "";
   $("authStep").textContent = setup ? "" : step;
   $("authTitle").textContent = setup ? "初始化平台管理员" : title;
+  $("authDescription").textContent = setup ? "创建首位管理员，开启税海旅程。" : ({login:"连接每一份证据，拾取每一条线索。", signup:"从一份邀请，开启你的税海旅程。", emailLogin:"使用验证码或邮件链接，安全回到税海。", forgot:"验证绑定邮箱，找回你的账号。", reset:"设置新密码，保护账号与证据。", emailMagic:"确认本人发起的邮件验证。"}[view] || "");
+  const linkRow = view === "login" ? document.querySelector(".auth-remember-row") : document.querySelector(".auth-secondary-row");
+  linkRow.append($("forgotLink"));
   $("authSubmit").textContent = setup ? "创建管理员" : submitText;
   $("authSubmit").disabled=authSubmitBusy;
   form.dataset.view = view;
@@ -757,7 +765,7 @@ $("signupSendBtn").addEventListener("click", async () => {
       $("signupEmailHint").textContent = "该邮箱已注册，请直接登录；忘记密码可用登录页的「忘记密码？」找回。";
       return;
     }
-    $("signupEmailHint").textContent = result.message || "验证码已发送，10 分钟内有效，输错 5 次作废。";
+    $("signupEmailHint").textContent = purpose === "register" ? "验证码已发送，10 分钟内有效。" : "验证申请已提交，请查收邮箱。";
     showToast(purpose==="register"?"验证邮件已发送，请查收邮箱。":"验证申请已提交，请查收邮箱。", "success", 6000);
     startCooldown(60);
     loadCaptcha();
@@ -771,6 +779,7 @@ $("authForm").addEventListener("submit", async (e) => {
   if(authSubmitBusy)return;
   const form = e.currentTarget;
   const view = form.dataset.view || "login";
+  if (!form.reportValidity()) return;
   const version=authViewVersion;
   const submitLabel=$("authSubmit").textContent;
   authSubmitBusy=true;$("authSubmit").disabled=true;
