@@ -9,6 +9,48 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
   let referenceRequest = 0, operationRequest = 0, operationRoot = null;
   const urls = new Set();
   let pollTimer = null;
+  let profileRequest = 0, profileLoading = false, uploadOwner = user()?.id;
+  const uploadFields = {name:"uploadCompanyName",taxpayer_id:"uploadCompanyTaxId",industry:"uploadCompanyIndustry",
+    region:"uploadCompanyRegion",taxpayer_type:"uploadCompanyTaxpayerType",business_scope:"uploadCompanyBusinessScope",
+    period_start:"uploadCompanyStart",period_end:"uploadCompanyEnd"};
+  const uploadOrigins = {};
+  for(const [key,id] of Object.entries(uploadFields)) $(id).addEventListener("input",()=>{uploadOrigins[key]="user";});
+  if(!$("uploadCompanyMode").value) $("uploadCompanyMode").value="new";
+  $("uploadCompanyMode").addEventListener("change",()=>selectClient($("uploadCompanyMode").value==="existing"?$("auditClient").value:""));
+  $("auditClient").addEventListener("change",()=>selectClient($("auditClient").value));
+  function clearArchiveFields(all=false) {
+    for(const [key,id] of Object.entries(uploadFields)) if(all||uploadOrigins[key]!=="user") {$(id).value="";delete uploadOrigins[key];}
+  }
+  async function selectClient(id) {
+    const request=++profileRequest,owner=user()?.id;
+    $("auditClient").value=id;
+    // Choosing 'existing' without a client keeps the empty selection visible.
+    if(id) $("uploadCompanyMode").value="existing";
+    const existing=$("uploadCompanyMode").value==="existing";
+    $("auditClient").disabled=!existing;clearArchiveFields();
+    profileLoading=false;
+    $("uploadProfileHint").textContent=existing?"请选择已有企业；本次期间仍须重新确认。":"新建企业可留空，上传后仅从无歧义材料预填；确认后才建档。";
+    if(!existing||!id) {controls();return;}
+    profileLoading=true;controls();$("uploadProfileHint").textContent="正在读取有权访问的企业档案……";
+    const current=()=>request===profileRequest&&owner===user()?.id&&enabled()&&$("auditClient").value===id;
+    try {
+      const value=await api("/api/enterprise/client-profile/"+encodeURIComponent(id));
+      if(!current())return;
+      for(const [key,inputId] of Object.entries(uploadFields)) if(!["period_start","period_end"].includes(key)&&uploadOrigins[key]!=="user") {
+        $(inputId).value=value.company[key]||"";uploadOrigins[key]="archive";
+      }
+      $("uploadProfileHint").textContent=`${value.analysis_count?"已有 "+value.analysis_count+" 次分析":"已建档，尚未分析"}。${value.history?"历史参考期间："+value.history.period+"；":""}预填不代表本期资格成立，手填值保留，确认时会与材料核对。`;
+    } catch(error) {if(current()) {clearArchiveFields();$("uploadProfileHint").textContent="档案未读取："+error.message;}}
+    finally {if(current()){profileLoading=false;controls();}}
+  }
+  function uploadDeclaration() {
+    if(profileLoading)throw new Error("请等待企业档案读取完成。");
+    const mode=$("uploadCompanyMode").value||"new",clientId=mode==="existing"?$("auditClient").value:"";
+    if(mode==="existing"&&!clientId)throw new Error("请选择已有企业，或切换为新建企业。");
+    const company={};
+    for(const [key,id] of Object.entries(uploadFields)) if(uploadOrigins[key]==="user")company[key]=$(id).value;
+    return {mode,clientId,company};
+  }
   const pending = () => batch?.jobs?.some(job => ["queued","running"].includes(job.state));
   const currentFailed = () => batch?.jobs?.some(job => job.state==="failed" && job.input_revision===batch.revision);
   const enabled = () => ["org_admin", "accountant"].includes(user()?.role);
@@ -27,9 +69,15 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     $("busy").style.display = "none";
     editor = save = confirm = supplement = status = null;
     extractionActions = [];
+    profileRequest++;profileLoading=false;
+    if(uploadOwner!==user()?.id||!enabled()) {
+      uploadOwner=user()?.id;clearArchiveFields(true);$("auditClient").value="";$("uploadCompanyMode").value="new";
+      $("uploadProfileHint").textContent="新建企业可留空，上传后从材料预填并核对。";
+    }
     urls.forEach(URL.revokeObjectURL); urls.clear();
   }
   function controls() {
+    $("uploadScope").disabled=busy||profileLoading;
     $("busy").style.display = busy && !batch ? "block" : "none";
     if (editor) editor.disabled = busy || pending() || currentFailed() || batch?.analysis_revision===null;
     if (save) save.disabled = busy || needsReload || pending() || currentFailed() || batch?.analysis_revision===null;
@@ -72,9 +120,11 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
   }
   async function upload(files) {
     if (!canLeave()) return;
+    let declaration;try {declaration=uploadDeclaration();}catch(error){showError(error.message);return;}
     clear(); const valid = stamp(); $("dropzone").style.display = "none"; $("busy").style.display = "block";
     await perform(async () => {
-      const data = form(files); if ($("auditClient").value) data.append("client_id", $("auditClient").value);
+      const data = form(files); if (declaration.clientId) data.append("client_id", declaration.clientId);
+      data.append("company_mode",declaration.mode);data.append("company",JSON.stringify(declaration.company));
       const value = await api(base, {method:"POST",body:data});
       if (valid()) { batch = value; render(); $("materialReview").scrollIntoView({block:"start"}); refresh(); }
     });
@@ -232,7 +282,15 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     }
     editor = el("fieldset"); root.append(editor);
     const scope = el("div", "material-company"), company = {};
-    for (const [key,title,type] of [["name","企业名称（必填）"],["taxpayer_id","纳税人识别号（必填）"],["period_start","主期间起始日（必填）","date"],["period_end","主期间终止日（必填）","date"],["industry","所属行业（选填）"]]) company[key] = input(scope,title,batch.company[key],type);
+    for (const [key,title,type] of [["name","企业名称（必填）"],["taxpayer_id","纳税人识别号（必填）"],["period_start","主期间起始日（必填）","date"],["period_end","主期间终止日（必填）","date"],["industry","所属行业（选填）"],["region","地区（待核对）"],["taxpayer_type","本期纳税人身份（待核对）"],["business_scope","本次业务范围（待核对）"]]) company[key] = input(scope,title,batch.company[key],type);
+    if(batch.scope_context) {
+      const archive=batch.scope_context.archive;
+      editor.append(el("p","muted",archive?`已有企业档案：${archive.company.name} · ${archive.company.taxpayer_id}；历史资料只作预填，不替代本期材料。`:"新建企业模式：无歧义材料预填，手填值保留；确认后建档，税号已存在则复用档案，不覆盖档案信息。"));
+      const names={user:"上传前手填",client_archive:"企业档案",confirmed_history:"历史确认信息（本期须核对）",material_candidate:"材料识别候选"};
+      const provenance=Object.entries(batch.scope_context.prefill_origins||{}).map(([key,value])=>key+"："+(names[value]||"用户核对"));
+      if(provenance.length)textDetails(editor,"企业信息预填来源（不等于原文已证实）",provenance.join("\n"));
+    }
+    if(batch.existing_match) editor.append(el("p","material-note",`税号已对应已有企业档案：${batch.existing_match.name}。确认检测将复用该档案，不重复建档、不覆盖档案名称或负责人。`));
     editor.append(scope,el("p", "muted", "无歧义信息会预填；可补填或修正，无须填写修改原因。用户值不代替原文事实，主体或期间冲突仍须处理。主期间支持完整月、季度、半年或年度。"));
     const selections = {};reviewChecks=[];extractionActions=[];
     for (const doc of batch.documents) {
@@ -551,5 +609,5 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
       })),button("取消",()=>preview.remove()));parent.append(preview);
     });
   }
-  return {enabled,reset,refresh,upload,open,renderReference};
+  return {enabled,reset,refresh,upload,open,renderReference,selectClient};
 }

@@ -79,14 +79,17 @@ async function refreshAuditClients() {
   if(!currentUser || !["org_admin","accountant"].includes(currentUser.role)){field.style.display="none";return;}
   field.style.display="block";
   try {
-    const clients=await api("/api/clients"),preferred=selectedClientId||select.value;
-    select.textContent="";const blank=el("option",null,"不关联（按材料自动建档）");blank.value="";select.append(blank);
+    const owner=currentUser.id,clients=await api("/api/clients"),preferred=selectedClientId||select.value;
+    if(currentUser?.id!==owner)return;
+    select.textContent="";const blank=el("option",null,"请选择已有企业");blank.value="";select.append(blank);
     for(const client of clients){const o=el("option",null,client.name+" · "+client.taxpayer_id);o.value=client.id;select.append(o);}
     if(clients.some(client=>client.id===preferred))select.value=preferred;
     selectedClientId=select.value;
+    await enterpriseMaterials.selectClient(select.value);
   } catch(err){showError(err.message);}
 }
 $("auditClient").addEventListener("change",()=>{selectedClientId=$("auditClient").value;});
+$("uploadCompanyMode").addEventListener("change",()=>{if($("uploadCompanyMode").value==="new")selectedClientId="";});
 function clearMaterials() {
   materialRequest++;
   enterpriseMaterials.reset();

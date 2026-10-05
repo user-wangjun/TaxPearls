@@ -639,9 +639,27 @@
     <!-- 1. 上传区 -->
     <div class="sheet" style="margin-bottom:16px">
       <div class="field" id="auditClientField">
-        <label for="auditClient">关联客户档案</label>
-        <select id="auditClient"><option value="">不关联（按材料自动建档）</option></select>
-        <p class="muted">从工作台进入时会自动带入客户；所选档案的纳税人识别号必须与材料一致。</p>
+        <fieldset id="uploadScope">
+          <legend>本次分析的企业</legend>
+          <label for="uploadCompanyMode">企业选择</label>
+          <select id="uploadCompanyMode"><option value="new">新建企业（默认）</option><option value="existing">已有企业</option></select>
+          <label for="auditClient">已有企业档案</label>
+          <select id="auditClient" disabled><option value="">请选择已有企业</option></select>
+          <p class="muted" id="uploadProfileHint">新建企业可留空，上传后仅从无歧义材料预填；确认后才建档。</p>
+          <details><summary>本次企业信息（可先填写，也可上传后核对）</summary>
+            <div class="material-company">
+              <label>企业名称<input id="uploadCompanyName" maxlength="200"></label>
+              <label>纳税人识别号<input id="uploadCompanyTaxId" maxlength="200"></label>
+              <label>所属行业<input id="uploadCompanyIndustry" maxlength="200"></label>
+              <label>地区<input id="uploadCompanyRegion" maxlength="200" placeholder="涉及房产土地时，另核对事项所在地"></label>
+              <label>本期纳税人身份<input id="uploadCompanyTaxpayerType" maxlength="200"></label>
+              <label>本次业务范围<input id="uploadCompanyBusinessScope" maxlength="200"></label>
+              <label>主期间起始日<input id="uploadCompanyStart" type="date"></label>
+              <label>主期间终止日<input id="uploadCompanyEnd" type="date"></label>
+            </div>
+          </details>
+          <p class="muted">手填值不被材料覆盖。历史信息仅供预填，本期身份和范围须确认；旧期间不自动沿用。此选择不代表符合任何税收优惠。</p>
+        </fieldset>
       </div>
       <label for="extractionMode">数据提取方式</label>
       <select id="extractionMode" style="padding:8px;margin:8px 0;max-width:100%">
