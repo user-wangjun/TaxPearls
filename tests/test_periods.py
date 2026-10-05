@@ -9,7 +9,8 @@ import unittest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from src import config, engine, loader, materials
+from src import config, engine, loader, materials, periods
+from src.input_errors import InputError
 from webapp import app as app_module
 from webapp.storage import Store
 from tests.enterprise_support import material_key
@@ -95,6 +96,26 @@ def partial_history_workbook(rows: list[list[object]]) -> bytes:
 
 
 class PeriodAggregationTests(unittest.TestCase):
+    def test_statement_date_is_not_a_complete_period(self):
+        self.assertEqual(periods.statement_date('2024年2月29日'), '2024-02-29')
+        for value in ('2025年2月29日', '2026-13-01', '2026-06', '2026H1',
+                      '截至2026年6月30日', '2026-01-01至2026-06-30'):
+            with self.subTest(value=value):
+                self.assertEqual(periods.statement_date(value), '')
+        with self.assertRaises(InputError):
+            periods.parse_period('2024年2月29日', '报表日期')
+
+    def test_report_annual_label_is_a_full_calendar_year(self):
+        for label in ('2025', '2025年', '2025年度'):
+            with self.subTest(label=label):
+                interval = periods.parse_period(label, '报告所属期')
+                self.assertEqual(str(interval.start), '2025-01-01')
+                self.assertEqual(str(interval.end), '2025-12-31')
+                self.assertEqual((interval.group, interval.months), ('year', 12))
+        for label in ('2025年度累计', '2025年度1-9月', '2025-2026年度'):
+            with self.subTest(label=label), self.assertRaises(InputError):
+                periods.parse_period(label, '报告所属期')
+
     def test_monthly_yoy_mom_r12_and_rule_inputs(self):
         rows: list[list[object]] = []
         for month in range(1, 13):

@@ -22,12 +22,12 @@ from webapp import app as module, material_batches
 from webapp.storage import Store
 
 
-class EnterpriseMaterialTests(unittest.TestCase):
+class EnterpriseMaterialFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         env = patch.dict(os.environ, {'TAXPEARLS_MATERIAL_KEY': base64.b64encode(b'e' * 32).decode(),
-                                     'TAXPEARLS_AI_ENABLED': '0', 'TAXPEARLS_NOTIFICATION_EMAIL_ENABLED': '0'})
+                                     'TAXPEARLS_AI_ENABLED': '0', 'TAXPEARLS_MATERIAL_QUEUE_ENABLED': '0', 'TAXPEARLS_NOTIFICATION_EMAIL_ENABLED': '0'})
         env.start()
         self.addCleanup(env.stop)
         self.store = Store(Path(self.tmp.name) / 'enterprise.db')
@@ -73,6 +73,437 @@ class EnterpriseMaterialTests(unittest.TestCase):
         rows = self.client.get('/api/enterprise/material-operations')
         self.assertEqual(rows.status_code, 200, rows.text)
         return next(row for row in rows.json() if row['id'] == response_id)
+
+
+class EnterpriseMaterialTests(EnterpriseMaterialFixture):
+    def test_native_annual_three_statements_review_confirmation_and_retained_originals(self):
+        from tests.test_financial_import import annual_book, scope
+        originals = {kind + '.xlsx': annual_book(kind) for kind in ('balance', 'income', 'cashflow')}
+        response = self.client.post('/api/enterprise/materials',
+                                    files=[('files', (name, raw)) for name, raw in originals.items()])
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        target = {**scope(), 'period_start': '2026-01-01', 'period_end': '2026-12-31'}
+        response = self.client.post(self.url(item, '/analyze'),
+            json={'expected_revision': item['revision'], 'company': target})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertFalse(item['analysis']['can_confirm'])
+        self.assertEqual(self.confirm(item).status_code, 409)
+        choices = {d['id']: {'evidence_reviews': [r['id'] for r in d['evidence_reviews']]} for d in item['documents']}
+        response = self.client.post(self.url(item, '/analyze'),
+            json={'expected_revision': item['revision'], 'selections': choices})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertTrue(item['analysis']['can_confirm'], item['analysis']['feedback'])
+        self.assertEqual(len(item['metrics']), 13)
+        result = self.confirm(item)
+        self.assertEqual(result.status_code, 200, result.text)
+        findings = {f['id']: f['status'] for f in result.json()['findings']}
+        for rule in ('R-009', 'R-010', 'R-012'):
+            self.assertEqual(findings[rule], 'pass')
+        self.assertEqual(findings['R-007'], 'skipped')
+        for file in item['files']:
+            self.assertEqual(self.client.get(self.url(item, '/originals/' + file['id'])).content, originals[file['name']])
+        self.assertEqual(self.counts()['audits'], 1)
+
+    def test_formula_candidates_need_cell_review_and_preserve_original_and_results(self):
+        from tests.test_financial_import import formula_book, scope
+        raw = formula_book()
+        item = self.upload(raw)
+        document = item['documents'][0]
+        file_id = document['id']
+        field = next(f for f in document['standard_fields'] if f['id'] == '利润表!C3')
+        self.assertEqual((field['formula'],field['cached_value'],field['value']),('=1+1','10',None))
+        before = deepcopy(material_batches.read(self.store,self.admin,item['id'])['versions'][0]['payload'])
+
+        def update(current, selection):
+            response = self.client.post(self.url(current,'/analyze'),json={'expected_revision':current['revision'],
+                'company':scope(), 'selections':{file_id:selection}})
+            self.assertEqual(response.status_code,200,response.text)
+            return response.json()
+
+        item = update(item,{'standard_edits':{'利润表!C3':'10'}})
+        requirements = item['documents'][0]['evidence_reviews']
+        item = update(item,{'evidence_reviews':[r['id'] for r in requirements if not r['key'].startswith('formula:')]})
+        self.assertFalse(item['analysis']['can_confirm'])
+        self.assertEqual(self.confirm(item).status_code,409)
+        item = update(item,{'evidence_reviews':[r['id'] for r in requirements]})
+        self.assertTrue(item['analysis']['can_confirm'],item['analysis']['feedback'])
+        metric = next(m for m in item['metrics'] if m['name']=='利润表.营业收入')
+        self.assertEqual(metric['value'],'100000')
+        self.assertIn('原公式 =1+1',metric['source'])
+        self.assertIn('用户核对值 10',metric['source'])
+        first = self.confirm(item)
+        self.assertEqual(first.status_code,200,first.text)
+        item = self.client.get(self.url(item)).json()
+        item = update(item,{'standard_edits':{'利润表!C3':'0'}})
+        self.assertFalse(item['analysis']['can_confirm'])
+        item = update(item,{'evidence_reviews':[r['id'] for r in item['documents'][0]['evidence_reviews']]})
+        self.assertTrue(item['analysis']['can_confirm'],item['analysis']['feedback'])
+        self.assertEqual(next(m['value'] for m in item['metrics'] if m['name']=='利润表.营业收入'),'0')
+        self.assertEqual(self.confirm(item).status_code,200)
+        self.assertEqual(self.counts()['audits'],2)
+        self.assertEqual(self.client.get(self.url(item,'/originals/'+item['files'][0]['id'])).content,raw)
+        versions = material_batches.read(self.store,self.admin,item['id'])['versions']
+        self.assertEqual(versions[0]['payload'],before)
+
+    def test_mixed_workbook_exclusion_restoration_and_original_versions(self):
+        from tests.test_financial_import import mixed_export, scope
+        for kind, sheet in [('company', '利润表'), ('period', '利润表'), ('date', '资产负债表'),
+                            ('currency', '利润表'), ('row_currency', '科目余额表')]:
+            with self.subTest(kind=kind):
+                raw = mixed_export(kind)
+                item = self.upload(raw)
+                doc = item['documents'][0]
+                file_id = doc['id']
+                original = deepcopy(material_batches.read(self.store, self.admin, item['id'])['versions'][0]['payload'])
+                review = [r['id'] for r in doc['evidence_reviews']]
+                response = self.client.post(self.url(item, '/analyze'), json={
+                    'expected_revision': item['revision'], 'company': scope(),
+                    'selections': {file_id: {'evidence_reviews': review}}})
+                self.assertEqual(response.status_code, 200, response.text)
+                item = response.json()
+                self.assertFalse(item['analysis']['can_confirm'])
+                self.assertEqual(self.confirm(item).status_code, 409)
+                selection = {'import_options': {sheet: {'excluded': True}}, 'evidence_reviews': review}
+                response = self.client.post(self.url(item, '/analyze'), json={
+                    'expected_revision': item['revision'], 'selections': {file_id: selection}})
+                self.assertEqual(response.status_code, 200, response.text)
+                item = response.json()
+                self.assertFalse(item['documents'][0]['import_mapping']['pending'])
+                self.assertEqual(item['selections'][file_id]['evidence_reviews'], [])
+                self.assertFalse(item['analysis']['can_confirm'])
+                selection['evidence_reviews'] = [r['id'] for r in item['documents'][0]['evidence_reviews']]
+                response = self.client.post(self.url(item, '/analyze'), json={
+                    'expected_revision': item['revision'], 'selections': {file_id: selection}})
+                self.assertEqual(response.status_code, 200, response.text)
+                item = response.json()
+                self.assertTrue(item['analysis']['can_confirm'], item['analysis']['feedback'])
+                self.assertEqual(self.confirm(item).status_code, 200)
+                item = self.client.get(self.url(item)).json()
+                response = self.client.post(self.url(item, '/analyze'), json={
+                    'expected_revision': item['revision'],
+                    'selections': {file_id: {'import_options': {}, 'evidence_reviews': selection['evidence_reviews']}}})
+                self.assertEqual(response.status_code, 200, response.text)
+                item = response.json()
+                self.assertTrue(item['documents'][0]['import_mapping']['pending'])
+                self.assertFalse(item['analysis']['can_confirm'])
+                self.assertEqual(self.confirm(item).status_code, 409)
+                self.assertEqual(self.client.get(self.url(item, '/originals/' + item['files'][0]['id'])).content, raw)
+                frozen = material_batches.read(self.store, self.admin, item['id'])['versions'][0]['payload']
+                self.assertEqual(frozen, original)
+
+    def test_mapping_change_clears_stored_edits_and_rejects_simultaneous_edits(self):
+        from tests.test_financial_import import export_book, scope
+        raw = export_book(balance=True)
+        item = self.upload(raw)
+        file_id = item['documents'][0]['id']
+        edits = {'科目余额表!F4': '12', '利润表!C3': '12', '资产负债表!B3': '25'}
+        response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+            'company': scope(), 'selections': {file_id: {'standard_edits': edits}}})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        old_revision = item['revision']
+        before = deepcopy(material_batches.read(self.store, self.admin, item['id'])['versions'][-1]['payload'])
+        choices = {'资产负债表': {'excluded': True}}
+        rejected = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+            'selections': {file_id: {'import_options': choices, 'standard_edits': edits}}})
+        self.assertEqual(rejected.status_code, 422, rejected.text)
+        self.assertEqual(self.client.get(self.url(item)).json()['revision'], old_revision)
+        response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+            'selections': {file_id: {'import_options': choices,
+                'evidence_reviews': [r['id'] for r in item['documents'][0]['evidence_reviews']]}}})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertEqual(item['selections'][file_id]['standard_edits'], {})
+        self.assertEqual(item['selections'][file_id]['evidence_reviews'], [])
+        self.assertFalse(item['analysis']['can_confirm'])
+        frozen = next(r['payload'] for r in material_batches.read(self.store, self.admin, item['id'])['versions']
+                      if r['revision'] == old_revision)
+        self.assertEqual(frozen, before)
+        self.assertFalse(any(f['id'].startswith('资产负债表!') for f in item['documents'][0]['standard_fields']))
+        response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+            'selections': {file_id: {'evidence_reviews': [r['id'] for r in item['documents'][0]['evidence_reviews']]}}})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertEqual(next(m for m in item['metrics'] if m['name'] == '利润表.营业收入')['value'], '100000')
+        self.assertEqual(next(m for m in item['metrics'] if m['name'] == '营业收入')['value'], '100000')
+        self.assertEqual(self.client.get(self.url(item, '/originals/' + item['files'][0]['id'])).content, raw)
+
+    def test_financial_export_confirmation_original_and_recheck_versions(self):
+        from tests.test_financial_import import export_book, scope
+        raw = export_book(legacy=True)
+        item = self.upload(raw)
+        doc = item['documents'][0]
+        self.assertNotIn('import_model', doc)
+        self.assertIn('import_mapping', doc)
+        self.assertTrue(doc['standard_fields'])
+        self.assertFalse(item['analysis']['can_confirm'])
+        self.assertEqual(self.confirm(item).status_code, 409)
+        file_id = doc['id']
+
+        def analyze(value, *, edits=None, approve=False):
+            current = value['documents'][0]
+            selection = {'standard_edits': edits or {}}
+            if approve:
+                selection['evidence_reviews'] = [r['id'] for r in current['evidence_reviews']]
+            response = self.client.post(self.url(value, '/analyze'), json={
+                'expected_revision': value['revision'], 'company': scope(), 'selections': {file_id: selection}})
+            self.assertEqual(response.status_code, 200, response.text)
+            return response.json()
+
+        item = analyze(item)
+        item = analyze(item, approve=True)
+        self.assertTrue(item['analysis']['can_confirm'], item['analysis']['feedback'])
+        first = self.confirm(item)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(self.confirm(item).json(), first.json())
+        self.assertEqual(self.counts()['audits'], 1)
+        item = self.client.get(self.url(item)).json()
+        # Correcting even an authorized cell invalidates the acknowledged mapping.
+        item = analyze(item, edits={'利润表!C3': '12'}, approve=True)
+        self.assertFalse(item['analysis']['can_confirm'])
+        self.assertEqual(self.confirm(item).status_code, 409)
+        item = analyze(item, edits={'利润表!C3': '12'}, approve=True)
+        self.assertTrue(item['analysis']['can_confirm'], item['analysis']['feedback'])
+        second = self.confirm(item)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(self.counts()['audits'], 2)
+        self.assertNotEqual(second.json(), first.json())
+        metric = next(m for m in item['metrics'] if m['name'] == '利润表.营业收入')
+        self.assertEqual(metric['value'], '120000')
+        self.assertIn('原文 10', metric['source'])
+        original = self.client.get(self.url(item, '/originals/' + item['files'][0]['id']))
+        self.assertEqual(original.status_code, 200, original.text[:100] if original.status_code != 200 else '')
+        self.assertEqual(original.content, raw)
+
+    def test_financial_adapter_change_requires_retained_source_reanalysis(self):
+        from src import financial_import
+        from tests.test_financial_import import export_book, scope
+        for mode in ('model_version', 'mapping_version', 'financial_source', 'period_source',
+                     'missing_program', 'mapped_program', 'mapped_missing', 'mapped_failed', 'dependency'):
+            with self.subTest(mode=mode):
+                raw = export_book()
+                item = self.upload(raw)
+                fid = item['documents'][0]['id']
+                changed = self.client.post(self.url(item, '/analyze'), json={
+                    'expected_revision': item['revision'], 'company': scope(),
+                    'selections': {fid: {'standard_edits': {'利润表!C3': '12'}}}})
+                self.assertEqual(changed.status_code, 200, changed.text)
+                item = changed.json()
+                approved = self.client.post(self.url(item, '/analyze'), json={
+                    'expected_revision': item['revision'], 'selections': {fid: {
+                        'evidence_reviews': [r['id'] for r in item['documents'][0]['evidence_reviews']]}}})
+                self.assertEqual(approved.status_code, 200, approved.text)
+                item = approved.json()
+                self.assertTrue(item['analysis']['can_confirm'])
+                payload = deepcopy(material_batches.read(self.store, self.admin, item['id'])['versions'][-1]['payload'])
+                doc = payload['documents'][0]
+                if mode in {'model_version', 'mapping_version'}:
+                    doc['import_model' if mode == 'model_version' else 'import_mapping']['version'] = 'financial-export-v1'
+                elif mode == 'missing_program':
+                    doc['extraction']['local'].pop('program')
+                elif mode in {'mapped_program', 'mapped_missing', 'mapped_failed'}:
+                    doc['extraction']['mapping_reanalysis'] = deepcopy(doc['extraction']['local'])
+                    if mode == 'mapped_missing':
+                        doc['extraction']['mapping_reanalysis'].pop('program')
+                    elif mode == 'mapped_failed':
+                        doc['extraction']['mapping_reanalysis']['status'] = 'failed'
+                    else:
+                        doc['extraction']['mapping_reanalysis']['program']['sources']['financial_import.py'] = '0' * 64
+                elif mode == 'dependency':
+                    doc['extraction']['local']['program']['dependencies']['openpyxl'] = 'unknown-older-runtime'
+                else:
+                    doc['extraction']['local']['program']['sources'][
+                        'financial_import.py' if mode == 'financial_source' else 'periods.py'] = '0' * 64
+                revision = material_batches.append_revision(self.store, self.admin, item['id'], item['revision'], 'edit', payload)
+                before = self.counts()
+                self.assertEqual(self.confirm(item, revision).status_code, 409)
+                self.assertEqual(self.counts(), before)
+                projected = self.client.get(self.url(item)).json()
+                self.assertFalse(projected['analysis']['can_confirm'])
+                self.assertTrue(projected['documents'][0]['financial_reanalysis_required'])
+                self.assertTrue(any(n['code'] == 'financial_reanalysis_required'
+                    for n in projected['analysis']['feedback']['blocking']))
+                rejected = self.client.post(self.url(item, '/analyze'), json={
+                    'expected_revision': revision,
+                    'selections': {fid: {'standard_edits': {'利润表!C3': '13'}}}})
+                self.assertEqual(rejected.status_code, 422, rejected.text)
+                self.assertEqual(self.counts(), before)
+                with patch('src.ai_extraction.AIExtractor.enrich', side_effect=AssertionError('no model call')):
+                    refreshed = self.client.post(self.url(item, '/analyze'), json={
+                        'expected_revision': revision, 'selections': {fid: {
+                            'evidence_reviews': payload['selections'][fid]['evidence_reviews']}}})
+                self.assertEqual(refreshed.status_code, 200, refreshed.text)
+                item = refreshed.json()
+                self.assertFalse(item['analysis']['can_confirm'])
+                self.assertFalse(item['documents'][0]['financial_reanalysis_required'])
+                self.assertFalse(item['selections'][fid]['standard_edits'])
+                self.assertFalse(item['selections'][fid]['evidence_reviews'])
+                self.assertEqual(item['documents'][0]['import_mapping']['version'], financial_import.VERSION)
+                self.assertFalse(item['metrics'])
+                self.assertEqual(next(m for m in item['documents'][0]['rows']
+                    if m['name'] == '利润表.营业收入')['value'], '100000')
+                self.assertEqual(self.client.get(self.url(item, '/originals/' + item['files'][0]['id'])).content, raw)
+                old = next(v['payload'] for v in material_batches.read(self.store, self.admin, item['id'])['versions']
+                           if v['revision'] == revision)
+                self.assertEqual(old, payload)
+                approved = self.client.post(self.url(item, '/analyze'), json={
+                    'expected_revision': item['revision'], 'selections': {fid: {
+                        'evidence_reviews': [r['id'] for r in item['documents'][0]['evidence_reviews']]}}})
+                self.assertEqual(approved.status_code, 200, approved.text)
+                self.assertTrue(approved.json()['analysis']['can_confirm'])
+                self.assertEqual(next(m for m in approved.json()['metrics']
+                    if m['name'] == '利润表.营业收入')['value'], '100000')
+
+    def test_old_foreign_amount_cache_cannot_bypass_current_financial_adapter(self):
+        from tests.test_financial_import import export_book, mixed_export, parse, scope
+        supported = parse(export_book(balance=True))
+        for mode in ('currency', 'row_currency'):
+            with self.subTest(mode=mode):
+                raw = mixed_export(mode)
+                item = self.upload(raw)
+                payload = deepcopy(material_batches.read(self.store, self.admin, item['id'])['versions'][-1]['payload'])
+                doc = payload['documents'][0]
+                # Simulate a historical parser which ignored declared foreign
+                # currency. Actual retained bytes, file IDs and hashes stay foreign.
+                for key in ('import_model', 'import_mapping', 'accounts', 'declarations', 'rows',
+                            'account_cell_sources', 'declaration_cell_sources'):
+                    doc[key] = deepcopy(supported[key])
+                doc['import_model']['version'] = doc['import_mapping']['version'] = 'financial-export-v1'
+                self.assertTrue(doc['accounts'])
+                self.assertTrue(doc['rows'])
+                payload['company'] = scope()
+                payload['analysis']['can_confirm'] = True
+                revision = material_batches.append_revision(self.store, self.admin, item['id'], item['revision'], 'edit', payload)
+                before = self.counts()
+                self.assertEqual(self.confirm(item, revision).status_code, 409)
+                self.assertEqual(self.counts(), before)
+                with patch('src.ai_extraction.AIExtractor.enrich', side_effect=AssertionError('no model call')):
+                    refreshed = self.client.post(self.url(item, '/analyze'), json={'expected_revision': revision})
+                self.assertEqual(refreshed.status_code, 200, refreshed.text)
+                current = refreshed.json()
+                self.assertFalse(current['analysis']['can_confirm'])
+                self.assertTrue(current['documents'][0]['import_mapping']['pending'])
+                self.assertFalse(current['documents'][0]['rows'])
+                self.assertFalse(current['metrics'])
+                self.assertEqual(self.confirm(current).status_code, 409)
+                self.assertEqual(self.counts()['audits'], 0)
+                self.assertEqual(self.client.get(self.url(item, '/originals/' + item['files'][0]['id'])).content, raw)
+                old = next(v['payload'] for v in material_batches.read(self.store, self.admin, item['id'])['versions']
+                           if v['revision'] == revision)
+                self.assertEqual(old, payload)
+
+    def test_excluded_old_financial_adapter_rechecks_only_on_restoration(self):
+        from tests.test_financial_import import export_book, scope
+        raw = export_book()
+        item = self.upload(raw)
+        payload = deepcopy(material_batches.read(self.store, self.admin, item['id'])['versions'][-1]['payload'])
+        fid = payload['documents'][0]['id']
+        payload['documents'][0]['import_model']['version'] = 'financial-export-v1'
+        payload['company'] = scope()
+        payload['selections'][fid] = {'purpose': 'excluded'}
+        revision = material_batches.append_revision(self.store, self.admin, item['id'], item['revision'], 'edit', payload)
+        with patch('webapp.enterprise_materials.batches.original', side_effect=AssertionError('excluded original must not be read')):
+            response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': revision})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertTrue(item['documents'][0]['financial_reanalysis_required'])
+        self.assertFalse(item['metrics'])
+        response = self.client.post(self.url(item, '/analyze'), json={
+            'expected_revision': item['revision'], 'selections': {fid: {'purpose': 'current'}}})
+        self.assertEqual(response.status_code, 200, response.text)
+        restored = response.json()
+        self.assertFalse(restored['documents'][0]['financial_reanalysis_required'])
+        self.assertFalse(restored['analysis']['can_confirm'])
+        self.assertFalse(restored['selections'][fid]['evidence_reviews'])
+        self.assertEqual(self.client.get(self.url(item, '/originals/' + item['files'][0]['id'])).content, raw)
+
+    def test_export_cell_injection_and_foreign_batch_access_are_rejected(self):
+        from tests.test_financial_import import export_book
+        item = self.upload(export_book())
+        forged = self.correct(item, {'利润表!D3': '1'})
+        self.assertEqual(forged.status_code, 422)
+        self.login(self.foreign)
+        self.assertEqual(self.client.get(self.url(item)).status_code, 404)
+        self.assertEqual(self.confirm(item).status_code, 404)
+
+    def test_missing_units_mapping_reparses_original_and_requires_fresh_review(self):
+        from tests.test_financial_import import export_book, scope
+        raw = export_book(unit='', legacy=True)
+        item = self.upload(raw)
+        doc = item['documents'][0]
+        self.assertTrue(doc['import_mapping']['pending'])
+        self.assertEqual(self.confirm(item).status_code, 409)
+        choices = {'科目余额表': {'unit': '万元'}, '利润表': {'unit': '万元'}}
+        selection = {'import_options': choices, 'standard_edits': {},
+                     'evidence_reviews': [r['id'] for r in doc['evidence_reviews']]}
+        response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+            'company': scope(), 'selections': {doc['id']: selection}})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        mapped = item['documents'][0]
+        self.assertFalse(mapped['import_mapping']['pending'])
+        self.assertFalse(item['analysis']['can_confirm'])
+        self.assertEqual(mapped['import_mapping']['sheets'][0]['unit_origin'], 'user')
+        self.assertIn('mapping_reanalysis', mapped['extraction'])
+        self.assertEqual(mapped['sha256'], doc['sha256'])
+        selection['evidence_reviews'] = [r['id'] for r in mapped['evidence_reviews']]
+        response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+            'selections': {doc['id']: selection}})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertTrue(item['analysis']['can_confirm'], item['analysis']['feedback'])
+        self.assertEqual(next(m for m in item['metrics'] if m['name'] == '营业收入')['value'], '100000')
+        self.assertEqual(self.confirm(item).status_code, 200)
+        self.assertEqual(self.client.get(self.url(item, '/originals/' + item['files'][0]['id'])).content, raw)
+
+    def test_source_mapping_override_and_unknown_sheet_roll_back(self):
+        from tests.test_financial_import import export_book
+        item = self.upload(export_book())
+        before = self.counts()
+        for choices in [{'利润表': {'unit': '元'}}, {'未知工作表': {'unit': '万元'}},
+                        {'利润表': {'columns': {'2:A': 'D'}}},
+                        *[{'利润表': {'unit': value}} for value in [[], {}, None, True, 10000]]]:
+            response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+                'selections': {item['documents'][0]['id']: {'import_options': choices}}})
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertEqual(self.counts(), before)
+
+    def test_csv_manual_mapping_confirmation_and_original_bytes(self):
+        from tests.test_financial_import import scope
+        raw = ('\n利润表,,,\n编制单位：' + COMPANY['name'] + ' 2026年1月,,,\n'
+               '项目,行次,本月数,本年累计数\n,,,\n营业收入,1,10,900').encode('gb18030')
+        response = self.client.post('/api/enterprise/materials', files={'files': ('导出.csv', raw)})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        doc = item['documents'][0]
+        self.assertTrue(doc['import_mapping']['pending'])
+        self.assertEqual(self.confirm(item).status_code, 409)
+        selection = {'import_options': {'利润表': {'unit': '万元'}}}
+        response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+            'company': scope(), 'selections': {doc['id']: selection}})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        fields = item['documents'][0]['standard_fields']
+        self.assertEqual(fields[0]['id'], '利润表!C6')
+        selection['standard_edits'] = {'利润表!C6': '12'}
+        response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+            'selections': {doc['id']: selection}})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertFalse(item['analysis']['can_confirm'])
+        selection['evidence_reviews'] = [r['id'] for r in item['documents'][0]['evidence_reviews']]
+        response = self.client.post(self.url(item, '/analyze'), json={'expected_revision': item['revision'],
+            'selections': {doc['id']: selection}})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertTrue(item['analysis']['can_confirm'], item['analysis']['feedback'])
+        self.assertEqual(next(m for m in item['metrics'] if m['name'] == '利润表.营业收入')['value'], '120000')
+        self.assertEqual(self.confirm(item).status_code, 200)
+        original = self.client.get(self.url(item, '/originals/' + item['files'][0]['id']))
+        self.assertEqual(original.content, raw)
 
     def test_request_journal_records_pre_batch_failure_without_payload_or_credentials(self):
         with patch('webapp.enterprise_materials.materials.preview') as parse:
@@ -546,13 +977,56 @@ class EnterpriseMaterialTests(unittest.TestCase):
             self.assertEqual(current[1]['extraction']['local']['status'], 'succeeded')
 
     def test_incomplete_company_keeps_failed_file_extraction_trace(self):
-        item = self.upload(b'not-a-workbook')
+        from tests.test_materials import workbook
+        item = self.upload(workbook('未识别账表', [['字段', '金额'], ['未知项目', 100]]))
         self.assertFalse(item['analysis']['can_confirm'])
         trace = self.client.get(self.url(item, '/trace')).json()
         row = trace['versions'][0]['detail']['extractions'][0]
         self.assertEqual(row['extraction']['local']['status'], 'failed')
         self.assertTrue(row['error'])
         self.assertEqual(len(row['sha256']), 64)
+
+    def test_failed_ai_file_blocks_confirmation_until_explicitly_excluded(self):
+        from src.ai_extraction import ExtractionError
+        from src.settings import AISettings
+        from tests.test_materials import FIXTURES
+        settings = AISettings(enabled=True, api_key='synthetic-gate-key', vision=True)
+        with patch('webapp.enterprise_materials.AISettings.from_env', return_value=settings), \
+                patch('src.ai_extraction.call_model', side_effect=ExtractionError('synthetic schema failure', code='schema')):
+            response = self.client.post('/api/enterprise/materials', data={'extraction': 'ai'}, files=[
+                ('files', ('账.xlsx', accounts())),
+                ('files', ('扫描.pdf', (FIXTURES/'materials-scanned.pdf').read_bytes()))])
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertFalse(item['analysis']['can_confirm'])
+        failed = next(d for d in item['documents'] if d.get('extraction', {}).get('status') == 'failed')
+        before = self.counts()
+        with patch('webapp.enterprise_materials.engine.run', side_effect=AssertionError('failed material executed')):
+            self.assertEqual(self.confirm(item).status_code, 409)
+        self.assertEqual(self.counts(), before)
+        corrected = self.client.post(self.url(item, '/analyze'), json={
+            'expected_revision': item['revision'], 'selections': {failed['id']: {'purpose': 'excluded'}}})
+        self.assertEqual(corrected.status_code, 200, corrected.text)
+        ready = corrected.json()
+        self.assertTrue(ready['analysis']['can_confirm'])
+        self.assertEqual(self.confirm(ready).status_code, 200)
+        trace = self.client.get(self.url(item, '/trace')).json()
+        self.assertEqual(trace['versions'][0]['detail']['extractions'][1]['extraction']['failure_code'], 'schema')
+
+    def test_legacy_ready_snapshot_with_failed_extraction_is_rejected_by_server(self):
+        item = self.upload()
+        view = material_batches.read(self.store, self.admin, item['id'])
+        payload = deepcopy(view['versions'][-1]['payload'])
+        payload['documents'][0]['extraction'] = {'method': 'ai_failed', 'status': 'failed', 'failure_code': 'invalid_evidence'}
+        self.assertTrue(payload['analysis']['can_confirm'])
+        revision = material_batches.append_revision(self.store, self.admin, item['id'], item['revision'], 'edit', payload)
+        before = self.counts()
+        response = self.confirm(item, revision)
+        self.assertEqual(response.status_code, 409, response.text[:500])
+        self.assertEqual(self.counts(), before)
+        projected = self.client.get(self.url(item)).json()
+        self.assertFalse(projected['analysis']['can_confirm'])
+        self.assertTrue(any(n['code'] == 'extraction_failed' for n in projected['analysis']['feedback']['blocking']))
 
     def test_edits_invalidate_stale_confirm_and_preserve_prior_revision(self):
         item = self.upload()

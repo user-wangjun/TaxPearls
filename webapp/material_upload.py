@@ -9,6 +9,7 @@ from threading import BoundedSemaphore, RLock
 from fastapi import BackgroundTasks, Cookie, HTTPException, Request
 from starlette.concurrency import run_in_threadpool
 from starlette.formparsers import MultiPartException
+from src import material_format_guard
 from webapp.uploads import bounded_stream, multipart
 from starlette.datastructures import UploadFile
 
@@ -102,27 +103,29 @@ def register(app, get_user, allow, save_audit, rules_dir, audit_for_user):
             raise HTTPException(422, "请以多文件表单上传材料。")
         try:
             async with multipart(request, total_limit=materials.MAX_TOTAL + 1024 * 1024,
-                                 max_files=20, max_fields=5) as form:
+                                 max_files=20, max_fields=5, material_scope=user['org_id']) as form:
                 uploads = [(value.filename or "未命名", await value.read()) for key, value in form.multi_items()
                            if isinstance(value, UploadFile)]
                 mode = form.get("extraction", "local")
-            if mode not in {"local", "auto", "ai"}:
-                raise HTTPException(422, "提取方式无效。")
-            catalog = field_catalog()
-            settings = ai_settings()
-            if mode == "ai" and settings.problem():
-                raise HTTPException(422, settings.problem())
-            if mode != "local" and not settings.problem():
-                with lock:
-                    purge()
-                    if len(jobs) >= 20 or not ai_slots.acquire(blocking=False):
-                        raise HTTPException(429, "AI 正在处理其他材料，请稍后再试。")
-                    job_id = secrets.token_urlsafe(24)
-                    jobs[job_id] = {**scope(user), "state": "processing", "expires": time.monotonic() + 900}
-                background.add_task(run_ai, job_id, uploads, catalog, user, settings)
-                from fastapi.responses import JSONResponse
-                return JSONResponse({"job_id": job_id, "state": "processing"}, status_code=202)
-            docs = await run_in_threadpool(materials.preview, uploads, set(catalog))
+                await form.close()
+                if mode not in {"local", "auto", "ai"}:
+                    raise HTTPException(422, "提取方式无效。")
+                await run_in_threadpool(material_format_guard.check, uploads)
+                catalog = field_catalog()
+                settings = ai_settings()
+                if mode == "ai" and settings.problem():
+                    raise HTTPException(422, settings.problem())
+                if mode != "local" and not settings.problem():
+                    with lock:
+                        purge()
+                        if len(jobs) >= 20 or not ai_slots.acquire(blocking=False):
+                            raise HTTPException(429, "AI 正在处理其他材料，请稍后再试。")
+                        job_id = secrets.token_urlsafe(24)
+                        jobs[job_id] = {**scope(user), "state": "processing", "expires": time.monotonic() + 900}
+                    background.add_task(run_ai, job_id, uploads, catalog, user, settings)
+                    from fastapi.responses import JSONResponse
+                    return JSONResponse({"job_id": job_id, "state": "processing"}, status_code=202)
+                docs = await run_in_threadpool(materials.preview, uploads, set(catalog))
         except (materials.InputError, MultiPartException) as exc:
             raise HTTPException(422, str(exc)) from exc
         return save_preview(docs, catalog, user)

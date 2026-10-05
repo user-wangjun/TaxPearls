@@ -645,18 +645,18 @@
       </div>
       <label for="extractionMode">数据提取方式</label>
       <select id="extractionMode" style="padding:8px;margin:8px 0;max-width:100%">
-        <option value="auto">自动：已配置时使用 AI 提取 PDF / 非标准 Excel</option>
+        <option value="auto">自动：已配置时使用 AI 提取 PDF / 扫描图片 / 非标准账表</option>
         <option value="ai">使用 AI 提取（需要配置模型服务）</option>
         <option value="local">仅本地解析</option>
       </select>
       <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
     </div>
     <div class="dropzone" id="dropzone">
-      <div class="t1">一次选择或拖拽多份 Excel、XML、PDF，也可上传 ZIP 文件包</div>
-      <div class="t2">支持账表 Excel、数电发票 XML、来源银行 Excel / 调节底稿、合同四流台账、文字 / 扫描 PDF；AI 候选数据经校验后进入核对页<br>
-        最多 20 份材料，单份 / ZIP 不超过 10MB，解压后合计 50MB · <span id="materialRetentionHint">企业原件受控留存；教学材料沿用独立核对流程</span></div>
+      <div class="t1">一次选择或拖拽多份 XLSX、受控旧版 XLS、CSV/TSV、XML、PDF、PNG/JPEG/TIFF，也可上传 ZIP 文件包</div>
+      <div class="t2">支持 XLSX、CSV/TSV 账表、数电发票 XML、来源银行 Excel / 调节底稿、合同四流台账、文字 / 扫描 PDF 和扫描图片（TIFF 最多 50 页）；AI 候选数据经校验后进入核对页<br>
+        最多 20 份材料，单份 / ZIP 不超过 10MB，解压后合计 50MB · <span id="materialRetentionHint">服务器核对实际格式和危险部件后接收；企业原件受控留存</span></div>
       <button class="pick" type="button">选择多份材料</button>
-      <input type="file" id="fileInput" accept=".xlsx,.xml,.pdf,.zip" multiple hidden>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.tsv,.xml,.pdf,.png,.jpg,.jpeg,.tif,.tiff,.zip" multiple hidden>
     </div>
     <div class="busy" id="busy">正在处理材料，请稍候<span class="dot">……</span></div>
 

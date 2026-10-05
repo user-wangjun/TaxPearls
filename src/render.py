@@ -109,6 +109,12 @@ def build_view_model(dataset: Dataset, findings: list[Finding]) -> dict:
         "pass_findings": passed,
         "skipped_findings": skipped,
         "sources": material_sources(dataset),
+        # Frozen accepted values, including unused/derived metrics. This is
+        # not proof that every item was executed or independently verified.
+        "input_metrics": [{"name": name, "value": str(metric.value),
+                           "source": metric.source or "未记录原始取数来源，不补造。",
+                           "detail": metric.detail}
+                          for name, metric in sorted(dataset.metrics.items())],
         "summary": {
             "total": len(vm_findings),
             "hit": len(hit),

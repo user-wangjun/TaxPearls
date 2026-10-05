@@ -276,6 +276,10 @@
   .evidence-table td.val { text-align: right; white-space: normal; }
   .evidence-table td.val.em { font-weight: 500; color: #0F1B2D; }
   .evidence-table td.src { font-size: 8pt; color: #8A94A6; }
+  .confirmed-pass td.src, .confirmed-inputs td.src { color: #526078; }
+  .confirmed-inputs { break-inside: auto; }
+  .confirmed-pass thead, .confirmed-inputs thead { display: table-header-group; }
+  .confirmed-pass tr, .confirmed-inputs tr { break-inside: avoid; }
 
   .block { margin-top: 1.6mm; }
 
@@ -318,6 +322,10 @@
 
   .mini .t { font-weight: 500; }
   .mini .d { color: #6B7280; font-size: 9pt; margin-top: 0.8mm; }
+  .mini.confirmed-pass-card { break-inside: auto; }
+  .confirmed-pass-intro { break-inside: avoid; break-after: avoid; }
+  .confirmed-section-lead { break-after: avoid; }
+  .confirmed-input-heading { break-before: page; }
 
   /* ============================ 声明 ============================ */
   .disclaimer {
@@ -516,9 +524,22 @@
 <h2>四、检查通过事项</h2>
 <p class="small muted">下列事项经检查未发现超出阈值的情形。</p>
 {% for f in pass_findings %}
-<div class="mini">
+<div class="mini{% if material_reference %} confirmed-pass-card{% endif %}">
+  {% if material_reference %}<div class="confirmed-pass-intro">{% endif %}
   <div class="t">{{ f.id }}　{{ f.name }}</div>
   <div class="d">{{ f.conclusion }}{% if f.calculation %}　（{{ f.calculation }}）{% endif %}</div>
+  {% if material_reference %}
+  <div class="d">适用范围：{{ f.scope }}（规则版本 {{ f.version }}）</div>
+  </div>
+  {% if f.evidence %}
+  <table class="evidence-table confirmed-pass">
+    <thead><tr><th style="width:24%">项目</th><th style="width:26%">金额 / 数值</th><th style="width:50%">取数来源与口径（{{ f.id }}）</th></tr></thead>
+    <tbody>{% for e in f.evidence %}
+    <tr><td>{{ e.label }}</td><td class="val{% if e.emphasis %} em{% endif %}">{{ e.value }}</td><td class="src">{{ e.source }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}<p class="small muted">此冻结检查未保存逐项取数证据，不补造原页或栏次。</p>{% endif %}
+  {% endif %}
 </div>
 {% endfor %}
 {% endif %}
@@ -526,7 +547,7 @@
 <!-- ======================== 五、未能执行事项 ======================== -->
 {% if skipped_findings %}
 <h2>五、未能执行事项</h2>
-<p class="small muted">下列检查未能执行，不构成「已通过」结论；请按逐项列明的证据、口径或适用范围限制核对后重新检查。</p>
+<p class="small muted{% if material_reference %} confirmed-section-lead{% endif %}">下列检查未能执行，不构成「已通过」结论；请按逐项列明的证据、口径或适用范围限制核对后重新检查。</p>
 {% for f in skipped_findings %}
 <div class="mini">
   <div class="t">{{ f.id }}　{{ f.name }}</div>
@@ -558,6 +579,19 @@
     <td>报告编号</td><td class="line">{{ report_no }}</td>
   </tr>
 </table>
+
+{% if material_reference %}
+<h2 class="confirmed-input-heading">附录：已确认输入指标与来源</h2>
+<p class="small muted">下表是本报告冻结输入的保存值，含已确认人工修改及派生指标，不等于所有指标都已执行检查或原件全部内容已读取。企业信息与主期间为本次确认范围，用户补填不代替原文证明；原始页、金额栏次、单位和识别候选原值以各项来源说明为准。未读取页、未映射项目和缺失值不补造，材料修改及复核记录可通过本报告的确认材料版本查询。</p>
+{% if input_metrics %}
+<table class="evidence-table confirmed-inputs">
+  <thead><tr><th style="width:24%">标准指标</th><th style="width:26%">保存值（原有指标口径）</th><th style="width:50%">原件位置、来源与取数说明</th></tr></thead>
+  <tbody>{% for item in input_metrics %}
+  <tr><td>{{ item.name }}</td><td class="val">{{ item.value }}</td><td class="src">{{ item.source }}{% if item.detail %}<br>{{ item.detail }}{% endif %}</td></tr>
+  {% endfor %}</tbody>
+</table>
+{% else %}<p class="small muted">此冻结输入未保存标准指标；未提供的原件位置和金额不补造。</p>{% endif %}
+{% endif %}
 
 <div class="cover-foot" style="margin-top:10mm">
   {{ org_name }} · AI 税务审计引擎 v{{ engine_version }}　|　本报告由系统自动生成，共 {{ summary.total }} 项检查记录{% if footer_text %}　|　{{ footer_text }}{% endif %}

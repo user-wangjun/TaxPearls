@@ -154,9 +154,11 @@ class InvoiceSourceParsing(unittest.TestCase):
 
     def test_xml_security_and_required_fields(self):
         entity = b'''<?xml version="1.0"?><!DOCTYPE x [<!ENTITY e "boom">]><x><InvoiceNumber>&e;</InvoiceNumber></x>'''
-        self.assertIn("DTD", materials.preview([("实体.xml", entity)], KEYS)[0]["error"])
+        with self.assertRaisesRegex(materials.InputError, "DTD"):
+            materials.preview([("实体.xml", entity)], KEYS)
         fake = b'''<xbrl xmlns:einv="https://example.test/einv"><einv:InvoiceNumber>1</einv:InvoiceNumber></xbrl>'''
-        self.assertIn("财政部", materials.preview([("非标准.xml", fake)], KEYS)[0]["error"])
+        with self.assertRaisesRegex(materials.InputError, "财政部"):
+            materials.preview([("非标准.xml", fake)], KEYS)
         mismatch = invoice_xml(total="999")
         self.assertIn("价税合计", materials.preview([("错误.xml", mismatch)], KEYS)[0]["error"])
 

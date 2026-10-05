@@ -1,5 +1,7 @@
 """Shared bounded Chat Completions transport; errors never include payloads."""
 import json
+from contextlib import nullcontext
+from contextvars import ContextVar
 import hashlib
 import logging
 from threading import Lock
@@ -12,6 +14,7 @@ _KEY_COOLDOWN_SECONDS = 300
 _key_failures = {}
 _key_lock = Lock()
 _logger = logging.getLogger(__name__)
+REQUEST_GUARD = ContextVar('material_ai_guard', default=None)
 
 
 def _key_identity(base_url, key):
@@ -65,7 +68,14 @@ def chat_content(settings, messages, timeout, *, temperature=0, max_tokens=None)
                           method="POST")
         attempts += 1
         try:
-            return _content(opener, request, remaining)
+            guard = REQUEST_GUARD.get()
+            with guard(remaining) if guard else nullcontext():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TransportError("timeout", attempts=attempts)
+                return _content(opener, request, remaining)
+        except TimeoutError:
+            raise TransportError("timeout", attempts=attempts) from None
         except TransportError as exc:
             exc.attempts = attempts
             # Only explicit key/balance rejection permits another paid request.

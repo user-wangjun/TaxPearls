@@ -94,10 +94,22 @@ def parse_period(value: object, location: str) -> _Period:
     match = re.fullmatch(r"(\d{4})年?(上|下)半年", text)
     if match:
         return _period_from_month(int(match.group(1)), 1 if match.group(2) == "上" else 7, 6, "half", text)
-    match = re.fullmatch(r"(\d{4})年?", text)
+    match = re.fullmatch(r"(\d{4})(?:年度|年)?", text)
     if match:
         return _period_from_month(int(match.group(1)), 1, 12, "year", text)
     raise InputError(f"{location}：无法识别所属期「{text}」；请使用完整月、季度、半年或年度")
+
+
+def statement_date(value: object) -> str:
+    """Recognize a single report date without inferring an accounting interval."""
+    text = re.sub(r'\s+', '', str(value or ''))
+    match = re.fullmatch(r'(\d{4})(?:年|-|/|\.)(\d{1,2})(?:月|-|/|\.)(\d{1,2})日?', text)
+    if not match:
+        return ''
+    try:
+        return date(*map(int, match.groups())).isoformat()
+    except ValueError:
+        return ''
 
 
 def _shift_period(period: _Period, months: int) -> tuple[int, int]:

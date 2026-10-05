@@ -26,12 +26,12 @@ TABLES = {
 ACCOUNT_FIELDS = {2: 'opening', 3: 'debit', 4: 'credit', 5: 'closing'}
 
 
-def capture(workbook):
+def capture(workbook, *, excluded=()):
     """Called only after the original standard table parsers validate headers."""
     from .materials import _serial
     return {name: [[_serial(cell) for cell in row] for row in
                    workbook[name].iter_rows(max_col=len(headers), values_only=True)]
-            for name, (headers, _) in TABLES.items() if name in workbook.sheetnames}
+            for name, (headers, _) in TABLES.items() if name in workbook.sheetnames and name not in excluded}
 
 
 def fields(document):
@@ -39,6 +39,8 @@ def fields(document):
     output = []
     if document.get('error') or document.get('review_required'):
         return output
+    for field in document.get('import_model', {}).get('cells', {}).values():
+        output.append({**field, 'label': field['label'] + ' · 原单位 ' + field['unit']})
     for name, rows in document.get('standard_tables', {}).items():
         headers, columns = TABLES[name]
         for number, row in enumerate(rows[1:], 2):
@@ -71,7 +73,7 @@ def normalize(document, edits):
         if value is not None and (abs(value) > Decimal('1e18') or value.as_tuple().exponent < -12):
             raise InputError('修正值绝对值不得超过 10^18，且最多 12 位小数。')
         original = loader._number(originals[address]['value'], address)
-        if value != original:
+        if value != original or originals[address].get('formula') and address in edits:
             normalized[address] = str(value) if value is not None else None
     return normalized
 
@@ -118,6 +120,24 @@ def apply(document, corrections):
     candidate = deepcopy(document)
     if not edits:
         return candidate, []
+    if 'import_model' in document:
+        from . import financial_import
+        model = deepcopy(document['import_model'])
+        base = deepcopy(document)
+        base.pop('import_model')
+        base.pop('import_mapping', None)
+        base.update(model['base'])
+        base_edits = {k: v for k, v in edits.items() if k not in model['cells']}
+        parsed, _ = apply(base, base_edits)
+        model['base'] = {key: parsed.get(key, default) for key, default in (
+            ('accounts', []), ('declarations', {}), ('rows', []),
+            ('account_cell_sources', {}), ('declaration_cell_sources', {}))}
+        candidate['import_model'] = model
+        candidate['period_series'] = parsed.get('period_series', [])
+        candidate = financial_import.evaluate(candidate, {k: v for k, v in edits.items() if k in model['cells']})
+        originals = {field['id']: field for field in fields(document)}
+        return candidate, [{'file_id': document['id'], 'field': key, 'old': originals[key]['value'],
+            'new': value, 'origin': 'user', 'source': document['name'] + ' / ' + key} for key, value in edits.items()]
     tables = deepcopy(document['standard_tables'])
     for address, value in edits.items():
         sheet, cell = address.rsplit('!', 1)

@@ -7,7 +7,7 @@ confirmation; this module alone does not authorize or execute an audit.
 from copy import deepcopy
 import re
 
-from src import config, engine, materials, periods, related_graph, material_review
+from src import config, engine, materials, periods, related_graph, material_review, material_security, financial_import
 from src.input_errors import InputError
 from src.snapshots import serialize_dataset
 
@@ -18,6 +18,22 @@ def _text(value):
 
 def _identity(value):
     return re.sub(r'\s+', '', _text(value)).upper()
+
+
+def extraction_blockers(documents, selections, company=None):
+    """Selected failed evidence cannot become usable through cached readiness or edits."""
+    blockers = []
+    for document in documents:
+        if selections.get(document['id'], {}).get('purpose', 'current') == 'excluded':
+            continue
+        blockers.extend(material_security.blockers(document, selections.get(document['id'], {}), company))
+        meta = document.get('extraction', {})
+        if meta.get('status') == 'failed' or meta.get('method') == 'ai_failed' or (
+                meta.get('method') == 'ai' and meta.get('status') != 'succeeded'):
+            blockers.append({'code': 'extraction_failed', 'message': '材料提取未成功，不能将本地候选当作完整结果。',
+                'file_id': document['id'], 'impact': '本文件尚不能参与检测，手工改值不会消除原提取失败。',
+                'required': '替换或补传可核对材料；如确认不使用本文件，请明确排除后重新分析。'})
+    return blockers
 
 
 def prefill(documents):
@@ -55,6 +71,8 @@ def analyze(documents, company, selections, rules):
     ids = [d.get('id') for d in documents]
     if any(not isinstance(i, str) for i in ids) or len(set(ids)) != len(ids) or set(selections) - set(ids):
         raise InputError('材料编号重复或无效。')
+    if any(not isinstance(choice, dict) for choice in selections.values()):
+        raise InputError('材料选择格式无效。')
     result = {'company': {}, 'files': [], 'edits': [], 'feedback': {'blocking': [], 'limited': [], 'suggested': []},
               'checks': [], 'dataset': None, 'can_confirm': False}
 
@@ -85,12 +103,18 @@ def analyze(documents, company, selections, rules):
     keys = {key for rule in rules for key in rule.inputs}
     # Parsing may contain other supported metrics needed by period derivation.
     keys |= set(config.PERIOD_SERIES)
+    selected_bases = {financial_import.statement_basis(d) for d in documents
+                      if selections.get(d['id'], {}).get('purpose', 'current') != 'excluded' and financial_import.statement_basis(d)}
+    if len(selected_bases) > 1:
+        note('blocking', 'statement_basis_conflict', '母公司/合并或未明确口径的财务报表不能跨材料混用。',
+             impact='同名企业不代表财务报表主体范围一致，人工改值或勾选复核不能消除该冲突。',
+             required='排除不同口径材料，按同一主体口径重新选页并保存复核；历史参考也须保持可比口径。')
     for original in documents:
         file_id = original['id']
         selection = selections.get(file_id, {})
         if not isinstance(selection, dict):
             raise InputError('材料选择格式无效。')
-        if set(selection) - {'purpose', 'rows', 'company', 'standard_edits'}:
+        if set(selection) - {'purpose', 'rows', 'company', 'standard_edits', 'evidence_reviews', 'import_options', 'pdf_range'}:
             raise InputError('材料选择含未知字段。')
         purpose = selection.get('purpose', 'current')
         if purpose not in {'current', 'history', 'excluded'}:
@@ -98,14 +122,43 @@ def analyze(documents, company, selections, rules):
         result['files'].append({'id': file_id, 'name': original['name'], 'fingerprint': original['fingerprint'],
                                 'sha256': original.get('sha256'),
                                 'purpose': purpose, 'material_company': deepcopy(original['company']),
-                                'extraction': deepcopy(original.get('extraction', {}))})
+                                'extraction': deepcopy(original.get('extraction', {})),
+                                'pdf_selection': deepcopy(original.get('pdf_selection')),
+                                'security': deepcopy(original.get('security', {})),
+                                'evidence_reviews': material_security.review_requirements(original, selection, target)})
         if purpose == 'excluded':
             continue
+        selected_pdf = original.get('pdf_selection')
+        if selected_pdf and not selected_pdf.get('pending') and selected_pdf['unprocessed_ranges']:
+            note('limited', 'pdf_partial_scope',
+                 f"原件共 {selected_pdf['total_pages']} 页，本次仅选择 {selected_pdf['first']}–{selected_pdf['last']} 页。", file_id,
+                 '未选页未参与本次提取和检测，不是已检查或无风险。', '如需检查其他页，另选同主体同期间片段并重新分析。')
         selected_count += 1
         if original.get('error'):
             note('blocking', 'read_failed', original['error'], file_id, '本文件未读取，不能当作没有字段。', '替换或明确移除此文件。')
             continue
         original_scope = original['company']
+        if purpose == 'current' and any(s.get('as_of') and s['as_of'] != main.end.isoformat()
+                                       for s in original.get('pdf_statements', [])):
+            note('blocking', 'statement_date_conflict', 'PDF 原文报表时点与主期间终点不同。', file_id,
+                 '单个报表日期不代表完整业务期间，补填不能消除原文时点冲突。',
+                 '对照原页，另开对应期间检测或明确排除此材料。')
+            continue
+        failed = extraction_blockers([original], selections, target)
+        if failed:
+            result['feedback']['blocking'].extend(failed)
+            continue
+        if purpose == 'current' and any(item.get('as_of') and item['as_of'] != main.end.isoformat()
+                for item in original.get('extraction', {}).get('period_observations', [])):
+            note('blocking', 'statement_date_conflict', '模型报表时点候选与主期间终点不同。', file_id,
+                 '报表日期不是完整期间，不能据此混入另一时点的金额。',
+                 '对照原件核对模型日期与材料归属，重新提取、另开检测或明确排除；补填期间不能消除该冲突。')
+            continue
+        if purpose == 'current' and any(not s.get('excluded') and s.get('as_of') and s['as_of'] != main.end.isoformat()
+                for s in original.get('import_mapping', {}).get('sheets', [])):
+            note('blocking', 'statement_date_conflict', '报表时点与主期间终点不同。', file_id,
+                 '期末余额不能混入另一时点的检测。', '核对原报表时点，另开检测或明确排除材料。')
+            continue
         if original_scope.get('taxpayer_id') and _identity(original_scope['taxpayer_id']) != target['taxpayer_id']:
             note('blocking', 'identity_conflict', '材料税号与被检测企业不同。', file_id,
                  '不能通过修改字段消除原材料冲突。', '核对材料归属，移除或另开检测。')
@@ -157,7 +210,11 @@ def analyze(documents, company, selections, rules):
         # Preserve original facts separately; normalization here is only for
         # the legacy parser's same-scope assembly contract.
         doc['company'] = normalized
-        edited = {'company': normalized, 'reviewed': True}
+        edited = {'company': normalized, 'reviewed': True, 'purpose': purpose,
+                  'evidence_reviews': selection.get('evidence_reviews', []), 'evidence_scope': target}
+        if doc.get('import_mapping'):
+            edited['standard_edits'] = corrections
+            edited['import_options'] = selection.get('import_options', {})
         if 'rows' in selection:
             if not isinstance(selection['rows'], list):
                 raise InputError('指标编辑须为列表。')

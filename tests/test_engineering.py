@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Thread, get_ident
 import unittest
 from unittest.mock import patch
 from zipfile import ZipFile, ZIP_DEFLATED
@@ -70,7 +71,8 @@ class EngineeringTests(unittest.TestCase):
         response = self.client.post('/api/audit', files={'file':('padded.xlsx', data)})
         self.assertEqual(response.status_code, 422)
         preview = self.client.post('/api/materials/preview', files={'files':('padded.xlsx', data)})
-        self.assertIn('解压', preview.json()['documents'][0]['error'])
+        self.assertEqual(preview.status_code, 422)
+        self.assertIn('解压', preview.json()['detail'])
         original = UploadFile.write
         rolled = []
         async def observe(file, content):
@@ -131,6 +133,7 @@ class EngineeringTests(unittest.TestCase):
         self.assertEqual(combined.sources, ['实际文件.xlsx'])
 
     def test_dashboard_pages_one_company_with_constant_query_count(self):
+        from webapp.access import current_actor
         from webapp.dashboard import collect
         dataset = loader.load(SAMPLE)
         for index in range(35):
@@ -140,12 +143,32 @@ class EngineeringTests(unittest.TestCase):
         foreign = self.store.create_user('foreign','Review-Probe-2026!','外部','org_admin','elsewhere')
         statements = []
         connect = self.store.connect
+        caller = get_ident()
+        def observe(query):
+            # The app's material queue can use this same Store concurrently.
+            # Count the dashboard caller, not unrelated worker transactions.
+            if get_ident() == caller:
+                statements.append(query)
         @contextmanager
         def traced():
             with connect() as db:
-                db.set_trace_callback(statements.append)
+                db.set_trace_callback(observe)
                 yield db
-        with patch.object(self.store, 'connect', traced):
+        background_queries = []
+        def background_read():
+            with self.store.connect() as db:
+                for _ in range(4):
+                    background_queries.append(db.execute('SELECT COUNT(*) FROM material_jobs').fetchone()[0])
+        def authorize_with_background(db, actor, roles):
+            verified = current_actor(db, actor, roles)
+            reader = Thread(target=background_read)
+            reader.start()
+            reader.join(timeout=5)
+            self.assertFalse(reader.is_alive(), 'Background query probe did not finish')
+            self.assertEqual(len(background_queries), 4)
+            return verified
+        with patch.object(self.store, 'connect', traced), \
+                patch('webapp.dashboard.current_actor', side_effect=authorize_with_background):
             first = collect(self.store, self.owner, page_size=20)
         selects = [query for query in statements if query.lstrip().upper().startswith('SELECT')]
         self.assertLessEqual(len(selects), 6)
