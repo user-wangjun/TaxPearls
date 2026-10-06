@@ -519,6 +519,8 @@ def auth_signup_ticket() -> FileResponse:
 @app.get("/auth-glass.js")
 @app.get("/auth-ocean.mjs")
 @app.get("/auth-wordmark.png")
+@app.get("/auth-ocean-poster-desktop.webp")
+@app.get("/auth-ocean-poster-mobile.webp")
 @app.get("/vendor/three.module.mjs")
 def auth_glass_asset(request: Request) -> FileResponse:
     assets = {
@@ -526,6 +528,8 @@ def auth_glass_asset(request: Request) -> FileResponse:
         "/auth-glass.js": ("auth-glass.js", "text/javascript"),
         "/auth-ocean.mjs": ("auth-ocean.mjs", "text/javascript"),
         "/auth-wordmark.png": ("auth-wordmark.png", "image/png"),
+        "/auth-ocean-poster-desktop.webp": ("auth-ocean-poster-desktop.webp", "image/webp"),
+        "/auth-ocean-poster-mobile.webp": ("auth-ocean-poster-mobile.webp", "image/webp"),
         "/vendor/three.module.mjs": ("vendor/three.module.mjs", "text/javascript"),
     }
     name, media_type = assets[request.url.path]

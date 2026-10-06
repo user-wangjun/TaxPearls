@@ -1,10 +1,14 @@
 /* Authentication-only styles: the workspace retains its existing layout. */
-.auth-screen { position:relative; isolation:isolate; min-height:100dvh; display:grid; grid-template-columns:minmax(0,1fr); overflow:hidden; padding:16px 24px; background:linear-gradient(160deg,#91b8d2,#f7e1c2 65%,#26455d); font-family:Inter,"Microsoft YaHei",sans-serif; color:#070d15; color-scheme:light; }
+.auth-screen { position:relative; isolation:isolate; min-height:100dvh; display:grid; grid-template-columns:minmax(0,1fr); overflow:hidden; padding:16px 24px; background:#8ba7ba; font-family:Inter,"Microsoft YaHei",sans-serif; color:#070d15; color-scheme:light; }
+.auth-screen::before { content:""; position:fixed; inset:0; pointer-events:none; z-index:-1; background:url('/auth-ocean-poster-desktop.webp?v=20261006-shape-1') center/cover no-repeat; }
+@media(max-aspect-ratio:3/4) { .auth-screen::before { background-image:url('/auth-ocean-poster-mobile.webp?v=20261006-shape-1'); } }
 .auth-screen [hidden] { display:none!important; }
-.auth-screen #sceneCanvas { position:fixed; inset:0; width:100%; height:100%; pointer-events:none; z-index:-1; }
+.auth-screen #sceneCanvas { position:fixed; inset:0; width:100%; height:100%; object-fit:cover; object-position:center; pointer-events:none; z-index:-1; opacity:0; transition:opacity .65s ease; }
+.auth-screen.ocean-ready #sceneCanvas { opacity:1; }
 .auth-screen .auth-entry { display:grid; place-items:center; min-height:0; padding:0; background:none; }
 .auth-screen .auth-card { position:relative; display:block; width:430px; max-width:100%; min-height:0; padding:24px 28px; overflow:visible; border:1px solid #ffffff4d; border-radius:22px; background:linear-gradient(125deg,#ffffff29,#f0f9ff13 45%,#ffffff26); backdrop-filter:blur(2px); -webkit-backdrop-filter:blur(2px); box-shadow:0 24px 64px -26px #091e304d,0 5px 14px -8px #091e3029,inset 0 1px 0 #ffffff66,inset 0 -1px 0 #ffffff1f; animation:none; }
 .auth-screen.liquid-live .auth-card { backdrop-filter:none; -webkit-backdrop-filter:none; }
+.auth-screen .auth-card { transition:backdrop-filter 1.2s ease,-webkit-backdrop-filter 1.2s ease; }
 .auth-screen .auth-card::before { content:""; position:absolute; inset:0; height:auto; border-radius:inherit; pointer-events:none; background:linear-gradient(125deg,#ffffff17,transparent 26%,transparent 72%,#ffffff09); box-shadow:inset 1px 1px 0 #ffffff66,inset -1px -1px 0 #112d4117; }
 .auth-screen .auth-card::after { content:""; position:absolute; inset:2px; border-radius:inherit; border:1px solid #ffffff09; pointer-events:none; }
 .auth-screen .auth-card>* { width:100%; max-width:none; }
