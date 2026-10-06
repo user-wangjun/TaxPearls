@@ -75,21 +75,22 @@ async function refreshAIStatus() {
   catch(err) { $("aiStatus").textContent = "AI 配置状态不可用：" + err.message; }
 }
 async function refreshAuditClients() {
-  const field=$("auditClientField"),select=$("auditClient");
+  const field=$("auditClientField"),select=$("uploadCompanyMode");
   if(!currentUser || !["org_admin","accountant"].includes(currentUser.role)){field.style.display="none";return;}
   field.style.display="block";
   try {
     const owner=currentUser.id,clients=await api("/api/clients"),preferred=selectedClientId||select.value;
     if(currentUser?.id!==owner)return;
-    select.textContent="";const blank=el("option",null,"请选择已有企业");blank.value="";select.append(blank);
-    for(const client of clients){const o=el("option",null,client.name+" · "+client.taxpayer_id);o.value=client.id;select.append(o);}
-    if(clients.some(client=>client.id===preferred))select.value=preferred;
-    selectedClientId=select.value;
-    await enterpriseMaterials.selectClient(select.value);
+    const group=$("uploadClientGroup");
+    group.replaceChildren();
+    for(const client of clients){const o=el("option",null,client.name+" · "+client.taxpayer_id);o.value=client.id;group.append(o);}
+    group.hidden=!clients.length;
+    if(clients.some(client=>client.id===preferred))select.value=preferred;else select.value="new";
+    selectedClientId=select.value==="new"?"":select.value;
+    await enterpriseMaterials.selectClient(selectedClientId);
   } catch(err){showError(err.message);}
 }
-$("auditClient").addEventListener("change",()=>{selectedClientId=$("auditClient").value;});
-$("uploadCompanyMode").addEventListener("change",()=>{if($("uploadCompanyMode").value==="new")selectedClientId="";});
+$("uploadCompanyMode").addEventListener("change",()=>{selectedClientId=$("uploadCompanyMode").value==="new"?"":$("uploadCompanyMode").value;});
 function clearMaterials() {
   materialRequest++;
   enterpriseMaterials.reset();
@@ -285,7 +286,7 @@ function renderMaterialReview(files) {
       rows:(c.doc.kind==="pdf"||c.doc.review_required)?c.rows.map(r=>({name:r.name.value,value:r.value.value.trim(),page:Number(r.page.value),detail:r.detail.value.trim()})):undefined}));
     submit.disabled=true; reset.disabled=true; $("busy").style.display="block";
     try {
-      const result=await api("/api/materials/audit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:draft.token,mode:mode.value,same_scope:sameScope.checked,company:company(),client_id:$("auditClient").value||null,selections})});
+      const result=await api("/api/materials/audit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:draft.token,mode:mode.value,same_scope:sameScope.checked,company:company(),client_id:selectedClientId||null,selections})});
       if(!materialCurrent(request,owner)||!$("uploadPanel").classList.contains("active"))return;
       const box=$("batchResults"); box.replaceChildren(); box.hidden=false;
       box.append(el("h2","",`完成 ${result.results.length} 份审计，${result.errors.length} 组材料未通过`));
@@ -1127,16 +1128,16 @@ function appendProtectionAction(box,protection) {
   };box.append(label,open);
 }
 function invalidateVerification() {
-  verificationRequest++;$("verificationStatus").textContent="";$("verificationDetails").textContent="";
+  verificationRequest++;const status=$("verificationStatus");status.textContent="";status.className="muted";$("verificationDetails").textContent="";
   $("verificationLookup").disabled=$("verificationCheck").disabled=false;
 }
 function verificationDetails(data) {
   $("verificationDetails").textContent=`${data.report_no} · ${data.kind==="audit"?"审计 v"+data.version:"机构报告"}\n${data.customer_name} · 报告日期 ${data.report_date} · 归档 ${data.archived_at}\n标识 ${data.id}\nHTML SHA-256 ${data.html_sha256}\nPDF SHA-256 ${data.pdf_sha256 || "未导出存档；不能核验 PDF"}\n${data.notice}`;
 }
 async function performVerification(checkFile) {
-  const request=++verificationRequest,id=$("verificationId").value.trim(),format=$("verificationFormat").value,file=$("verificationFile").files[0];
+  const request=++verificationRequest,id=$("verificationId").value.trim(),format=$("verificationFormat").value,file=$("verificationFile").files[0],status=$("verificationStatus");
   $("verificationLookup").disabled=$("verificationCheck").disabled=true;
-  $("verificationDetails").textContent="";$("verificationStatus").textContent=checkFile?"正在本机计算文件指纹……":"正在读取登记……";
+  $("verificationDetails").textContent="";status.className="muted";status.textContent=checkFile?"正在本机计算文件指纹……":"正在读取登记……";
   try {
     if(!/^TPV-[0-9a-f]{40}$/.test(id))throw new Error("请输入完整的 TPV 追溯标识；TPL 本地标识没有服务器登记。");
     let options;
@@ -1152,9 +1153,10 @@ async function performVerification(checkFile) {
     const data=await api("/api/report-verification/"+encodeURIComponent(id),options);
     if(request!==verificationRequest)return;
     verificationDetails(data);
-    $("verificationStatus").textContent=checkFile?(data.sha256_matches?"核验通过：所选文件与归档原件逐字节一致。":"核验不通过：所选文件与归档原件不一致，可能改动或选错版本。"):
+    status.className=checkFile?(data.sha256_matches?"verify-ok":"verify-bad"):"muted";
+    status.textContent=checkFile?(data.sha256_matches?"核验通过：所选文件与归档原件逐字节一致。":"核验不通过：所选文件与归档原件不一致，可能改动或选错版本。"):
       "此标识已登记；尚未核验任何文件，请选择文件后核验。";
-  } catch(e) {if(request===verificationRequest)$("verificationStatus").textContent="核验失败："+e.message;}
+  } catch(e) {if(request===verificationRequest){status.className="verify-bad";status.textContent="核验失败："+e.message;}}
   finally {if(request===verificationRequest)$("verificationLookup").disabled=$("verificationCheck").disabled=false;}
 }
 function lookupVerification(){return performVerification(false);}
@@ -1690,7 +1692,7 @@ $("btnCreateUser").addEventListener("click",async()=>{const uid=currentUser?.id;
 $("btnCreateInvite").addEventListener("click",async()=>{try{const org=$("inviteOrgName").value.trim(),seats=Number($("inviteSeats").value);if(!org)throw new Error("请填写企业/高校名称。");const inv=await api("/api/invites",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({org_name:org,seats})});$("inviteOrgName").value="";$("inviteSeats").value="5";$("inviteRevealCode").textContent=inv.code;$("inviteRevealSeats").textContent="机构总席位："+inv.seats+" 席（含管理员）";$("inviteReveal").hidden=false;await loadAdmin();}catch(err){showError(err.message);}});
 $("btnCopyInvite").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("inviteRevealCode").textContent);showToast("邀请码已复制");}catch(err){showError("复制失败，请手动选中复制。");}});
 $("btnHideInvite").addEventListener("click",()=>{$("inviteReveal").hidden=true;$("inviteRevealCode").textContent="";});
-$("btnCreateClient").addEventListener("click",async()=>{try{const client=await api("/api/clients",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:$("clientName").value,taxpayer_id:$("clientTaxpayerId").value,accountant_id:$("clientAccountant").value||null})});selectedClientId=client.id;$("clientName").value="";$("clientTaxpayerId").value="";await loadAdmin();}catch(err){showError(err.message);}});
+$("btnCreateClient").addEventListener("click",async()=>{const name=$("clientName").value.trim(),taxpayerId=$("clientTaxpayerId").value.trim();if(!name||!taxpayerId)return showError("企业名称和纳税人识别号为必填项。");try{const client=await api("/api/clients",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,taxpayer_id:taxpayerId,accountant_id:$("clientAccountant").value||null})});selectedClientId=client.id;$("clientName").value="";$("clientTaxpayerId").value="";await loadAdmin();}catch(err){showError(err.message);}});
 $("btnSaveOrgSettings").addEventListener("click",async()=>{try{const saved=await api("/api/org/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({display_name:$("orgDisplayName").value,report_title:$("orgReportTitle").value,footer_text:$("orgFooterText").value})});showOrgSettings(saved,"报告抬头与页脚已保存。");}catch(err){showError(err.message);}});
 $("btnUploadOrgLogo").addEventListener("click",async()=>{const file=$("orgLogoFile").files[0];if(!file)return showError("请选择 PNG 或 JPEG Logo。");try{const form=new FormData();form.append("file",file);const saved=await api("/api/org/logo",{method:"POST",body:form});$("orgLogoFile").value="";showOrgSettings(saved,"Logo 已上传并同步到报告模板。");}catch(err){showError(err.message);}});
 $("btnRemoveOrgLogo").addEventListener("click",async()=>{if(!window.confirm("确认移除本机构报告 Logo？机构名称、标题和页脚不会改变。"))return;try{showOrgSettings(await api("/api/org/logo",{method:"DELETE"}),"Logo 已移除。");}catch(err){showError(err.message);}});

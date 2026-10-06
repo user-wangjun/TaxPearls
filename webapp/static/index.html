@@ -36,6 +36,9 @@
   .hdr-txt p { font-size: 12.5px; color: #b8c3dc; margin-top: 4px; }
   /* 左上角品牌标识：矢量 SVG，任意尺寸不失真 */
   .hdr-logo { flex: none; display: block; height: 76px; width: auto; }
+  /* 标题中的“税海拾珠”使用登录页同款字标 PNG */
+  .hdr-wordmark { height: 40px; width: auto; vertical-align: -11px; user-select: none; }
+  .hdr-sub { white-space: nowrap; }
 
   main { padding: 28px 0 60px; }
 
@@ -265,6 +268,7 @@
     .hdr-txt h1 { font-size: 17px; letter-spacing: 1px; }
     .hdr-txt p { display: none; }
     .hdr-logo { height: 48px; }
+    .hdr-wordmark { height: 28px; vertical-align: -7px; }
   }
   @media (max-width: 520px) {
     .hdr { flex-wrap: wrap; row-gap: 10px; }
@@ -334,6 +338,45 @@
   .material-table th:nth-child(3) { width:70px; }
   .material-card pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:auto; background:var(--bg); padding:12px; font-size:12px; }
   .material-check { display:block; margin:12px 0; line-height:1.8; }
+  label .req { color: var(--high); margin-left: 3px; font-weight: 600; }
+
+  /* 上传设置卡片：去掉 fieldset 默认边框，按全站 field 控件与分组卡片组织 */
+  #uploadScope { border:0; padding:0; margin:0; min-width:0; }
+  #uploadScope:disabled { opacity:.6; }
+  #uploadScope legend { padding:0; font-size:17px; font-weight:600; color:var(--ink); margin-bottom:14px; }
+  #uploadScope .muted { margin-top:10px; }
+  #uploadScope details { margin:14px 0; border:1px solid var(--line); border-radius:10px; background:#f8fafd; }
+  #uploadScope summary { list-style:none; display:flex; align-items:center; gap:9px; padding:13px 16px; border-radius:10px; cursor:pointer; user-select:none; font-size:15px; font-weight:600; color:#2c4a78; }
+  #uploadScope summary::-webkit-details-marker { display:none; }
+  #uploadScope summary::before { content:"▸"; flex:none; font-size:11px; color:#5b8ad3; transition:transform .18s ease; }
+  #uploadScope details[open] summary::before { transform:rotate(90deg); }
+  #uploadScope summary:hover { background:#eef3fb; }
+  #uploadScope details[open] .material-company { padding:2px 16px 6px; margin:0; }
+  .upload-extraction { margin-top:20px; padding-top:18px; border-top:1px solid var(--line); }
+  .upload-extraction .field { margin:0; max-width:560px; }
+  .upload-extraction .muted { margin-top:10px; }
+
+  /* 机构总览控制行：控件与按钮等高，单字段不再横向拉伸占满整行 */
+  #orgReportPanel .row .field { flex:0 1 360px; min-width:220px; }
+  #orgReportPanel .row .field select { height:48px; min-height:48px; padding-top:0; padding-bottom:0; }
+  #orgReportPanel .row .btn { min-height:48px; }
+  #orgReportPanel .row .btn.pdf { margin-left:auto; }
+
+  /* 卡片内控制行恢复纵向节奏：field 外边距被工作台样式清零后，行与行、行与按钮会贴死 */
+  .sheet .row { margin-block:12px; }
+
+  /* 报告原件核验：列宽按内容分配，文件选择与状态提示与全站控件同风格 */
+  #reportVerification > * { max-width:960px; }
+  #reportVerification .verify-fields .field:nth-child(1) { flex:2.4; min-width:260px; }
+  #reportVerification .verify-fields .field:nth-child(2) { flex:1; min-width:150px; }
+  #reportVerification .verify-fields .field:nth-child(3) { flex:1.6; min-width:230px; }
+  #reportVerification input[type=file] { display:flex; align-items:center; gap:10px; padding:5px 12px; color:var(--ink-2); }
+  #reportVerification input[type=file]::file-selector-button { flex:none; border:0; border-radius:8px; background:#eaf1ff; color:#2865e8; padding:8px 14px; font-family:inherit; font-size:14px; cursor:pointer; transition:background .16s; }
+  #reportVerification input[type=file]::file-selector-button:hover { background:#dbe7fc; }
+  #reportVerification .verify-actions .btn { min-height:48px; }
+  #reportVerification #verificationStatus.verify-ok { color:#18835b; }
+  #reportVerification #verificationStatus.verify-bad { color:var(--high); }
+  #reportVerification #verificationDetails:not(:empty) { margin-top:12px; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:#f8fafd; font-size:13px; line-height:1.9; color:var(--ink-2); }
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
@@ -350,11 +393,11 @@
       <div class="auth-brand"><img class="auth-logo" src="/logo" alt="税海拾珠" draggable="false"><div class="auth-brand-txt"><img class="brand-wordmark" src="/auth-wordmark.png" alt="税海拾珠" draggable="false"><span>TAXPEARLS</span></div></div>
       <div class="auth-intro"><h2 id="authTitle">欢迎回来</h2><p id="authDescription">连接每一份证据，拾取每一条线索。</p><p class="auth-step" id="authStep"></p></div>
       <div id="viewLogin">
-        <div class="field"><label for="loginUser" id="loginUserLabel">邮箱或用户名</label><input id="loginUser" name="username" autocomplete="username" inputmode="email" placeholder="name@example.com" required></div>
-        <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+        <div class="field"><label for="loginUser" id="loginUserLabel">邮箱或用户名</label><input id="loginUser" autocomplete="username" inputmode="email" placeholder="name@example.com" required></div>
+        <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" type="password" autocomplete="current-password" placeholder="请输入密码" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
       </div>
       <div class="auth-remember" id="loginRememberField">
-        <div class="auth-remember-row"><label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">保持登录 30 天</label></div>
+        <div class="auth-remember-row"><label><input id="loginRemember" type="checkbox" aria-describedby="loginRememberHint">保持登录 30 天</label></div>
         <p id="loginRememberHint">公共电脑请勿勾选</p>
       </div>
       <div id="viewForgot" style="display:none">
@@ -424,7 +467,7 @@
     <div class="hdr-brand">
       <img class="hdr-logo" src="/logo" alt="税海拾珠">
       <div class="hdr-txt">
-        <h1>税海拾珠 · 税务风险审计</h1>
+        <h1 class="hdr-title"><img class="hdr-wordmark" src="/auth-wordmark.png" alt="税海拾珠" draggable="false"><span class="hdr-sub">· 税务风险审计</span></h1>
       </div>
     </div>
     <div class="top-tools"><span id="currentUser"></span><button id="btnLogout">退出</button></div>
@@ -470,38 +513,43 @@
     <section class="panel" id="uploadPanel">
     <div class="page-head"><div><p class="eyebrow">DATA IMPORT</p><h2>上传材料</h2><p class="muted">核对企业与所属期间后，生成审计结果并更新工作台。</p></div></div>
 
-    <!-- 1. 上传区 -->
-    <div class="sheet" style="margin-bottom:16px">
+    <!-- 1. 上传设置：企业范围 + 提取方式 -->
+    <div class="sheet">
       <div class="field" id="auditClientField">
         <fieldset id="uploadScope">
           <legend>本次分析的企业</legend>
-          <label for="uploadCompanyMode">企业选择</label>
-          <select id="uploadCompanyMode"><option value="new">新建企业（默认）</option><option value="existing">已有企业</option></select>
-          <label for="auditClient">已有企业档案</label>
-          <select id="auditClient" disabled><option value="">请选择已有企业</option></select>
+          <div class="field">
+            <label for="uploadCompanyMode">企业选择</label>
+            <select id="uploadCompanyMode"><option value="new">新建企业（默认）</option><optgroup id="uploadClientGroup" label="已有企业档案" hidden></optgroup></select>
+          </div>
           <p class="muted" id="uploadProfileHint">新建企业可留空，上传后仅从无歧义材料预填；确认后才建档。</p>
-          <details><summary>本次企业信息（可先填写，也可上传后核对）</summary>
+          <details class="upload-company-info"><summary>本次企业信息（可先填写，也可上传后核对）</summary>
+            <p class="muted">带 <span class="req">*</span> 的为确认检测前必填项；可先留空，由无歧义材料候选预填。</p>
             <div class="material-company">
-              <label>企业名称<input id="uploadCompanyName" maxlength="200"></label>
-              <label>纳税人识别号<input id="uploadCompanyTaxId" maxlength="200"></label>
+              <label>企业名称<span class="req" aria-hidden="true">*</span><input id="uploadCompanyName" maxlength="200"></label>
+              <label>纳税人识别号<span class="req" aria-hidden="true">*</span><input id="uploadCompanyTaxId" maxlength="200"></label>
               <label>所属行业<input id="uploadCompanyIndustry" maxlength="200"></label>
               <label>地区<input id="uploadCompanyRegion" maxlength="200" placeholder="涉及房产土地时，另核对事项所在地"></label>
               <label>本期纳税人身份<input id="uploadCompanyTaxpayerType" maxlength="200"></label>
               <label>本次业务范围<input id="uploadCompanyBusinessScope" maxlength="200"></label>
-              <label>主期间起始日<input id="uploadCompanyStart" type="date"></label>
-              <label>主期间终止日<input id="uploadCompanyEnd" type="date"></label>
+              <label>主期间起始日<span class="req" aria-hidden="true">*</span><input id="uploadCompanyStart" type="date"></label>
+              <label>主期间终止日<span class="req" aria-hidden="true">*</span><input id="uploadCompanyEnd" type="date"></label>
             </div>
           </details>
           <p class="muted">手填值不被材料覆盖。历史信息仅供预填，本期身份和范围须确认；旧期间不自动沿用。此选择不代表符合任何税收优惠。</p>
         </fieldset>
       </div>
-      <label for="extractionMode">数据提取方式</label>
-      <select id="extractionMode" style="padding:8px;margin:8px 0;max-width:100%">
-        <option value="auto">自动：已配置时使用 AI 提取 PDF / 扫描图片 / 非标准账表</option>
-        <option value="ai">使用 AI 提取（需要配置模型服务）</option>
-        <option value="local">仅本地解析</option>
-      </select>
-      <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
+      <div class="upload-extraction">
+        <div class="field">
+          <label for="extractionMode">数据提取方式</label>
+          <select id="extractionMode">
+            <option value="auto">自动：已配置时使用 AI 提取 PDF / 扫描图片 / 非标准账表</option>
+            <option value="ai">使用 AI 提取（需要配置模型服务）</option>
+            <option value="local">仅本地解析</option>
+          </select>
+        </div>
+        <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
+      </div>
     </div>
     <div class="dropzone" id="dropzone">
       <div class="t1">一次选择或拖拽多份 XLSX、受控旧版 XLS、CSV/TSV、XML、PDF、PNG/JPEG/TIFF，也可上传 ZIP 文件包</div>
@@ -595,8 +643,8 @@
 
     <section class="panel" id="historyPanel">
       <div class="sheet" id="reportVerification"><h2>报告原件核验</h2><p class="muted">标识和水印可以被复制，不能单独证明文件真实。登录后核对服务器冻结原件；文件在本机计算 SHA-256，只提交指纹，不上传报告内容。不提供公开报告查询，不是第三方数字签名，也不能阻止转发。旧归档没有标识时保留旧文件，归档当前报告可生成带标识的新版本。</p>
-        <div class="row"><div class="field"><label for="verificationId">追溯标识</label><input id="verificationId" maxlength="44" placeholder="TPV- 后接 40 位小写十六进制"></div><div class="field"><label for="verificationFormat">文件类型</label><select id="verificationFormat"><option value="pdf">PDF 原件</option><option value="html">HTML 原件</option></select></div><div class="field"><label for="verificationFile">待核验文件（仅本机计算）</label><input id="verificationFile" type="file" accept=".pdf,.html"></div></div>
-        <div class="row"><button class="btn re" id="verificationLookup" type="button">查看登记信息</button><button class="btn pdf" id="verificationCheck" type="button">核验所选文件</button></div><p id="verificationStatus" class="muted" role="status"></p><p id="verificationDetails" class="muted" style="overflow-wrap:anywhere;white-space:pre-line"></p>
+        <div class="row verify-fields"><div class="field"><label for="verificationId">追溯标识</label><input id="verificationId" maxlength="44" placeholder="TPV- 后接 40 位小写十六进制"></div><div class="field"><label for="verificationFormat">文件类型</label><select id="verificationFormat"><option value="pdf">PDF 原件</option><option value="html">HTML 原件</option></select></div><div class="field"><label for="verificationFile">待核验文件（仅本机计算）</label><input id="verificationFile" type="file" accept=".pdf,.html"></div></div>
+        <div class="row verify-actions"><button class="btn re" id="verificationLookup" type="button">查看登记信息</button><button class="btn pdf" id="verificationCheck" type="button">核验所选文件</button></div><p id="verificationStatus" class="muted" role="status"></p><p id="verificationDetails" class="muted" style="overflow-wrap:anywhere;white-space:pre-line"></p>
       </div>
       <div class="sheet"><h2>审计历史与报告归档</h2><p class="muted">证据快照与报告版本分开保存。品牌、模板或已校验叙述变化后生成新版本，旧版不覆盖；PDF 首次导出后保存原文件。旧审计首次归档以实际归档时间为准，不补造历史报告。</p>
         <form id="historySearch"><div class="row">
@@ -694,7 +742,7 @@
           <h3>注册邮箱域名白名单</h3><div class="field"><label for="memberDomainEnabled"><input type="checkbox" id="memberDomainEnabled"> 启用限制（默认关闭）</label><label for="memberDomains">允许的完整域名，每行一个，最多 20 个</label><textarea id="memberDomains" maxlength="5100" placeholder="example.com"></textarea><p class="muted">只匹配完整域名，不自动允许子域名；支持国际化域名。仅限制新成员通过邀请注册，不影响现有账号。</p><button class="btn" id="btnSaveInvitationPolicy" type="button">保存邮箱限制</button></div>
         </section>
       </div>
-      <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称</label><input id="clientName"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号</label><input id="clientTaxpayerId"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
+      <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称<span class="req" aria-hidden="true">*</span></label><input id="clientName" required maxlength="200"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号<span class="req" aria-hidden="true">*</span></label><input id="clientTaxpayerId" required maxlength="64"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
       <div class="sheet" id="ruleAdmin"><h2>规则参数与试跑</h2><p class="muted">选择规则后以表单调整参数，并在指定历史材料快照上试跑。试跑不修改历史审计；只有平台管理员可正式保存。带日期的新版本只适用于完整落在其生效区间内的审计期。</p><div class="data-list" id="ruleList"></div><div class="rule-editor" id="ruleEditor" hidden><div class="rule-editor-head"><div><h3 id="ruleEditorTitle"></h3><p class="muted" id="ruleEditorMeta"></p></div><span class="role-chip" id="ruleEditorState"></span></div><div class="row"><div class="field"><label for="ruleCurrentVersion">最新保存版本</label><input id="ruleCurrentVersion" readonly></div><div class="field"><label for="ruleNewVersion">新版本</label><input id="ruleNewVersion" maxlength="32" inputmode="decimal"></div></div><div class="row"><div class="field"><label for="ruleEffectiveFrom">生效起始日</label><input id="ruleEffectiveFrom" type="date"></div><div class="field"><label for="ruleEffectiveTo">生效终止日（可留空）</label><input id="ruleEffectiveTo" type="date"></div></div><p class="muted">首次配置可留空日期沿用全期间兼容模式；启用定期版本后，后续版本须填写起始日。新起始日会自动截止前一条开放式版本；有限区间不得重叠。跨版本的审计期需拆期审计。</p><div class="field"><label for="ruleThresholdBasis">阈值依据</label><textarea id="ruleThresholdBasis" maxlength="500"></textarea></div><div><h3>可调参数</h3><p class="muted" id="ruleMetricHint"></p><div class="rule-param-grid" id="ruleParamFields"></div></div><div class="field"><label for="ruleTrialAudit">试跑材料</label><select id="ruleTrialAudit"></select></div><div class="row"><button class="btn pdf" id="btnRuleTrial" type="button">试跑当前草稿</button><button id="btnRuleSave" type="button">保存为新版本</button><p class="muted" id="ruleEditorStatus" role="status"></p></div><div class="rule-trial-result" id="ruleTrialResult" hidden></div><div id="ruleVersionHistory" class="data-list"></div></div></div>
       <div class="sheet" id="logAdmin"><h2>操作日志</h2><div class="data-list" id="logList"></div></div>
     </section>

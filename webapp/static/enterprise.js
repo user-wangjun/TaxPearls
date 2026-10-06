@@ -16,23 +16,21 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
   const uploadOrigins = {};
   for(const [key,id] of Object.entries(uploadFields)) $(id).addEventListener("input",()=>{uploadOrigins[key]="user";});
   if(!$("uploadCompanyMode").value) $("uploadCompanyMode").value="new";
-  $("uploadCompanyMode").addEventListener("change",()=>selectClient($("uploadCompanyMode").value==="existing"?$("auditClient").value:""));
-  $("auditClient").addEventListener("change",()=>selectClient($("auditClient").value));
+  $("uploadCompanyMode").addEventListener("change",()=>selectClient($("uploadCompanyMode").value==="new"?"":$("uploadCompanyMode").value));
   function clearArchiveFields(all=false) {
     for(const [key,id] of Object.entries(uploadFields)) if(all||uploadOrigins[key]!=="user") {$(id).value="";delete uploadOrigins[key];}
   }
   async function selectClient(id) {
+    if(id==="new")id="";
     const request=++profileRequest,owner=user()?.id;
-    $("auditClient").value=id;
-    // Choosing 'existing' without a client keeps the empty selection visible.
-    if(id) $("uploadCompanyMode").value="existing";
-    const existing=$("uploadCompanyMode").value==="existing";
-    $("auditClient").disabled=!existing;clearArchiveFields();
+    $("uploadCompanyMode").value=id||"new";
+    const existing=!!id;
+    clearArchiveFields();
     profileLoading=false;
-    $("uploadProfileHint").textContent=existing?"请选择已有企业；本次期间仍须重新确认。":"新建企业可留空，上传后仅从无歧义材料预填；确认后才建档。";
-    if(!existing||!id) {controls();return;}
+    $("uploadProfileHint").textContent=existing?"已选择企业档案；本次期间仍须重新确认。":"新建企业可留空，上传后仅从无歧义材料预填；确认后才建档。";
+    if(!existing) {controls();return;}
     profileLoading=true;controls();$("uploadProfileHint").textContent="正在读取有权访问的企业档案……";
-    const current=()=>request===profileRequest&&owner===user()?.id&&enabled()&&$("auditClient").value===id;
+    const current=()=>request===profileRequest&&owner===user()?.id&&enabled()&&$("uploadCompanyMode").value===id;
     try {
       const value=await api("/api/enterprise/client-profile/"+encodeURIComponent(id));
       if(!current())return;
@@ -45,8 +43,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
   }
   function uploadDeclaration() {
     if(profileLoading)throw new Error("请等待企业档案读取完成。");
-    const mode=$("uploadCompanyMode").value||"new",clientId=mode==="existing"?$("auditClient").value:"";
-    if(mode==="existing"&&!clientId)throw new Error("请选择已有企业，或切换为新建企业。");
+    const value=$("uploadCompanyMode").value,clientId=value&&value!=="new"?value:"",mode=clientId?"existing":"new";
     const company={};
     for(const [key,id] of Object.entries(uploadFields)) if(uploadOrigins[key]==="user")company[key]=$(id).value;
     return {mode,clientId,company};
@@ -71,7 +68,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     extractionActions = [];
     profileRequest++;profileLoading=false;
     if(uploadOwner!==user()?.id||!enabled()) {
-      uploadOwner=user()?.id;clearArchiveFields(true);$("auditClient").value="";$("uploadCompanyMode").value="new";
+      uploadOwner=user()?.id;clearArchiveFields(true);$("uploadCompanyMode").value="new";
       $("uploadProfileHint").textContent="新建企业可留空，上传后从材料预填并核对。";
     }
     urls.forEach(URL.revokeObjectURL); urls.clear();
@@ -230,8 +227,12 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     });root.append(load,detail);
   }
   function input(parent, title, value, type = "text", onInput = changed) {
-    const label = el("label", "", title), control = el("input"); control.type = type;
-    control.value = value ?? ""; control.maxLength = 200; control.setAttribute("aria-label",title);
+    const aria = title, required = title.endsWith("（必填）");
+    if (required) title = title.slice(0, -4);
+    const label = el("label", "", title);
+    if (required) { const star = el("span", "req", "*"); star.setAttribute("aria-hidden", "true"); label.append(star); }
+    const control = el("input"); control.type = type;
+    control.value = value ?? ""; control.maxLength = 200; control.setAttribute("aria-label",aria);
     control.addEventListener("input",onInput); label.append(control); parent.append(label); return control;
   }
   function pollBatch() {
