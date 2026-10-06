@@ -5,19 +5,40 @@
   const form = document.getElementById('authForm');
   const canvas = document.getElementById('sceneCanvas');
   const status = document.getElementById('oceanStatus');
-  let ocean, loading = false, failed = false, pending = false, lastView = '';
+  let ocean, loading = false, failed = false, pending = false, lastView = '', revealId = 0, revealComplete = false;
   const visible = () => screen.style.display !== 'none' && !document.hidden;
   function unavailable() {
-    screen.classList.remove('liquid-live');
+    revealId++;
+    revealComplete = false;
+    screen.classList.remove('liquid-live', 'ocean-ready');
     canvas.style.visibility = 'hidden';
     status.textContent = '海景渲染暂不可用，您仍可正常登录或注册。';
     status.hidden = false;
   }
-  function restored() {
-    screen.classList.add('liquid-live');
+  async function restored() {
+    const id = ++revealId;
+    revealComplete = false;
+    screen.classList.remove('liquid-live');
+    screen.classList.add('ocean-ready');
     canvas.style.visibility = '';
     status.hidden = true;
     update();
+    // Keep the t=0 reflections still throughout the crossfade. Motion starts
+    // only once the poster is fully covered by the matching live frame.
+    const duration = parseFloat(getComputedStyle(canvas).transitionDuration) * 1000;
+    if (duration > 0) await new Promise(resolve => {
+      let timer;
+      const finish = () => { clearTimeout(timer); canvas.removeEventListener('transitionend', ended); resolve(); };
+      const ended = event => { if (event.target === canvas && event.propertyName === 'opacity') finish(); };
+      canvas.addEventListener('transitionend', ended);
+      timer = setTimeout(finish, duration + 100);
+    });
+    if (id !== revealId) return;
+    revealComplete = true;
+    if (visible()) {
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) screen.classList.add('liquid-live');
+      ocean?.releaseOpening();
+    }
   }
   async function update() {
     const view = form.dataset.view;
@@ -31,12 +52,20 @@
     if (!ocean && !loading && !failed && visible() && form.dataset.setup !== undefined) {
       loading = true;
       try {
-        const {mountOcean} = await import('/auth-ocean.mjs?v=20261005-glass-1');
+        // Let the form paint before creating the WebGL context.
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        if (!visible()) return;
+        const {mountOcean} = await import('/auth-ocean.mjs?v=20261006-shape-1');
         // A remembered session may have entered the app during the download.
         if (!visible()) return;
-        ocean = mountOcean(canvas);
+        ocean = await mountOcean(canvas, {holdOpening:true});
         window.taxPearlsOcean = ocean;
-        screen.classList.add('liquid-live');
+        ocean.setActive(visible());
+        if (visible()) ocean.setGlassPanel(form.getBoundingClientRect(), parseFloat(getComputedStyle(form).borderTopLeftRadius));
+        // Keep the matching static opening frame until full-quality WebGL is
+        // ready; the low-resolution sky bootstrap is never exposed to users.
+        await ocean.whenSkyReady();
+        restored();
       } catch (error) {
         failed = true;
         unavailable();
@@ -46,6 +75,10 @@
     if (!ocean) return;
     ocean.setActive(visible());
     if (visible()) ocean.setGlassPanel(form.getBoundingClientRect(), parseFloat(getComputedStyle(form).borderTopLeftRadius));
+    if (visible() && revealComplete) {
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) screen.classList.add('liquid-live');
+      ocean.releaseOpening();
+    }
   }
   function schedule() {
     if (pending) return;
@@ -60,7 +93,7 @@
   window.addEventListener('pagehide', () => ocean?.setActive(false));
   window.addEventListener('pageshow', schedule);
   canvas.addEventListener('ocean-unavailable', unavailable);
-  canvas.addEventListener('ocean-restored', restored);
+  canvas.addEventListener('ocean-restored', () => ocean?.whenSkyReady().then(restored, unavailable));
   form.querySelectorAll('[data-password]').forEach(button => button.addEventListener('click', () => {
     const input = document.getElementById(button.dataset.password);
     const show = input.type === 'password';
