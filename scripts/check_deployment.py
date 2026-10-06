@@ -25,6 +25,63 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 
+def request(ctx, path, data=None, *, content_type='application/json', token=None, expected=200, timeout=90):
+    headers = {'Content-Type': content_type}
+    if token or ctx.get('token'): headers['Cookie'] = 'taxpearls_session=' + (token or ctx['token'])
+    req = Request(ctx['url'] + path, data=data, headers=headers)
+    try:
+        with urlopen(req, timeout=timeout) as response: code, raw = response.status, response.read()
+    except HTTPError as error:
+        with error: code, raw = error.code, error.read()
+    if code != expected: raise RuntimeError(f'{path}: expected {expected}, got {code}')
+    return raw
+
+
+def upload_and_confirm(ctx, payload, content_type, *, timeout=60, poll=.5):
+    """Confirm only the completed job from this upload, using its saved analysis."""
+    batch = json.loads(request(ctx, '/api/enterprise/materials', payload,
+                               content_type=content_type, expected=202))
+    jobs = batch.get('jobs', [])
+    if len(jobs) != 1 or not jobs[0].get('id') or jobs[0].get('batch_id') != batch['id']:
+        raise RuntimeError('Upload did not return one identifiable material job')
+    job_id = jobs[0]['id']
+    path = '/api/enterprise/materials/' + batch['id']
+    deadline = time.monotonic() + timeout
+    state = 'queued'
+
+    def read(suffix):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f'Material job timed out (last state: {state})')
+        try:
+            return json.loads(request(ctx, path + suffix, timeout=min(5, remaining)))
+        except (TimeoutError, URLError):
+            raise RuntimeError('Material job status/read request failed or timed out') from None
+
+    while True:
+        status = read('/status')
+        job = next((j for j in status.get('jobs', []) if j['id'] == job_id), None)
+        if status.get('id') != batch['id'] or not job or job.get('batch_id') != batch['id']:
+            raise RuntimeError('Uploaded material job missing from its batch status')
+        state = job['state']
+        if state == 'done':
+            batch = read('')
+            if (batch.get('id') != status['id'] or type(job.get('result_revision')) is not int
+                    or batch.get('revision') != job['result_revision']
+                    or batch.get('analysis_revision') != job['result_revision']):
+                raise RuntimeError('Completed material job does not match the current analysis revision')
+            if batch.get('analysis', {}).get('can_confirm') is not True:
+                raise RuntimeError('Completed material analysis is not confirmable')
+            break
+        if state not in {'queued', 'running'}:
+            terminal = state if state in {'failed', 'superseded'} else 'unknown'
+            raise RuntimeError(f'Material job ended without a usable analysis ({terminal})')
+        time.sleep(min(poll, max(0, deadline - time.monotonic())))
+    result = json.loads(request(ctx, path + '/confirm',
+                                json.dumps({'expected_revision': batch['revision']}).encode()))
+    return batch, result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--image', required=True, help='Existing local taxpearls image tag; no pull/build')
@@ -61,6 +118,7 @@ def main():
                       'TAXPEARLS_PUBLIC_BASE_URL': 'https://synthetic.example.test',
                       'TAXPEARLS_TRUSTED_PROXY_IPS': '127.0.0.1',
                       'TAXPEARLS_AI_ENABLED': '0', 'TAXPEARLS_NOTIFICATION_EMAIL_ENABLED': '0',
+                      'TAXPEARLS_MATERIAL_QUEUE_ENABLED': '1', 'TAXPEARLS_MATERIAL_WORKERS': '4',
                       'TAXPEARLS_AI_API_KEY': '', 'TAXPEARLS_RESEND_API_KEY': ''}
             for name in ('TAXPEARLS_FIELD_KEY', 'TAXPEARLS_MATERIAL_KEY', 'TAXPEARLS_BACKUP_KEY'):
                 values[name] = base64.b64encode(os.urandom(32)).decode(); secrets.append(values[name])
@@ -88,16 +146,6 @@ def main():
                 except (URLError, TimeoutError, ConnectionError):
                     if time.monotonic() >= deadline: raise RuntimeError('Local container health timeout') from None
                     time.sleep(.5)
-
-        def request(ctx, path, data=None, *, content_type='application/json', token=None, expected=200):
-            headers = {'Content-Type': content_type}
-            if token or ctx.get('token'): headers['Cookie'] = 'taxpearls_session=' + (token or ctx['token'])
-            req = Request(ctx['url'] + path, data=data, headers=headers)
-            try:
-                with urlopen(req, timeout=90) as response: code, raw = response.status, response.read()
-            except HTTPError as error: code, raw = error.code, error.read()
-            if code != expected: raise RuntimeError(f'{path}: expected {expected}, got {code}')
-            return raw
 
         # Before allocating anything, refuse a namespace that already contains
         # containers/volumes. Cleanup must never adopt a user's existing project.
@@ -135,10 +183,7 @@ def main():
             payload = (f'--{boundary}\r\nContent-Disposition: form-data; name="files"; filename="synthetic.xlsx"\r\n'
                        'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\n\r\n').encode()
             payload += raw + f'\r\n--{boundary}--\r\n'.encode()
-            batch = json.loads(request(production, '/api/enterprise/materials', payload,
-                                       content_type='multipart/form-data; boundary=' + boundary))
-            result = json.loads(request(production, '/api/enterprise/materials/' + batch['id'] + '/confirm',
-                                        json.dumps({'expected_revision': batch['revision']}).encode()))
+            batch, result = upload_and_confirm(production, payload, 'multipart/form-data; boundary=' + boundary)
             aid = result['audit_id']
             original_path = '/api/enterprise/materials/' + batch['id'] + '/originals/' + batch['files'][0]['id']
             pdf_path = '/api/report/' + aid + '?version=1'

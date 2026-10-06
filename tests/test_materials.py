@@ -57,10 +57,30 @@ def selections(docs, reviewed=True):
 
 
 class MaterialParsing(unittest.TestCase):
+    def test_unrecognized_source_layout_is_not_adopted_or_a_rename_instruction(self):
+        raw = workbook('Sheet1', [
+            ['构造企业经营情况调查表'],
+            ['项目名称', '2022年', '2023年'],
+            ['主营业务净利润(元)', -10, -20],
+            ['负债(元)', '=B5+B6', '=C5+C6'],
+            ['流动负债', 30, 40],
+            ['所有者权益', 50, 60],
+        ])
+        document = materials.preview([('经营情况.xlsx', raw)], KEYS,
+                                     allow_incomplete_company=True, capture_standard=True)[0]
+        self.assertIn('尚未采用金额', document['error'])
+        self.assertIn('不要仅重命名工作表或列名', document['error'])
+        self.assertEqual(document['extraction']['local']['status'], 'failed')
+        self.assertFalse(document['rows'])
+        self.assertFalse(document['accounts'])
+        self.assertNotIn('import_model', document)
+        with self.assertRaises(materials.InputError):
+            materials.build_dataset([document], selections([document]), COMPANY, KEYS)
+
     def test_local_parser_provenance_and_full_fingerprint_include_failed_documents(self):
         import hashlib
         raw = accounts()
-        good, bad = materials.preview([('good.xlsx', raw), ('bad.xlsx', b'broken')], KEYS)
+        good, bad = materials.preview([('good.xlsx', raw), ('bad.xlsx', workbook('利润表', [['项目','本期金额'],['收入','不是数值']]))], KEYS)
         self.assertEqual(good['sha256'], hashlib.sha256(raw).hexdigest())
         self.assertEqual(good['extraction']['local']['status'], 'succeeded')
         self.assertEqual(bad['extraction']['local']['status'], 'failed')
@@ -133,21 +153,28 @@ class MaterialParsing(unittest.TestCase):
             materials.build_dataset(docs, selections(docs), {}, KEYS)
         self.assertEqual(materials.build_dataset(docs, selections(docs), COMPANY, KEYS).get("利润表.营业收入"), 500)
         bad = workbook("利润表", [["项目", "本期金额"], ["营业收入", "=1+1"]], COMPANY)
-        self.assertIn("有效数值", materials.preview([("公式.xlsx", bad)], KEYS)[0]["error"])
+        formula = materials.preview([("公式.xlsx", bad)], KEYS)
+        self.assertEqual(formula[0]['error'], '')
+        self.assertEqual(formula[0]['import_mapping']['formula_cells'][0]['formula'], '=1+1')
+        self.assertFalse(any(row['name'] == '利润表.营业收入' for row in formula[0]['rows']))
+        with self.assertRaisesRegex(materials.InputError, '复核'):
+            materials.build_dataset(formula, selections(formula), {}, KEYS)
 
     def test_zip_bounds_paths_bad_files_and_no_nested_zip(self):
         files = [("目录/a.xlsx", accounts()), ("说明.txt", b"unsupported")]
-        docs = materials.preview([("pack.zip", zip_bytes(files))], KEYS)
-        self.assertEqual(len(docs), 2)
+        with self.assertRaisesRegex(materials.InputError, "不支持"):
+            materials.preview([("pack.zip", zip_bytes(files))], KEYS)
+        docs = materials.preview([("pack.zip", zip_bytes(files[:1]))], KEYS)
+        self.assertEqual(len(docs), 1)
         self.assertFalse(docs[0]["error"])
-        self.assertIn("不支持", docs[1]["error"])
         for files in ([('../a.xlsx', b'x')], [('nested.zip', b'x')], [("bomb.pdf", b'0' * 500000)], [(str(i)+'.pdf', b'x') for i in range(21)]):
             with self.assertRaises(materials.InputError):
                 materials.expand_uploads([("bad.zip", zip_bytes(files))])
         for files in ([("a.pdf", b"")], [("a.pdf", b'x'*(materials.MAX_FILE+1))]):
             with self.assertRaises(materials.InputError):
                 materials.expand_uploads(files)
-        self.assertTrue(materials.preview([("bad.pdf", b'bad')], KEYS)[0]["error"])
+        with self.assertRaises(materials.InputError):
+            materials.preview([("bad.pdf", b'bad')], KEYS)
 
 
 class MaterialWebFlow(unittest.TestCase):
@@ -174,7 +201,7 @@ class MaterialWebFlow(unittest.TestCase):
         return self.client.post("/api/materials/audit", json={"token":draft["token"], "mode":"separate", "selections":list(selections(draft["documents"]).values()), **kw})
 
     def test_batch_independent_errors_and_idempotency(self):
-        draft = self.preview([("a.xlsx", accounts()), ("bad.pdf", b"bad")])
+        draft = self.preview([("a.xlsx", accounts()), ("bad.xlsx", workbook("利润表", [["项目", "本期金额"], ["收入", "无效金额"]], COMPANY))])
         response = self.commit(draft)
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()

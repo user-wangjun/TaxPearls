@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 def material_key(target):
     return patch.dict(os.environ, {'TAXPEARLS_MATERIAL_KEY': base64.b64encode(b't' * 32).decode(),
-                                  'TAXPEARLS_AI_ENABLED': '0'})(target)
+                                  'TAXPEARLS_AI_ENABLED': '0', 'TAXPEARLS_MATERIAL_QUEUE_ENABLED': '0'})(target)
 
 
 def audit(client, *, files, data=None):

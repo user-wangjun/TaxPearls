@@ -475,24 +475,42 @@
     <!-- 1. 上传区 -->
     <div class="sheet" style="margin-bottom:16px">
       <div class="field" id="auditClientField">
-        <label for="auditClient">关联客户档案</label>
-        <select id="auditClient"><option value="">不关联（按材料自动建档）</option></select>
-        <p class="muted">从工作台进入时会自动带入客户；所选档案的纳税人识别号必须与材料一致。</p>
+        <fieldset id="uploadScope">
+          <legend>本次分析的企业</legend>
+          <label for="uploadCompanyMode">企业选择</label>
+          <select id="uploadCompanyMode"><option value="new">新建企业（默认）</option><option value="existing">已有企业</option></select>
+          <label for="auditClient">已有企业档案</label>
+          <select id="auditClient" disabled><option value="">请选择已有企业</option></select>
+          <p class="muted" id="uploadProfileHint">新建企业可留空，上传后仅从无歧义材料预填；确认后才建档。</p>
+          <details><summary>本次企业信息（可先填写，也可上传后核对）</summary>
+            <div class="material-company">
+              <label>企业名称<input id="uploadCompanyName" maxlength="200"></label>
+              <label>纳税人识别号<input id="uploadCompanyTaxId" maxlength="200"></label>
+              <label>所属行业<input id="uploadCompanyIndustry" maxlength="200"></label>
+              <label>地区<input id="uploadCompanyRegion" maxlength="200" placeholder="涉及房产土地时，另核对事项所在地"></label>
+              <label>本期纳税人身份<input id="uploadCompanyTaxpayerType" maxlength="200"></label>
+              <label>本次业务范围<input id="uploadCompanyBusinessScope" maxlength="200"></label>
+              <label>主期间起始日<input id="uploadCompanyStart" type="date"></label>
+              <label>主期间终止日<input id="uploadCompanyEnd" type="date"></label>
+            </div>
+          </details>
+          <p class="muted">手填值不被材料覆盖。历史信息仅供预填，本期身份和范围须确认；旧期间不自动沿用。此选择不代表符合任何税收优惠。</p>
+        </fieldset>
       </div>
       <label for="extractionMode">数据提取方式</label>
       <select id="extractionMode" style="padding:8px;margin:8px 0;max-width:100%">
-        <option value="auto">自动：已配置时使用 AI 提取 PDF / 非标准 Excel</option>
+        <option value="auto">自动：已配置时使用 AI 提取 PDF / 扫描图片 / 非标准账表</option>
         <option value="ai">使用 AI 提取（需要配置模型服务）</option>
         <option value="local">仅本地解析</option>
       </select>
       <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
     </div>
     <div class="dropzone" id="dropzone">
-      <div class="t1">一次选择或拖拽多份 Excel、XML、PDF，也可上传 ZIP 文件包</div>
-      <div class="t2">支持账表 Excel、数电发票 XML、来源银行 Excel / 调节底稿、合同四流台账、文字 / 扫描 PDF；AI 候选数据经校验后进入核对页<br>
-        最多 20 份材料，单份 / ZIP 不超过 10MB，解压后合计 50MB · <span id="materialRetentionHint">企业原件受控留存；教学材料沿用独立核对流程</span></div>
+      <div class="t1">一次选择或拖拽多份 XLSX、受控旧版 XLS、CSV/TSV、XML、PDF、PNG/JPEG/TIFF，也可上传 ZIP 文件包</div>
+      <div class="t2">支持 XLSX、CSV/TSV 账表、数电发票 XML、来源银行 Excel / 调节底稿、合同四流台账、文字 / 扫描 PDF 和扫描图片（TIFF 最多 50 页）；AI 候选数据经校验后进入核对页<br>
+        最多 20 份材料，单份 / ZIP 不超过 10MB，解压后合计 50MB · <span id="materialRetentionHint">服务器核对实际格式和危险部件后接收；企业原件受控留存</span></div>
       <button class="pick" type="button">选择多份材料</button>
-      <input type="file" id="fileInput" accept=".xlsx,.xml,.pdf,.zip" multiple hidden>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.tsv,.xml,.pdf,.png,.jpg,.jpeg,.tif,.tiff,.zip" multiple hidden>
     </div>
     <div class="busy" id="busy">正在处理材料，请稍候<span class="dot">……</span></div>
 
