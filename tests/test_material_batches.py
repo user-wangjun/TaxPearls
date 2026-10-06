@@ -28,7 +28,9 @@ class MaterialBatchTests(unittest.TestCase):
         self.foreign = self.person('foreign', 'org_admin', 'foreign-org')
         self.teacher = self.person('teacher', 'teacher')
         self.platform = self.person('platform', 'platform_admin')
-        self.raw = b'PRIVATE-FINANCIAL-ORIGINAL-2026'
+        from tests.test_materials import workbook
+        self.secret = 'PRIVATE-FINANCIAL-ORIGINAL-2026'
+        self.raw = workbook('原件', [['内容', '说明'], [self.secret, '保留原件']])
 
     def person(self, name, role, org='batch-org'):
         return self.store.create_user(name, 'Material-batch-2026!', name, role, org)
@@ -51,7 +53,7 @@ class MaterialBatchTests(unittest.TestCase):
                 for row in db.execute('SELECT * FROM ' + table):
                     self.assertNotIn('sensitive-old-value', str(tuple(row)))
                     self.assertNotIn('secret-customer.xlsx', str(tuple(row)))
-                    self.assertNotIn(self.raw.decode(), str(tuple(row)))
+                    self.assertNotIn(self.secret, str(tuple(row)))
         restored = Store(self.store.path)
         view = batches.read(restored, self.admin, bid)
         self.assertEqual(view['versions'][0]['payload'], payload)

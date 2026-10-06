@@ -79,14 +79,17 @@ async function refreshAuditClients() {
   if(!currentUser || !["org_admin","accountant"].includes(currentUser.role)){field.style.display="none";return;}
   field.style.display="block";
   try {
-    const clients=await api("/api/clients"),preferred=selectedClientId||select.value;
-    select.textContent="";const blank=el("option",null,"不关联（按材料自动建档）");blank.value="";select.append(blank);
+    const owner=currentUser.id,clients=await api("/api/clients"),preferred=selectedClientId||select.value;
+    if(currentUser?.id!==owner)return;
+    select.textContent="";const blank=el("option",null,"请选择已有企业");blank.value="";select.append(blank);
     for(const client of clients){const o=el("option",null,client.name+" · "+client.taxpayer_id);o.value=client.id;select.append(o);}
     if(clients.some(client=>client.id===preferred))select.value=preferred;
     selectedClientId=select.value;
+    await enterpriseMaterials.selectClient(select.value);
   } catch(err){showError(err.message);}
 }
 $("auditClient").addEventListener("change",()=>{selectedClientId=$("auditClient").value;});
+$("uploadCompanyMode").addEventListener("change",()=>{if($("uploadCompanyMode").value==="new")selectedClientId="";});
 function clearMaterials() {
   materialRequest++;
   enterpriseMaterials.reset();
@@ -163,7 +166,7 @@ dz.addEventListener("drop", e => { e.preventDefault(); dz.classList.remove("drag
 async function upload(files) {
   hideError();
   if (files.length > 20) return showError("每次最多选择 20 个文件。");
-  if (files.some(f => !/\.(xlsx|xml|pdf|zip)$/i.test(f.name))) return showError("支持 .xlsx、.xml、.pdf 和 .zip 文件。");
+  if (files.some(f => !/\.(xlsx|xls|csv|tsv|xml|pdf|png|jpg|jpeg|tif|tiff|zip)$/i.test(f.name))) return showError("支持 XLSX、受控旧版 XLS、CSV/TSV、数电票据 XML、PDF、PNG/JPEG/TIFF 和 ZIP；实际内容由服务器检查，旧 XLS 的公式、宏和对象仍拒绝。");
   if (files.some(f => !f.size || f.size > 10 * 1024 * 1024)) return showError("单个文件须非空且不超过 10MB。");
   if (files.reduce((n,f) => n+f.size,0) > 50 * 1024 * 1024) return showError("上传总大小不能超过 50MB。");
   if (enterpriseMaterials.enabled()) return enterpriseMaterials.upload(files);

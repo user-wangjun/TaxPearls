@@ -63,8 +63,10 @@ async def lifespan(application):
     worker = NotificationWorker(lambda: store)
     worker.start()
     try:
+        application.state.material_worker.start()
         yield
     finally:
+        application.state.material_worker.stop()
         worker.stop()
 
 
@@ -1066,7 +1068,7 @@ async def audit(request: Request, session: str | None = Cookie(default=None, ali
     # Legacy direct import is teaching-only. Business uploads must retain
     # originals and explicitly confirm a server-side analysis revision.
     _allow(user, "teacher")
-    async with multipart(request) as form:
+    async with multipart(request, material_scope=user['org_id']) as form:
         file = single_file(form)
         if not file.filename or not file.filename.lower().endswith(".xlsx"):
             return _err(422, "仅支持 .xlsx 格式的审计材料。")
@@ -1075,6 +1077,8 @@ async def audit(request: Request, session: str | None = Cookie(default=None, ali
             return _err(422, "客户档案编号格式错误。")
         data = await file.read()
     try:
+        from src import material_format_guard
+        await run_in_threadpool(material_format_guard.check, [(file.filename, data)])
         dataset = await run_in_threadpool(loader.load_bytes, data)
     except loader.InputError as exc:
         return _err(422, f"审计材料不符合模板要求：{exc}")

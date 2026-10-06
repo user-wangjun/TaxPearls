@@ -96,7 +96,11 @@ class AISettings:
 
     def public_status(self):
         problem = self.problem()
+        display_model = self.effective_model
+        if display_model != self.model:
+            display_model += f"（配置名 {self.model}）"
+        content = "文字及页面图片" if self.vision else "文字"
         return {"enabled": self.enabled, "ready": not problem, "model": self.model,
                 "effective_model": self.effective_model, "vision": self.vision,
                 "backup_key_count": max(0, len(self.api_keys) - 1),
-                "message": problem or f"AI 已配置：{self.model}；所选材料的文字及页面图片会发送给配置的模型服务。"}
+                "message": problem or f"AI 已配置：{display_model}；所选材料的{content}会发送给配置的模型服务。"}

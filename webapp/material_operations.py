@@ -18,7 +18,8 @@ from webapp.access import AccessDenied, current_actor, audit_row
 
 ACTIVE = ContextVar('material_operation', default=None)
 ROLES = {'org_admin', 'accountant'}
-EVENTS = {'upload': 'upload', 'supplement': 'supplement', 'analyze': 'edit',
+EVENTS = {'upload': 'upload', 'supplement': 'supplement', 'analyze': 'edit', 'retry':'job_retry_requested',
+          'extract': 'pdf_extraction_requested',
           'confirm': 'execution', 'delete': 'delete', 'download': 'download',
           'view': 'view', 'confirmation_view': 'view_confirmation'}
 
@@ -132,10 +133,10 @@ def route(method, path):
         return None  # Canonical redirect is not a material operation.
     if method == 'POST' and path.rstrip('/') == base:
         return ('upload', None, None)
-    match = re.fullmatch(base + r'/([^/]+)(?:/(analyze|supplement|confirm|trace)|/originals/([^/]+))?/?', path)
+    match = re.fullmatch(base + r'/([^/]+)(?:/(analyze|supplement|confirm|trace|retry|extract)|/originals/([^/]+))?/?', path)
     if match:
         batch, action, original = match.groups()
-        if method == 'POST' and action in {'analyze', 'supplement', 'confirm'}:
+        if method == 'POST' and action in {'analyze', 'supplement', 'confirm', 'retry', 'extract'}:
             return (action, batch, None)
         if original and method in {'GET', 'DELETE'}:
             return ('download' if method == 'GET' else 'delete', batch, None)
