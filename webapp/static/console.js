@@ -678,7 +678,7 @@ function showAuthView(view) {
   $("authTitle").textContent = setup ? "初始化平台管理员" : title;
   $("authDescription").textContent = setup ? "创建首位管理员，开启税海旅程。" : ({login:"连接每一份证据，拾取每一条线索。", signup:"从一份邀请，开启你的税海旅程。", emailLogin:"使用验证码或邮件链接，安全回到税海。", forgot:"验证绑定邮箱，找回你的账号。", reset:"设置新密码，保护账号与证据。", emailMagic:"确认本人发起的邮件验证。"}[view] || "");
   const linkRow = view === "login" ? document.querySelector(".auth-remember-row") : document.querySelector(".auth-secondary-row");
-  linkRow.append($("forgotLink"));
+  if ($("forgotLink").parentElement !== linkRow) linkRow.append($("forgotLink"));
   $("authSubmit").textContent = setup ? "创建管理员" : submitText;
   $("authSubmit").disabled=authSubmitBusy;
   form.dataset.view = view;

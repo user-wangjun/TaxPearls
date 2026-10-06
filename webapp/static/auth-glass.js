@@ -42,10 +42,11 @@
   }
   async function update() {
     const view = form.dataset.view;
-    if (visible() && view !== lastView) {
+    if (visible() && form.dataset.setup !== undefined && view && view !== lastView) {
+      const changingView = !!lastView;
       lastView = view;
       const viewId = {login:'viewLogin', signup:'viewSignup', emailLogin:'viewEmailLogin', forgot:'viewForgot', reset:'viewReset', emailMagic:'viewEmailMagic'}[view];
-      if (viewId && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      if (changingView && viewId && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
         document.getElementById(viewId).animate([{opacity:0, transform:'translateY(6px)'}, {opacity:1, transform:'none'}], {duration:220, easing:'cubic-bezier(.2,.7,.2,1)'});
       }
     }

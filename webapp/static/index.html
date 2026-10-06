@@ -356,7 +356,7 @@
         <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
       </div>
       <div class="auth-remember" id="loginRememberField">
-        <div class="auth-remember-row"><label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">保持登录 30 天</label></div>
+        <div class="auth-remember-row"><label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">保持登录 30 天</label><button type="button" class="auth-link" id="forgotLink">忘记密码？</button></div>
         <p id="loginRememberHint">公共电脑请勿勾选</p>
       </div>
       <div id="viewForgot" style="display:none">
@@ -401,9 +401,8 @@
       <button class="btn" type="submit" id="authSubmit">登录</button>
       <div class="auth-secondary">
         <div class="auth-secondary-row">
-          <button type="button" class="auth-link" id="forgotLink">忘记密码？</button>
           <button type="button" class="auth-link" id="emailLoginEntryLink">使用邮箱验证码 / 邮件链接登录</button>
-          <button type="button" class="auth-link" id="passwordLoginEntryLink">密码登录</button>
+          <button type="button" class="auth-link" id="passwordLoginEntryLink" style="display:none">密码登录</button>
         </div>
         <button type="button" class="auth-signup-card" id="signupEntryLink">
           <img class="auth-signup-icon" src="/auth-signup-ticket-v1.png" alt="" draggable="false">
@@ -714,8 +713,8 @@
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/enterprise.js?v=enterprise-review-1"></script>
-<script src="/console.js?v=auth-glass-20261005-1"></script>
-<script src="/auth-glass.js?v=20261006-shape-1"></script>
+<script src="/console.js?v=20261006-login-layout-1"></script>
+<script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=platform-access-1"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
