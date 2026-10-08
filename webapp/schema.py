@@ -222,3 +222,93 @@ def initialize(store) -> None:
         members.migrate(db)
         from webapp import material_batches
         material_batches.migrate(db)
+        # ------------------------------------------------------------------
+        # 高校实训（teaching-training）：实训管理员、任务、学生、提交与评分。
+        # 仅新增表，不改动既有结构；与 src/models.py 中对应 dataclass 一一对应。
+        # 建表顺序即外键依赖顺序：college_user → training_task → student_info
+        #   → student_submit → score_result → score_rule。
+        # ------------------------------------------------------------------
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS college_user (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                username TEXT NOT NULL UNIQUE,            -- 登录名，全局唯一
+                password_hash TEXT NOT NULL,              -- 登录密码哈希（禁存明文）
+                display_name TEXT NOT NULL,               -- 姓名 / 显示名
+                college TEXT NOT NULL,                    -- 所属院校（实训数据的隔离键）
+                department TEXT,                          -- 所属院系（可空）
+                email TEXT,                               -- 联系邮箱（可空）
+                phone TEXT,                               -- 联系电话（可空）
+                role TEXT NOT NULL DEFAULT 'teacher',     -- 角色：teacher=教师 / admin=实训管理员
+                active INTEGER NOT NULL DEFAULT 1,        -- 是否启用：1=启用 0=停用
+                created_at TEXT NOT NULL                  -- 创建时间（ISO 8601 文本）
+            );
+            CREATE INDEX IF NOT EXISTS idx_college_user_college
+                ON college_user(college, active);
+            CREATE TABLE IF NOT EXISTS training_task (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                college TEXT NOT NULL,                    -- 所属院校（与 college_user.college 同域）
+                title TEXT NOT NULL,                      -- 任务标题
+                description TEXT NOT NULL DEFAULT '',     -- 任务说明
+                dataset_json TEXT NOT NULL,               -- 实训数据集（仿真材料/科目余额等，JSON 文本）
+                created_by TEXT NOT NULL REFERENCES college_user(id),  -- 创建教师（外键 → college_user.id）
+                starts_at TEXT,                           -- 开放开始时间（可空，ISO 文本）
+                ends_at TEXT,                             -- 截止时间（可空，ISO 文本，不早于 starts_at）
+                published INTEGER NOT NULL DEFAULT 0,     -- 是否发布：0=草稿 1=已发布
+                created_at TEXT NOT NULL,                 -- 创建时间（ISO 8601 文本）
+                CHECK (ends_at IS NULL OR starts_at IS NULL OR ends_at >= starts_at)
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_task_college
+                ON training_task(college, created_at DESC);
+            CREATE TABLE IF NOT EXISTS student_info (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                college TEXT NOT NULL,                    -- 所属院校（租户键）
+                student_no TEXT NOT NULL,                 -- 学号（同一院校内唯一）
+                name TEXT NOT NULL,                       -- 姓名
+                class_name TEXT,                          -- 班级（可空）
+                password_hash TEXT NOT NULL,              -- 登录密码哈希（学生登录作答用）
+                email TEXT,                               -- 邮箱（可空）
+                active INTEGER NOT NULL DEFAULT 1,        -- 是否在读/启用：1=是 0=否
+                created_at TEXT NOT NULL,                 -- 建档时间（ISO 8601 文本）
+                UNIQUE(college, student_no)               -- 同一院校内学号唯一
+            );
+            CREATE INDEX IF NOT EXISTS idx_student_info_college
+                ON student_info(college, active);
+            CREATE TABLE IF NOT EXISTS student_submit (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                task_id TEXT NOT NULL REFERENCES training_task(id),    -- 实训任务（外键 → training_task.id）
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键 → student_info.id）
+                answers_json TEXT NOT NULL,               -- 作答内容（识别的风险点/证据引用，JSON 文本）
+                status TEXT NOT NULL DEFAULT 'submitted'
+                    CHECK (status IN ('submitted','scored','reviewed')),  -- 状态：已提交/已评分/已复核
+                submitted_at TEXT NOT NULL,               -- 提交时间（ISO 8601 文本）
+                UNIQUE(task_id, student_id)               -- 每个任务每名学生一条提交（沿用 submissions 惯例）
+            );
+            CREATE INDEX IF NOT EXISTS idx_student_submit_task
+                ON student_submit(task_id, submitted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_student_submit_student
+                ON student_submit(student_id, submitted_at DESC);
+            CREATE TABLE IF NOT EXISTS score_result (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                submission_id TEXT NOT NULL UNIQUE REFERENCES student_submit(id),  -- 提交记录（外键，1:1）
+                total_score REAL NOT NULL DEFAULT 0,      -- 总得分（误报扣分后允许为负）
+                missed_count INTEGER NOT NULL DEFAULT 0,          -- 漏检项数量（应发现而未发现）
+                false_positive_count INTEGER NOT NULL DEFAULT 0,  -- 误报项数量（报告了不存在的问题）
+                detail_json TEXT NOT NULL,                -- 得分明细（逐规则得分/标准答案比对，JSON 文本）
+                scored_by TEXT REFERENCES college_user(id),  -- 评分人（外键 → college_user.id；系统自动评分为空）
+                scored_at TEXT NOT NULL                   -- 评分时间（ISO 8601 文本）
+            );
+            CREATE TABLE IF NOT EXISTS score_rule (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                task_id TEXT NOT NULL REFERENCES training_task(id),  -- 所属实训任务（外键 → training_task.id）
+                name TEXT NOT NULL,                       -- 规则名称（同一任务内唯一）
+                category TEXT NOT NULL DEFAULT 'omission'
+                    CHECK (category IN ('omission','false_positive','evidence')),  -- 类别：漏检/误报/证据复核
+                weight REAL NOT NULL DEFAULT 1.0,         -- 分值权重
+                config_json TEXT NOT NULL DEFAULT '{}',   -- 规则参数（阈值、适用范围等，JSON 文本）
+                enabled INTEGER NOT NULL DEFAULT 1,       -- 是否启用：1=启用 0=停用
+                created_at TEXT NOT NULL,                 -- 创建时间（ISO 8601 文本）
+                UNIQUE(task_id, name)                     -- 同一任务内规则名唯一
+            );
+            CREATE INDEX IF NOT EXISTS idx_score_rule_task
+                ON score_rule(task_id, enabled);
+        """)

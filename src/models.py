@@ -184,3 +184,97 @@ class Finding:
 
 SEVERITY_LABEL = {"high": "高风险", "medium": "中风险", "low": "低风险"}
 STATUS_LABEL = {"hit": "命中", "pass": "通过", "skipped": "未执行"}
+
+
+# ---------------------------------------------------------------------------
+# 高校实训（teaching-training）：以下数据类与 webapp/schema.py 中实训表一一对应，
+# 仅承载数据，不做 ORM 映射。
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CollegeUser:
+    """高校实训管理员（教师账号），对应表 college_user。"""
+
+    id: str                        # 主键，UUID 文本
+    username: str                  # 登录名，全局唯一
+    password_hash: str             # 登录密码哈希（不存明文）
+    display_name: str              # 姓名 / 显示名
+    college: str                   # 所属院校（实训数据的隔离键）
+    created_at: str                # 创建时间（ISO 8601 文本）
+    department: str | None = None  # 所属院系（可空）
+    email: str | None = None       # 联系邮箱（可空）
+    phone: str | None = None       # 联系电话（可空）
+    role: str = "teacher"          # 角色：teacher=教师 / admin=实训管理员
+    active: bool = True            # 是否启用
+
+
+@dataclass
+class TrainingTask:
+    """一次高校实训任务，对应表 training_task。"""
+
+    id: str                        # 主键，UUID 文本
+    college: str                   # 所属院校（与 college_user.college 同域）
+    title: str                     # 任务标题
+    dataset: dict[str, Any]        # 实训数据集（仿真材料/科目余额，落库为 dataset_json）
+    created_by: str                # 创建教师，外键 → college_user.id
+    created_at: str                # 创建时间（ISO 8601 文本）
+    description: str = ""          # 任务说明
+    starts_at: str | None = None   # 开放开始时间（可空）
+    ends_at: str | None = None     # 截止时间（可空，不早于 starts_at）
+    published: bool = False        # 是否发布：False=草稿 / True=已发布
+
+
+@dataclass
+class StudentInfo:
+    """实训学生信息，对应表 student_info。"""
+
+    id: str                        # 主键，UUID 文本
+    college: str                   # 所属院校
+    student_no: str                # 学号，同一院校内唯一
+    name: str                      # 姓名
+    password_hash: str             # 登录密码哈希（学生登录作答用）
+    created_at: str                # 建档时间（ISO 8601 文本）
+    class_name: str | None = None  # 班级（可空）
+    email: str | None = None       # 邮箱（可空）
+    active: bool = True            # 是否在读 / 启用
+
+
+@dataclass
+class StudentSubmit:
+    """一次学生实训提交，对应表 student_submit；每个任务每名学生仅一条提交。"""
+
+    id: str                        # 主键，UUID 文本
+    task_id: str                   # 实训任务，外键 → training_task.id
+    student_id: str                # 学生，外键 → student_info.id
+    answers: dict[str, Any]        # 作答内容（识别的风险点/证据引用，落库为 answers_json）
+    submitted_at: str              # 提交时间（ISO 8601 文本）
+    status: str = "submitted"      # submitted=已提交 / scored=已评分 / reviewed=已复核
+
+
+@dataclass
+class ScoreResult:
+    """一次提交的评分结果，对应表 score_result；与提交记录 1:1。"""
+
+    id: str                                # 主键，UUID 文本
+    submission_id: str                     # 提交记录，外键 → student_submit.id（1:1）
+    total_score: float                     # 总得分（误报扣分后允许为负）
+    detail: dict[str, Any]                 # 逐规则得分明细与标准答案比对，落库为 detail_json
+    scored_at: str                         # 评分时间（ISO 8601 文本）
+    missed_count: int = 0                  # 漏检项数量（应发现而未发现）
+    false_positive_count: int = 0          # 误报项数量（报告了不存在的问题）
+    scored_by: str | None = None           # 评分人，外键 → college_user.id；系统自动评分为空
+
+
+@dataclass
+class ScoreRule:
+    """一条实训评分规则，对应表 score_rule。"""
+
+    id: str                        # 主键，UUID 文本
+    task_id: str                   # 所属实训任务，外键 → training_task.id
+    name: str                      # 规则名称，同一任务内唯一
+    created_at: str                # 创建时间（ISO 8601 文本）
+    category: str = "omission"     # omission=漏检 / false_positive=误报 / evidence=证据复核
+    weight: float = 1.0            # 分值权重
+    config: dict[str, Any] = field(default_factory=dict)  # 规则参数（阈值等，落库为 config_json）
+    enabled: bool = True           # 是否启用
