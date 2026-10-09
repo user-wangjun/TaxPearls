@@ -416,6 +416,7 @@ async function main() {
   const profileA=controller.selectClient("client-a"),responseA=calls.shift();
   assert.equal($("uploadScope").disabled,true);
   const profileB=controller.selectClient("client-b"),responseB=calls.shift();
+  assert.equal($("uploadCompanyMode").value,"client-b");
   responseB.resolve({company:{name:"档案B",taxpayer_id:"TAX-B",region:"广东省",period_start:"2025-01-01"},analysis_count:1,history:{period:"2025"}});
   await profileB;
   responseA.resolve({company:{name:"旧档案A",taxpayer_id:"TAX-A"},analysis_count:0});await profileA;
@@ -423,7 +424,7 @@ async function main() {
   assert.equal($("uploadCompanyStart").value,"");assert.equal($("uploadScope").disabled,false);
   $("uploadCompanyMode").value="new";await controller.selectClient("");
   assert.equal($("uploadCompanyTaxId").value,"");assert.equal($("uploadCompanyName").value,"手填企业");
-  assert.equal($("auditClient").disabled,true);
+  assert.equal($("uploadCompanyMode").value,"new");
   const profileDenied=controller.selectClient("revoked");calls.shift().reject(Object.assign(new Error("access denied"),{status:403}));await profileDenied;
   assert.equal($("uploadCompanyTaxId").value,"");assert.ok($("uploadProfileHint").textContent.includes("未读取"));
   // A prior tenant's material-list response cannot leak after a role switch.
@@ -431,7 +432,7 @@ async function main() {
   calls.shift().resolve([{id:"private",revision:1,created_at:"today"}]);calls.shift().resolve({retention_ready:true,message:"ready"});await listing;
   await controller.refresh();assert.equal($("enterpriseHistory").hidden,true);assert.equal($("enterpriseHistory").children.length,0);
   assert.equal(controller.enabled(),false);
-  controller.reset();assert.equal($("uploadCompanyName").value,"");assert.equal($("auditClient").value,"");
+  controller.reset();assert.equal($("uploadCompanyName").value,"");assert.equal($("uploadCompanyMode").value,"new");
   console.log("Enterprise frontend: routing, standard-cell review/paging/restore, dirty guard, failed save, retry, idempotent dispatch, stale response, version conflict and revoked access passed.");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});
