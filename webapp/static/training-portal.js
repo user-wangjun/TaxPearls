@@ -167,15 +167,18 @@ async function refreshPractice() {
     state.prCert = state.certificates.length ? state.certificates[0].id : null;
   }
   if (state.prCert) certSel.value = state.prCert;
-  const [kpData, wrong, open] = await Promise.all([
+  const [kpData, wrong, open, dash] = await Promise.all([
     state.prCert ? api(`/api/training/my/knowledge-points?certificate_id=${state.prCert}`)
                  : Promise.resolve({ knowledge_points: [] }),
     api("/api/training/my/practice/wrong"),
     api("/api/training/my/practice?status=open"),
+    api("/api/training/my/dashboard"),
   ]);
   state.kps = kpData.knowledge_points;
   state.wrong = wrong.attempts;
   state.open = open.attempts;
+  state.dashboard = dash;
+  renderWorkbench();
   const kpSel = document.getElementById("pr-kp");
   kpSel.innerHTML = `<option value="">（整证随机）</option>` + state.kps.map((k) =>
     `<option value="${esc(k.id)}">${esc(k.code)} ${esc(k.name)}${k.rule_links ? "" : "（暂无题目）"}</option>`).join("");
@@ -220,6 +223,46 @@ function renderOpen() {
       <div class="muted">开始于 ${esc(a.created_at)}</div>
       <button class="small" data-act="resume" data-id="${esc(a.id)}">继续作答</button>
     </div></div>`).join("") : "";
+}
+
+function renderWorkbench() {
+  const box = document.getElementById("wb-body");
+  const dash = state.dashboard;
+  if (!dash) { box.innerHTML = ""; return; }
+  if (!dash.goals.length) {
+    box.innerHTML = `<p class="muted">${esc(dash.hint)}</p>`;
+    return;
+  }
+  box.innerHTML = dash.goals.map((g) => {
+    const source = g.countdown_source === "planned" ? "个人计划日"
+      : (g.official_date ? (g.official_date.date_type === "official" ? "官方考试日" : "预计考试日") : "未设日期");
+    const targetDate = g.countdown ? g.countdown.target_date : "未设";
+    const hot = g.high_freq.map((h) =>
+      `<span class="chip" title="${esc(h.basis_ref || "")}">常考 ${esc(h.name)}</span>`).join("");
+    const weak = g.weak.length
+      ? g.weak.map((w) => `<span class="chip">${esc(w.name)}（${w.attempts} 次未满分）</span>`).join("")
+      : `<span class="muted">暂无薄弱知识点</span>`;
+    const rec = g.recommendation;
+    const recButton = rec.kind === "resume"
+      ? `<button class="small primary" data-act="wb-resume" data-id="${esc(rec.attempt_id)}">继续作答</button>`
+      : (rec.kind === "practice"
+          ? `<button class="small primary" data-act="wb-practice" data-cert="${esc(rec.certificate_id)}" data-kp="${esc(rec.knowledge_point_id || "")}" data-rule="${esc(rec.rule_id || "")}">开始练习</button>`
+          : "");
+    return `<div class="item">
+      <div class="item-head">
+        <div><strong>${esc(g.certificate_name)}</strong>
+          <span class="muted">目标日期 ${esc(targetDate)}（${source}）</span></div>
+        ${countdownBadge(g.countdown)}
+      </div>
+      <div class="muted">覆盖进度：${g.coverage.covered}/${g.coverage.total} 个知识点已练 · 练习 ${g.coverage.attempts} 次 · 满分 ${g.coverage.perfect} 次</div>
+      <div style="margin-top:6px;">${hot || `<span class="muted">暂无常考标注</span>`}</div>
+      <div style="margin-top:6px;"><span class="muted">薄弱点：</span>${weak}</div>
+      <div class="inline-form" style="margin-top:10px;">
+        <div class="muted">下一步建议：${esc(rec.reason)}</div>
+        <div class="actions">${recButton}</div>
+      </div>
+    </div>`;
+  }).join("");
 }
 
 function renderAttempt() {
@@ -413,6 +456,30 @@ document.getElementById("pr-attempt").addEventListener("click", async (event) =>
       state.attempt = data.attempt;
       renderAttempt();
     } catch (err) { flash(err.message, true); }
+  }
+});
+
+document.getElementById("wb-body").addEventListener("click", async (event) => {
+  const btn = event.target.closest("button[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  if (act === "wb-resume") {
+    try {
+      const data = await api(`/api/training/my/practice/${btn.dataset.id}`);
+      state.attempt = data.attempt;
+      state.prCert = state.attempt.certificate_id;
+      renderAttempt();
+      document.getElementById("pr-attempt").scrollIntoView({ behavior: "smooth" });
+    } catch (err) { flash(err.message, true); }
+  } else if (act === "wb-practice") {
+    state.prCert = btn.dataset.cert;
+    state.attempt = null;
+    document.getElementById("pr-cert").value = state.prCert;
+    await refreshPractice().catch(() => {});
+    startPractice({ certificate_id: btn.dataset.cert,
+                    knowledge_point_id: btn.dataset.kp || null,
+                    rule_id: btn.dataset.rule || null }).catch((err) => flash(err.message, true));
+    document.getElementById("pr-attempt").scrollIntoView({ behavior: "smooth" });
   }
 });
 

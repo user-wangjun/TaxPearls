@@ -917,6 +917,112 @@ def coverage(store, student_id: str, cert_id: str) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# 学生目标工作台（FR-K07）：聚合目标/倒计时、覆盖、常考、薄弱点与可解释推荐
+# ---------------------------------------------------------------------------
+
+def dashboard(store, student_id: str) -> dict[str, Any]:
+    """工作台聚合视图。推荐为确定性规则（非算法画像）：续作 > 错题重练 >
+    常考未练 > 未练知识点 > 巩固最弱；无历史不虚构，每条建议带原因并可直达内容。"""
+    with store.connect() as db:
+        goal_rows = db.execute(
+            "SELECT * FROM student_goal WHERE student_id=? AND status='active' ORDER BY created_at",
+            (student_id,)).fetchall()
+        goals = []
+        for row in goal_rows:
+            payload = _goal_payload(db, row)
+            cert_id = row["certificate_id"]
+            cert = db.execute("SELECT name FROM certificate WHERE id=?", (cert_id,)).fetchone()
+            kps = db.execute(
+                "SELECT id, code, name FROM knowledge_point WHERE certificate_id=? AND active=1 ORDER BY code",
+                (cert_id,)).fetchall()
+            attempts = []
+            for r in db.execute(
+                    """SELECT id, knowledge_point_id, rule_id, result_json, created_at FROM training_self_practice_attempts
+                       WHERE student_id=? AND certificate_id=? AND status='scored'""", (student_id, cert_id)).fetchall():
+                entry = {"id": r["id"], "knowledge_point_id": r["knowledge_point_id"],
+                         "rule_id": r["rule_id"], "created_at": r["created_at"], "perfect": False}
+                try:
+                    entry["perfect"] = bool(json.loads(r["result_json"] or "{}").get("perfect"))
+                except ValueError:
+                    pass
+                attempts.append(entry)
+            stats: dict[str, dict[str, int]] = {}
+            for a in attempts:
+                if not a["knowledge_point_id"]:
+                    continue
+                e = stats.setdefault(a["knowledge_point_id"], {"attempts": 0, "perfect": 0})
+                e["attempts"] += 1
+                if a["perfect"]:
+                    e["perfect"] += 1
+            rule_links = {r["knowledge_point_id"]: r["n"] for r in db.execute(
+                "SELECT knowledge_point_id, count(*) n FROM knowledge_point_link WHERE target_type='rule'"
+                " AND knowledge_point_id IN (SELECT id FROM knowledge_point WHERE certificate_id=?)"
+                " GROUP BY knowledge_point_id", (cert_id,)).fetchall()}
+            high_freq = [dict(h) for h in db.execute(
+                """SELECT k.id, k.code, k.name, m.basis_ref, m.basis_version FROM knowledge_point k
+                   JOIN knowledge_point_mark m ON m.knowledge_point_id = k.id
+                   WHERE k.certificate_id=? AND k.active=1 AND m.mark_type='high_freq'
+                   ORDER BY k.code""", (cert_id,)).fetchall()]
+            open_rows = [dict(o) for o in db.execute(
+                "SELECT id, created_at FROM training_self_practice_attempts WHERE student_id=? AND certificate_id=?"
+                " AND status='open' ORDER BY created_at DESC LIMIT 3", (student_id, cert_id)).fetchall()]
+            # 错题重练只针对从未满分过的知识点：已满分过的不再推荐重练
+            unmastered = {k for k in stats if stats[k]["perfect"] == 0}
+            wrong = [a for a in attempts if not a["perfect"] and a["knowledge_point_id"] in unmastered]
+            wrong_count: dict[tuple[str, str], int] = {}
+            for a in wrong:
+                key = (a["knowledge_point_id"], a["rule_id"])
+                wrong_count[key] = wrong_count.get(key, 0) + 1
+            covered = len(stats)
+            total = len(kps)
+            weak_ids = sorted((k for k in stats if stats[k]["perfect"] == 0),
+                              key=lambda k: -stats[k]["attempts"])[:5]
+            weak = [{"id": k["id"], "code": k["code"], "name": k["name"],
+                     "attempts": stats[k["id"]]["attempts"]} for k in kps if k["id"] in weak_ids]
+            kp_names = {k["id"]: dict(k) for k in kps}
+            # 可解释推荐（按优先级取第一条）
+            recommendation = None
+            if open_rows:
+                recommendation = {"kind": "resume", "attempt_id": open_rows[0]["id"],
+                                  "reason": "有一道未完成的练习，继续作答即可判分并开放解析。"}
+            elif wrong:
+                (wk_id, wr_id) = next(iter(wrong_count))
+                name = kp_names.get(wk_id, {}).get("name", "知识点")
+                recommendation = {"kind": "practice", "certificate_id": cert_id, "knowledge_point_id": wk_id,
+                                  "rule_id": wr_id,
+                                  "reason": f"「{name}」已练 {wrong_count[(wk_id, wr_id)]} 次未满分，建议重练错题。"}
+            else:
+                untried = [k for k in kps if k["id"] not in stats and rule_links.get(k["id"], 0) > 0]
+                hot = [k for k in untried if any(h["id"] == k["id"] for h in high_freq)]
+                pick = hot[0] if hot else (untried[0] if untried else None)
+                if pick is not None:
+                    reason = "常考知识点还未练习，建议从它开始。" if hot else "还有未练过的知识点。"
+                    recommendation = {"kind": "practice", "certificate_id": cert_id,
+                                      "knowledge_point_id": pick["id"], "reason": reason}
+                elif stats:
+                    weakest = min(stats.items(), key=lambda kv: kv[1]["perfect"] / max(kv[1]["attempts"], 1))[0]
+                    recommendation = {"kind": "practice", "certificate_id": cert_id, "knowledge_point_id": weakest,
+                                      "reason": "已练知识点全部满分，可巩固正确率最低的知识点。"}
+                else:
+                    recommendation = {"kind": "none",
+                                      "reason": "该证书下还没有关联题目的知识点，等待教师配置后即可练习。"}
+            goals.append({
+                "goal_id": row["id"], "certificate_id": cert_id,
+                "certificate_name": cert["name"] if cert else "",
+                "countdown": payload["countdown"], "countdown_source": payload["countdown_source"],
+                "official_date": payload["official_date"], "planned_date": payload["planned_date"],
+                "coverage": {"total": total, "covered": covered,
+                             "attempts": sum(s["attempts"] for s in stats.values()),
+                             "perfect": sum(s["perfect"] for s in stats.values())},
+                "high_freq": high_freq, "weak": weak,
+                "recommendation": recommendation,
+                "open_attempts": open_rows,
+            })
+        return {"goals": goals,
+                "hint": "" if goals else "还没有考证目标：在下方证书目录中选择「设为我的目标」即可开始，目标不依赖教师建班。"}
+
+
+# ---------------------------------------------------------------------------
 # 路由注册（接线模式与 classroom/mistake_book 一致）
 # ---------------------------------------------------------------------------
 
@@ -1151,6 +1257,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         who = student(session)
         return response({"knowledge_points": student_knowledge_points(
             store_provider(), who["id"], certificate_id)})
+
+    # ---- 学生：目标工作台（FR-K07）----
+
+    @app.get("/api/training/my/dashboard")
+    @guarded
+    def my_dashboard(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response(dashboard(store_provider(), who["id"]))
 
     # ---- 学生：自主刷题闭环（FR-K06）----
 
