@@ -266,6 +266,365 @@ def set_goal_status(store, student_id: str, goal_id: str, action: str) -> dict[s
 
 
 # ---------------------------------------------------------------------------
+# 教师/管理员认证（college_user）与内容维护（FR-K01/K02/K03/K04 管理侧）
+# ---------------------------------------------------------------------------
+
+STAFF_COOKIE = "taxpearls_staff_session"
+staff_login_guard = LoginGuard()
+
+
+def _staff_public(row: sqlite3.Row) -> dict[str, Any]:
+    return {"id": row["id"], "username": row["username"], "display_name": row["display_name"],
+            "college": row["college"], "role": row["role"]}
+
+
+def login_staff(store, username: str, password: str, remember: bool = False) -> dict[str, Any] | None:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_user WHERE username=? AND active=1",
+                         (username.strip(),)).fetchone()
+        if not row:
+            return None
+        try:
+            _passwords.verify(row["password_hash"], password)
+        except (VerifyMismatchError, InvalidHashError):
+            return None
+        token = secrets.token_urlsafe(32)
+        expires = (datetime.now(UTC) + timedelta(seconds=session_max_age(remember))).isoformat(timespec="seconds")
+        db.execute("DELETE FROM training_staff_sessions WHERE expires_at < ?", (_now(),))
+        db.execute("INSERT INTO training_staff_sessions VALUES (?,?,?,?)",
+                   (_hash_token(token), row["id"], expires, _now()))
+        return {"staff": _staff_public(row), "token": token}
+
+
+def staff_for_token(store, token: str | None) -> dict[str, Any] | None:
+    if not token:
+        return None
+    with store.connect() as db:
+        row = db.execute(
+            """SELECT c.id, c.username, c.display_name, c.college, c.role, c.active
+               FROM training_staff_sessions t JOIN college_user c ON c.id = t.staff_id
+               WHERE t.token_hash=? AND t.expires_at>=?""",
+            (_hash_token(token), _now()),
+        ).fetchone()
+    if not row or not row["active"] or row["role"] not in ("teacher", "admin"):
+        return None
+    return _staff_public(row)
+
+
+def logout_staff(store, token: str | None) -> None:
+    if token:
+        with store.connect() as db:
+            db.execute("DELETE FROM training_staff_sessions WHERE token_hash=?", (_hash_token(token),))
+
+
+def _clean_subjects(value: Any) -> list[str]:
+    if not isinstance(value, list) or any(not isinstance(s, str) for s in value):
+        raise TrainingPortalError("科目清单必须是字符串数组。")
+    out = list(dict.fromkeys(s.strip() for s in value if s.strip()))
+    return out
+
+
+def create_certificate(store, staff: dict, code: str, name: str, *, description: str = "",
+                       subjects: list[str] | None = None, source_ref: str = "") -> dict[str, Any]:
+    code, name = code.strip(), name.strip()
+    if not code or not name:
+        raise TrainingPortalError("证书编码与名称不能为空。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if db.execute("SELECT 1 FROM certificate WHERE code=?", (code,)).fetchone():
+            raise TrainingPortalError(f"证书编码 {code} 已存在。", 409)
+        cert_id = str(uuid.uuid4())
+        now = _now()
+        db.execute(
+            """INSERT INTO certificate (id, code, name, description, subjects_json, source_ref,
+               active, created_at, updated_at) VALUES (?,?,?,?,?,?,1,?,?)""",
+            (cert_id, code, name, description.strip(), _json_subjects(subjects or []),
+             source_ref.strip(), now, now))
+        row = db.execute("SELECT * FROM certificate WHERE id=?", (cert_id,)).fetchone()
+        return _certificate_payload(db, row)
+
+
+def _json_subjects(subjects: list[str]) -> str:
+    return json.dumps(_clean_subjects(subjects), ensure_ascii=False)
+
+
+def _certificate_payload(db, row: sqlite3.Row) -> dict[str, Any]:
+    cert = dict(row)
+    cert["subjects"] = json.loads(cert.pop("subjects_json") or "[]")
+    dates = db.execute(
+        """SELECT id, round_label, date_type, exam_date, created_at FROM exam_date
+           WHERE certificate_id=? AND date_type IN ('official','expected') ORDER BY exam_date""",
+        (cert["id"],)).fetchall()
+    cert["exam_dates"] = [dict(d) | {"countdown": countdown(d["exam_date"])} for d in dates]
+    cert["knowledge_point_count"] = db.execute(
+        "SELECT count(*) FROM knowledge_point WHERE certificate_id=?", (cert["id"],)).fetchone()[0]
+    return cert
+
+
+def get_certificate(store, cert_id: str, *, include_inactive: bool = True) -> dict[str, Any]:
+    with store.connect() as db:
+        row = db.execute("SELECT * FROM certificate WHERE id=?", (cert_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("证书不存在。", 404)
+        return _certificate_payload(db, row)
+
+
+def update_certificate(store, staff: dict, cert_id: str, *, fields: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"name": str, "description": str, "source_ref": str, "subjects": list, "active": bool}
+    updates: dict[str, Any] = {}
+    for key, value in fields.items():
+        if key not in allowed:
+            raise TrainingPortalError(f"不支持的字段：{key}。")
+        if key == "subjects":
+            updates["subjects_json"] = _json_subjects(value)
+        elif key == "name":
+            if not value.strip():
+                raise TrainingPortalError("证书名称不能为空。")
+            updates["name"] = value.strip()
+        else:
+            updates[key] = value
+    if not updates:
+        raise TrainingPortalError("没有提供任何要更新的字段。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在。", 404)
+        updates["updated_at"] = _now()
+        sets = ", ".join(f"{k}=?" for k in updates)
+        db.execute(f"UPDATE certificate SET {sets} WHERE id=?", (*updates.values(), cert_id))
+        row = db.execute("SELECT * FROM certificate WHERE id=?", (cert_id,)).fetchone()
+        return _certificate_payload(db, row)
+
+
+def create_exam_date(store, staff: dict, cert_id: str, date_type: str, exam_date: str,
+                     round_label: str = "") -> dict[str, Any]:
+    if date_type not in ("official", "expected"):
+        raise TrainingPortalError("考试日期类型只能是 official 或 expected；个人计划日由学生自行设置。")
+    day = date.fromisoformat(_parse_date(exam_date))
+    if day < today_cst():
+        raise TrainingPortalError(f"考试日期 {exam_date} 已经过期，不能录入。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在。", 404)
+        date_id = str(uuid.uuid4())
+        now = _now()
+        db.execute(
+            """INSERT INTO exam_date (id, certificate_id, round_label, date_type, exam_date,
+               created_by, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)""",
+            (date_id, cert_id, round_label.strip(), date_type, day.isoformat(), staff["id"], now, now))
+        row = db.execute("SELECT * FROM exam_date WHERE id=?", (date_id,)).fetchone()
+        return dict(row) | {"countdown": countdown(row["exam_date"])}
+
+
+def update_exam_date(store, staff: dict, date_id: str, *, fields: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    if "round_label" in fields:
+        updates["round_label"] = str(fields["round_label"]).strip()
+    if "exam_date" in fields:
+        day = date.fromisoformat(_parse_date(fields["exam_date"]))
+        if day < today_cst():
+            raise TrainingPortalError(f"考试日期 {fields['exam_date']} 已经过期，不能修改为过去。")
+        updates["exam_date"] = day.isoformat()
+    if not updates:
+        raise TrainingPortalError("没有提供任何要更新的字段。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM exam_date WHERE id=?", (date_id,)).fetchone():
+            raise TrainingPortalError("考试日期不存在。", 404)
+        updates["updated_at"] = _now()
+        sets = ", ".join(f"{k}=?" for k in updates)
+        db.execute(f"UPDATE exam_date SET {sets} WHERE id=?", (*updates.values(), date_id))
+        row = db.execute("SELECT * FROM exam_date WHERE id=?", (date_id,)).fetchone()
+        return dict(row) | {"countdown": countdown(row["exam_date"])}
+
+
+def delete_exam_date(store, staff: dict, date_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM exam_date WHERE id=?", (date_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("考试日期不存在。", 404)
+        used = db.execute("SELECT count(*) FROM student_goal WHERE official_date_id=?",
+                          (date_id,)).fetchone()[0]
+        if used:
+            raise TrainingPortalError(f"已有 {used} 个学生目标引用该考试日期，不能删除；可修改日期或让目标改挂其他日期。", 409)
+        db.execute("DELETE FROM exam_date WHERE id=?", (date_id,))
+    return {"ok": True}
+
+
+def _assert_same_certificate(db, kp_id: str, cert_id: str, label: str) -> None:
+    row = db.execute("SELECT certificate_id FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
+    if not row:
+        raise TrainingPortalError(f"{label}不存在。", 404)
+    if row["certificate_id"] != cert_id:
+        raise TrainingPortalError(f"{label}不属于该证书。")
+
+
+def _would_cycle(db, kp_id: str, parent_id: str) -> bool:
+    """沿 parent 链向上走，若回到 kp_id 自身则成环。"""
+    seen, current = set(), parent_id
+    while current:
+        if current == kp_id:
+            return True
+        if current in seen:
+            return True
+        seen.add(current)
+        row = db.execute("SELECT parent_id FROM knowledge_point WHERE id=?", (current,)).fetchone()
+        current = row["parent_id"] if row else None
+    return False
+
+
+def create_knowledge_point(store, staff: dict, cert_id: str, code: str, name: str, *,
+                           subject: str = "", parent_id: str | None = None,
+                           description: str = "", source_ref: str = "",
+                           outline_version: str = "") -> dict[str, Any]:
+    code, name = code.strip(), name.strip()
+    if not code or not name:
+        raise TrainingPortalError("知识点编码与名称不能为空。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在。", 404)
+        if db.execute("SELECT 1 FROM knowledge_point WHERE certificate_id=? AND code=?",
+                      (cert_id, code)).fetchone():
+            raise TrainingPortalError(f"知识点编码 {code} 在该证书下已存在。", 409)
+        if parent_id:
+            _assert_same_certificate(db, parent_id, cert_id, "上级知识点")
+        kp_id = str(uuid.uuid4())
+        now = _now()
+        db.execute(
+            """INSERT INTO knowledge_point (id, certificate_id, code, name, subject, parent_id,
+               description, source_ref, outline_version, active, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,1,?,?)""",
+            (kp_id, cert_id, code, name, subject.strip(), parent_id, description.strip(),
+             source_ref.strip(), outline_version.strip(), now, now))
+        row = db.execute("SELECT * FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
+        return _kp_payload(db, row)
+
+
+def _kp_payload(db, row: sqlite3.Row) -> dict[str, Any]:
+    marks = db.execute(
+        "SELECT id, mark_type, level, basis_ref, basis_version, created_at FROM knowledge_point_mark"
+        " WHERE knowledge_point_id=? ORDER BY mark_type, created_at", (row["id"],)).fetchall()
+    return dict(row) | {"marks": [dict(m) for m in marks]}
+
+
+def list_knowledge_points(store, staff: dict, cert_id: str, *,
+                          include_inactive: bool = True) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在。", 404)
+        where = "" if include_inactive else "AND active=1"
+        rows = db.execute(
+            f"SELECT * FROM knowledge_point WHERE certificate_id=? {where} ORDER BY code",
+            (cert_id,)).fetchall()
+        return [_kp_payload(db, r) for r in rows]
+
+
+def update_knowledge_point(store, staff: dict, kp_id: str, *, fields: dict[str, Any]) -> dict[str, Any]:
+    allowed = {"name": None, "subject": None, "description": None, "source_ref": None,
+               "outline_version": None, "active": None, "parent_id": None}
+    updates: dict[str, Any] = {}
+    for key, value in fields.items():
+        if key not in allowed:
+            raise TrainingPortalError(f"不支持的字段：{key}。")
+        if key == "name":
+            if not str(value).strip():
+                raise TrainingPortalError("知识点名称不能为空。")
+            updates["name"] = str(value).strip()
+        elif key in ("subject", "description", "source_ref", "outline_version"):
+            updates[key] = str(value).strip()
+        elif key == "active":
+            updates["active"] = 1 if value else 0
+        else:
+            updates["parent_id"] = value
+    if not updates:
+        raise TrainingPortalError("没有提供任何要更新的字段。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("知识点不存在。", 404)
+        if "parent_id" in updates:
+            parent = updates["parent_id"]
+            if parent == kp_id:
+                raise TrainingPortalError("知识点不能以自己为上级。")
+            if parent and _would_cycle(db, kp_id, parent):
+                raise TrainingPortalError("上级知识点选择会形成循环层级。")
+            if parent:
+                _assert_same_certificate(db, parent, row["certificate_id"], "上级知识点")
+        updates["updated_at"] = _now()
+        sets = ", ".join(f"{k}=?" for k in updates)
+        db.execute(f"UPDATE knowledge_point SET {sets} WHERE id=?", (*updates.values(), kp_id))
+        row = db.execute("SELECT * FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
+        return _kp_payload(db, row)
+
+
+def create_mark(store, staff: dict, kp_id: str, mark_type: str, *, level: str = "high",
+                basis_ref: str = "", basis_version: str = "") -> dict[str, Any]:
+    if mark_type not in ("high_freq", "risk_context", "error_prone"):
+        raise TrainingPortalError("标注类型必须是 high_freq / risk_context / error_prone。")
+    if level not in ("high", "medium", "low"):
+        raise TrainingPortalError("标注程度必须是 high / medium / low。")
+    basis_ref = basis_ref.strip()
+    if mark_type == "high_freq" and not basis_ref:
+        raise TrainingPortalError("考证高频标注必须提供依据（如官方考纲章节），不允许无依据标注。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM knowledge_point WHERE id=?", (kp_id,)).fetchone():
+            raise TrainingPortalError("知识点不存在。", 404)
+        mark_id = str(uuid.uuid4())
+        try:
+            db.execute(
+                """INSERT INTO knowledge_point_mark (id, knowledge_point_id, mark_type, level,
+                   basis_ref, basis_version, created_by, created_at) VALUES (?,?,?,?,?,?,?,?)""",
+                (mark_id, kp_id, mark_type, level, basis_ref, basis_version.strip(), staff["id"], _now()))
+        except sqlite3.IntegrityError:
+            raise TrainingPortalError("该知识点已存在相同依据的同类标注。", 409) from None
+        row = db.execute("SELECT * FROM knowledge_point_mark WHERE id=?", (mark_id,)).fetchone()
+        return dict(row)
+
+
+def update_mark(store, staff: dict, mark_id: str, *, fields: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    if "level" in fields:
+        if fields["level"] not in ("high", "medium", "low"):
+            raise TrainingPortalError("标注程度必须是 high / medium / low。")
+        updates["level"] = fields["level"]
+    if "basis_ref" in fields:
+        updates["basis_ref"] = str(fields["basis_ref"]).strip()
+    if "basis_version" in fields:
+        updates["basis_version"] = str(fields["basis_version"]).strip()
+    if not updates:
+        raise TrainingPortalError("没有提供任何要更新的字段。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM knowledge_point_mark WHERE id=?", (mark_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("标注不存在。", 404)
+        final_ref = updates.get("basis_ref", row["basis_ref"])
+        if row["mark_type"] == "high_freq" and not final_ref:
+            raise TrainingPortalError("考证高频标注必须保留依据，不允许清空。")
+        updates.setdefault("basis_version", row["basis_version"])
+        updates["basis_ref"] = final_ref
+        sets = ", ".join(f"{k}=?" for k in set(updates))
+        db.execute(f"UPDATE knowledge_point_mark SET {sets} WHERE id=?", (*updates.values(), mark_id))
+        row = db.execute("SELECT * FROM knowledge_point_mark WHERE id=?", (mark_id,)).fetchone()
+        return dict(row)
+
+
+def delete_mark(store, staff: dict, mark_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM knowledge_point_mark WHERE id=?", (mark_id,)).fetchone():
+            raise TrainingPortalError("标注不存在。", 404)
+        db.execute("DELETE FROM knowledge_point_mark WHERE id=?", (mark_id,))
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # 路由注册（接线模式与 classroom/mistake_book 一致）
 # ---------------------------------------------------------------------------
 
@@ -287,6 +646,84 @@ class GoalPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     official_date_id: str | None = None
     planned_date: str | None = None
+
+
+class StaffLoginBody(BaseModel):
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    remember: bool = False
+
+
+class CertificateCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    description: str = ""
+    subjects: list[str] = Field(default_factory=list)
+    source_ref: str = ""
+
+
+class CertificatePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    description: str | None = None
+    subjects: list[str] | None = None
+    source_ref: str | None = None
+    active: bool | None = None
+
+
+class ExamDateCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    date_type: str
+    exam_date: str
+    round_label: str = ""
+
+
+class ExamDatePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    exam_date: str | None = None
+    round_label: str | None = None
+
+
+class KnowledgePointCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    subject: str = ""
+    parent_id: str | None = None
+    description: str = ""
+    source_ref: str = ""
+    outline_version: str = ""
+
+
+class KnowledgePointPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    subject: str | None = None
+    parent_id: str | None = None
+    description: str | None = None
+    source_ref: str | None = None
+    outline_version: str | None = None
+    active: bool | None = None
+
+
+class MarkCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    mark_type: str
+    level: str = "high"
+    basis_ref: str = ""
+    basis_version: str = ""
+
+
+class MarkPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    level: str | None = None
+    basis_ref: str | None = None
+    basis_version: str | None = None
+
+
+def _patch_fields(body) -> dict[str, Any]:
+    return {k: getattr(body, k) for k in body.model_fields_set}
 
 
 def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
@@ -386,6 +823,145 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                 return response({"goal": set_goal_status(store_provider(), who["id"], goal_id, action)})
             return endpoint
         app.post(f"/api/training/my/goals/{{goal_id}}/{action}")(_make(action))
+
+    # ---- 教师/管理员：认证与内容维护（证书上架、官方日期、考纲知识点、三类标注）----
+
+    def staff(session: str | None) -> dict[str, Any]:
+        who = staff_for_token(store_provider(), session)
+        if not who:
+            raise HTTPException(status_code=401, detail="请先使用教师或管理员账号登录。")
+        return who
+
+    @app.post("/api/training/staff/auth/login")
+    @guarded
+    def staff_login(body: StaffLoginBody, request: Request) -> Response:
+        ip = request.client.host if request.client else "unknown"
+        with staff_login_guard.reserve(body.username, ip) as wait:
+            if wait:
+                return JSONResponse(status_code=429, content={"detail": "登录尝试过于频繁，请稍后重试。"},
+                                    headers={"Retry-After": str(wait)})
+            result = login_staff(store_provider(), body.username, body.password, remember=body.remember)
+            if not result:
+                staff_login_guard.record_failure(body.username, ip)
+                raise HTTPException(status_code=401, detail="用户名或密码不正确。")
+            staff_login_guard.record_success(body.username)
+        resp = response({"staff": result["staff"]})
+        resp.set_cookie(
+            STAFF_COOKIE, result["token"], max_age=session_max_age(body.remember), httponly=True,
+            samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1", path="/",
+        )
+        return resp
+
+    @app.post("/api/training/staff/auth/logout")
+    def staff_logout(session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        logout_staff(store_provider(), session)
+        resp = response({"ok": True})
+        resp.delete_cookie(STAFF_COOKIE, path="/")
+        return resp
+
+    @app.get("/api/training/staff/auth/me")
+    @guarded
+    def staff_me(session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        return response({"staff": staff(session)})
+
+    @app.get("/api/training/staff/certificates")
+    @guarded
+    def staff_certificates(include_inactive: bool = True,
+                           session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        with store_provider().connect() as db:
+            where = "" if include_inactive else "WHERE active=1"
+            rows = db.execute(f"SELECT id FROM certificate {where} ORDER BY created_at").fetchall()
+        return response({"certificates": [get_certificate(store_provider(), r["id"]) for r in rows]})
+
+    @app.post("/api/training/staff/certificates")
+    @guarded
+    def staff_certificate_create(body: CertificateCreate,
+                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"certificate": create_certificate(
+            store_provider(), who, body.code, body.name, description=body.description,
+            subjects=body.subjects, source_ref=body.source_ref)})
+
+    @app.patch("/api/training/staff/certificates/{cert_id}")
+    @guarded
+    def staff_certificate_update(cert_id: str, body: CertificatePatch,
+                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"certificate": update_certificate(
+            store_provider(), who, cert_id, fields=_patch_fields(body))})
+
+    @app.post("/api/training/staff/certificates/{cert_id}/dates")
+    @guarded
+    def staff_date_create(cert_id: str, body: ExamDateCreate,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"exam_date": create_exam_date(
+            store_provider(), who, cert_id, body.date_type, body.exam_date, body.round_label)})
+
+    @app.patch("/api/training/staff/dates/{date_id}")
+    @guarded
+    def staff_date_update(date_id: str, body: ExamDatePatch,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"exam_date": update_exam_date(
+            store_provider(), who, date_id, fields=_patch_fields(body))})
+
+    @app.delete("/api/training/staff/dates/{date_id}")
+    @guarded
+    def staff_date_delete(date_id: str,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response(delete_exam_date(store_provider(), who, date_id))
+
+    @app.get("/api/training/staff/certificates/{cert_id}/knowledge-points")
+    @guarded
+    def staff_kp_list(cert_id: str, include_inactive: bool = True,
+                      session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"knowledge_points": list_knowledge_points(
+            store_provider(), who, cert_id, include_inactive=include_inactive)})
+
+    @app.post("/api/training/staff/certificates/{cert_id}/knowledge-points")
+    @guarded
+    def staff_kp_create(cert_id: str, body: KnowledgePointCreate,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"knowledge_point": create_knowledge_point(
+            store_provider(), who, cert_id, body.code, body.name, subject=body.subject,
+            parent_id=body.parent_id, description=body.description, source_ref=body.source_ref,
+            outline_version=body.outline_version)})
+
+    @app.patch("/api/training/staff/knowledge-points/{kp_id}")
+    @guarded
+    def staff_kp_update(kp_id: str, body: KnowledgePointPatch,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"knowledge_point": update_knowledge_point(
+            store_provider(), who, kp_id, fields=_patch_fields(body))})
+
+    @app.post("/api/training/staff/knowledge-points/{kp_id}/marks")
+    @guarded
+    def staff_mark_create(kp_id: str, body: MarkCreate,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"mark": create_mark(
+            store_provider(), who, kp_id, body.mark_type, level=body.level,
+            basis_ref=body.basis_ref, basis_version=body.basis_version)})
+
+    @app.patch("/api/training/staff/marks/{mark_id}")
+    @guarded
+    def staff_mark_update(mark_id: str, body: MarkPatch,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"mark": update_mark(store_provider(), who, mark_id, fields=_patch_fields(body))})
+
+    @app.delete("/api/training/staff/marks/{mark_id}")
+    @guarded
+    def staff_mark_delete(mark_id: str,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response(delete_mark(store_provider(), who, mark_id))
 
     @app.get("/training-certificates")
     def training_portal_page() -> FileResponse:

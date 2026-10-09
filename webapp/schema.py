@@ -414,4 +414,12 @@ def initialize(store) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_training_student_sessions_student
                 ON training_student_sessions(student_id);
+            CREATE TABLE IF NOT EXISTS training_staff_sessions (
+                token_hash TEXT PRIMARY KEY,              -- 教师/管理员会话令牌 SHA-256
+                staff_id TEXT NOT NULL REFERENCES college_user(id),  -- 实训教师或管理员（外键）
+                expires_at TEXT NOT NULL,                 -- 过期时间（ISO 8601 文本）
+                created_at TEXT NOT NULL                  -- 创建时间
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_staff_sessions_staff
+                ON training_staff_sessions(staff_id);
         """)
