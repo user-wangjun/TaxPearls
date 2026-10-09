@@ -373,3 +373,27 @@ class StudentGoal:
     planned_date: str | None = None       # 个人计划考试日（可空，ISO 日期）
     official_date_id: str | None = None   # 选定的官方考试日，外键 → exam_date.id（可空）
     status: str = "active"         # active=进行 / paused=暂停 / achieved=达成 / archived=归档
+
+
+@dataclass
+class TrainingContentVersion:
+    """一条考证内容版本，对应表 training_content_version；题源治理与旧作答回溯的锚点。
+
+    首发仅开放 simulated（规则仿真题）；real/recall/mock 为数据模型预留类型，
+    服务层一律拒绝创建，待真题授权与审核流程建立后再开放。
+    同一证书同一时间仅一个 active 版本，发布新版本时旧版本转 retired（行保留）。
+    """
+
+    id: str                        # 主键，UUID 文本
+    certificate_id: str            # 证书，外键 → certificate.id
+    label: str                     # 版本标签，证书内唯一
+    year: int                      # 适用年度
+    created_at: str                # 发布时间（ISO 8601 文本）
+    updated_at: str                # 最近更新时间
+    source_type: str = "simulated" # simulated=仿真 / real=真题 / recall=回忆 / mock=模拟
+    rules_digest: str = ""         # 覆盖规则的指纹（sha256），检测同标签下的内容漂移
+    status: str = "active"         # active=启用中 / retired=已轮换退役
+    source_ref: str = ""           # 依据/授权说明
+    note: str = ""                 # 备注
+    created_by: str | None = None  # 发布人，外键 → college_user.id；自动基线版本为空
+    rule_ids: list[str] = field(default_factory=list)  # 覆盖的规则清单，落库为 rule_ids_json

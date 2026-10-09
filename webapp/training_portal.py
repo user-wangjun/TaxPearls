@@ -28,6 +28,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from webapp.login_guard import LoginGuard
 from webapp.storage import _hash_token, _now, session_max_age
+from webapp.training_content import (applicability, ensure_active_version,
+                                     resolve_active_version, version_brief)
 
 STATIC_DIR_KEYS = ("training-portal.html", "training-portal.js")
 
@@ -144,6 +146,11 @@ def list_certificates(store, *, include_inactive: bool = False) -> list[dict[str
                    WHERE certificate_id=? AND date_type IN ('official','expected')
                    ORDER BY exam_date""", (cert["id"],)).fetchall()
             cert["exam_dates"] = [dict(d) | {"countdown": countdown(d["exam_date"])} for d in dates]
+            active_version = resolve_active_version(db, cert["id"])
+            cert["content_version"] = (
+                {"id": active_version["id"], "label": active_version["label"],
+                 "year": active_version["year"], "source_type": active_version["source_type"]}
+                if active_version else None)
         return certs
 
 
@@ -359,6 +366,11 @@ def _certificate_payload(db, row: sqlite3.Row) -> dict[str, Any]:
     cert["exam_dates"] = [dict(d) | {"countdown": countdown(d["exam_date"])} for d in dates]
     cert["knowledge_point_count"] = db.execute(
         "SELECT count(*) FROM knowledge_point WHERE certificate_id=?", (cert["id"],)).fetchone()[0]
+    active_version = resolve_active_version(db, cert["id"])
+    cert["content_version"] = (
+        {"id": active_version["id"], "label": active_version["label"],
+         "year": active_version["year"], "source_type": active_version["source_type"]}
+        if active_version else None)
     return cert
 
 
@@ -774,6 +786,8 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
             if not candidates:
                 raise TrainingPortalError("该范围还没有可练题目：知识点尚未关联规则，请等待教师配置。")
             rule_id = secrets.choice(candidates)
+        # 绑定当前内容版本（FR-K08）：证书尚无版本时自动建立仿真基线版本。
+        version = ensure_active_version(db, cert_id, rules)
     if seed is None:
         seed = secrets.randbelow(2147483648)
     exercise = _generate(rules, rule_id, seed)
@@ -783,24 +797,27 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
     with store.connect() as db:
         db.execute(
             """INSERT INTO training_self_practice_attempts (id, student_id, certificate_id, knowledge_point_id,
-               rule_id, seed, level, year, digest, status, created_at)
-               VALUES (?,?,?,?,?,?, 'normal', 2026, ?, 'open', ?)""",
-            (attempt_id, student_id, cert_id, kp_id, rule_id, seed, digest, _now()))
-    attempt_id = attempt_id  # 已在库中；下面构造作答视图
-    return _open_view(exercise, {"id": attempt_id, "certificate_id": cert_id,
-                                 "knowledge_point_id": kp_id, "level": "normal",
-                                 "year": 2026, "created_at": _now()}, rules)
+               rule_id, seed, level, year, digest, status, content_version_id, created_at)
+               VALUES (?,?,?,?,?,?, 'normal', ?, ?, 'open', ?, ?)""",
+            (attempt_id, student_id, cert_id, kp_id, rule_id, seed, version["year"], digest,
+             version["id"], _now()))
+        row = db.execute("SELECT * FROM training_self_practice_attempts WHERE id=?", (attempt_id,)).fetchone()
+        return _open_view(exercise, row, rules, db=db)
 
 
-def _open_view(exercise, row: dict[str, Any], rules: list[Any]) -> dict[str, Any]:
+def _open_view(exercise, row: Any, rules: list[Any], db=None) -> dict[str, Any]:
     """作中视图：材料与规则目录下发，答案（rule_id）绝不下发。"""
-    return {
+    view = {
         "id": row["id"], "status": "open",
         "certificate_id": row["certificate_id"], "knowledge_point_id": row["knowledge_point_id"],
         "level": row["level"], "year": row["year"], "created_at": row["created_at"],
         "materials": _materials(exercise),
         "rule_catalog": sorted(({"id": r.id, "name": r.name} for r in rules), key=lambda x: x["name"]),
     }
+    if db is not None:
+        view["content_version"] = version_brief(db, row["content_version_id"])
+        view["applicability"] = applicability(db, row["certificate_id"], row["content_version_id"])
+    return view
 
 
 def _attempt_row(store, student_id: str, attempt_id: str) -> sqlite3.Row:
@@ -813,10 +830,12 @@ def _attempt_row(store, student_id: str, attempt_id: str) -> sqlite3.Row:
 def get_attempt(store, student_id: str, attempt_id: str) -> dict[str, Any]:
     row = _attempt_row(store, student_id, attempt_id)
     if row["status"] == "scored":
-        return _scored_view(row)
+        with store.connect() as db:
+            return _scored_view(row, db)
     rules = _load_rules()
     exercise = _generate(rules, row["rule_id"], row["seed"])
-    return _open_view(exercise, dict(row), rules)
+    with store.connect() as db:
+        return _open_view(exercise, row, rules, db=db)
 
 
 def submit_practice(store, student_id: str, attempt_id: str, selected: list[str]) -> dict[str, Any]:
@@ -846,12 +865,12 @@ def submit_practice(store, student_id: str, attempt_id: str, selected: list[str]
             "UPDATE training_self_practice_attempts SET status='scored', answers_json=?, result_json=?, scored_at=? WHERE id=?",
             (json.dumps(chosen, ensure_ascii=False), sealed, _now(), attempt_id))
         row = db.execute("SELECT * FROM training_self_practice_attempts WHERE id=?", (attempt_id,)).fetchone()
-    return _scored_view(row)
+        return _scored_view(row, db)
 
 
-def _scored_view(row: sqlite3.Row) -> dict[str, Any]:
+def _scored_view(row: sqlite3.Row, db=None) -> dict[str, Any]:
     result = json.loads(row["result_json"] or "{}")
-    return {
+    view = {
         "id": row["id"], "status": "scored", "certificate_id": row["certificate_id"],
         "knowledge_point_id": row["knowledge_point_id"], "rule_id": row["rule_id"],
         "seed": row["seed"], "level": row["level"], "year": row["year"],
@@ -859,6 +878,10 @@ def _scored_view(row: sqlite3.Row) -> dict[str, Any]:
         "result": result, "score": result.get("score"), "perfect": result.get("perfect"),
         "created_at": row["created_at"], "scored_at": row["scored_at"],
     }
+    if db is not None:
+        view["content_version"] = version_brief(db, row["content_version_id"])
+        view["applicability"] = applicability(db, row["certificate_id"], row["content_version_id"])
+    return view
 
 
 def list_attempts(store, student_id: str, *, cert_id: str | None = None,
@@ -869,18 +892,18 @@ def list_attempts(store, student_id: str, *, cert_id: str | None = None,
     if status in ("open", "scored"):
         clauses.append("AND status=?"); params.append(status)
     params.append(max(1, min(int(limit), 200)))
+    out = []
     with store.connect() as db:
         rows = db.execute(
             f"SELECT * FROM training_self_practice_attempts {' '.join(clauses)} ORDER BY created_at DESC LIMIT ?",
             params).fetchall()
-    out = []
-    for row in rows:
-        if row["status"] == "scored":
-            view = _scored_view(row)
-        else:
-            view = {"id": row["id"], "status": "open", "certificate_id": row["certificate_id"],
-                    "knowledge_point_id": row["knowledge_point_id"], "created_at": row["created_at"]}
-        out.append(view)
+        for row in rows:
+            if row["status"] == "scored":
+                view = _scored_view(row, db)
+            else:
+                view = {"id": row["id"], "status": "open", "certificate_id": row["certificate_id"],
+                        "knowledge_point_id": row["knowledge_point_id"], "created_at": row["created_at"]}
+            out.append(view)
     return out
 
 

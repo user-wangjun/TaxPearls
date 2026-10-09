@@ -371,6 +371,7 @@ def initialize(store) -> None:
                 target_type TEXT NOT NULL
                     CHECK (target_type IN ('rule','task','question')),  -- 规则/实训任务/题目
                 target_id TEXT NOT NULL,                  -- 目标对象 ID
+                active INTEGER NOT NULL DEFAULT 1,        -- 是否启用：0=停用（出题不再选用，治理题源）
                 created_by TEXT REFERENCES college_user(id),  -- 建立人（外键）
                 created_at TEXT NOT NULL,                 -- 创建时间
                 UNIQUE(knowledge_point_id, target_type, target_id)
@@ -430,7 +431,9 @@ def initialize(store) -> None:
                 rule_id TEXT NOT NULL,                    -- 本题目标规则（评分后随解析展示，未交前不下发）
                 seed INTEGER NOT NULL,                    -- 仿真种子（确定性复现题目材料）
                 level TEXT NOT NULL DEFAULT 'normal',     -- 难度
-                year INTEGER NOT NULL DEFAULT 2026,       -- 教学年度
+                year INTEGER NOT NULL DEFAULT 2026,       -- 教学年度（年度变化时提示适用性）
+                source_type TEXT NOT NULL DEFAULT 'simulated',  -- 题源：simulated=规则仿真（真题/回忆/模拟预留，不冒充真题）
+                rule_version TEXT NOT NULL DEFAULT '',    -- 出题时规则版本快照（旧作答可追溯当时内容）
                 digest TEXT NOT NULL,                     -- 出题时材料指纹（提交时校验规则未变更）
                 status TEXT NOT NULL DEFAULT 'open'
                     CHECK (status IN ('open','scored')),  -- 作答中 / 已判分（重复提交不再计数）
@@ -443,4 +446,32 @@ def initialize(store) -> None:
                 ON training_self_practice_attempts(student_id, status, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_training_self_practice_attempts_kp
                 ON training_self_practice_attempts(knowledge_point_id);
+            CREATE TABLE IF NOT EXISTS training_content_version (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 证书（外键）
+                label TEXT NOT NULL,                      -- 版本标签，证书内唯一（如 '2026 考纲仿真题 v1'）
+                source_type TEXT NOT NULL DEFAULT 'simulated'
+                    CHECK (source_type IN ('simulated','real','recall','mock')),
+                                                          -- 题源类型：仿真/真题/回忆/模拟（数据模型预留，首发仅仿真）
+                year INTEGER NOT NULL,                    -- 适用年度（年度变化时提示旧作答适用性）
+                rules_digest TEXT NOT NULL DEFAULT '',    -- 本版本覆盖规则的指纹（sha256，检测内容漂移）
+                rule_ids_json TEXT NOT NULL DEFAULT '[]', -- 本版本覆盖的规则清单（JSON 数组文本）
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','retired')),  -- 启用中 / 已轮换退役（行保留供旧作答回溯）
+                source_ref TEXT NOT NULL DEFAULT '',      -- 依据/授权说明（真题等须有授权文号，服务层校验）
+                note TEXT NOT NULL DEFAULT '',            -- 备注
+                created_by TEXT REFERENCES college_user(id),  -- 发布人（自动基线版本为空）
+                created_at TEXT NOT NULL,                 -- 发布时间
+                updated_at TEXT NOT NULL,                 -- 最近更新时间
+                UNIQUE(certificate_id, label)
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_content_version_cert
+                ON training_content_version(certificate_id, status);
         """)
+        # 既有库的作答表补挂内容版本列（additive 迁移；旧行为 NULL=未版本化，按材料指纹回溯）。
+        attempt_columns = {row["name"] for row in db.execute(
+            "PRAGMA table_info(training_self_practice_attempts)")}
+        if "content_version_id" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts"
+                " ADD COLUMN content_version_id TEXT REFERENCES training_content_version(id)")

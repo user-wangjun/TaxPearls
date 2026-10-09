@@ -130,6 +130,29 @@
     </div>
 
     <div class="card">
+      <h2>内容版本（题源治理） <button class="small" data-act="show-version-form">＋ 发布新版本</button></h2>
+      <p class="muted" style="margin-top:-6px;">当前题源为规则仿真题；真题/回忆题/模拟题类型已预留，须获授权后才能启用，生成题不冒充真题。同一证书仅一个启用版本，发布新版本会自动退役旧版本，旧作答仍按当时版本回溯。</p>
+      <div id="version-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>版本标签（证书内唯一）</label><input id="vf-label" placeholder="如 2026 考纲仿真题 v1"></div>
+          <div><label>适用年度</label><input id="vf-year" type="number" placeholder="留空=当前年度"></div>
+        </div>
+        <div class="row">
+          <div><label>题源类型</label>
+            <select id="vf-type">
+              <option value="simulated">仿真题（当前唯一开放）</option>
+              <option value="real">真题（暂缓，须授权）</option>
+              <option value="recall">回忆题（暂缓，须授权）</option>
+              <option value="mock">模拟题（暂缓，须授权）</option>
+            </select></div>
+          <div><label>依据/授权说明（必填）</label><input id="vf-source" placeholder="如：依据 2026 版考纲整理的规则仿真题"></div>
+        </div>
+        <div class="actions"><button class="primary small" data-act="create-version">发布并启用</button></div>
+      </div>
+      <div id="versions"></div>
+    </div>
+
+    <div class="card">
       <h2>考纲知识点 <button class="small" data-act="show-kp-form">＋ 新增知识点</button></h2>
       <div id="kp-form" class="inline-form" hidden>
         <div class="row">

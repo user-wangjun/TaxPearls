@@ -1156,6 +1156,8 @@ register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
 from webapp.training_portal import register as register_training_portal
 register_training_portal(app, lambda: store, "taxpearls_training_session")
+from webapp.training_content import register as register_training_content
+register_training_content(app, lambda: store)
 
 
 @app.get("/api/audits")

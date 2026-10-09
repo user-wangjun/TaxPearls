@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [] };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [] };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -186,10 +186,35 @@ function renderParentOptions() {
   ).join("");
 }
 
+function renderVersions() {
+  const box = document.getElementById("versions");
+  const cert = current();
+  if (!cert) { box.innerHTML = ""; return; }
+  if (!state.versions.length) {
+    box.innerHTML = `<p class="muted">尚无内容版本：学生首次练习时会自动建立“仿真基线”版本，也可在上方手动发布。</p>`;
+    return;
+  }
+  const TYPE = { simulated: "仿真题", real: "真题", recall: "回忆题", mock: "模拟题" };
+  box.innerHTML = state.versions.map((v) => `<div class="item">
+    <div class="item-head">
+      <div><strong>${esc(v.label)}</strong>
+        <span class="badge ${v.status === "active" ? "" : "gray"}">${v.status === "active" ? "启用中" : "已退役"}</span>
+        <span class="chip">${TYPE[v.source_type] || v.source_type} · ${esc(v.year)} 年度</span>
+        <span class="muted">覆盖规则 ${(v.rule_ids || []).length} 条</span></div>
+      <div class="actions">
+        ${v.status === "active" ? `<button class="small danger" data-act="retire-version" data-id="${esc(v.id)}">退役</button>` : ""}
+      </div>
+    </div>
+    ${v.source_ref ? `<div class="muted">依据：${esc(v.source_ref)}</div>` : ""}
+    ${v.note ? `<div class="muted">备注：${esc(v.note)}</div>` : ""}
+  </div>`).join("");
+}
+
 function renderAll() {
   renderCertSelect();
   renderCertForm();
   renderDates();
+  renderVersions();
   renderKps();
   renderParentOptions();
 }
@@ -203,9 +228,12 @@ async function load() {
     state.currentId = state.certificates.length ? state.certificates[0].id : null;
   }
   state.kps = [];
+  state.versions = [];
   if (state.currentId) {
     const kp = await api(`/api/training/staff/certificates/${state.currentId}/knowledge-points`);
     state.kps = kp.knowledge_points;
+    const vs = await api(`/api/training/staff/certificates/${state.currentId}/content-versions`);
+    state.versions = vs.versions;
   }
   renderAll();
 }
@@ -373,6 +401,28 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       });
       flash("标注已添加。");
     }),
+    "show-version-form": () => { const f = q("#version-form"); f.hidden = !f.hidden; },
+    "create-version": () => withCert(async () => {
+      await api(`/api/training/staff/certificates/${cert.id}/content-versions`, {
+        method: "POST",
+        body: {
+          label: q("#vf-label").value.trim(),
+          source_type: q("#vf-type").value,
+          year: q("#vf-year").value ? parseInt(q("#vf-year").value, 10) : null,
+          source_ref: q("#vf-source").value,
+        },
+      });
+      q("#vf-label").value = ""; q("#vf-year").value = ""; q("#vf-source").value = "";
+      q("#version-form").hidden = true;
+      flash("内容版本已发布并启用；旧版本自动退役，旧作答仍按当时版本回溯。");
+    }),
+    "retire-version": () => {
+      if (!window.confirm("确认退役该内容版本？记录保留，旧作答仍按当时版本回溯。")) return;
+      withCert(async () => {
+        await api(`/api/training/staff/content-versions/${id}/retire`, { method: "POST" });
+        flash("版本已退役。");
+      });
+    },
     "delete-mark": () => {
       if (!window.confirm("确认删除该标注？")) return;
       withCert(async () => { await api(`/api/training/staff/marks/${id}`, { method: "DELETE" }); flash("标注已删除。"); });
