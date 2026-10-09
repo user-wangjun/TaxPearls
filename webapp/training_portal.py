@@ -1,0 +1,396 @@
+"""考证刷题线学生端（FR-K01/K02）：证书目录、学习目标与考试倒计时。
+
+学生身份独立于平台 users 账号：以 student_info（学号 + 密码）登录，
+会话存 training_student_sessions 表，使用独立 cookie，与主站会话互不影响。
+倒计时按中国日历日计算且永不为负；考试日期过期仅作标记，绝不自动修改
+目标状态（验收：不自动判定目标达成）；目标修改保留 created_at 历史，
+归档不删行（验收：修改范围不丢失历史记录）。
+
+需求基线：docs/07-高校考证刷题线需求.md（TP-CERT-001，university-extension 分支）。
+"""
+from __future__ import annotations
+
+import json
+import os
+import secrets
+import sqlite3
+import uuid
+from datetime import UTC, date, datetime, timedelta, timezone
+from functools import wraps
+from pathlib import Path
+from typing import Any, Callable
+
+from argon2 import PasswordHasher
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from fastapi import Cookie, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from webapp.login_guard import LoginGuard
+from webapp.storage import _hash_token, _now, session_max_age
+
+STATIC_DIR_KEYS = ("training-portal.html", "training-portal.js")
+
+_passwords = PasswordHasher()
+CST = timezone(timedelta(hours=8))  # 考试与倒计时按中国日历日（无夏令时）
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+login_guard = LoginGuard()
+
+
+class TrainingPortalError(ValueError):
+    def __init__(self, message: str, status: int = 422):
+        super().__init__(message)
+        self.status = status
+
+
+def today_cst() -> date:
+    return datetime.now(CST).date()
+
+
+def countdown(target: str | None) -> dict[str, Any] | None:
+    """倒计时只到日；剩余天数最小为 0，过期以 expired 标记（不出现负数）。"""
+    if not target:
+        return None
+    try:
+        day = date.fromisoformat(str(target)[:10])
+    except (TypeError, ValueError):
+        return None
+    delta = (day - today_cst()).days
+    return {"target_date": day.isoformat(), "days_left": max(delta, 0), "expired": delta < 0}
+
+
+def _parse_date(value: Any) -> str:
+    try:
+        return date.fromisoformat(str(value)).isoformat()
+    except (TypeError, ValueError) as exc:
+        raise TrainingPortalError("日期格式必须是 YYYY-MM-DD。") from None
+
+
+def _student_public(row: sqlite3.Row) -> dict[str, Any]:
+    return {"id": row["id"], "student_no": row["student_no"], "name": row["name"],
+            "college": row["college"], "class_name": row["class_name"]}
+
+
+# ---------------------------------------------------------------------------
+# 学生会话
+# ---------------------------------------------------------------------------
+
+def login_student(store, student_no: str, password: str, college: str | None = None,
+                  remember: bool = False) -> dict[str, Any] | None:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        rows = db.execute(
+            "SELECT * FROM student_info WHERE student_no=? AND active=1", (student_no.strip(),)
+        ).fetchall()
+        if college:
+            rows = [r for r in rows if r["college"] == college.strip()]
+        if not rows:
+            return None
+        # 先验密码再谈歧义：全部失败一律 401，不泄露学号存在性
+        verified = []
+        for row in rows:
+            try:
+                _passwords.verify(row["password_hash"], password)
+                verified.append(row)
+            except (VerifyMismatchError, InvalidHashError):
+                continue
+        if not verified:
+            return None
+        if len(verified) > 1:
+            raise TrainingPortalError("该学号在多个院校存在，请在登录时填写院校名称。")
+        row = verified[0]
+        token = secrets.token_urlsafe(32)
+        expires = (datetime.now(UTC) + timedelta(seconds=session_max_age(remember))).isoformat(timespec="seconds")
+        db.execute("DELETE FROM training_student_sessions WHERE expires_at < ?", (_now(),))
+        db.execute("INSERT INTO training_student_sessions VALUES (?,?,?,?)",
+                   (_hash_token(token), row["id"], expires, _now()))
+        return {"student": _student_public(row), "token": token}
+
+
+def student_for_token(store, token: str | None) -> dict[str, Any] | None:
+    if not token:
+        return None
+    with store.connect() as db:
+        row = db.execute(
+            """SELECT s.id, s.student_no, s.name, s.college, s.class_name, s.active
+               FROM training_student_sessions t JOIN student_info s ON s.id = t.student_id
+               WHERE t.token_hash=? AND t.expires_at>=?""",
+            (_hash_token(token), _now()),
+        ).fetchone()
+    if not row or not row["active"]:
+        return None
+    return _student_public(row)
+
+
+def logout_student(store, token: str | None) -> None:
+    if token:
+        with store.connect() as db:
+            db.execute("DELETE FROM training_student_sessions WHERE token_hash=?", (_hash_token(token),))
+
+
+# ---------------------------------------------------------------------------
+# 证书目录（FR-K01）
+# ---------------------------------------------------------------------------
+
+def list_certificates(store, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        where = "" if include_inactive else "WHERE active=1"
+        certs = [dict(r) for r in db.execute(
+            f"SELECT * FROM certificate {where} ORDER BY created_at").fetchall()]
+        for cert in certs:
+            cert["subjects"] = json.loads(cert.pop("subjects_json") or "[]")
+            dates = db.execute(
+                """SELECT id, round_label, date_type, exam_date FROM exam_date
+                   WHERE certificate_id=? AND date_type IN ('official','expected')
+                   ORDER BY exam_date""", (cert["id"],)).fetchall()
+            cert["exam_dates"] = [dict(d) | {"countdown": countdown(d["exam_date"])} for d in dates]
+        return certs
+
+
+# ---------------------------------------------------------------------------
+# 学习目标与倒计时（FR-K02）
+# ---------------------------------------------------------------------------
+
+def _goal_payload(db, row: sqlite3.Row) -> dict[str, Any]:
+    cert = db.execute("SELECT id, code, name, subjects_json FROM certificate WHERE id=?",
+                      (row["certificate_id"],)).fetchone()
+    official = None
+    if row["official_date_id"]:
+        official = db.execute(
+            "SELECT id, round_label, date_type, exam_date FROM exam_date WHERE id=?",
+            (row["official_date_id"],)).fetchone()
+    source, target = None, None
+    if official is not None:
+        source, target = official["date_type"], official["exam_date"]
+    elif row["planned_date"]:
+        source, target = "planned", row["planned_date"]
+    return {
+        "id": row["id"], "status": row["status"],
+        "certificate": {"id": cert["id"], "code": cert["code"], "name": cert["name"],
+                        "subjects": json.loads(cert["subjects_json"] or "[]")} if cert else None,
+        "official_date": (dict(official) | {"countdown": countdown(official["exam_date"])}) if official else None,
+        "planned_date": row["planned_date"],
+        "countdown": countdown(target), "countdown_source": source,
+        "created_at": row["created_at"], "updated_at": row["updated_at"],
+    }
+
+
+def list_goals(store, student_id: str, *, include_archived: bool = False) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        where = "" if include_archived else "AND status != 'archived'"
+        rows = db.execute(
+            f"SELECT * FROM student_goal WHERE student_id=? {where} ORDER BY created_at DESC",
+            (student_id,)).fetchall()
+        return [_goal_payload(db, r) for r in rows]
+
+
+def _validate_target(db, certificate_id: str, official_date_id: str | None, planned_date: str | None) -> None:
+    if official_date_id:
+        row = db.execute("SELECT date_type, exam_date FROM exam_date WHERE id=? AND certificate_id=?",
+                         (official_date_id, certificate_id)).fetchone()
+        if not row:
+            raise TrainingPortalError("所选考试日期不存在或不属于该证书。")
+        if row["date_type"] not in ("official", "expected"):
+            raise TrainingPortalError("只能选择官方或预计考试日作为目标。")
+        if countdown(row["exam_date"])["expired"]:
+            raise TrainingPortalError(f"考试日期 {row['exam_date']} 已经过期，请选择未来的考试日。")
+    if planned_date:
+        day = date.fromisoformat(_parse_date(planned_date))
+        if day < today_cst():
+            raise TrainingPortalError(f"个人计划日期 {planned_date} 已过期，请选择今天或未来的日期。")
+
+
+def create_goal(store, student_id: str, certificate_id: str, official_date_id: str | None = None,
+                planned_date: str | None = None) -> dict[str, Any]:
+    if planned_date is not None:
+        planned_date = _parse_date(planned_date)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        cert = db.execute("SELECT active FROM certificate WHERE id=?", (certificate_id,)).fetchone()
+        if not cert or not cert["active"]:
+            raise TrainingPortalError("证书不存在或已下架。", 404)
+        _validate_target(db, certificate_id, official_date_id, planned_date)
+        goal_id = str(uuid.uuid4())
+        now = _now()
+        try:
+            db.execute(
+                """INSERT INTO student_goal (id, student_id, certificate_id, planned_date,
+                   official_date_id, status, created_at, updated_at) VALUES (?,?,?,?,?,'active',?,?)""",
+                (goal_id, student_id, certificate_id, planned_date, official_date_id, now, now))
+        except sqlite3.IntegrityError:
+            raise TrainingPortalError("该证书已有进行中的学习目标，请先归档或暂停它。", 409) from None
+        row = db.execute("SELECT * FROM student_goal WHERE id=?", (goal_id,)).fetchone()
+        return _goal_payload(db, row)
+
+
+def update_goal(store, student_id: str, goal_id: str, *, official_date_id: str | None = None,
+                planned_date: str | None = None) -> dict[str, Any]:
+    if planned_date is not None:
+        planned_date = _parse_date(planned_date)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM student_goal WHERE id=? AND student_id=?",
+                         (goal_id, student_id)).fetchone()
+        if not row:
+            raise TrainingPortalError("学习目标不存在。", 404)
+        if row["status"] != "active":
+            raise TrainingPortalError("目标当前不是进行中状态，恢复后再修改。")
+        _validate_target(db, row["certificate_id"], official_date_id, planned_date)
+        db.execute(
+            "UPDATE student_goal SET planned_date=?, official_date_id=?, updated_at=? WHERE id=?",
+            (planned_date, official_date_id, _now(), goal_id))
+        row = db.execute("SELECT * FROM student_goal WHERE id=?", (goal_id,)).fetchone()
+        return _goal_payload(db, row)
+
+
+def set_goal_status(store, student_id: str, goal_id: str, action: str) -> dict[str, Any]:
+    allowed = {"pause": ("active", "paused"), "resume": ("paused", "active"), "archive": (None, "archived")}
+    if action not in allowed:
+        raise TrainingPortalError("不支持的目标操作。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM student_goal WHERE id=? AND student_id=?",
+                         (goal_id, student_id)).fetchone()
+        if not row:
+            raise TrainingPortalError("学习目标不存在。", 404)
+        current, target = allowed[action]
+        if current is not None and row["status"] != current:
+            raise TrainingPortalError(f"目标当前状态为 {row['status']}，无法执行该操作。")
+        try:
+            db.execute("UPDATE student_goal SET status=?, updated_at=? WHERE id=?",
+                       (target, _now(), goal_id))
+        except sqlite3.IntegrityError:
+            raise TrainingPortalError("该证书已有另一个进行中的目标，请先归档它。", 409) from None
+        row = db.execute("SELECT * FROM student_goal WHERE id=?", (goal_id,)).fetchone()
+        return _goal_payload(db, row)
+
+
+# ---------------------------------------------------------------------------
+# 路由注册（接线模式与 classroom/mistake_book 一致）
+# ---------------------------------------------------------------------------
+
+class LoginBody(BaseModel):
+    student_no: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    college: str | None = None
+    remember: bool = False
+
+
+class GoalCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    certificate_id: str = Field(min_length=1)
+    official_date_id: str | None = None
+    planned_date: str | None = None
+
+
+class GoalPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    official_date_id: str | None = None
+    planned_date: str | None = None
+
+
+def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
+    def response(body: Any) -> JSONResponse:
+        return JSONResponse(body, headers={"Cache-Control": "private, no-store"})
+
+    def student(session: str | None) -> dict[str, Any]:
+        who = student_for_token(store_provider(), session)
+        if not who:
+            raise HTTPException(status_code=401, detail="请先使用学号登录。")
+        return who
+
+    def guarded(handler):
+        @wraps(handler)  # 保留原签名：FastAPI 依赖参数内省解析 Cookie/Body
+        def wrapper(*args, **kwargs):
+            try:
+                return handler(*args, **kwargs)
+            except TrainingPortalError as exc:
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+            except sqlite3.IntegrityError:
+                raise HTTPException(status_code=409, detail="操作与现有数据冲突。") from None
+        return wrapper
+
+    @app.post("/api/training/auth/login")
+    @guarded
+    def training_login(body: LoginBody, request: Request) -> Response:
+        ip = request.client.host if request.client else "unknown"
+        with login_guard.reserve(body.student_no, ip) as wait:
+            if wait:
+                return JSONResponse(status_code=429, content={"detail": "登录尝试过于频繁，请稍后重试。"},
+                                    headers={"Retry-After": str(wait)})
+            result = login_student(store_provider(), body.student_no, body.password,
+                                   college=body.college, remember=body.remember)
+            if not result:
+                login_guard.record_failure(body.student_no, ip)
+                raise HTTPException(status_code=401, detail="学号或密码不正确。")
+            login_guard.record_success(body.student_no)
+        resp = response({"student": result["student"]})
+        resp.set_cookie(
+            cookie_name, result["token"], max_age=session_max_age(body.remember), httponly=True,
+            samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1", path="/",
+        )
+        return resp
+
+    @app.post("/api/training/auth/logout")
+    def training_logout(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        logout_student(store_provider(), session)
+        resp = response({"ok": True})
+        resp.delete_cookie(cookie_name, path="/")
+        return resp
+
+    @app.get("/api/training/auth/me")
+    @guarded
+    def training_me(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        return response({"student": student(session)})
+
+    @app.get("/api/training/certificates")
+    @guarded
+    def training_certificates(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        student(session)
+        return response({"certificates": list_certificates(store_provider())})
+
+    @app.get("/api/training/my/goals")
+    @guarded
+    def training_goals(include_archived: bool = False,
+                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"goals": list_goals(store_provider(), who["id"], include_archived=include_archived)})
+
+    @app.post("/api/training/my/goals")
+    @guarded
+    def training_goal_create(body: GoalCreate,
+                             session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"goal": create_goal(store_provider(), who["id"], body.certificate_id,
+                                             official_date_id=body.official_date_id,
+                                             planned_date=body.planned_date)})
+
+    @app.patch("/api/training/my/goals/{goal_id}")
+    @guarded
+    def training_goal_update(goal_id: str, body: GoalPatch,
+                             session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        kwargs: dict[str, Any] = {}
+        if "official_date_id" in body.model_fields_set:
+            kwargs["official_date_id"] = body.official_date_id
+        if "planned_date" in body.model_fields_set:
+            kwargs["planned_date"] = body.planned_date
+        return response({"goal": update_goal(store_provider(), who["id"], goal_id, **kwargs)})
+
+    for action in ("pause", "resume", "archive"):
+        def _make(action: str):
+            @guarded
+            def endpoint(goal_id: str,
+                         session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+                who = student(session)
+                return response({"goal": set_goal_status(store_provider(), who["id"], goal_id, action)})
+            return endpoint
+        app.post(f"/api/training/my/goals/{{goal_id}}/{action}")(_make(action))
+
+    @app.get("/training-certificates")
+    def training_portal_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "training-portal.html", media_type="text/html")
+
+    @app.get("/training-portal.js")
+    def training_portal_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "training-portal.js", media_type="text/javascript")

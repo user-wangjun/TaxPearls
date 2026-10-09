@@ -406,4 +406,12 @@ def initialize(store) -> None:
                 ON student_goal(student_id, certificate_id) WHERE status = 'active';  -- 同证书仅一个进行中目标
             CREATE INDEX IF NOT EXISTS idx_student_goal_student
                 ON student_goal(student_id, status);
+            CREATE TABLE IF NOT EXISTS training_student_sessions (
+                token_hash TEXT PRIMARY KEY,              -- 会话令牌 SHA-256（与主站 sessions 同惯例）
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键）
+                expires_at TEXT NOT NULL,                 -- 过期时间（ISO 8601 文本）
+                created_at TEXT NOT NULL                  -- 创建时间
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_student_sessions_student
+                ON training_student_sessions(student_id);
         """)
