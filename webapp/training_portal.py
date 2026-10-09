@@ -22,7 +22,7 @@ from typing import Any, Callable
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from fastapi import Cookie, HTTPException, Request
+from fastapi import Cookie, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -64,7 +64,7 @@ def countdown(target: str | None) -> dict[str, Any] | None:
 def _parse_date(value: Any) -> str:
     try:
         return date.fromisoformat(str(value)).isoformat()
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError):
         raise TrainingPortalError("日期格式必须是 YYYY-MM-DD。") from None
 
 

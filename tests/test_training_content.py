@@ -100,7 +100,6 @@ class TrainingContentVersionTests(unittest.TestCase):
         self.assertEqual(v1["source_type"], "simulated")
         res = self._create_version("2027 考纲仿真题 v1", year=2027)
         self.assertEqual(res.status_code, 200, res.text)
-        v2 = res.json()["content_version"]
         versions = self.client.get(
             f"/api/training/staff/certificates/{self.cert}/content-versions").json()["versions"]
         by_label = {v["label"]: v for v in versions}

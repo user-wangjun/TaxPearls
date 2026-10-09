@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from src import settings  # noqa: F401 - 先加载 .env，Store 需要 FIELD_KEY
 from src import engine
 from webapp.storage import Store
-from webapp.training_portal import RULES_DIR, register, today_cst
+from webapp.training_portal import RULES_DIR, register
 
 _passwords = PasswordHasher()
 STUDENT_COOKIE = "test_training_cookie"
