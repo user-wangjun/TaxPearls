@@ -5,6 +5,63 @@
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>税海拾珠 · 税务风险审计</title>
+<script id="workspaceAppearance">
+"use strict";
+/* Apply the saved appearance before styles load; no account/server data is stored. */
+(() => {
+  const key = "taxpearls.theme", choices = ["light", "dark", "system"];
+  const system = window.matchMedia?.("(prefers-color-scheme: dark)");
+  let preference = "light";
+  try { const saved = localStorage.getItem(key); if (choices.includes(saved)) preference = saved; } catch (_) {}
+  function apply() {
+    document.documentElement.dataset.theme = preference === "system" ? (system?.matches ? "dark" : "light") : preference;
+    document.documentElement.dataset.themePreference = preference;
+    const labels = {light:"亮色", dark:"暗色", system:"跟随系统"};
+    const button = document.getElementById("themeCycle");
+    const next = choices[(choices.indexOf(preference) + 1) % choices.length];
+    if (button) {
+      const hint = "当前：" + labels[preference] + "；点击切换为" + labels[next];
+      button.setAttribute("aria-label", hint);
+      button.title = hint;
+      button.dataset.themeChoice = preference;
+    }
+    document.querySelectorAll("#themeOptions [data-theme-select]").forEach(option => {
+      option.setAttribute("aria-pressed", String(option.dataset.themeSelect === preference));
+    });
+    const label = document.getElementById("themeLabel");
+    if (label) label.textContent = labels[preference];
+    document.querySelectorAll("#themeCycle [data-theme-icon]").forEach(icon => {
+      icon.toggleAttribute("hidden", icon.dataset.themeIcon !== preference);
+    });
+  }
+  function select(value) {
+    if (!choices.includes(value)) return;
+    preference = value;
+    try { localStorage.setItem(key, value); } catch (_) {}
+    apply();
+  }
+  function mount() {
+    document.querySelectorAll("#themeOptions [data-theme-select]").forEach(option => {
+      option.addEventListener("click", () => select(option.dataset.themeSelect));
+    });
+    document.getElementById("themeCycle")?.addEventListener("click", () => {
+      select(choices[(choices.indexOf(preference) + 1) % choices.length]);
+    });
+    apply();
+  }
+  apply();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount, {once:true});
+  else mount();
+  const systemChanged = () => { if (preference === "system") apply(); };
+  if (system?.addEventListener) system.addEventListener("change", systemChanged);
+  else system?.addListener?.(systemChanged);
+  window.addEventListener("storage", event => {
+    if (event.key !== key && event.key !== null) return;
+    preference = choices.includes(event.newValue) ? event.newValue : "light";
+    apply();
+  });
+})();
+</script>
 <link rel="icon" type="image/svg+xml" href="/logo">
 <style>
   :root {
@@ -334,10 +391,49 @@
   .material-table th:nth-child(3) { width:70px; }
   .material-card pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:auto; background:var(--bg); padding:12px; font-size:12px; }
   .material-check { display:block; margin:12px 0; line-height:1.8; }
+  label .req { color: var(--high); margin-left: 3px; font-weight: 600; }
+
+  /* 上传设置卡片：去掉 fieldset 默认边框，按全站 field 控件与分组卡片组织 */
+  #uploadScope { border:0; padding:0; margin:0; min-width:0; }
+  #uploadScope:disabled { opacity:.6; }
+  #uploadScope legend { padding:0; font-size:17px; font-weight:600; color:var(--ink); margin-bottom:14px; }
+  #uploadScope .muted { margin-top:10px; }
+  #uploadScope details { margin:14px 0; border:1px solid var(--line); border-radius:10px; background:#f8fafd; }
+  #uploadScope summary { list-style:none; display:flex; align-items:center; gap:9px; padding:13px 16px; border-radius:10px; cursor:pointer; user-select:none; font-size:15px; font-weight:600; color:#2c4a78; }
+  #uploadScope summary::-webkit-details-marker { display:none; }
+  #uploadScope summary::before { content:"▸"; flex:none; font-size:11px; color:#5b8ad3; transition:transform .18s ease; }
+  #uploadScope details[open] summary::before { transform:rotate(90deg); }
+  #uploadScope summary:hover { background:#eef3fb; }
+  #uploadScope details[open] .material-company { padding:2px 16px 6px; margin:0; }
+  .upload-extraction { margin-top:20px; padding-top:18px; border-top:1px solid var(--line); }
+  .upload-extraction .field { margin:0; max-width:560px; }
+  .upload-extraction .muted { margin-top:10px; }
+
+  /* 机构总览控制行：控件与按钮等高，单字段不再横向拉伸占满整行 */
+  #orgReportPanel .row .field { flex:0 1 360px; min-width:220px; }
+  #orgReportPanel .row .field select { height:48px; min-height:48px; padding-top:0; padding-bottom:0; }
+  #orgReportPanel .row .btn { min-height:48px; }
+  #orgReportPanel .row .btn.pdf { margin-left:auto; }
+
+  /* 卡片内控制行恢复纵向节奏：field 外边距被工作台样式清零后，行与行、行与按钮会贴死 */
+  .sheet .row { margin-block:12px; }
+
+  /* 报告原件核验：列宽按内容分配，文件选择与状态提示与全站控件同风格 */
+  #reportVerification > * { max-width:960px; }
+  #reportVerification .verify-fields .field:nth-child(1) { flex:2.4; min-width:260px; }
+  #reportVerification .verify-fields .field:nth-child(2) { flex:1; min-width:150px; }
+  #reportVerification .verify-fields .field:nth-child(3) { flex:1.6; min-width:230px; }
+  #reportVerification input[type=file] { display:flex; align-items:center; gap:10px; padding:5px 12px; color:var(--ink-2); }
+  #reportVerification input[type=file]::file-selector-button { flex:none; border:0; border-radius:8px; background:#eaf1ff; color:#2865e8; padding:8px 14px; font-family:inherit; font-size:14px; cursor:pointer; transition:background .16s; }
+  #reportVerification input[type=file]::file-selector-button:hover { background:#dbe7fc; }
+  #reportVerification .verify-actions .btn { min-height:48px; }
+  #reportVerification #verificationStatus.verify-ok { color:#18835b; }
+  #reportVerification #verificationStatus.verify-bad { color:var(--high); }
+  #reportVerification #verificationDetails:not(:empty) { margin-top:12px; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:#f8fafd; font-size:13px; line-height:1.9; color:var(--ink-2); }
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=reports-training">
+<link rel="stylesheet" href="/workspace.css?v=20261009-workspace-pr-41">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -420,23 +516,14 @@
 
 
 
-<header id="appHeader" style="display:none">
-  <div class="wrap hdr">
-    <div class="hdr-brand">
-      <img class="hdr-logo" src="/logo" alt="税海拾珠">
-      <div class="hdr-txt">
-        <h1>税海拾珠 · 税务风险审计</h1>
-      </div>
-    </div>
-    <div class="top-tools"><span id="currentUser"></span><button id="btnLogout">退出</button></div>
-  </div>
-</header>
+
 
 <main id="appMain" style="display:none">
-  <div class="wrap">
+  <div class="wrap nav-collapsed">
 
     <div class="nav" id="nav" role="navigation" aria-label="企业工作空间">
-      <div class="nav-heading"><div class="nav-caption">企业工作空间</div><button type="button" id="navToggle" aria-controls="nav" aria-expanded="true" aria-label="收起侧边栏" title="收起侧边栏"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button></div>
+      <div class="nav-brand"><img class="nav-brand-logo" src="/logo" alt="税海拾珠" draggable="false"><img class="nav-brand-wordmark" src="/auth-wordmark.png" alt="" draggable="false"></div>
+      <div class="nav-heading"><div class="nav-caption">企业工作空间</div><button type="button" id="navToggle" aria-controls="nav" aria-expanded="false" aria-label="展开侧边栏" title="展开侧边栏"><span class="nav-toggle-direction" aria-hidden="true"><span class="nav-toggle-track"><span class="nav-toggle-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></span><span class="nav-toggle-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></span></span></span></button></div>
       <button data-panel="notificationPanel" aria-label="通知订阅" title="通知订阅"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a6 6 0 0 0-6 6v5l-2 4h16l-2-4V8a6 6 0 0 0-6-6Zm-3 17h6a3 3 0 0 1-6 0Z"/></svg><span class="nav-label">通知订阅</span></button>
       <button data-panel="dashboardPanel" class="business-nav" aria-label="工作台" title="工作台"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="8" height="10" rx="2"/><rect x="13" y="3" width="8" height="6" rx="2"/><rect x="3" y="15" width="8" height="6" rx="2"/><rect x="13" y="11" width="8" height="10" rx="2"/></svg><span class="nav-label">工作台</span></button>
       <button data-panel="uploadPanel" class="business-nav" aria-label="上传材料" title="上传材料"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 15V7.4L8.7 9.7 7.3 8.3 12 3.6l4.7 4.7-1.4 1.4L13 7.4V15zM4 13h4v4h8v-4h4v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span class="nav-label">上传材料</span></button>
@@ -445,6 +532,23 @@
       <button data-panel="knowledgePanel" aria-label="知识图谱" title="知识图谱"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m11 6 2-1 6 12-2 1zM5 17 11 5l2 1-6 12zM6 17h12v2H6z"/><circle cx="12" cy="5" r="3.5"/><circle cx="5" cy="18" r="3.5"/><circle cx="19" cy="18" r="3.5"/></svg><span class="nav-label">知识图谱</span></button>
       <button data-panel="trainingPanel" class="training-nav" aria-label="实训中心" title="实训中心"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 11 5-11 5L1 8zm-7 9 7 3.2 7-3.2v5c-3.7 3.5-10.3 3.5-14 0zM21 11h2v8h-2z"/></svg><span class="nav-label">实训中心</span></button>
       <button data-panel="adminPanel" class="admin-nav" aria-label="管理" title="管理"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10" cy="7" r="4"/><path d="M2 21v-3a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v3zm16-18a4 4 0 0 1 0 8h-1a6 6 0 0 0 0-8zm.5 10a5 5 0 0 1 4.5 5v3h-3v-3a8 8 0 0 0-1.5-5z"/></svg><span class="nav-label">管理</span></button>
+      <div id="appHeader" class="nav-account" style="display:none">
+        <div id="themePicker" class="theme-picker">
+          <div id="themeOptions" role="group" aria-label="外观模式">
+            <button type="button" data-theme-select="light" aria-pressed="true" aria-label="亮色" title="亮色"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><span>亮色</span></button>
+            <button type="button" data-theme-select="dark" aria-pressed="false" aria-label="暗色" title="暗色"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/></svg><span>暗色</span></button>
+            <button type="button" data-theme-select="system" aria-pressed="false" aria-label="跟随系统" title="跟随系统"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8m-4-5v5"/></svg><span>跟随系统</span></button>
+          </div>
+          <button id="themeCycle" class="account-control" type="button" aria-label="当前：亮色；点击切换为暗色" title="当前：亮色；点击切换为暗色">
+            <span class="account-icon" aria-hidden="true"><svg data-theme-icon="light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg data-theme-icon="dark" hidden viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/></svg><svg data-theme-icon="system" hidden viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8m-4-5v5"/></svg></span><span id="themeLabel" hidden>亮色</span>
+          </button>
+        </div>
+        <div class="top-tools">
+        <button class="account-control" type="button" data-panel="userSettingsPanel" aria-label="用户设置" title="用户设置">
+          <span class="account-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg></span><span class="account-label">用户设置</span>
+        </button>
+        <button id="btnLogout" class="account-control" type="button" aria-label="退出登录" title="退出登录"><span class="account-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 3H4v18h5M9 12h12m-5-5 5 5-5 5"/></svg></span><span class="account-label">退出</span></button>
+      </div></div>
     </div>
 
     <section class="panel" id="dashboardPanel">
@@ -471,38 +575,43 @@
     <section class="panel" id="uploadPanel">
     <div class="page-head"><div><p class="eyebrow">DATA IMPORT</p><h2>上传材料</h2><p class="muted">核对企业与所属期间后，生成审计结果并更新工作台。</p></div></div>
 
-    <!-- 1. 上传区 -->
-    <div class="sheet" style="margin-bottom:16px">
+    <!-- 1. 上传设置：企业范围 + 提取方式 -->
+    <div class="sheet">
       <div class="field" id="auditClientField">
         <fieldset id="uploadScope">
           <legend>本次分析的企业</legend>
-          <label for="uploadCompanyMode">企业选择</label>
-          <select id="uploadCompanyMode"><option value="new">新建企业（默认）</option><option value="existing">已有企业</option></select>
-          <label for="auditClient">已有企业档案</label>
-          <select id="auditClient" disabled><option value="">请选择已有企业</option></select>
+          <div class="field">
+            <label for="uploadCompanyMode">企业选择</label>
+            <select id="uploadCompanyMode"><option value="new">新建企业（默认）</option><optgroup id="uploadClientGroup" label="已有企业档案" hidden></optgroup></select>
+          </div>
           <p class="muted" id="uploadProfileHint">新建企业可留空，上传后仅从无歧义材料预填；确认后才建档。</p>
-          <details><summary>本次企业信息（可先填写，也可上传后核对）</summary>
+          <details class="upload-company-info"><summary>本次企业信息（可先填写，也可上传后核对）</summary>
+            <p class="muted">带 <span class="req">*</span> 的为确认检测前必填项；可先留空，由无歧义材料候选预填。</p>
             <div class="material-company">
-              <label>企业名称<input id="uploadCompanyName" maxlength="200"></label>
-              <label>纳税人识别号<input id="uploadCompanyTaxId" maxlength="200"></label>
+              <label>企业名称<span class="req" aria-hidden="true">*</span><input id="uploadCompanyName" maxlength="200"></label>
+              <label>纳税人识别号<span class="req" aria-hidden="true">*</span><input id="uploadCompanyTaxId" maxlength="200"></label>
               <label>所属行业<input id="uploadCompanyIndustry" maxlength="200"></label>
               <label>地区<input id="uploadCompanyRegion" maxlength="200" placeholder="涉及房产土地时，另核对事项所在地"></label>
               <label>本期纳税人身份<input id="uploadCompanyTaxpayerType" maxlength="200"></label>
               <label>本次业务范围<input id="uploadCompanyBusinessScope" maxlength="200"></label>
-              <label>主期间起始日<input id="uploadCompanyStart" type="date"></label>
-              <label>主期间终止日<input id="uploadCompanyEnd" type="date"></label>
+              <label>主期间起始日<span class="req" aria-hidden="true">*</span><input id="uploadCompanyStart" type="date"></label>
+              <label>主期间终止日<span class="req" aria-hidden="true">*</span><input id="uploadCompanyEnd" type="date"></label>
             </div>
           </details>
           <p class="muted">手填值不被材料覆盖。历史信息仅供预填，本期身份和范围须确认；旧期间不自动沿用。此选择不代表符合任何税收优惠。</p>
         </fieldset>
       </div>
-      <label for="extractionMode">数据提取方式</label>
-      <select id="extractionMode" style="padding:8px;margin:8px 0;max-width:100%">
-        <option value="auto">自动：已配置时使用 AI 提取 PDF / 扫描图片 / 非标准账表</option>
-        <option value="ai">使用 AI 提取（需要配置模型服务）</option>
-        <option value="local">仅本地解析</option>
-      </select>
-      <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
+      <div class="upload-extraction">
+        <div class="field">
+          <label for="extractionMode">数据提取方式</label>
+          <select id="extractionMode">
+            <option value="auto">自动：已配置时使用 AI 提取 PDF / 扫描图片 / 非标准账表</option>
+            <option value="ai">使用 AI 提取（需要配置模型服务）</option>
+            <option value="local">仅本地解析</option>
+          </select>
+        </div>
+        <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
+      </div>
     </div>
     <div class="dropzone" id="dropzone">
       <div class="t1">一次选择或拖拽多份 XLSX、受控旧版 XLS、CSV/TSV、XML、PDF、PNG/JPEG/TIFF，也可上传 ZIP 文件包</div>
@@ -596,8 +705,8 @@
 
     <section class="panel" id="historyPanel">
       <div class="sheet" id="reportVerification"><h2>报告原件核验</h2><p class="muted">标识和水印可以被复制，不能单独证明文件真实。登录后核对服务器冻结原件；文件在本机计算 SHA-256，只提交指纹，不上传报告内容。不提供公开报告查询，不是第三方数字签名，也不能阻止转发。旧归档没有标识时保留旧文件，归档当前报告可生成带标识的新版本。</p>
-        <div class="row"><div class="field"><label for="verificationId">追溯标识</label><input id="verificationId" maxlength="44" placeholder="TPV- 后接 40 位小写十六进制"></div><div class="field"><label for="verificationFormat">文件类型</label><select id="verificationFormat"><option value="pdf">PDF 原件</option><option value="html">HTML 原件</option></select></div><div class="field"><label for="verificationFile">待核验文件（仅本机计算）</label><input id="verificationFile" type="file" accept=".pdf,.html"></div></div>
-        <div class="row"><button class="btn re" id="verificationLookup" type="button">查看登记信息</button><button class="btn pdf" id="verificationCheck" type="button">核验所选文件</button></div><p id="verificationStatus" class="muted" role="status"></p><p id="verificationDetails" class="muted" style="overflow-wrap:anywhere;white-space:pre-line"></p>
+        <div class="row verify-fields"><div class="field"><label for="verificationId">追溯标识</label><input id="verificationId" maxlength="44" placeholder="TPV- 后接 40 位小写十六进制"></div><div class="field"><label for="verificationFormat">文件类型</label><select id="verificationFormat"><option value="pdf">PDF 原件</option><option value="html">HTML 原件</option></select></div><div class="field"><label for="verificationFile">待核验文件（仅本机计算）</label><input id="verificationFile" type="file" accept=".pdf,.html"></div></div>
+        <div class="row verify-actions"><button class="btn re" id="verificationLookup" type="button">查看登记信息</button><button class="btn pdf" id="verificationCheck" type="button">核验所选文件</button></div><p id="verificationStatus" class="muted" role="status"></p><p id="verificationDetails" class="muted" style="overflow-wrap:anywhere;white-space:pre-line"></p>
       </div>
       <div class="sheet"><h2>审计历史与报告归档</h2><p class="muted">证据快照与报告版本分开保存。品牌、模板或已校验叙述变化后生成新版本，旧版不覆盖；PDF 首次导出后保存原文件。旧审计首次归档以实际归档时间为准，不补造历史报告。</p>
         <form id="historySearch"><div class="row">
@@ -610,6 +719,35 @@
         </div></form>
         <p class="muted" id="historyStatus" role="status"></p><div class="data-list" id="historyList"></div>
         <div class="row"><button class="btn re" id="historyPrev" type="button">上一页</button><button class="btn re" id="historyNext" type="button">下一页</button></div>
+      </div>
+    </section>
+
+    <section class="panel" id="userSettingsPanel" aria-labelledby="userSettingsTitle">
+      <div class="settings-heading"><div><p class="muted">ACCOUNT SETTINGS</p><h1 id="userSettingsTitle">用户设置</h1><p class="muted">查看账号信息，管理通知偏好和报告导出。</p></div></div>
+      <div class="settings-grid">
+        <div class="sheet settings-profile"><h2>账号信息</h2><p id="currentUser" class="muted"></p>
+          <dl class="settings-account-fields">
+            <div><dt>登录账号</dt><dd id="settingsUsername">—</dd></div>
+            <div><dt>显示名称</dt><dd id="settingsDisplayName">—</dd></div>
+            <div><dt>账号角色</dt><dd id="settingsRole">—</dd></div>
+            <div><dt>注册时间</dt><dd id="settingsCreatedAt">—</dd></div>
+          </dl><p class="muted settings-note">账号信息由当前登录账号提供；如需变更，请联系管理员。</p>
+        </div>
+        <div class="sheet settings-notifications"><h2>通知偏好</h2><p class="muted">选择接收的事件和邮件渠道，保存后生效。</p>
+          <fieldset id="settingsPreferences" disabled><legend class="visually-hidden">个人通知偏好</legend>
+            <label class="settings-choice" for="settingsCompleted"><span><strong>审计完成提醒</strong><small>接收之后的审计完成通知</small></span><input type="checkbox" id="settingsCompleted"></label>
+            <label class="settings-choice" for="settingsHigh"><span><strong>高风险提醒</strong><small>单独接收高风险命中摘要</small></span><input type="checkbox" id="settingsHigh"></label>
+            <label class="settings-choice" for="settingsEmail"><span><strong>摘要邮件</strong><small>仅发送风险摘要，不含企业名称或原始财务数据</small></span><input type="checkbox" id="settingsEmail"></label>
+          </fieldset>
+          <div class="settings-actions"><button class="btn pdf" id="settingsSave" type="button" disabled>保存通知偏好</button><button class="btn re" id="settingsRefresh" type="button">重新读取</button><button class="btn re" id="settingsNoticeOpen" type="button" hidden>查看通知</button></div>
+          <p class="muted settings-note" id="settingsStatus" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+      <div class="sheet settings-exports"><h2>数据与报告导出</h2><p class="muted">从现有报告入口选择企业、期间和报告版本，再下载所需文件。</p>
+        <div class="settings-export-grid">
+          <div id="settingsHistoryExport" class="settings-export-entry" hidden><div><h3>审计报告档案</h3><p class="muted">检索历史审计，下载已归档的 HTML / PDF 报告。</p></div><button class="btn re" id="settingsHistoryOpen" type="button">前往历史档案 →</button></div>
+          <div id="settingsOrgExport" class="settings-export-entry" hidden><div><h3>机构汇总报告</h3><p class="muted">选择客户与业务期间，查看汇总报告并导出 PDF。</p></div><button class="btn re" id="settingsOrgOpen" type="button">前往机构总览 →</button></div>
+        </div><p class="muted settings-note" id="settingsExportStatus"></p>
       </div>
     </section>
 
@@ -680,7 +818,7 @@
     </section>
 
     <section class="panel" id="adminPanel">
-      <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
+      <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button class="btn re" id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
       <div class="sheet" id="inviteAdmin" style="display:none"><h2>签发机构创始码</h2><p class="muted">为企业和高校的管理员签发一次性注册码：码只与机构名称捆绑，一码一位、私聊交付，不绑定邮箱；注册时仍须通过邮箱验证码核验。明文只在签发时显示一次，系统中仅存哈希。</p><div class="row"><div class="field"><label for="inviteOrgName">企业 / 高校名称</label><input id="inviteOrgName" maxlength="120" placeholder="例如：东莞市某某税务师事务所"></div><div class="field"><label for="inviteSeats">机构总席位（含管理员）</label><select id="inviteSeats"><option value="5" selected>小型 · 5 席</option><option value="20">中型 · 20 席</option><option value="50">大型 · 50 席</option></select></div><button class="btn pdf" id="btnCreateInvite" type="button">签发邀请码</button></div><div class="data-item" id="inviteReveal" hidden><div><div id="inviteRevealCode" class="invite-code"></div><p class="muted" id="inviteRevealSeats"></p><p class="muted">仅显示这一次，关闭后无法找回，请立即复制并私聊交付给机构负责人。</p></div><div class="row"><button id="btnCopyInvite" type="button">复制</button><button id="btnHideInvite" type="button">我已保存</button></div></div><h3>邀请码台账</h3><div class="data-list" id="inviteList"></div></div>
       <div class="sheet" id="userAdmin"><h2>账号与成员管理</h2><p class="muted" id="userAdminHint">机构管理员可创建本机构会计；平台只能签发创始码，不手动开户。席位按当前在岗成员计算（含机构管理员，不含平台管理员）；停用释放席位并撤销会话，恢复后须重新登录，不删除历史业务。</p>
         <div class="row"><div class="field"><label for="memberOrg">管理机构</label><select id="memberOrg"></select></div><button class="btn" id="btnRefreshMembers">刷新成员</button></div>
@@ -712,10 +850,10 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
-<script src="/enterprise.js?v=enterprise-review-1"></script>
-<script src="/console.js?v=20261006-login-layout-1"></script>
+<script src="/enterprise.js?v=20261007-company-selector-2"></script>
+<script src="/console.js?v=20261009-org-overview-icon-3"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
-<script src="/workspace.js?v=platform-access-1"></script>
+<script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>

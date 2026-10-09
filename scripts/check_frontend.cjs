@@ -18,6 +18,160 @@ for (const name of fs.readdirSync("webapp/static").filter(name => name.endsWith(
 for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
   if (match[1].trim()) new vm.Script(match[1]);
 }
+// Trend area gaps remain gaps; isolated/zero samples and reduced-motion modes stay valid.
+{
+  const source = fs.readFileSync("webapp/static/workspace.js", "utf8");
+  function node(tag='div',className='',text='') {
+    return {tag,children:[],attributes:{class:className},style:{setProperty(){}},textContent:text,
+      classList:{add(){},remove(){}},setAttribute(name,value){this.attributes[name]=String(value);},
+      append(...children){this.children.push(...children);},addEventListener(){}};
+  }
+  function all(parent) { return [parent,...parent.children.flatMap(all)]; }
+  for(const reduced of [true,false]) {
+    const ctx={REDUCED_MOTION:reduced, $:()=>({value:'2026-05'}),
+      metricOf:(row,key)=>row.metrics[key],amount:metric=>String(metric.value),
+      document:{createElementNS:(_ns,tag)=>node(tag)},el:node,requestAnimationFrame:fn=>fn()};
+    vm.createContext(ctx);vm.runInContext(source.slice(source.indexOf('function svgNode(')),ctx);
+    const box=node();
+    const rows=[1,2,3,4,5].map(month=>({period:'2026-0'+month,metrics:{'营业成本':{value:month*5}}}));
+    for(const index of [0,1,3,4]) rows[index].metrics['营业收入']={value:(index+1)*10};
+    ctx.renderTrend(box,rows);
+    const elements=all(box),areas=elements.filter(n=>n.tag==='path');
+    const income=areas.filter(n=>n.attributes.fill.includes('Income'));
+    assert.equal(income.length,2,'Missing income must split the filled area into two runs');
+    assert.equal(areas.length,3,'Continuous cost data should retain one filled area');
+    for(const area of income) assert.ok(!area.attributes.d.includes('L 325 '),'A missing metric must not become a filled vertex');
+    assert.ok(areas.every(n=>/ Z$/.test(n.attributes.d)&&!n.attributes.d.includes('NaN')));
+    const reveals=elements.filter(n=>n.tag==='rect');
+    assert.equal(reveals.length,2);
+    assert.ok(reveals.every(n=>reduced?n.attributes.width==='520':n.style.width==='520px'));
+    const sparse=node();
+    ctx.renderTrend(sparse,rows.map((row,i)=>({...row,metrics:i===2?{'营业收入':{value:0}}:{}})));
+    assert.equal(all(sparse).filter(n=>n.tag==='path').length,0,'Isolated and zero-valued samples must not create a bridge');
+  }
+}
+
+// Appearance persists independently of account data and reacts to system changes only in system mode.
+{
+  const appearance = indexMarkup.match(/<script id="workspaceAppearance">([\s\S]*?)<\/script>/)[1];
+  function appearanceBoundary(saved, dark = false, blocked = false) {
+    const button = {dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},addEventListener(_name,fn){this.click=fn;}};
+    const options = ["light", "dark", "system"].map(value => ({dataset:{themeSelect:value},attributes:{},setAttribute(name,value){this.attributes[name]=value;},addEventListener(_name,fn){this.click=fn;}}));
+    const label = {textContent:""};
+    const icons = ["light", "dark", "system"].map(value => ({dataset:{themeIcon:value},hidden:false,toggleAttribute(name,on){assert.equal(name,"hidden");this.hidden=on;}}));
+    const dataset = {}, events = {}, writes = [];let mounted, changed, isMounted=false;
+    const media = {matches:dark,addEventListener(_name,fn){changed=fn;}};
+    const ctx = {document:{documentElement:{dataset},readyState:"loading",getElementById:id=>!isMounted?null:id==="themeCycle"?button:id==="themeLabel"?label:null,querySelectorAll:selector=>!isMounted?[]:selector.includes("themeOptions")?options:icons,addEventListener(_name,fn){mounted=()=>{isMounted=true;fn();};}},
+      localStorage:{getItem(){if(blocked)throw new Error("storage blocked");return saved;},setItem(key,value){if(blocked)throw new Error("storage blocked");writes.push({key,value});saved=value;}},
+      window:{matchMedia:()=>media,addEventListener(name,fn){events[name]=fn;}}};
+    vm.createContext(ctx);vm.runInContext(appearance,ctx);
+    const initial = {...dataset};mounted();
+    return {dataset,initial,button,label,icons,options,writes,events,select(value){options.find(option=>option.dataset.themeSelect===value).click();},system(value){media.matches=value;changed();},click(){button.click();}};
+  }
+  const light=appearanceBoundary(null);assert.equal(light.initial.theme,"light");
+  assert.equal(light.label.textContent,"亮色");assert.equal(light.icons.filter(i=>!i.hidden).length,1);
+  assert.match(light.button.attributes["aria-label"],/点击切换为暗色/);
+  light.click();assert.equal(light.dataset.themePreference,"dark");assert.equal(light.label.textContent,"暗色");
+  light.click();assert.equal(light.dataset.themePreference,"system");assert.equal(light.label.textContent,"跟随系统");
+  light.click();assert.equal(light.dataset.themePreference,"light");assert.equal(light.writes.at(-1).value,"light");
+  const direct=appearanceBoundary("light");
+  for (const mode of ["system", "dark", "light"]) {
+    direct.select(mode);assert.equal(direct.dataset.themePreference,mode);
+    assert.equal(direct.options.filter(option=>option.attributes["aria-pressed"]==="true").length,1);
+    assert.equal(direct.options.find(option=>option.attributes["aria-pressed"]==="true").dataset.themeSelect,mode);
+    assert.equal(direct.icons.find(icon=>!icon.hidden).dataset.themeIcon,mode);
+    assert.equal(direct.writes.at(-1).value,mode);
+  }
+  direct.select("dark");direct.click();assert.equal(direct.dataset.themePreference,"system");
+  assert.equal(direct.options.find(option=>option.attributes["aria-pressed"]==="true").dataset.themeSelect,"system");
+  assert.equal(appearanceBoundary(direct.writes.at(-1).value,true).initial.theme,"dark");
+  const savedDark=appearanceBoundary("dark");assert.equal(savedDark.initial.theme,"dark");
+  assert.equal(savedDark.icons.find(i=>!i.hidden).dataset.themeIcon,"dark");
+  savedDark.system(false);assert.equal(savedDark.dataset.theme,"dark");
+  savedDark.click();assert.equal(savedDark.dataset.themePreference,"system");
+  const system=appearanceBoundary("system",true);assert.equal(system.initial.theme,"dark");
+  system.system(false);assert.equal(system.dataset.theme,"light");assert.equal(system.dataset.themePreference,"system");
+  system.click();system.click();system.system(false);assert.equal(system.dataset.theme,"dark");
+  system.click();assert.equal(system.dataset.theme,"light");
+  system.events.storage({key:"unrelated",newValue:"dark"});assert.equal(system.dataset.themePreference,"system");
+  system.events.storage({key:"taxpearls.theme",newValue:"light"});assert.equal(system.dataset.themePreference,"light");
+  assert.equal(system.icons.find(i=>!i.hidden).dataset.themeIcon,"light");
+  system.events.storage({key:null,newValue:null});assert.equal(system.dataset.theme,"light");
+  assert.equal(appearanceBoundary("invalid",true).initial.theme,"light");
+  const blocked=appearanceBoundary("dark",true,true);assert.equal(blocked.initial.theme,"light");
+  blocked.click();assert.equal(blocked.dataset.themePreference,"dark");
+  blocked.click();assert.equal(blocked.dataset.themePreference,"system");
+  blocked.click();assert.equal(blocked.dataset.themePreference,"light");
+  assert.equal(appearanceBoundary(light.dataset.themePreference).initial.theme,"light");
+}
+
+// Refresh restores the actual selected workspace view, while role-hidden views stay unavailable.
+{
+  const source = fs.readFileSync("webapp/static/console.js", "utf8");
+  const code = source.slice(source.indexOf("function defaultWorkspacePanel()"), source.indexOf("/* ---------- 多材料上传"));
+  const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel"];
+  const permitted = {
+    org_admin: panels.filter(id => id !== "trainingPanel"),
+    accountant: panels.filter(id => !["trainingPanel", "orgReportPanel"].includes(id)),
+    teacher: panels.filter(id => id !== "orgReportPanel"),
+    student: ["trainingPanel", "knowledgePanel", "userSettingsPanel"],
+    platform_admin: ["adminPanel", "knowledgePanel", "userSettingsPanel"],
+  };
+  function navigation(role, href = "http://localhost/?view=test") {
+    const calls = [], url = new URL(href);
+    const location = {href:url.href, pathname:url.pathname, search:url.search, hash:url.hash, reload(){calls.push("reload");}};
+    const classes = (...initial) => {
+      const values = new Set(initial);
+      return {contains:name=>values.has(name), toggle(name, enabled){if(enabled) values.add(name);else values.delete(name);}};
+    };
+    const views = panels.map(id => ({id, classList:classes("panel")}));
+    const buttons = panels.map(id => ({dataset:{panel:id}, hidden:false, style:{display:permitted[role].includes(id)?"block":"none"}, classList:classes()}));
+    const ctx = {currentUser:{id:"user",role}, location, URLSearchParams,
+      history:{state:{retained:true}, replaceState(_state,_title,path){const next=new URL(path,location.href);Object.assign(location,{href:next.href,pathname:next.pathname,search:next.search,hash:next.hash});}},
+      $:id=>views.find(view=>view.id===id),
+      document:{querySelectorAll:selector=>selector===".panel"?views:buttons},
+      noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0,
+      refreshAIStatus(){calls.push("ai");},refreshAuditClients(){calls.push("clients");},enterpriseMaterials:{refresh(){calls.push("materials");}}};
+    for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge"])ctx[name]=()=>calls.push(name);
+    vm.createContext(ctx);vm.runInContext(code,ctx);
+    return {ctx,calls,location,views,buttons};
+  }
+  for (const [role, ids] of Object.entries(permitted)) {
+    for(const id of ids) {
+      const before=navigation(role);before.ctx.switchPanel(id);
+      assert.equal(before.location.hash,"#panel="+id);
+      assert.equal(before.location.search,"?view=test");
+      const refreshed=navigation(role,before.location.href);
+      refreshed.ctx.switchPanel(refreshed.ctx.initialWorkspacePanel());
+      assert.equal(refreshed.views.find(view=>view.classList.contains("active")).id,id);
+      assert.equal(refreshed.buttons.find(button=>button.classList.contains("active")).dataset.panel,id);
+    }
+  }
+  for(const [role, requested, expected] of [
+    ["student","adminPanel","trainingPanel"],
+    ["platform_admin","dashboardPanel","adminPanel"],
+    ["accountant","orgReportPanel","dashboardPanel"],
+    ["org_admin","unknownPanel","dashboardPanel"],
+  ]) {
+    const view=navigation(role,"http://localhost/#panel="+requested);
+    view.ctx.switchPanel(view.ctx.initialWorkspacePanel());
+    assert.equal(view.views.find(panel=>panel.classList.contains("active")).id,expected);
+    assert.equal(view.location.hash,"#panel="+expected);
+  }
+  const graph=navigation("org_admin","http://localhost/#panel=knowledgePanel");
+  graph.ctx.switchPanel(graph.ctx.initialWorkspacePanel());assert.deepEqual(graph.calls,["loadKnowledge"]);
+  const guest=navigation("org_admin");guest.ctx.currentUser=null;guest.ctx.switchPanel("adminPanel");
+  assert.equal(guest.calls.length,0);assert.equal(guest.location.hash,"");
+  const hashStart=source.indexOf('window.addEventListener("hashchange"');
+  const hashCode=source.slice(hashStart,source.indexOf("async function bootstrap()",hashStart));
+  const mail=navigation("org_admin");let hashChanged;
+  mail.ctx.window={addEventListener(_name,handler){hashChanged=handler;}};
+  vm.runInContext(hashCode,mail.ctx);
+  mail.location.hash="#email=confirmation-token";hashChanged();assert.deepEqual(mail.calls,["reload"]);
+  mail.calls.length=0;mail.location.hash="#panel=historyPanel";hashChanged();assert.deepEqual(mail.calls,["loadHistory"]);
+  assert.ok(source.includes("switchPanel(initialWorkspacePanel());"));
+}
+
 // Run the actual role-selection function with a small API/DOM boundary.
 const graph = fs.readFileSync("webapp/static/graph.js", "utf8");
 const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), graph.indexOf("async function loadGraph()"));
@@ -38,6 +192,73 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   // and navigation while a write is in flight. No browser globals are replaced
   // in application code; this tiny boundary provides only the needed DOM/API.
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
+  // Settings reuses self-only preferences; stale reads/writes may not alter another view/account.
+  const settingsCode = source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
+  function settingsBoundary(role = "accountant") {
+    const nodes = new Map(), calls = [], navigated = []; let active = true;
+    const user = {id:"settings-user", role, username:"<account>", display_name:"<name>", created_at:"2026-10-01T00:00:00+00:00"};
+    const ctx = {currentUser:user, Number, Date,
+      $:id => {if(!nodes.has(id)) nodes.set(id, {checked:false, disabled:false, hidden:false, textContent:"", classList:{contains:()=>active}});return nodes.get(id);},
+      canOpenWorkspacePanel:id=>["org_admin","accountant","teacher"].includes(ctx.currentUser.role) && (id!=="orgReportPanel" || ctx.currentUser.role==="org_admin"),
+      switchPanel:id=>navigated.push(id),
+      api:(url,options)=>new Promise((resolve,reject)=>calls.push({url,options,resolve,reject}))};
+    vm.createContext(ctx); vm.runInContext(settingsCode,ctx);
+    return {ctx,calls,navigated,leave(){active=false;vm.runInContext("settingsRequest++;",ctx);},enter(){active=true;}};
+  }
+  const settingsPrefs = {audit_completed:true, high_risk:false, email_enabled:true, has_email:true, delivery_enabled:false};
+  for(const role of ["student","platform_admin"]) {
+    const {ctx,calls}=settingsBoundary(role);await ctx.loadUserSettings();await ctx.saveUserSettings();
+    assert.equal(calls.length,0);assert.equal(ctx.$("settingsSave").disabled,true);
+    assert.equal(ctx.$("settingsHistoryExport").hidden,true);assert.equal(ctx.$("settingsOrgExport").hidden,true);
+    assert.equal(ctx.$("settingsUsername").textContent,"<account>");
+  }
+  for(const role of ["org_admin","accountant","teacher"]) {
+    const {ctx,calls,navigated}=settingsBoundary(role);const loading=ctx.loadUserSettings();
+    assert.equal(ctx.$("settingsSave").disabled,true);
+    assert.equal(calls.length,1);assert.equal(calls[0].url,"/api/notifications/preferences");
+    calls.shift().resolve(settingsPrefs);await loading;
+    assert.equal(ctx.$("settingsCompleted").checked,true);assert.equal(ctx.$("settingsEmail").checked,true);
+    assert.equal(ctx.$("settingsPreferences").disabled,false);assert.equal(ctx.$("settingsSave").disabled,false);
+    assert.equal(ctx.$("settingsOrgExport").hidden,role!=="org_admin");
+    ctx.$("settingsHistoryOpen").onclick();assert.deepEqual(navigated,["historyPanel"]);
+  }
+  {
+    const boundary=settingsBoundary(),{ctx,calls}=boundary;
+    const old=ctx.loadUserSettings(),oldRead=calls.shift();
+    const latest=ctx.loadUserSettings();calls.shift().resolve({...settingsPrefs,has_email:false,email_enabled:false});await latest;
+    oldRead.resolve(settingsPrefs);await old;
+    assert.equal(ctx.$("settingsEmail").disabled,true);assert.equal(ctx.$("settingsEmail").checked,false);
+    ctx.$("settingsEmail").checked=true; // Disabled channels cannot be enabled by a stale/programmatic value.
+    const saving=ctx.saveUserSettings(),write=calls.shift();
+    assert.equal(write.options.method,"PUT");assert.deepEqual(JSON.parse(write.options.body),{audit_completed:true,high_risk:false,email_enabled:false});
+    assert.equal(ctx.$("settingsSave").disabled,true);await ctx.saveUserSettings();assert.equal(calls.length,0);
+    write.resolve({});await new Promise(resolve=>setImmediate(resolve));
+    calls.shift().resolve({...settingsPrefs,has_email:false,email_enabled:false});await saving;
+    assert.ok(ctx.$("settingsStatus").textContent.includes("已保存"));
+    const leaving=ctx.loadUserSettings(),leaveRead=calls.shift();boundary.leave();
+    leaveRead.reject(new Error("stale settings error"));await leaving;
+    assert.ok(!ctx.$("settingsStatus").textContent.includes("stale settings error"));
+    boundary.enter();const recover=ctx.loadUserSettings();calls.shift().resolve(settingsPrefs);await recover;
+    const pendingSave=ctx.saveUserSettings(),pendingWrite=calls.shift();boundary.leave();boundary.enter();
+    const reentered=ctx.loadUserSettings();assert.equal(calls.length,0); // No pre-write GET on re-entry.
+    pendingWrite.resolve({});await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(calls.length,1);calls.shift().resolve({...settingsPrefs,high_risk:true});await Promise.all([pendingSave,reentered]);
+    assert.equal(ctx.$("settingsHigh").checked,true);assert.equal(ctx.$("settingsSave").disabled,false);
+    const failedSave=ctx.saveUserSettings();calls.shift().reject(new Error("uncertain save"));await failedSave;
+    assert.equal(ctx.$("settingsSave").disabled,true);assert.equal(ctx.$("settingsRefresh").disabled,false);
+    assert.ok(ctx.$("settingsStatus").textContent.includes("未确认"));
+    const reload=ctx.loadUserSettings();calls.shift().reject(new Error("settings read failure"));await reload;
+    assert.equal(ctx.$("settingsSave").disabled,true);
+    const changedOwner=ctx.loadUserSettings(),privateRead=calls.shift();ctx.currentUser={id:"other",role:"accountant",username:"other"};
+    privateRead.resolve(settingsPrefs);await changedOwner;assert.equal(ctx.$("settingsCompleted").checked,false);
+    const nextUser=ctx.loadUserSettings();calls.shift().resolve(settingsPrefs);await nextUser;
+    const otherSave=ctx.saveUserSettings(),otherWrite=calls.shift();ctx.currentUser={id:"third",role:"accountant",username:"third"};
+    const thirdLoad=ctx.loadUserSettings();assert.equal(calls.length,0);
+    otherWrite.reject(new Error("other user's save"));await new Promise(resolve=>setImmediate(resolve));
+    calls.shift().resolve(settingsPrefs);await Promise.all([otherSave,thirdLoad]);
+    assert.equal(ctx.$("settingsUsername").textContent,"third");assert.ok(!ctx.$("settingsStatus").textContent.includes("other user's save"));
+    assert.equal(ctx.$("settingsSave").disabled,false);
+  }
   assert.ok(source.includes('AI 候选原值（待核对）'));
   assert.ok(!source.includes('`原件：${row.ai_raw_value'));
   const notificationCode = source.slice(source.indexOf("function noticeCurrent("), source.indexOf("let currentRiskChanges"));
@@ -202,5 +423,5 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   mistakeUser = {id:"student-b",role:"teacher"};
   lostRoleCall.reject(new Error("private failure")); await lostRole;
   assert.ok(!mistakeNodes.get("mistakeStatus").textContent.includes("private failure"));
-  console.log("Frontend syntax, role, evidence and notification/rule/material/mistake race contracts passed.");
+  console.log("Frontend syntax, role, evidence and notification/rule/material/mistake race and trend area contracts passed.");
 })().catch(error => {console.error(error); process.exitCode = 1;});
