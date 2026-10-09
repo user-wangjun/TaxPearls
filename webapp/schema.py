@@ -422,4 +422,25 @@ def initialize(store) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_training_staff_sessions_staff
                 ON training_staff_sessions(staff_id);
+            CREATE TABLE IF NOT EXISTS training_self_practice_attempts (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键）
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 证书（外键）
+                knowledge_point_id TEXT REFERENCES knowledge_point(id),  -- 知识点（外键，可空=整证随机）
+                rule_id TEXT NOT NULL,                    -- 本题目标规则（评分后随解析展示，未交前不下发）
+                seed INTEGER NOT NULL,                    -- 仿真种子（确定性复现题目材料）
+                level TEXT NOT NULL DEFAULT 'normal',     -- 难度
+                year INTEGER NOT NULL DEFAULT 2026,       -- 教学年度
+                digest TEXT NOT NULL,                     -- 出题时材料指纹（提交时校验规则未变更）
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open','scored')),  -- 作答中 / 已判分（重复提交不再计数）
+                answers_json TEXT,                        -- 学生选择的风险点（JSON 数组文本）
+                result_json TEXT,                         -- 判分结果与逐项解析（JSON 文本）
+                created_at TEXT NOT NULL,                 -- 开始时间
+                scored_at TEXT                            -- 判分时间
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_self_practice_attempts_student
+                ON training_self_practice_attempts(student_id, status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_training_self_practice_attempts_kp
+                ON training_self_practice_attempts(knowledge_point_id);
         """)

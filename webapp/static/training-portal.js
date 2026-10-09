@@ -1,7 +1,7 @@
 /* 考证备考学生端（FR-K01/K02）：证书目录、学习目标与考试倒计时。 */
 "use strict";
 
-const state = { student: null, certificates: [], goals: [] };
+const state = { student: null, certificates: [], goals: [], kps: [], attempt: null };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -152,6 +152,136 @@ async function refresh() {
   state.goals = goals.goals;
   renderGoals();
   renderCerts();
+  await refreshPractice().catch((err) => flash(err.message, true));
+}
+
+/* ---------- 自主练习（FR-K05/K06） ---------- */
+
+function fmtNum(v) { return v === null || v === undefined || v === "" ? "—" : esc(v); }
+
+async function refreshPractice() {
+  const certSel = document.getElementById("pr-cert");
+  certSel.innerHTML = state.certificates.map((c) =>
+    `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+  if (!state.prCert || !state.certificates.some((c) => c.id === state.prCert)) {
+    state.prCert = state.certificates.length ? state.certificates[0].id : null;
+  }
+  if (state.prCert) certSel.value = state.prCert;
+  const [kpData, wrong, open] = await Promise.all([
+    state.prCert ? api(`/api/training/my/knowledge-points?certificate_id=${state.prCert}`)
+                 : Promise.resolve({ knowledge_points: [] }),
+    api("/api/training/my/practice/wrong"),
+    api("/api/training/my/practice?status=open"),
+  ]);
+  state.kps = kpData.knowledge_points;
+  state.wrong = wrong.attempts;
+  state.open = open.attempts;
+  const kpSel = document.getElementById("pr-kp");
+  kpSel.innerHTML = `<option value="">（整证随机）</option>` + state.kps.map((k) =>
+    `<option value="${esc(k.id)}">${esc(k.code)} ${esc(k.name)}${k.rule_links ? "" : "（暂无题目）"}</option>`).join("");
+  document.getElementById("pr-hint").textContent = state.kps.length
+    ? "题目来自教师关联的规则仿真题（纯仿真，非真题）；提交后自动判分并开放解析。"
+    : "该证书下教师尚未配置知识点与题目，等待教师上架后即可练习。";
+  renderKpRows();
+  renderWrong();
+  renderOpen();
+  if (!state.attempt) renderAttempt();
+}
+
+function renderKpRows() {
+  const box = document.getElementById("pr-kps");
+  box.innerHTML = state.kps.map((k) => `
+    <div class="item"><div class="item-head">
+      <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
+        ${k.high_freq.map((m) => `<span class="badge warn">常考${m.basis_ref ? " · " + esc(m.basis_ref) : ""}</span>`).join("")}
+        ${k.rule_links ? "" : `<span class="badge gray">暂无题目</span>`}
+      </div>
+      <div class="muted">已练 ${k.attempts} 次 · 满分 ${k.perfect} 次</div>
+    </div></div>`).join("");
+}
+
+function renderWrong() {
+  const box = document.getElementById("pr-wrong");
+  box.innerHTML = state.wrong.length ? state.wrong.map((a) => `
+    <div class="item"><div class="item-head">
+      <div><span class="badge bad">${a.score} 分</span>
+        <span class="muted">${esc(a.scored_at || "")}</span></div>
+      <div class="actions">
+        <button class="small" data-act="redo-new" data-rule="${esc(a.rule_id)}" data-kp="${esc(a.knowledge_point_id || "")}">再练新题</button>
+        <button class="small" data-act="redo-same" data-rule="${esc(a.rule_id)}" data-seed="${esc(a.seed)}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>
+      </div>
+    </div></div>`).join("") : `<p class="muted">暂无错题，保持！</p>`;
+}
+
+function renderOpen() {
+  const box = document.getElementById("pr-open");
+  box.innerHTML = state.open.length ? `<h2 style="margin-top:18px;">未完成的练习</h2>` + state.open.map((a) => `
+    <div class="item"><div class="item-head">
+      <div class="muted">开始于 ${esc(a.created_at)}</div>
+      <button class="small" data-act="resume" data-id="${esc(a.id)}">继续作答</button>
+    </div></div>`).join("") : "";
+}
+
+function renderAttempt() {
+  const box = document.getElementById("pr-attempt");
+  const a = state.attempt;
+  if (!a) { box.innerHTML = ""; return; }
+  if (a.status === "open") {
+    const m = a.materials;
+    const accounts = (m.accounts || []).map((acc) => `<tr><td>${esc(acc.code)}</td><td>${esc(acc.name)}</td>
+      <td class="num">${fmtNum(acc.opening)}</td><td class="num">${fmtNum(acc.debit)}</td>
+      <td class="num">${fmtNum(acc.credit)}</td><td class="num">${fmtNum(acc.closing)}</td></tr>`).join("");
+    const decls = Object.entries(m.declarations || {}).map(([k, v]) =>
+      `<tr><td>${esc(k)}</td><td class="num">${fmtNum(v)}</td></tr>`).join("");
+    const metrics = Object.entries(m.metrics || {}).map(([k, mt]) =>
+      `<tr><td>${esc(mt.name)}</td><td class="num">${fmtNum(mt.value)}</td><td>${esc(mt.source)}</td></tr>`).join("");
+    const catalog = a.rule_catalog.map((r) =>
+      `<label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;margin:2px 12px 2px 0;">
+        <input type="checkbox" class="risk-pick" value="${esc(r.id)}"> ${esc(r.name)}</label>`).join("");
+    box.innerHTML = `
+      <div class="item"><strong>仿真材料（纯仿真教学企业，非真题）</strong>
+        <div class="muted">${esc(m.company.name)} · 税号 ${esc(m.company.taxpayer_id)} · ${esc(m.company.industry)} · ${esc(m.company.period)}</div>
+        <div><strong style="font-size:13px;">科目余额表</strong>
+          <table><tr><th>编码</th><th>科目</th><th>期初</th><th>借方</th><th>贷方</th><th>期末</th></tr>${accounts}</table></div>
+        <div><strong style="font-size:13px;">申报数据</strong>
+          <table><tr><th>项目</th><th>金额</th></tr>${decls}</table></div>
+        <div><strong style="font-size:13px;">标准化指标</strong>
+          <table><tr><th>指标</th><th>数值</th><th>取数来源</th></tr>${metrics}</table></div>
+      </div>
+      <div class="item"><strong>识别风险点</strong>
+        <div class="muted">勾选你认为构成风险的规则（可多选）；选错扣分，漏选不得分，提交后开放逐项解析。</div>
+        <div style="margin:6px 0;">${catalog}</div>
+        <div class="actions">
+          <button class="primary" data-act="submit">提交判分</button>
+          <button data-act="abandon">放弃本题</button>
+        </div>
+        <div class="error" id="pr-error"></div>
+      </div>`;
+  } else {
+    const r = a.result || {};
+    const kindLabel = { correct: "命中", missed: "漏检", false_positives: "误报" };
+    const cls = { correct: "ok", missed: "miss", false_positives: "false" };
+    const rows = ["correct", "missed", "false_positives"].flatMap((key) =>
+      (r[key] || []).map((d) => `<div class="detail ${cls[key]}">
+        [${kindLabel[key]}] ${esc(d.name)}（${d.points > 0 ? "+" : ""}${esc(d.points)} 分）${d.explanation ? " — " + esc(d.explanation) : ""}</div>`));
+    box.innerHTML = `
+      <div class="item">
+        <div class="item-head"><strong>判分结果</strong>
+          <span class="badge ${a.perfect ? "" : "warn"}">${a.score} 分${a.perfect ? " · 满分" : ""}</span></div>
+        ${rows.join("") || `<p class="muted">无明细。</p>`}
+        <div class="muted">标准答案（判分后开放）：${esc((r.standard_answer || []).join("、"))}</div>
+        <div class="actions">
+          <button class="small" data-act="redo-new" data-rule="${esc(a.rule_id)}" data-kp="${esc(a.knowledge_point_id || "")}">再练新题</button>
+          <button class="small" data-act="redo-same" data-rule="${esc(a.rule_id)}" data-seed="${esc(a.seed)}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>
+        </div>
+      </div>`;
+  }
+}
+
+async function startPractice(body) {
+  const data = await api("/api/training/my/practice/start", { method: "POST", body });
+  state.attempt = data.attempt;
+  renderAttempt();
 }
 
 function showApp(loggedIn) {
@@ -233,6 +363,56 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
   } catch (err) {
     flash(err.message, true);
     setTimeout(() => flash("", true), 5000);
+  }
+});
+
+document.getElementById("pr-cert").addEventListener("change", async (event) => {
+  state.prCert = event.target.value || null;
+  state.attempt = null;
+  renderAttempt();
+  await refreshPractice().catch((err) => flash(err.message, true));
+});
+
+document.getElementById("start-practice").addEventListener("click", () => {
+  if (!state.prCert) { flash("请先选择证书范围。", true); return; }
+  startPractice({
+    certificate_id: state.prCert,
+    knowledge_point_id: document.getElementById("pr-kp").value || null,
+  }).catch((err) => flash(err.message, true));
+});
+
+document.getElementById("pr-attempt").addEventListener("click", async (event) => {
+  const btn = event.target.closest("button[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  if (act === "submit") {
+    const picked = [...document.querySelectorAll("#pr-attempt .risk-pick:checked")].map((c) => c.value);
+    const attemptId = state.attempt.id;
+    try {
+      const data = await api(`/api/training/my/practice/${attemptId}/submit`, {
+        method: "POST", body: { selected_rule_ids: picked } });
+      state.attempt = data.attempt;
+      renderAttempt();
+      flash("已判分，解析已开放。");
+      await refreshPractice();
+    } catch (err) {
+      document.getElementById("pr-error").textContent = err.message + "（你的选择已保留，可修正后重新提交）";
+    }
+  } else if (act === "abandon") {
+    state.attempt = null;
+    renderAttempt();
+  } else if (act === "redo-new") {
+    startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
+                    rule_id: btn.dataset.rule || null }).catch((err) => flash(err.message, true));
+  } else if (act === "redo-same") {
+    startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
+                    rule_id: btn.dataset.rule, seed: parseInt(btn.dataset.seed, 10) }).catch((err) => flash(err.message, true));
+  } else if (act === "resume") {
+    try {
+      const data = await api(`/api/training/my/practice/${btn.dataset.id}`);
+      state.attempt = data.attempt;
+      renderAttempt();
+    } catch (err) { flash(err.message, true); }
   }
 });
 

@@ -508,7 +508,10 @@ def _kp_payload(db, row: sqlite3.Row) -> dict[str, Any]:
     marks = db.execute(
         "SELECT id, mark_type, level, basis_ref, basis_version, created_at FROM knowledge_point_mark"
         " WHERE knowledge_point_id=? ORDER BY mark_type, created_at", (row["id"],)).fetchall()
-    return dict(row) | {"marks": [dict(m) for m in marks]}
+    links = db.execute(
+        "SELECT id, target_type, target_id, created_at FROM knowledge_point_link"
+        " WHERE knowledge_point_id=? ORDER BY target_type, target_id", (row["id"],)).fetchall()
+    return dict(row) | {"marks": [dict(m) for m in marks], "links": [dict(l) for l in links]}
 
 
 def list_knowledge_points(store, staff: dict, cert_id: str, *,
@@ -625,6 +628,295 @@ def delete_mark(store, staff: dict, mark_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 知识点-题目关联（FR-K05）
+# ---------------------------------------------------------------------------
+
+RULES_DIR = Path(__file__).resolve().parent.parent / "rules"
+
+
+def _load_rules() -> list[Any]:
+    from src import engine
+    return engine.load_rules(RULES_DIR)
+
+
+def create_link(store, staff: dict, kp_id: str, target_type: str, target_id: str) -> dict[str, Any]:
+    if target_type not in ("rule", "task", "question"):
+        raise TrainingPortalError("关联类型必须是 rule / task / question。")
+    target_id = str(target_id).strip()
+    if not target_id:
+        raise TrainingPortalError("关联目标不能为空。")
+    if target_type == "question":
+        raise TrainingPortalError("题库尚未接入：当前练习以规则仿真题承载，请先关联规则或实训任务。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM knowledge_point WHERE id=?", (kp_id,)).fetchone():
+            raise TrainingPortalError("知识点不存在。", 404)
+        if target_type == "rule" and target_id not in {r.id for r in _load_rules()}:
+            raise TrainingPortalError("规则不存在或未启用。")
+        if target_type == "task" and not db.execute(
+                "SELECT 1 FROM training_task WHERE id=?", (target_id,)).fetchone():
+            raise TrainingPortalError("实训任务不存在。")
+        link_id = str(uuid.uuid4())
+        try:
+            db.execute(
+                "INSERT INTO knowledge_point_link (id, knowledge_point_id, target_type, target_id, created_by, created_at)"
+                " VALUES (?,?,?,?,?,?)", (link_id, kp_id, target_type, target_id, staff["id"], _now()))
+        except sqlite3.IntegrityError:
+            raise TrainingPortalError("该知识点已存在相同关联。", 409) from None
+        return {"id": link_id, "knowledge_point_id": kp_id, "target_type": target_type,
+                "target_id": target_id}
+
+
+def delete_link(store, staff: dict, link_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM knowledge_point_link WHERE id=?", (link_id,)).fetchone():
+            raise TrainingPortalError("关联不存在。", 404)
+        db.execute("DELETE FROM knowledge_point_link WHERE id=?", (link_id,))
+    return {"ok": True}
+
+
+def student_knowledge_points(store, student_id: str, cert_id: str) -> list[dict[str, Any]]:
+    """学生视角的知识点清单：启用知识点 + 高频标注（带依据）+ 规则关联数 + 本人覆盖统计。"""
+    with store.connect() as db:
+        if not db.execute("SELECT 1 FROM certificate WHERE id=? AND active=1", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在或已下架。", 404)
+        rows = db.execute(
+            "SELECT * FROM knowledge_point WHERE certificate_id=? AND active=1 ORDER BY code",
+            (cert_id,)).fetchall()
+        rule_counts = {r["knowledge_point_id"]: r["n"] for r in db.execute(
+            "SELECT knowledge_point_id, count(*) n FROM knowledge_point_link"
+            " WHERE target_type='rule' AND knowledge_point_id IN (SELECT id FROM knowledge_point"
+            " WHERE certificate_id=?) GROUP BY knowledge_point_id", (cert_id,)).fetchall()}
+        coverage: dict[str, dict[str, int]] = {}
+        for r in db.execute(
+                "SELECT id, knowledge_point_id, result_json FROM training_self_practice_attempts"
+                " WHERE student_id=? AND certificate_id=? AND status='scored' AND knowledge_point_id IS NOT NULL",
+                (student_id, cert_id)).fetchall():
+            entry = coverage.setdefault(r["knowledge_point_id"], {"attempts": 0, "perfect": 0})
+            entry["attempts"] += 1
+            try:
+                if json.loads(r["result_json"] or "{}").get("perfect"):
+                    entry["perfect"] += 1
+            except ValueError:
+                continue
+        out = []
+        for row in rows:
+            marks = db.execute(
+                "SELECT mark_type, level, basis_ref, basis_version FROM knowledge_point_mark"
+                " WHERE knowledge_point_id=? AND mark_type='high_freq'", (row["id"],)).fetchall()
+            item = dict(row)
+            item["high_freq"] = [dict(m) for m in marks]
+            item["rule_links"] = rule_counts.get(row["id"], 0)
+            stat = coverage.get(row["id"], {"attempts": 0, "perfect": 0})
+            item["attempts"] = stat["attempts"]
+            item["perfect"] = stat["perfect"]
+            out.append(item)
+        return out
+
+
+# ---------------------------------------------------------------------------
+# 自主刷题闭环（FR-K06）：确定性出题 → 作答 → 判分 → 解析与错题
+# ---------------------------------------------------------------------------
+
+def _generate(rules: list[Any], rule_id: str, seed: int):
+    from src import exercise_generator
+    try:
+        return exercise_generator.generate(rules, rule_id, seed=seed)
+    except ValueError as exc:
+        raise TrainingPortalError(f"出题失败：{exc}") from None
+
+
+def _materials(exercise) -> dict[str, Any]:
+    from dataclasses import asdict
+    return json.loads(json.dumps(asdict(exercise.dataset), ensure_ascii=False, default=str))
+
+
+def _candidate_rules(db, cert_id: str, kp_id: str | None) -> list[str]:
+    if kp_id:
+        rows = db.execute(
+            "SELECT target_id FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule'",
+            (kp_id,)).fetchall()
+    else:
+        rows = db.execute(
+            "SELECT DISTINCT l.target_id FROM knowledge_point_link l JOIN knowledge_point k ON k.id=l.knowledge_point_id"
+            " WHERE l.target_type='rule' AND k.certificate_id=? AND k.active=1", (cert_id,)).fetchall()
+    return sorted({r["target_id"] for r in rows})
+
+
+def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = None,
+                   rule_id: str | None = None, seed: int | None = None) -> dict[str, Any]:
+    rules = _load_rules()
+    by_id = {r.id: r for r in rules}
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM certificate WHERE id=? AND active=1", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在或已下架。", 404)
+        if kp_id:
+            kp = db.execute("SELECT certificate_id, active FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
+            if not kp or kp["certificate_id"] != cert_id or not kp["active"]:
+                raise TrainingPortalError("知识点不存在或未启用。", 404)
+        if rule_id:
+            if rule_id not in by_id:
+                raise TrainingPortalError("所选规则不存在或未启用。")
+            if kp_id:
+                linked = db.execute(
+                    "SELECT 1 FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule' AND target_id=?",
+                    (kp_id, rule_id)).fetchone()
+                if not linked:
+                    prior = db.execute(
+                        "SELECT 1 FROM training_self_practice_attempts WHERE student_id=? AND knowledge_point_id=? AND rule_id=?",
+                        (student_id, kp_id, rule_id)).fetchone()
+                    if not prior:
+                        raise TrainingPortalError("该规则未关联到此知识点，请从关联规则中练习。")
+        else:
+            candidates = [c for c in _candidate_rules(db, cert_id, kp_id) if c in by_id]
+            if not candidates:
+                raise TrainingPortalError("该范围还没有可练题目：知识点尚未关联规则，请等待教师配置。")
+            rule_id = secrets.choice(candidates)
+    if seed is None:
+        seed = secrets.randbelow(2147483648)
+    exercise = _generate(rules, rule_id, seed)
+    from src.exercise_generator import case_digest
+    digest = case_digest(exercise.dataset, rules)
+    attempt_id = str(uuid.uuid4())
+    with store.connect() as db:
+        db.execute(
+            """INSERT INTO training_self_practice_attempts (id, student_id, certificate_id, knowledge_point_id,
+               rule_id, seed, level, year, digest, status, created_at)
+               VALUES (?,?,?,?,?,?, 'normal', 2026, ?, 'open', ?)""",
+            (attempt_id, student_id, cert_id, kp_id, rule_id, seed, digest, _now()))
+    attempt_id = attempt_id  # 已在库中；下面构造作答视图
+    return _open_view(exercise, {"id": attempt_id, "certificate_id": cert_id,
+                                 "knowledge_point_id": kp_id, "level": "normal",
+                                 "year": 2026, "created_at": _now()}, rules)
+
+
+def _open_view(exercise, row: dict[str, Any], rules: list[Any]) -> dict[str, Any]:
+    """作中视图：材料与规则目录下发，答案（rule_id）绝不下发。"""
+    return {
+        "id": row["id"], "status": "open",
+        "certificate_id": row["certificate_id"], "knowledge_point_id": row["knowledge_point_id"],
+        "level": row["level"], "year": row["year"], "created_at": row["created_at"],
+        "materials": _materials(exercise),
+        "rule_catalog": sorted(({"id": r.id, "name": r.name} for r in rules), key=lambda x: x["name"]),
+    }
+
+
+def _attempt_row(store, student_id: str, attempt_id: str) -> sqlite3.Row:
+    with store.connect() as db:
+        return db.execute("SELECT * FROM training_self_practice_attempts WHERE id=? AND student_id=?",
+                          (attempt_id, student_id)).fetchone() or (_ for _ in ()).throw(
+        TrainingPortalError("练习记录不存在。", 404))
+
+
+def get_attempt(store, student_id: str, attempt_id: str) -> dict[str, Any]:
+    row = _attempt_row(store, student_id, attempt_id)
+    if row["status"] == "scored":
+        return _scored_view(row)
+    rules = _load_rules()
+    exercise = _generate(rules, row["rule_id"], row["seed"])
+    return _open_view(exercise, dict(row), rules)
+
+
+def submit_practice(store, student_id: str, attempt_id: str, selected: list[str]) -> dict[str, Any]:
+    chosen = sorted({s.strip() for s in selected if isinstance(s, str) and s.strip()})
+    row = _attempt_row(store, student_id, attempt_id)
+    if row["status"] != "open":
+        raise TrainingPortalError("本题已判分，重复提交不重复计数。", 409)
+    rules = _load_rules()
+    by_id = {r.id: r for r in rules}
+    if row["rule_id"] not in by_id:
+        raise TrainingPortalError("本题规则已被停用，无法判分；请放弃本题重新开始练习。")
+    exercise = _generate(rules, row["rule_id"], row["seed"])
+    from src.exercise_generator import case_digest
+    if case_digest(exercise.dataset, rules) != row["digest"]:
+        raise TrainingPortalError("规则已更新，本题材料发生变化；本次作答未计入，请放弃并重新开始本题。")
+    from src.training import score_submission
+    try:
+        result = score_submission(exercise.findings, chosen)
+    except ValueError as exc:
+        raise TrainingPortalError(str(exc)) from None
+    result["perfect"] = not result["missed"] and not result["false_positives"]
+    payload = json.dumps(result, ensure_ascii=False)
+    with store.connect() as db:
+        # result_json 为受保护列：写入库前按字段加密惯例封装（读取时行工厂自动解密）
+        sealed = db.field_codec.seal(payload, "training_self_practice_attempts", "result_json", attempt_id)
+        db.execute(
+            "UPDATE training_self_practice_attempts SET status='scored', answers_json=?, result_json=?, scored_at=? WHERE id=?",
+            (json.dumps(chosen, ensure_ascii=False), sealed, _now(), attempt_id))
+        row = db.execute("SELECT * FROM training_self_practice_attempts WHERE id=?", (attempt_id,)).fetchone()
+    return _scored_view(row)
+
+
+def _scored_view(row: sqlite3.Row) -> dict[str, Any]:
+    result = json.loads(row["result_json"] or "{}")
+    return {
+        "id": row["id"], "status": "scored", "certificate_id": row["certificate_id"],
+        "knowledge_point_id": row["knowledge_point_id"], "rule_id": row["rule_id"],
+        "seed": row["seed"], "level": row["level"], "year": row["year"],
+        "answers": json.loads(row["answers_json"] or "[]"),
+        "result": result, "score": result.get("score"), "perfect": result.get("perfect"),
+        "created_at": row["created_at"], "scored_at": row["scored_at"],
+    }
+
+
+def list_attempts(store, student_id: str, *, cert_id: str | None = None,
+                  status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    clauses, params = ["WHERE student_id=?"], [student_id]
+    if cert_id:
+        clauses.append("AND certificate_id=?"); params.append(cert_id)
+    if status in ("open", "scored"):
+        clauses.append("AND status=?"); params.append(status)
+    params.append(max(1, min(int(limit), 200)))
+    with store.connect() as db:
+        rows = db.execute(
+            f"SELECT * FROM training_self_practice_attempts {' '.join(clauses)} ORDER BY created_at DESC LIMIT ?",
+            params).fetchall()
+    out = []
+    for row in rows:
+        if row["status"] == "scored":
+            view = _scored_view(row)
+        else:
+            view = {"id": row["id"], "status": "open", "certificate_id": row["certificate_id"],
+                    "knowledge_point_id": row["knowledge_point_id"], "created_at": row["created_at"]}
+        out.append(view)
+    return out
+
+
+def wrong_attempts(store, student_id: str, cert_id: str | None = None) -> list[dict[str, Any]]:
+    """错题重练清单：已判分且未满分的尝试，供按规则再练。"""
+    rows = [v for v in list_attempts(store, student_id, cert_id=cert_id, status="scored", limit=200)
+            if not v.get("perfect")]
+    return rows
+
+
+def coverage(store, student_id: str, cert_id: str) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        kps = db.execute(
+            "SELECT id, code, name, subject, parent_id FROM knowledge_point"
+            " WHERE certificate_id=? AND active=1 ORDER BY code", (cert_id,)).fetchall()
+        stats: dict[str, dict[str, int]] = {}
+        for r in db.execute(
+                "SELECT id, knowledge_point_id, result_json FROM training_self_practice_attempts"
+                " WHERE student_id=? AND certificate_id=? AND status='scored' AND knowledge_point_id IS NOT NULL",
+                (student_id, cert_id)).fetchall():
+            entry = stats.setdefault(r["knowledge_point_id"], {"attempts": 0, "perfect": 0})
+            entry["attempts"] += 1
+            try:
+                if json.loads(r["result_json"] or "{}").get("perfect"):
+                    entry["perfect"] += 1
+            except ValueError:
+                continue
+        rule_counts = {r["knowledge_point_id"]: r["n"] for r in db.execute(
+            "SELECT knowledge_point_id, count(*) n FROM knowledge_point_link WHERE target_type='rule'"
+            " GROUP BY knowledge_point_id").fetchall()}
+        return [dict(k) | {"rule_links": rule_counts.get(k["id"], 0),
+                           "attempts": stats.get(k["id"], {}).get("attempts", 0),
+                           "perfect": stats.get(k["id"], {}).get("perfect", 0)} for k in kps]
+
+
+# ---------------------------------------------------------------------------
 # 路由注册（接线模式与 classroom/mistake_book 一致）
 # ---------------------------------------------------------------------------
 
@@ -722,6 +1014,25 @@ class MarkPatch(BaseModel):
     basis_version: str | None = None
 
 
+class LinkCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    target_type: str
+    target_id: str = Field(min_length=1)
+
+
+class PracticeStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    certificate_id: str = Field(min_length=1)
+    knowledge_point_id: str | None = None
+    rule_id: str | None = None
+    seed: int | None = None
+
+
+class PracticeSubmit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    selected_rule_ids: list[str] = Field(default_factory=list)
+
+
 def _patch_fields(body) -> dict[str, Any]:
     return {k: getattr(body, k) for k in body.model_fields_set}
 
@@ -813,6 +1124,81 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         if "planned_date" in body.model_fields_set:
             kwargs["planned_date"] = body.planned_date
         return response({"goal": update_goal(store_provider(), who["id"], goal_id, **kwargs)})
+
+    # ---- 教师：知识点-题目关联（FR-K05）----
+
+    @app.post("/api/training/staff/knowledge-points/{kp_id}/links")
+    @guarded
+    def staff_link_create(kp_id: str, body: LinkCreate,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"link": create_link(store_provider(), who, kp_id,
+                                             body.target_type, body.target_id)})
+
+    @app.delete("/api/training/staff/links/{link_id}")
+    @guarded
+    def staff_link_delete(link_id: str,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response(delete_link(store_provider(), who, link_id))
+
+    # ---- 学生：知识点清单（含覆盖统计）----
+
+    @app.get("/api/training/my/knowledge-points")
+    @guarded
+    def my_knowledge_points(certificate_id: str,
+                            session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"knowledge_points": student_knowledge_points(
+            store_provider(), who["id"], certificate_id)})
+
+    # ---- 学生：自主刷题闭环（FR-K06）----
+
+    @app.post("/api/training/my/practice/start")
+    @guarded
+    def practice_start(body: PracticeStart,
+                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"attempt": start_practice(
+            store_provider(), who["id"], body.certificate_id,
+            kp_id=body.knowledge_point_id, rule_id=body.rule_id, seed=body.seed)})
+
+    @app.get("/api/training/my/practice/wrong")
+    @guarded
+    def practice_wrong(certificate_id: str | None = None,
+                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"attempts": wrong_attempts(store_provider(), who["id"], cert_id=certificate_id)})
+
+    @app.get("/api/training/my/practice/{attempt_id}")
+    @guarded
+    def practice_detail(attempt_id: str,
+                        session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"attempt": get_attempt(store_provider(), who["id"], attempt_id)})
+
+    @app.get("/api/training/my/practice")
+    @guarded
+    def practice_list(certificate_id: str | None = None, status: str | None = None,
+                      session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"attempts": list_attempts(
+            store_provider(), who["id"], cert_id=certificate_id, status=status)})
+
+    @app.post("/api/training/my/practice/{attempt_id}/submit")
+    @guarded
+    def practice_submit(attempt_id: str, body: PracticeSubmit,
+                        session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"attempt": submit_practice(
+            store_provider(), who["id"], attempt_id, body.selected_rule_ids)})
+
+    @app.get("/api/training/my/coverage")
+    @guarded
+    def my_coverage(certificate_id: str,
+                    session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"coverage": coverage(store_provider(), who["id"], certificate_id)})
 
     for action in ("pause", "resume", "archive"):
         def _make(action: str):
