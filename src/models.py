@@ -278,3 +278,98 @@ class ScoreRule:
     weight: float = 1.0            # 分值权重
     config: dict[str, Any] = field(default_factory=dict)  # 规则参数（阈值等，落库为 config_json）
     enabled: bool = True           # 是否启用
+
+
+# ---------------------------------------------------------------------------
+# 考证刷题内容层（FR-K01～K08）：以下数据类与 webapp/schema.py 中内容表一一对应，
+# 仅承载数据，不做 ORM 映射。内容为全局共享，不做院校隔离；个人数据经 student_id 归属。
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class Certificate:
+    """一条证书目录项，对应表 certificate。"""
+
+    id: str                        # 主键，UUID 文本
+    code: str                      # 证书编码，全局唯一（如 'cjkj'）
+    name: str                      # 证书名称
+    created_at: str                # 创建时间（ISO 8601 文本）
+    updated_at: str                # 最近更新时间
+    description: str = ""          # 说明（报考条件、考试形式等）
+    subjects: list[str] = field(default_factory=list)  # 科目清单，落库为 subjects_json
+    source_ref: str = ""           # 内容依据说明（官方目录/公告引用）
+    active: bool = True            # 是否启用
+
+
+@dataclass
+class ExamDate:
+    """一条考试日期记录，对应表 exam_date；倒计时的数据来源。"""
+
+    id: str                        # 主键，UUID 文本
+    certificate_id: str            # 证书，外键 → certificate.id
+    date_type: str                 # official=官方 / expected=预计 / personal=个人计划
+    exam_date: str                 # 考试日期（ISO 日期文本）
+    created_at: str                # 创建时间
+    updated_at: str                # 最近更新时间
+    round_label: str = ""          # 年度/批次标识
+    student_id: str | None = None  # 学生，外键 → student_info.id；date_type=personal 时必填
+    note: str = ""                 # 备注
+    created_by: str | None = None  # 录入人，外键 → college_user.id；内置数据为空
+
+
+@dataclass
+class KnowledgePoint:
+    """一条考纲知识点，对应表 knowledge_point；树形层级经 parent_id 表达。"""
+
+    id: str                        # 主键，UUID 文本
+    certificate_id: str            # 证书，外键 → certificate.id
+    code: str                      # 知识点编码，证书内唯一
+    name: str                      # 知识点名称
+    created_at: str                # 创建时间
+    updated_at: str                # 最近更新时间
+    subject: str = ""              # 所属科目
+    parent_id: str | None = None   # 上级知识点，外键 → knowledge_point.id；根节点为空
+    description: str = ""          # 说明
+    source_ref: str = ""           # 考纲依据引用（章节/条目号）
+    outline_version: str = ""      # 考纲版本
+    active: bool = True            # 是否启用
+
+
+@dataclass
+class KnowledgePointLink:
+    """一条知识点关联，对应表 knowledge_point_link；知识点与规则/任务/题目双向引用。"""
+
+    id: str                        # 主键，UUID 文本
+    knowledge_point_id: str        # 知识点，外键 → knowledge_point.id
+    target_type: str               # rule=规则 / task=实训任务 / question=题目
+    target_id: str                 # 目标对象 ID
+    created_at: str                # 创建时间
+    created_by: str | None = None  # 建立人，外键 → college_user.id
+
+
+@dataclass
+class KnowledgePointMark:
+    """一条知识点标注，对应表 knowledge_point_mark；三类标注的存储承载。"""
+
+    id: str                        # 主键，UUID 文本
+    knowledge_point_id: str        # 知识点，外键 → knowledge_point.id
+    mark_type: str                 # high_freq=考证高频 / risk_context=企业风险情境 / error_prone=学生易错
+    created_at: str                # 创建时间
+    level: str = "high"            # 程度：high / medium / low
+    basis_ref: str = ""            # 标注依据（考纲章节/统计口径说明；考证高频类须有依据）
+    basis_version: str = ""        # 依据版本
+    created_by: str | None = None  # 标注人，外键 → college_user.id
+
+
+@dataclass
+class StudentGoal:
+    """一条学生考证目标，对应表 student_goal；同证书仅一个进行中目标（部分唯一索引保证）。"""
+
+    id: str                        # 主键，UUID 文本
+    student_id: str                # 学生，外键 → student_info.id
+    certificate_id: str            # 目标证书，外键 → certificate.id
+    created_at: str                # 创建时间
+    updated_at: str                # 最近更新时间
+    planned_date: str | None = None       # 个人计划考试日（可空，ISO 日期）
+    official_date_id: str | None = None   # 选定的官方考试日，外键 → exam_date.id（可空）
+    status: str = "active"         # active=进行 / paused=暂停 / achieved=达成 / archived=归档

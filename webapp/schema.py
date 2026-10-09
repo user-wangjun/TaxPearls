@@ -312,3 +312,98 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_score_rule_task
                 ON score_rule(task_id, enabled);
         """)
+
+        # ------------------------------------------------------------------
+        # 考证刷题内容层（FR-K01～K08，需求见 docs/07-高校考证刷题线需求.md）：
+        # 证书目录、考试日期、考纲知识点、知识点关联与标注、学生目标。
+        # 内容表为全局共享（证书/考纲不按院校隔离）；个人数据经 student_info 外键归属。
+        # ------------------------------------------------------------------
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS certificate (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                code TEXT NOT NULL UNIQUE,                -- 证书编码，如 'cjkj'（初级会计职称）
+                name TEXT NOT NULL,                       -- 证书名称
+                description TEXT NOT NULL DEFAULT '',     -- 说明（报考条件、考试形式等）
+                subjects_json TEXT NOT NULL DEFAULT '[]', -- 科目清单（JSON 数组文本）
+                source_ref TEXT NOT NULL DEFAULT '',      -- 内容依据说明（官方目录/公告引用）
+                active INTEGER NOT NULL DEFAULT 1,        -- 是否启用：1=启用 0=下架
+                created_at TEXT NOT NULL,                 -- 创建时间（ISO 8601 文本）
+                updated_at TEXT NOT NULL                  -- 最近更新时间
+            );
+            CREATE TABLE IF NOT EXISTS exam_date (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 证书（外键）
+                round_label TEXT NOT NULL DEFAULT '',     -- 年度/批次标识，如 '2027年第一批'
+                date_type TEXT NOT NULL
+                    CHECK (date_type IN ('official','expected','personal')),  -- 官方/预计/个人计划
+                exam_date TEXT NOT NULL,                  -- 考试日期（ISO 日期文本）
+                student_id TEXT REFERENCES student_info(id),  -- 学生（外键；date_type=personal 时必填）
+                note TEXT NOT NULL DEFAULT '',            -- 备注
+                created_by TEXT REFERENCES college_user(id),  -- 录入人（外键；内置数据为空）
+                created_at TEXT NOT NULL,                 -- 创建时间
+                updated_at TEXT NOT NULL,                 -- 最近更新时间
+                CHECK (date_type != 'personal' OR student_id IS NOT NULL)
+            );
+            CREATE INDEX IF NOT EXISTS idx_exam_date_cert
+                ON exam_date(certificate_id, date_type, exam_date);
+            CREATE INDEX IF NOT EXISTS idx_exam_date_student
+                ON exam_date(student_id);
+            CREATE TABLE IF NOT EXISTS knowledge_point (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 证书（外键）
+                code TEXT NOT NULL,                       -- 知识点编码，证书内唯一
+                name TEXT NOT NULL,                       -- 知识点名称
+                subject TEXT NOT NULL DEFAULT '',         -- 所属科目
+                parent_id TEXT REFERENCES knowledge_point(id),  -- 上级知识点（外键，层级树）
+                description TEXT NOT NULL DEFAULT '',     -- 说明
+                source_ref TEXT NOT NULL DEFAULT '',      -- 考纲依据引用（章节/条目号）
+                outline_version TEXT NOT NULL DEFAULT '', -- 考纲版本
+                active INTEGER NOT NULL DEFAULT 1,        -- 是否启用
+                created_at TEXT NOT NULL,                 -- 创建时间
+                updated_at TEXT NOT NULL,                 -- 最近更新时间
+                UNIQUE(certificate_id, code)
+            );
+            CREATE INDEX IF NOT EXISTS idx_knowledge_point_cert
+                ON knowledge_point(certificate_id, subject, active);
+            CREATE TABLE IF NOT EXISTS knowledge_point_link (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                knowledge_point_id TEXT NOT NULL REFERENCES knowledge_point(id),  -- 知识点（外键）
+                target_type TEXT NOT NULL
+                    CHECK (target_type IN ('rule','task','question')),  -- 规则/实训任务/题目
+                target_id TEXT NOT NULL,                  -- 目标对象 ID
+                created_by TEXT REFERENCES college_user(id),  -- 建立人（外键）
+                created_at TEXT NOT NULL,                 -- 创建时间
+                UNIQUE(knowledge_point_id, target_type, target_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_kp_link_target
+                ON knowledge_point_link(target_type, target_id);
+            CREATE TABLE IF NOT EXISTS knowledge_point_mark (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                knowledge_point_id TEXT NOT NULL REFERENCES knowledge_point(id),  -- 知识点（外键）
+                mark_type TEXT NOT NULL
+                    CHECK (mark_type IN ('high_freq','risk_context','error_prone')),  -- 考证高频/企业风险情境/学生易错
+                level TEXT NOT NULL DEFAULT 'high' CHECK (level IN ('high','medium','low')),  -- 程度
+                basis_ref TEXT NOT NULL DEFAULT '',       -- 标注依据（考纲章节/统计口径说明；高频类必填由服务层校验）
+                basis_version TEXT NOT NULL DEFAULT '',   -- 依据版本
+                created_by TEXT REFERENCES college_user(id),  -- 标注人（外键）
+                created_at TEXT NOT NULL,                 -- 创建时间
+                UNIQUE(knowledge_point_id, mark_type, basis_ref)
+            );
+            CREATE INDEX IF NOT EXISTS idx_kp_mark_kp
+                ON knowledge_point_mark(knowledge_point_id, mark_type);
+            CREATE TABLE IF NOT EXISTS student_goal (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键）
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 目标证书（外键）
+                planned_date TEXT,                        -- 个人计划考试日（可空，ISO 日期）
+                official_date_id TEXT REFERENCES exam_date(id),  -- 选定的官方考试日（可空，外键）
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','paused','achieved','archived')),  -- 进行/暂停/达成/归档
+                created_at TEXT NOT NULL,                 -- 创建时间
+                updated_at TEXT NOT NULL                  -- 最近更新时间（倒计时取值：官方日期优先，否则个人计划日）
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_student_goal_active
+                ON student_goal(student_id, certificate_id) WHERE status = 'active';  -- 同证书仅一个进行中目标
+            CREATE INDEX IF NOT EXISTS idx_student_goal_student
+                ON student_goal(student_id, status);
+        """)
