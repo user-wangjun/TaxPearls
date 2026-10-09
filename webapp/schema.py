@@ -392,6 +392,24 @@ def initialize(store) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_kp_mark_kp
                 ON knowledge_point_mark(knowledge_point_id, mark_type);
+            CREATE TABLE IF NOT EXISTS knowledge_point_relation (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                from_kp_id TEXT NOT NULL REFERENCES knowledge_point(id),  -- 关系主体知识点（外键）
+                to_kp_id TEXT NOT NULL REFERENCES knowledge_point(id),    -- 关系客体知识点（外键）
+                relation_type TEXT NOT NULL
+                    CHECK (relation_type IN ('prerequisite','concept','confusable')),
+                                                          -- 前置知识/概念关联/易混淆
+                basis_ref TEXT NOT NULL DEFAULT '',       -- 关系依据（考纲章节/教材说明；服务层强制必填）
+                basis_version TEXT NOT NULL DEFAULT '',   -- 依据版本
+                created_by TEXT REFERENCES college_user(id),  -- 建立人（外键）
+                created_at TEXT NOT NULL,                 -- 建立时间
+                UNIQUE(from_kp_id, to_kp_id, relation_type),
+                CHECK (from_kp_id <> to_kp_id)            -- 不允许自环
+            );
+            CREATE INDEX IF NOT EXISTS idx_kp_relation_from
+                ON knowledge_point_relation(from_kp_id, relation_type);
+            CREATE INDEX IF NOT EXISTS idx_kp_relation_to
+                ON knowledge_point_relation(to_kp_id, relation_type);
             CREATE TABLE IF NOT EXISTS student_goal (
                 id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
                 student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键）

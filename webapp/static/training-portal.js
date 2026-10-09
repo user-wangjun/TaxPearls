@@ -193,14 +193,21 @@ async function refreshPractice() {
 
 function renderKpRows() {
   const box = document.getElementById("pr-kps");
-  box.innerHTML = state.kps.map((k) => `
-    <div class="item"><div class="item-head">
+  box.innerHTML = state.kps.map((k) => {
+    const rel = k.relations || {};
+    const relChips = [
+      ...(rel.prerequisite || []).map((t) => `<span class="chip" title="学本知识点前建议先学">前置：${esc(t.name)}</span>`),
+      ...(rel.confusable || []).map((t) => `<span class="chip" title="与本知识点易混淆">易混淆：${esc(t.name)}</span>`),
+      ...(rel.concept || []).map((t) => `<span class="chip" title="概念关联">关联：${esc(t.name)}</span>`),
+    ].join("");
+    return `<div class="item"><div class="item-head">
       <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
         ${k.high_freq.map((m) => `<span class="badge warn">常考${m.basis_ref ? " · " + esc(m.basis_ref) : ""}</span>`).join("")}
         ${k.rule_links ? "" : `<span class="badge gray">暂无题目</span>`}
       </div>
       <div class="muted">已练 ${k.attempts} 次 · 满分 ${k.perfect} 次</div>
-    </div></div>`).join("");
+    </div>${relChips ? `<div style="margin-top:4px;">${relChips}</div>` : ""}</div>`;
+  }).join("");
 }
 
 function renderWrong() {

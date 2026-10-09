@@ -111,6 +111,21 @@ function kpDepth(kp, byId) {
   return depth;
 }
 
+function renderRelations(k) {
+  const rows = (k.relations || {});
+  const TYPE = { prerequisite: "前置", concept: "概念", confusable: "易混淆" };
+  const chips = [];
+  (rows.prerequisite || []).forEach((t) => chips.push({ label: `前置：${t.name}`, id: t.relation_id }));
+  (rows.concept || []).forEach((t) => chips.push({ label: `概念关联：${t.name}`, id: t.relation_id }));
+  (rows.confusable || []).forEach((t) => chips.push({ label: `易混淆：${t.name}`, id: t.relation_id }));
+  (k.incoming_prerequisite || []).forEach((r) =>
+    chips.push({ label: `被前置依赖：${r.name}` }));
+  if (!chips.length) return "";
+  return `<div style="margin-top:6px;">${chips.map((c) =>
+    `<span class="chip">${esc(c.label)}${c.id ? ` <button class="small danger" style="padding:0 6px;" data-act="delete-relation" data-id="${esc(c.id)}">删</button>` : ""}</span>`
+  ).join(" ")}</div>`;
+}
+
 function renderKps() {
   const box = document.getElementById("kps");
   if (!state.kps.length) {
@@ -142,7 +157,30 @@ function renderKps() {
         </div>
       </div>
       ${marks}
-      <div class="actions"><button class="small" data-act="show-mark-form" data-id="${esc(k.id)}">＋ 标注</button></div>
+      ${renderRelations(k)}
+      <div class="actions">
+        <button class="small" data-act="edit-kp" data-id="${esc(k.id)}">编辑</button>
+        <button class="small" data-act="show-mark-form" data-id="${esc(k.id)}">＋ 标注</button>
+        <button class="small" data-act="show-relation-form" data-id="${esc(k.id)}">＋ 关系</button>
+      </div>
+      <div class="inline-form" data-role="relation-form" hidden>
+        <div class="row">
+          <div><label>关系类型</label>
+            <select data-role="rf-type">
+              <option value="prerequisite">前置知识（学本点前先学对方）</option>
+              <option value="concept">概念关联</option>
+              <option value="confusable">易混淆</option>
+            </select></div>
+          <div><label>对侧知识点</label>
+            <select data-role="rf-target">${state.kps.filter((p) => p.id !== k.id && p.active)
+              .map((p) => `<option value="${esc(p.id)}">${esc(p.code)} ${esc(p.name)}</option>`).join("")}</select></div>
+        </div>
+        <div class="row">
+          <div><label>依据（必填，考纲章节/教材说明）</label><input data-role="rf-basis" placeholder="如 考纲第三章第2节"></div>
+          <div><label>依据版本</label><input data-role="rf-version" placeholder="如 2026大纲"></div>
+        </div>
+        <div class="actions"><button class="small primary" data-act="create-relation" data-id="${esc(k.id)}">建立关系</button></div>
+      </div>
       <div class="inline-form" data-role="kp-edit" hidden>
         <div class="row">
           <div><label>名称</label><input data-role="ke-name" value="${esc(k.name)}"></div>
@@ -422,6 +460,25 @@ document.getElementById("app-view").addEventListener("click", (event) => {
         await api(`/api/training/staff/content-versions/${id}/retire`, { method: "POST" });
         flash("版本已退役。");
       });
+    },
+    "show-relation-form": () => { const f = q(`#kp-${id} [data-role=relation-form]`); f.hidden = !f.hidden; },
+    "create-relation": () => withCert(async () => {
+      const scope = q(`#kp-${id}`);
+      await api(`/api/training/staff/knowledge-points/${id}/relations`, {
+        method: "POST",
+        body: {
+          to_kp_id: q("[data-role=rf-target]", scope).value,
+          relation_type: q("[data-role=rf-type]", scope).value,
+          basis_ref: q("[data-role=rf-basis]", scope).value,
+          basis_version: q("[data-role=rf-version]", scope).value,
+        },
+      });
+      q("[data-role=rf-basis]", scope).value = "";
+      flash("关系已建立。");
+    }),
+    "delete-relation": () => {
+      if (!window.confirm("确认删除该知识点关系？")) return;
+      withCert(async () => { await api(`/api/training/staff/relations/${id}`, { method: "DELETE" }); flash("关系已删除。"); });
     },
     "delete-mark": () => {
       if (!window.confirm("确认删除该标注？")) return;

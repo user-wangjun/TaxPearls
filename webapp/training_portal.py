@@ -30,6 +30,7 @@ from webapp.login_guard import LoginGuard
 from webapp.storage import _hash_token, _now, session_max_age
 from webapp.training_content import (applicability, ensure_active_version,
                                      resolve_active_version, version_brief)
+from webapp.training_graph import relations_payload
 
 STATIC_DIR_KEYS = ("training-portal.html", "training-portal.js")
 
@@ -523,7 +524,18 @@ def _kp_payload(db, row: sqlite3.Row) -> dict[str, Any]:
     links = db.execute(
         "SELECT id, target_type, target_id, created_at FROM knowledge_point_link"
         " WHERE knowledge_point_id=? ORDER BY target_type, target_id", (row["id"],)).fetchall()
-    return dict(row) | {"marks": [dict(m) for m in marks], "links": [dict(l) for l in links]}
+    return dict(row) | {"marks": [dict(m) for m in marks], "links": [dict(l) for l in links],
+                        "relations": relations_payload(db, row["id"]),
+                        "incoming_prerequisite": _incoming_prerequisite(db, row["id"])}
+
+
+def _incoming_prerequisite(db, kp_id: str) -> list[dict[str, Any]]:
+    """哪些知识点把当前知识点当前置（教师视图展示图谱入边）。"""
+    rows = db.execute(
+        """SELECT r.id, r.basis_ref, r.basis_version, k.id AS kp_id, k.code, k.name
+           FROM knowledge_point_relation r JOIN knowledge_point k ON k.id = r.from_kp_id
+           WHERE r.to_kp_id=? AND r.relation_type='prerequisite' ORDER BY k.code""", (kp_id,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_knowledge_points(store, staff: dict, cert_id: str, *,
@@ -720,6 +732,7 @@ def student_knowledge_points(store, student_id: str, cert_id: str) -> list[dict[
             item = dict(row)
             item["high_freq"] = [dict(m) for m in marks]
             item["rule_links"] = rule_counts.get(row["id"], 0)
+            item["relations"] = relations_payload(db, row["id"])
             stat = coverage.get(row["id"], {"attempts": 0, "perfect": 0})
             item["attempts"] = stat["attempts"]
             item["perfect"] = stat["perfect"]

@@ -397,3 +397,22 @@ class TrainingContentVersion:
     note: str = ""                 # 备注
     created_by: str | None = None  # 发布人，外键 → college_user.id；自动基线版本为空
     rule_ids: list[str] = field(default_factory=list)  # 覆盖的规则清单，落库为 rule_ids_json
+
+
+@dataclass
+class KnowledgePointRelation:
+    """一条知识点间关系，对应表 knowledge_point_relation；学习图谱的关系承载。
+
+    prerequisite=前置知识（from 依赖 to，须先学 to）、concept=概念关联、
+    confusable=易混淆。三类均要求依据（basis_ref），由服务层强制校验；
+    prerequisite 方向构成依赖图，服务层拒绝成环。
+    """
+
+    id: str                        # 主键，UUID 文本
+    from_kp_id: str                # 关系主体，外键 → knowledge_point.id
+    to_kp_id: str                  # 关系客体，外键 → knowledge_point.id
+    relation_type: str             # prerequisite=前置 / concept=概念关联 / confusable=易混淆
+    created_at: str                # 建立时间（ISO 8601 文本）
+    basis_ref: str = ""            # 关系依据（考纲章节/教材说明）
+    basis_version: str = ""        # 依据版本
+    created_by: str | None = None  # 建立人，外键 → college_user.id

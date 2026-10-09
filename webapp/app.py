@@ -1158,6 +1158,8 @@ from webapp.training_portal import register as register_training_portal
 register_training_portal(app, lambda: store, "taxpearls_training_session")
 from webapp.training_content import register as register_training_content
 register_training_content(app, lambda: store)
+from webapp.training_graph import register as register_training_graph
+register_training_graph(app, lambda: store)
 
 
 @app.get("/api/audits")
