@@ -89,6 +89,14 @@ class TrainingStaffTests(unittest.TestCase):
             "code": "hack", "name": "越权"})
         self.assertEqual(res.status_code, 401)
 
+    def test_staff_page_and_script_served(self):
+        page = self.client.get("/training-staff")
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("text/html", page.headers["content-type"])
+        script = self.client.get("/training-staff.js")
+        self.assertEqual(script.status_code, 200)
+        self.assertIn("text/javascript", script.headers["content-type"])
+
     # ---- 证书上架（FR-K01）---------------------------------------------
 
     def test_certificate_create_duplicate_and_toggle(self):
