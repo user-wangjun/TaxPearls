@@ -10,8 +10,11 @@
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
+import re
 import secrets
 import sqlite3
 import uuid
@@ -587,6 +590,268 @@ def update_knowledge_point(store, staff: dict, kp_id: str, *, fields: dict[str, 
         db.execute(f"UPDATE knowledge_point SET {sets} WHERE id=?", (*updates.values(), kp_id))
         row = db.execute("SELECT * FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
         return _kp_payload(db, row)
+
+
+# ---- 知识点批量导入（FR-K03 录入效率工具）----
+# 边界（内容三项决策之二）：工具只导入人工整理并核对过的考纲数据，不生成内容。
+# 支持两种格式：
+#   checklist —— 官方大纲 PDF 预整理清单（`### 章节点：`CODE` 名称` / `#### 节点：…`）；
+#   csv       —— 表头 code,parent_code,name,subject,description,source_ref,outline_version。
+# 语义：按 (certificate_id, code) 幂等 upsert；已有行只覆盖解析值非空的字段；
+# parent_code 为空表示"不指定上级"（更新时保留原上级，不因部分导入误脱挂）；
+# 不触碰 active、三类标注、规则关联与图谱关系。
+
+_KP_IMPORT_MAX_TEXT = 300_000
+_KP_IMPORT_MAX_ROWS = 2000
+
+
+def _checklist_rows(text: str) -> list[dict[str, str]]:
+    lines = text.replace("\r\n", "\n").split("\n")
+    rows: list[dict[str, str]] = []
+    subject = ""
+    chapter: str | None = None
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        m = re.match(r"^##\s*科目[:：]\s*(.+?)\s*$", line)
+        if m:
+            # 清单里科目行可能带给录入者的括注（如“（科目字段填：初级会计实务）”），去掉。
+            subject = re.sub(r"（[^（）]*）\s*$", "", m.group(1)).strip()
+            i += 1
+            continue
+        m = re.match(r"^###\s*章节点[:：]\s*`([^`]+)`\s*(.*)$", line)
+        if m:
+            chapter = m.group(1).strip()
+            rows.append({"code": chapter, "name": m.group(2).strip(), "subject": subject,
+                         "parent_code": "", "description": "", "source_ref": "", "outline_version": ""})
+            i += 1
+            continue
+        m = re.match(r"^####\s*节点[:：]\s*`([^`]+)`\s*(.*)$", line)
+        if m:
+            rows.append({"code": m.group(1).strip(), "name": m.group(2).strip(), "subject": subject,
+                         "parent_code": chapter or "", "description": "", "source_ref": "", "outline_version": ""})
+            i += 1
+            continue
+        m = re.match(r"^-\s*source_ref[:：]\s*`(.+?)`\s*$", line)
+        if m and rows:
+            rows[-1]["source_ref"] = m.group(1).strip()
+            i += 1
+            continue
+        m = re.match(r"^-\s*描述建议[:：]\s*(.+?)\s*$", line)
+        if m and rows:
+            rows[-1]["description"] = m.group(1).strip()
+            i += 1
+            continue
+        if re.match(r"^-\s*描述（考点清单[^）]*）[:：]\s*$", line) and rows:
+            i += 1
+            while i < len(lines) and not lines[i].strip():  # 清单在标记行后有空行
+                i += 1
+            buf: list[str] = []
+            while i < len(lines):
+                nxt = lines[i].rstrip()
+                if not nxt.strip() or nxt.lstrip().startswith(("#", "- ", "|", ">")):
+                    break
+                buf.append(nxt.strip().replace("\\.", ".").rstrip())
+                i += 1
+            rows[-1]["description"] = "\n".join(buf)
+            continue
+        i += 1
+    return rows
+
+
+def _csv_rows(text: str) -> tuple[list[dict[str, str]], list[str]]:
+    expected = ["code", "parent_code", "name", "subject", "description", "source_ref", "outline_version"]
+    errors: list[str] = []
+    rows: list[dict[str, str]] = []
+    header_seen = False
+    for lineno, raw in enumerate(csv.reader(io.StringIO(text.lstrip("\ufeff"))), start=1):
+        cells = [c.strip() for c in raw]
+        if not any(cells):
+            continue
+        if not header_seen:
+            if [c.lower() for c in cells[:7]] == expected:
+                header_seen = True
+                continue
+            errors.append(f"第 {lineno} 行：CSV 首行须为表头 {','.join(expected)}（format=csv）。")
+            return [], errors
+        if len(cells) < len(expected):
+            errors.append(f"第 {lineno} 行：列数不足，应为 {len(expected)} 列。")
+            continue
+        rows.append(dict(zip(expected, cells[:len(expected)])))
+    if not header_seen and not errors:
+        errors.append("CSV 缺少表头行。")
+    return rows, errors
+
+
+def parse_kp_import(text: str, fmt: str, *, default_outline_version: str = "") -> tuple[list[dict[str, str]], list[str]]:
+    """解析导入文本为知识点行；返回 (rows, errors)。行字段统一为 7 个导入列。"""
+    errors: list[str] = []
+    if len(text) > _KP_IMPORT_MAX_TEXT:
+        raise TrainingPortalError(f"导入文本过长（上限 {_KP_IMPORT_MAX_TEXT} 字符）。")
+    if fmt == "checklist":
+        rows = _checklist_rows(text)
+    elif fmt == "csv":
+        rows, errors = _csv_rows(text)
+    else:
+        raise TrainingPortalError("format 仅支持 checklist 或 csv。")
+    if not rows and not errors:
+        errors.append("未解析到任何知识点行，请检查格式。")
+    if len(rows) > _KP_IMPORT_MAX_ROWS:
+        errors.append(f"知识点行数超过上限 {_KP_IMPORT_MAX_ROWS}。")
+
+    by_code: dict[str, dict[str, str]] = {}
+    clean: list[dict[str, str]] = []
+    for idx, row in enumerate(rows, start=1):
+        if not row["code"]:
+            errors.append(f"第 {idx} 行：code 不能为空。")
+            continue
+        if row["code"] in by_code:
+            errors.append(f"编码 {row['code']} 在导入内容中重复出现。")
+            continue
+        if not row["name"]:
+            errors.append(f"编码 {row['code']}：name 不能为空。")
+            continue
+        if row["parent_code"] == row["code"]:
+            errors.append(f"编码 {row['code']}：不能以自己为上级。")
+            continue
+        if not (row["outline_version"] or default_outline_version):
+            errors.append(f"编码 {row['code']}：outline_version 为空且未提供默认版本。")
+            continue
+        by_code[row["code"]] = row
+        clean.append(row)
+
+    # 载荷内父级链成环检测（含通过已存在库行的复合环在落库前由 _would_cycle 拦截）。
+    visiting: set[str] = set()
+    done: set[str] = set()
+
+    def walk(code: str) -> None:
+        if code in done or code not in by_code:
+            return
+        if code in visiting:
+            errors.append(f"编码 {code}：导入内容的上级链形成循环。")
+            return
+        visiting.add(code)
+        parent = by_code[code]["parent_code"]
+        if parent and parent in by_code and parent not in done:
+            walk(parent)
+        visiting.discard(code)
+        done.add(code)
+
+    for code in list(by_code):
+        walk(code)
+    return clean, errors
+
+
+def _plan_kp_import(store, staff: dict, cert_id: str, text: str, fmt: str,
+                    default_outline_version: str) -> list[dict[str, Any]]:
+    """解析并对照库内现状生成逐行动作计划；不做任何写入。"""
+    rows, errors = parse_kp_import(text, fmt, default_outline_version=default_outline_version)
+    if errors:
+        raise TrainingPortalError("导入内容存在问题，未做任何修改：\n" + "\n".join(errors[:20]))
+    plan: list[dict[str, Any]] = []
+    with store.connect() as db:
+        if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在。", 404)
+        existing = {r["code"]: dict(r) for r in db.execute(
+            "SELECT id, code, name, parent_id FROM knowledge_point WHERE certificate_id=?",
+            (cert_id,)).fetchall()}
+        for row in rows:
+            effective = {k: (row[k].strip() if row[k] else "") for k in row}
+            if not effective["outline_version"]:
+                effective["outline_version"] = default_outline_version.strip()
+            parent_code = effective["parent_code"]
+            if parent_code and parent_code not in {r["code"] for r in rows} and parent_code not in existing:
+                raise TrainingPortalError(
+                    f"编码 {row['code']}：上级编码 {parent_code} 不在导入内容中，也不在该证书下已存在。")
+            action = "update" if row["code"] in existing else "insert"
+            warnings: list[str] = []
+            if not effective["source_ref"]:
+                warnings.append("未填考纲依据 source_ref")
+            plan.append({
+                "code": row["code"], "name": effective["name"], "subject": effective["subject"],
+                "description": effective["description"], "source_ref": effective["source_ref"],
+                "outline_version": effective["outline_version"], "parent_code": parent_code,
+                "action": action, "existing_id": existing[row["code"]]["id"] if action == "update" else None,
+                "existing_name": existing[row["code"]]["name"] if action == "update" else None,
+                "warnings": warnings})
+    return plan
+
+
+def preview_kp_import(store, staff: dict, cert_id: str, text: str, fmt: str,
+                      default_outline_version: str = "") -> dict[str, Any]:
+    plan = _plan_kp_import(store, staff, cert_id, text, fmt, default_outline_version)
+    summary = {"total": len(plan),
+               "insert": sum(1 for p in plan if p["action"] == "insert"),
+               "update": sum(1 for p in plan if p["action"] == "update"),
+               "warning": sum(1 for p in plan if p["warnings"])}
+    return {"plan": plan, "summary": summary}
+
+
+def apply_kp_import(store, staff: dict, cert_id: str, text: str, fmt: str,
+                    default_outline_version: str = "") -> dict[str, Any]:
+    plan = _plan_kp_import(store, staff, cert_id, text, fmt, default_outline_version)
+    created = updated = 0
+    # 拓扑排序插入段：载荷内新插入的父级先于子级落库（子行可出现在父行之前）。
+    by_code = {p["code"]: p for p in plan}
+    insert_order: list[dict[str, Any]] = []
+    state: dict[str, int] = {}
+
+    def visit(item: dict[str, Any]) -> None:
+        if state.get(item["code"]) == 1:
+            return
+        if state.get(item["code"]) == 0:  # parse 阶段已拦截，防御兜底
+            raise TrainingPortalError(f"编码 {item['code']}：导入内容的上级链形成循环。")
+        state[item["code"]] = 0
+        parent = by_code.get(item["parent_code"]) if item["parent_code"] else None
+        if parent is not None and parent["action"] == "insert":
+            visit(parent)
+        state[item["code"]] = 1
+        insert_order.append(item)
+
+    for item in (p for p in plan if p["action"] == "insert"):
+        visit(item)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        ids: dict[str, str] = {r["code"]: r["id"] for r in db.execute(
+            "SELECT id, code FROM knowledge_point WHERE certificate_id=?", (cert_id,)).fetchall()}
+        # 先插入再更新：同一事务内两遍扫描，保证载荷内父级（新插入行）先于子级存在。
+        for phase, ordered in (("insert", insert_order), ("update", [p for p in plan if p["action"] == "update"])):
+            for item in ordered:
+                now = _now()
+                parent_id: str | None = None
+                if item["parent_code"]:
+                    parent_id = ids.get(item["parent_code"])
+                    if not parent_id:
+                        raise TrainingPortalError(
+                            f"编码 {item['code']}：上级 {item['parent_code']} 未能解析。")
+                    if phase == "update":
+                        # 库内既有链 + 新上级可能构成环（如互换父子），落库前逐一校验。
+                        if parent_id == ids.get(item["code"]) or _would_cycle(db, ids[item["code"]], parent_id):
+                            raise TrainingPortalError(
+                                f"编码 {item['code']}：修改上级会形成循环层级。")
+                if phase == "insert":
+                    kp_id = str(uuid.uuid4())
+                    db.execute(
+                        """INSERT INTO knowledge_point (id, certificate_id, code, name, subject, parent_id,
+                           description, source_ref, outline_version, active, created_at, updated_at)
+                           VALUES (?,?,?,?,?,?,?,?,?,1,?,?)""",
+                        (kp_id, cert_id, item["code"], item["name"], item["subject"], parent_id,
+                         item["description"], item["source_ref"], item["outline_version"], now, now))
+                    ids[item["code"]] = kp_id
+                    created += 1
+                else:
+                    kp_id = ids[item["code"]]
+                    # 幂等覆盖：只覆盖解析值非空的字段；parent_code 为空保留原上级。
+                    sets: dict[str, Any] = {"name": item["name"], "updated_at": now}
+                    for col in ("subject", "description", "source_ref", "outline_version"):
+                        if item[col]:
+                            sets[col] = item[col]
+                    if parent_id:
+                        sets["parent_id"] = parent_id
+                    db.execute(f"UPDATE knowledge_point SET {', '.join(f'{k}=?' for k in sets)} WHERE id=?",
+                               (*sets.values(), kp_id))
+                    updated += 1
+    return {"ok": True, "created": created, "updated": updated, "total": len(plan)}
 
 
 def create_mark(store, staff: dict, kp_id: str, mark_type: str, *, level: str = "high",
@@ -1194,6 +1459,13 @@ class KnowledgePointCreate(BaseModel):
     outline_version: str = ""
 
 
+class KnowledgePointImportBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    text: str = Field(min_length=1, max_length=300_000)
+    format: str = "checklist"
+    default_outline_version: str = ""
+
+
 class KnowledgePointPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str | None = None
@@ -1547,6 +1819,22 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
             store_provider(), who, cert_id, body.code, body.name, subject=body.subject,
             parent_id=body.parent_id, description=body.description, source_ref=body.source_ref,
             outline_version=body.outline_version)})
+
+    @app.post("/api/training/staff/certificates/{cert_id}/knowledge-points/import/preview")
+    @guarded
+    def staff_kp_import_preview(cert_id: str, body: KnowledgePointImportBody,
+                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response(preview_kp_import(store_provider(), who, cert_id, body.text,
+                                          body.format, body.default_outline_version))
+
+    @app.post("/api/training/staff/certificates/{cert_id}/knowledge-points/import")
+    @guarded
+    def staff_kp_import(cert_id: str, body: KnowledgePointImportBody,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response(apply_kp_import(store_provider(), who, cert_id, body.text,
+                                        body.format, body.default_outline_version))
 
     @app.patch("/api/training/staff/knowledge-points/{kp_id}")
     @guarded
