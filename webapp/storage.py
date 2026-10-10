@@ -132,6 +132,10 @@ from src.snapshots import serialize_dataset, deserialize_dataset, serialize_find
 class Store:
     """Small SQLite repository with explicit organization and ownership checks."""
 
+    # 模块级共享锁：同进程所有 Store 实例（含指向同一库文件的多个实例）串行化库访问。
+    # 实例级锁无法保护跨实例并发；跨进程部署无此场景（单进程单实例服务）。
+    _LOCK = RLock()
+
     def __init__(self, path: str | Path | None = None, *, notification_adapters=None) -> None:
         from webapp.notifications import channel_registry
         self.notification_adapters = channel_registry(notification_adapters)
@@ -140,7 +144,7 @@ class Store:
         # 相对路径一律锚定项目根，与启动时的工作目录无关（防止在子目录启动时误建空库）。
         self.path = p if p.is_absolute() else (ROOT / p).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = RLock()
+        self._lock = Store._LOCK
         self._field_codec = sensitive_storage.Codec(sensitive_storage.configured_key())
         self.deployment = deployment.configured()
         self._fields_ready = False
@@ -155,25 +159,30 @@ class Store:
 
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
-        try:
-            sensitive_storage.attach(db, self._field_codec)
-            if not self._fields_ready:
-                db.row_factory = sqlite3.Row
-            else:
-                sensitive_storage.verify_state(db, self._field_codec)
-                deployment.verify(db, self.deployment, self._field_codec, require_bound=True)
-            db.execute("PRAGMA foreign_keys=ON")
-            # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
-            # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
-            # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
-            yield db
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+        # Windows 上 WAL 库的多连接并发写会以 SQLITE_READONLY 的面目偶发失败
+        # （-shm 映射竞态；实测 4 线程 x30 次并发写失败 2 次，加锁后全过）。
+        # 锁由此统一下沉到连接层串行化库访问：教学线等新模块的写路径无须
+        # 各自加锁；既有写方法中的 self._lock 为可重入 RLock，双重加锁无死锁。
+        with self._lock:
+            db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
+            try:
+                sensitive_storage.attach(db, self._field_codec)
+                if not self._fields_ready:
+                    db.row_factory = sqlite3.Row
+                else:
+                    sensitive_storage.verify_state(db, self._field_codec)
+                    deployment.verify(db, self.deployment, self._field_codec, require_bound=True)
+                db.execute("PRAGMA foreign_keys=ON")
+                # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
+                # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
+                # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
+                yield db
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
     def _init_schema(self) -> None:
         from webapp.schema import initialize
