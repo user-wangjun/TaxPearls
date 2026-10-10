@@ -1285,9 +1285,54 @@ def coverage(store, student_id: str, cert_id: str) -> list[dict[str, Any]]:
 # 学生目标工作台（FR-K07）：聚合目标/倒计时、覆盖、常考、薄弱点与可解释推荐
 # ---------------------------------------------------------------------------
 
+# 复习提醒口径：较熟练知识点超过该天数未作答即安排一次巩固（确定性规则，可解释）。
+REVIEW_STALE_DAYS = 7
+
+
+def _attempt_evidence(db, student_id: str, cert_id: str) -> tuple[dict[str, dict[str, Any]], dict[str, int], list[dict[str, Any]]]:
+    """作答证据聚合（口径与作答细分一致）：返回 (按知识点聚合, 总计, 明细)。
+
+    跳过留痕计数但不计入正确率与掌握程度；作答中（result_json 为空）不计入；
+    整证随机作答（knowledge_point_id 为空）计入总计、不映射到知识点。"""
+    agg: dict[str, dict[str, Any]] = {}
+    total = {"attempts": 0, "perfect": 0, "skipped": 0}
+    detail: list[dict[str, Any]] = []
+    for r in db.execute(
+            """SELECT id, knowledge_point_id, rule_id, skipped_at, result_json, created_at, scored_at
+               FROM training_self_practice_attempts
+               WHERE student_id=? AND certificate_id=?
+               ORDER BY scored_at, created_at""", (student_id, cert_id)).fetchall():
+        if r["skipped_at"]:
+            total["skipped"] += 1
+            continue
+        if r["result_json"] is None:
+            continue
+        try:
+            result = json.loads(r["result_json"] or "{}")
+        except ValueError:
+            result = {}
+        perfect = bool(result.get("perfect"))
+        total["attempts"] += 1
+        total["perfect"] += int(perfect)
+        detail.append({"id": r["id"], "knowledge_point_id": r["knowledge_point_id"],
+                       "rule_id": r["rule_id"], "created_at": r["created_at"],
+                       "scored_at": r["scored_at"], "perfect": perfect})
+        if not r["knowledge_point_id"]:
+            continue
+        e = agg.setdefault(r["knowledge_point_id"],
+                           {"attempts": 0, "perfect": 0, "last_perfect": None, "last_scored_at": None})
+        e["attempts"] += 1
+        e["perfect"] += int(perfect)
+        e["last_perfect"] = perfect
+        e["last_scored_at"] = r["scored_at"]
+    return agg, total, detail
+
+
 def dashboard(store, student_id: str) -> dict[str, Any]:
     """工作台聚合视图。推荐为确定性规则（非算法画像）：续作 > 错题重练 >
-    常考未练 > 未练知识点 > 巩固最弱；无历史不虚构，每条建议带原因并可直达内容。"""
+    巩固中补练 > 常考未练 > 未练补覆盖 > 较熟练超期复习；无历史不虚构，
+    题量不足说明缺口，不展示未经验证的通过概率；每条建议带原因并可直达内容。
+    plan 为完整版学习安排（FR-K 剩余项），recommendation 保留为首条建议。"""
     with store.connect() as db:
         goal_rows = db.execute(
             "SELECT * FROM student_goal WHERE student_id=? AND status='active' ORDER BY created_at",
@@ -1300,25 +1345,7 @@ def dashboard(store, student_id: str) -> dict[str, Any]:
             kps = db.execute(
                 "SELECT id, code, name FROM knowledge_point WHERE certificate_id=? AND active=1 ORDER BY code",
                 (cert_id,)).fetchall()
-            attempts = []
-            for r in db.execute(
-                    """SELECT id, knowledge_point_id, rule_id, result_json, created_at FROM training_self_practice_attempts
-                       WHERE student_id=? AND certificate_id=? AND status='scored'""", (student_id, cert_id)).fetchall():
-                entry = {"id": r["id"], "knowledge_point_id": r["knowledge_point_id"],
-                         "rule_id": r["rule_id"], "created_at": r["created_at"], "perfect": False}
-                try:
-                    entry["perfect"] = bool(json.loads(r["result_json"] or "{}").get("perfect"))
-                except ValueError:
-                    pass
-                attempts.append(entry)
-            stats: dict[str, dict[str, int]] = {}
-            for a in attempts:
-                if not a["knowledge_point_id"]:
-                    continue
-                e = stats.setdefault(a["knowledge_point_id"], {"attempts": 0, "perfect": 0})
-                e["attempts"] += 1
-                if a["perfect"]:
-                    e["perfect"] += 1
+            stats, totals, attempts = _attempt_evidence(db, student_id, cert_id)
             rule_links = {r["knowledge_point_id"]: r["n"] for r in db.execute(
                 "SELECT knowledge_point_id, count(*) n FROM knowledge_point_link WHERE target_type='rule'"
                 " AND knowledge_point_id IN (SELECT id FROM knowledge_point WHERE certificate_id=?)"
@@ -1371,14 +1398,85 @@ def dashboard(store, student_id: str) -> dict[str, Any]:
                 else:
                     recommendation = {"kind": "none",
                                       "reason": "该证书下还没有关联题目的知识点，等待教师配置后即可练习。"}
+            # 掌握程度汇总（口径见 mastery_level）：展示练习量/正确率之外的掌握分布。
+            def _level(kp_id: str) -> tuple[str, str | None]:
+                e = stats.get(kp_id)
+                n = e["attempts"] if e else 0
+                acc = (e["perfect"] / n) if e and n else None
+                return mastery_level(n, acc, e["last_perfect"] if e else None), (
+                    e["last_scored_at"] if e else None)
+
+            mastery = {"unstarted": 0, "acquainted": 0, "consolidating": 0, "proficient": 0}
+            for k in kps:
+                level, _ = _level(k["id"])
+                mastery[level] += 1
+            # 完整版学习安排：续作 > 错题复核 > 巩固中补练 > 常考未练 > 补覆盖 > 超期复习。
+            plan: list[dict[str, Any]] = []
+            if open_rows:
+                plan.append({"kind": "resume", "attempt_id": open_rows[0]["id"],
+                             "title": "续作未完成的练习",
+                             "reason": "有一道未完成的练习，继续作答即可判分并开放解析。"})
+            for (wk_id, wr_id), cnt in sorted(wrong_count.items(), key=lambda kv: -kv[1])[:3]:
+                wname = kp_names.get(wk_id, {}).get("name", "知识点")
+                plan.append({"kind": "redo", "certificate_id": cert_id, "knowledge_point_id": wk_id,
+                             "rule_id": wr_id, "title": f"重练「{wname}」错题",
+                             "reason": f"已练 {cnt} 次未满分，从错题入手见效最快。"})
+            consolidating = [k for k in kps if _level(k["id"])[0] == "consolidating"
+                             and rule_links.get(k["id"], 0) > 0]
+            for k in consolidating[:3]:
+                plan.append({"kind": "practice", "certificate_id": cert_id, "knowledge_point_id": k["id"],
+                             "title": f"巩固「{k['name']}」",
+                             "reason": "掌握程度为巩固中（正确率不足或最近一次未满分），再练新题巩固。"})
+            untried_with_q = [k for k in kps if k["id"] not in stats and rule_links.get(k["id"], 0) > 0]
+            hot_ids = {h["id"] for h in high_freq}
+            for k in [k for k in untried_with_q if k["id"] in hot_ids][:3]:
+                plan.append({"kind": "practice", "certificate_id": cert_id, "knowledge_point_id": k["id"],
+                             "title": f"新学常考「{k['name']}」",
+                             "reason": "常考知识点还未练习，建议优先覆盖。"})
+            for k in [k for k in untried_with_q if k["id"] not in hot_ids][:3]:
+                plan.append({"kind": "practice", "certificate_id": cert_id, "knowledge_point_id": k["id"],
+                             "title": f"新学「{k['name']}」", "reason": "还未练习的知识点，补全覆盖面。"})
+            now_cst = datetime.now(CST)
+            for k in kps:
+                level, last_at = _level(k["id"])
+                if level != "proficient" or not last_at:
+                    continue
+                try:
+                    last_day = datetime.fromisoformat(last_at)
+                    if last_day.tzinfo is None:
+                        last_day = last_day.replace(tzinfo=CST)
+                except ValueError:
+                    continue
+                if (now_cst - last_day).days >= REVIEW_STALE_DAYS:
+                    plan.append({"kind": "review", "certificate_id": cert_id, "knowledge_point_id": k["id"],
+                                 "title": f"复习「{k['name']}」",
+                                 "reason": f"已较熟练但超过 {REVIEW_STALE_DAYS} 天未练，安排一次巩固防遗忘。"})
+            plan = plan[:8]
+            # 剩余时间节奏提示：确定性换算，不作任何通过率承诺。
+            countdown = payload["countdown"]
+            days_left = countdown["days_left"] if countdown and not countdown.get("expired") else None
+            remaining = total - covered
+            pacing: dict[str, Any] | None = None
+            if remaining <= 0:
+                pacing = {"remaining_kps": 0, "days_left": days_left, "per_day": 0,
+                          "note": "知识点已全部练过，可按掌握程度安排巩固与复习。"}
+            elif days_left is not None:
+                per_day = -(-remaining // days_left) if days_left > 0 else remaining
+                pacing = {"remaining_kps": remaining, "days_left": days_left, "per_day": min(per_day, remaining),
+                          "note": (f"距考试 {days_left} 天，剩余 {remaining} 个知识点未练，约每天 {per_day} 个即可全部覆盖。"
+                                   if days_left > 0 else
+                                   f"考试就在今天，剩余 {remaining} 个知识点未练，按状态量力安排。")}
+            gap_kps = sum(1 for k in kps if rule_links.get(k["id"], 0) == 0)
             goals.append({
                 "goal_id": row["id"], "certificate_id": cert_id,
                 "certificate_name": cert["name"] if cert else "",
                 "countdown": payload["countdown"], "countdown_source": payload["countdown_source"],
                 "official_date": payload["official_date"], "planned_date": payload["planned_date"],
                 "coverage": {"total": total, "covered": covered,
-                             "attempts": sum(s["attempts"] for s in stats.values()),
-                             "perfect": sum(s["perfect"] for s in stats.values())},
+                             "attempts": totals["attempts"], "perfect": totals["perfect"],
+                             "skipped": totals["skipped"]},
+                "mastery": mastery, "plan": plan, "pacing": pacing,
+                "gaps": {"kps_without_questions": gap_kps},
                 "high_freq": high_freq, "weak": weak,
                 "recommendation": recommendation,
                 "open_attempts": open_rows,
@@ -1429,34 +1527,7 @@ def student_profile(store, student_id: str, cert_id: str) -> dict[str, Any]:
             " WHERE certificate_id=? AND active=1 ORDER BY code", (cert_id,)).fetchall()
         kp_ids = {r["id"] for r in kps}
 
-        rows = db.execute(
-            """SELECT id, knowledge_point_id, skipped_at, result_json, scored_at
-               FROM training_self_practice_attempts
-               WHERE student_id=? AND certificate_id=?
-               ORDER BY scored_at, created_at""", (student_id, cert_id)).fetchall()
-        agg: dict[str, dict[str, Any]] = {}
-        total = {"attempts": 0, "perfect": 0, "skipped": 0}
-        for r in rows:
-            if r["skipped_at"]:
-                total["skipped"] += 1  # 跳过留痕计数，不计入正确率与掌握程度
-                continue
-            if r["result_json"] is None:
-                continue  # 作答中，不计入统计（与作答细分口径一致）
-            try:
-                result = json.loads(r["result_json"] or "{}")
-            except ValueError:
-                result = {}
-            perfect = bool(result.get("perfect"))
-            total["attempts"] += 1
-            total["perfect"] += int(perfect)
-            if r["knowledge_point_id"] not in kp_ids:
-                continue  # 整证随机作答计入总览，不映射到具体知识点
-            entry = agg.setdefault(r["knowledge_point_id"], {
-                "attempts": 0, "perfect": 0, "last_perfect": None, "last_scored_at": None})
-            entry["attempts"] += 1
-            entry["perfect"] += int(perfect)
-            entry["last_perfect"] = perfect
-            entry["last_scored_at"] = r["scored_at"]
+        agg, total, _detail = _attempt_evidence(db, student_id, cert_id)
 
         notes: dict[str, dict[str, Any]] = {}
         for r in db.execute(
