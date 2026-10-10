@@ -493,3 +493,11 @@ def initialize(store) -> None:
             db.execute(
                 "ALTER TABLE training_self_practice_attempts"
                 " ADD COLUMN content_version_id TEXT REFERENCES training_content_version(id)")
+        # 作答细分（FR-K05/K06 待完善项）：新题/原题重做分开标记；跳过不删行、不进练习统计。
+        if "mode" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts"
+                " ADD COLUMN mode TEXT NOT NULL DEFAULT 'new'")
+        if "skipped_at" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts ADD COLUMN skipped_at TEXT")

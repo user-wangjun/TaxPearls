@@ -159,6 +159,14 @@ async function refresh() {
 
 function fmtNum(v) { return v === null || v === undefined || v === "" ? "—" : esc(v); }
 
+function renderStats() {
+  const box = document.getElementById("pr-stats");
+  const s = state.prStats;
+  if (!s) { box.textContent = ""; return; }
+  const fmt = (b) => b.attempts ? `${b.attempts} 次（满分 ${b.perfect}，正确率 ${(b.accuracy * 100).toFixed(0)}%）` : "0 次";
+  box.textContent = `细分统计 —— 新题：${fmt(s.new)} · 原题重做：${fmt(s.redo_same)} · 未作答即交：${fmt(s.unanswered)} · 跳过：${s.skipped} 次（不计入正确率）`;
+}
+
 async function refreshPractice() {
   const certSel = document.getElementById("pr-cert");
   certSel.innerHTML = state.certificates.map((c) =>
@@ -167,18 +175,22 @@ async function refreshPractice() {
     state.prCert = state.certificates.length ? state.certificates[0].id : null;
   }
   if (state.prCert) certSel.value = state.prCert;
-  const [kpData, wrong, open, dash] = await Promise.all([
+  const [kpData, wrong, open, dash, stats] = await Promise.all([
     state.prCert ? api(`/api/training/my/knowledge-points?certificate_id=${state.prCert}`)
                  : Promise.resolve({ knowledge_points: [] }),
     api("/api/training/my/practice/wrong"),
     api("/api/training/my/practice?status=open"),
     api("/api/training/my/dashboard"),
+    state.prCert ? api(`/api/training/my/practice/stats?certificate_id=${state.prCert}`)
+                 : Promise.resolve(null),
   ]);
   state.kps = kpData.knowledge_points;
   state.wrong = wrong.attempts;
   state.open = open.attempts;
   state.dashboard = dash;
+  state.prStats = stats ? stats.stats : null;
   renderWorkbench();
+  renderStats();
   const kpSel = document.getElementById("pr-kp");
   kpSel.innerHTML = `<option value="">（整证随机）</option>` + state.kps.map((k) =>
     `<option value="${esc(k.id)}">${esc(k.code)} ${esc(k.name)}${k.rule_links ? "" : "（暂无题目）"}</option>`).join("");
@@ -303,7 +315,7 @@ function renderAttempt() {
         <div style="margin:6px 0;">${catalog}</div>
         <div class="actions">
           <button class="primary" data-act="submit">提交判分</button>
-          <button data-act="abandon">放弃本题</button>
+          <button data-act="abandon">跳过本题（留痕，不计入统计）</button>
         </div>
         <div class="error" id="pr-error"></div>
       </div>`;
@@ -449,14 +461,20 @@ document.getElementById("pr-attempt").addEventListener("click", async (event) =>
       document.getElementById("pr-error").textContent = err.message + "（你的选择已保留，可修正后重新提交）";
     }
   } else if (act === "abandon") {
+    try {
+      await api(`/api/training/my/practice/${state.attempt.id}/skip`, { method: "POST" });
+      flash("已跳过：留痕统计，不计入正确率。");
+    } catch (err) { flash(err.message, true); }
     state.attempt = null;
     renderAttempt();
+    await refreshPractice().catch(() => {});
   } else if (act === "redo-new") {
     startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
-                    rule_id: btn.dataset.rule || null }).catch((err) => flash(err.message, true));
+                    rule_id: btn.dataset.rule || null, mode: "new" }).catch((err) => flash(err.message, true));
   } else if (act === "redo-same") {
     startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
-                    rule_id: btn.dataset.rule, seed: parseInt(btn.dataset.seed, 10) }).catch((err) => flash(err.message, true));
+                    rule_id: btn.dataset.rule, seed: parseInt(btn.dataset.seed, 10),
+                    mode: "redo_same" }).catch((err) => flash(err.message, true));
   } else if (act === "resume") {
     try {
       const data = await api(`/api/training/my/practice/${btn.dataset.id}`);

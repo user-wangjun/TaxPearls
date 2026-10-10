@@ -225,5 +225,52 @@ class TrainingPracticeTests(unittest.TestCase):
         self.assertEqual(row["rule_links"], 1)
 
 
+    # ---- FR-K05/K06 作答细分：跳过 / 原题重做 / 未作答即交分开统计 ----
+
+    def test_skip_marks_attempt_and_excludes_from_open(self):
+        self._staff_login(); self._link(); self._student_login()
+        attempt = self._start().json()["attempt"]
+        res = self.client.post(f"/api/training/my/practice/{attempt['id']}/skip")
+        self.assertEqual(res.status_code, 200, res.text)
+        self.assertTrue(res.json()["skipped"])
+        detail = self.client.get(f"/api/training/my/practice/{attempt['id']}").json()["attempt"]
+        self.assertTrue(detail["skipped"])
+        open_ids = [a["id"] for a in
+                    self.client.get("/api/training/my/practice?status=open").json()["attempts"]]
+        self.assertNotIn(attempt["id"], open_ids)
+        again = self.client.post(f"/api/training/my/practice/{attempt['id']}/skip")  # 幂等
+        self.assertEqual(again.status_code, 200)
+        scored = self._start().json()["attempt"]
+        self.client.post(f"/api/training/my/practice/{scored['id']}/submit",
+                         json={"selected_rule_ids": [self.rule_id]})
+        denied = self.client.post(f"/api/training/my/practice/{scored['id']}/skip")
+        self.assertEqual(denied.status_code, 409)
+
+    def test_stats_separate_modes_and_unanswered(self):
+        self._staff_login(); self._link(); self._student_login()
+        a1 = self._start(seed=5).json()["attempt"]
+        empty = self.client.post(f"/api/training/my/practice/{a1['id']}/submit",
+                                 json={"selected_rule_ids": []})
+        standard = empty.json()["attempt"]["result"]["standard_answer"]
+        redo = self._start(seed=5, rule_id=self.rule_id, mode="redo_same")
+        self.assertEqual(redo.status_code, 200, redo.text)
+        perfect = self.client.post(
+            f"/api/training/my/practice/{redo.json()['attempt']['id']}/submit",
+            json={"selected_rule_ids": standard}).json()["attempt"]
+        self.assertTrue(perfect["perfect"])
+        a3 = self._start(seed=9).json()["attempt"]
+        self.client.post(f"/api/training/my/practice/{a3['id']}/submit",
+                         json={"selected_rule_ids": [self.rule_id]})
+        bad = self._start(mode="redo_same")  # 原题重做缺规则/种子 → 拒绝
+        self.assertEqual(bad.status_code, 422)
+        stats = self.client.get(
+            f"/api/training/my/practice/stats?certificate_id={self.cert}").json()["stats"]
+        self.assertEqual(stats["unanswered"]["attempts"], 1)
+        self.assertEqual(stats["redo_same"]["attempts"], 1)
+        self.assertEqual(stats["redo_same"]["perfect"], 1)
+        self.assertEqual(stats["new"]["attempts"], 1)
+        self.assertEqual(stats["skipped"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()
