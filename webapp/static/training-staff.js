@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -270,6 +270,44 @@ async function importPayload() {
   };
 }
 
+function renderMarkStats() {
+  const box = document.getElementById("mark-stats");
+  const s = state.markStats;
+  if (!s) { box.innerHTML = `<p class="muted">暂无统计数据。</p>`; return; }
+  const TYPE = { high_freq: "考证高频", risk_context: "企业风险", error_prone: "学生易错" };
+  const kp = s.knowledge_points;
+  const rows = Object.entries(s.marks).map(([type, m]) => {
+    const versionDetail = m.by_basis_version && Object.keys(m.by_basis_version).length
+      ? `<span class="muted">依据版本：${Object.entries(m.by_basis_version)
+          .map(([v, n]) => `${esc(v)} × ${n}`).join("、")}</span>` : "";
+    return `<div class="item">
+      <div class="item-head">
+        <div><strong>${TYPE[type]}</strong>
+          <span class="badge">${m.count} 条标注 · 覆盖 ${m.points} 个知识点</span>
+          <span class="badge gray">未标注 ${m.unmarked_points} 个</span></div>
+      </div>${versionDetail ? `<div style="margin-top:4px;">${versionDetail}</div>` : ""}
+    </div>`;
+  }).join("");
+  box.innerHTML = `
+    <div style="margin-bottom:10px;">
+      <span class="badge">知识点 ${kp.total} 个</span>
+      <span class="badge">有题目 ${kp.with_questions}</span>
+      ${kp.without_questions ? `<span class="badge warn">无题目 ${kp.without_questions}（刷题前需关联规则）</span>` : `<span class="badge">题目全覆盖</span>`}
+      ${(Object.entries(kp.by_subject) || []).map(([sub, n]) => `<span class="chip">${esc(sub)} ${n}</span>`).join(" ")}
+    </div>${rows}`;
+}
+
+async function loadMarkStats() {
+  if (!state.currentId) { state.markStats = null; renderMarkStats(); return; }
+  try {
+    state.markStats = (await api(
+      `/api/training/staff/certificates/${state.currentId}/mark-stats`)).mark_stats;
+  } catch (err) {
+    state.markStats = null;
+  }
+  renderMarkStats();
+}
+
 function renderParentOptions() {
   const select = document.getElementById("kf-parent");
   select.innerHTML = [`<option value="">（无，作为顶级）</option>`].concat(
@@ -328,6 +366,7 @@ async function load() {
     state.versions = vs.versions;
   }
   renderAll();
+  await loadMarkStats().catch(() => {});
 }
 
 /* ---------- 事件 ---------- */
@@ -446,6 +485,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     },
     "show-kp-form": () => { const f = q("#kp-form"); f.hidden = !f.hidden; },
     "show-import-form": () => { const f = q("#import-form"); f.hidden = !f.hidden; },
+    "refresh-mark-stats": () => loadMarkStats(),
     "cancel-import": () => {
       q("#import-form").hidden = true;
       renderImportResult(null);
