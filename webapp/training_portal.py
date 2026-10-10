@@ -1388,6 +1388,161 @@ def dashboard(store, student_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# 个人学习档案与知识库（FR-K 剩余项 v1）+ 掌握程度口径（FR-K07 待定义项定版）
+# ---------------------------------------------------------------------------
+
+MASTERY_LABELS = {"unstarted": "未开始", "acquainted": "初识",
+                  "consolidating": "巩固中", "proficient": "较熟练"}
+
+
+def mastery_level(attempts_n: int, accuracy: float | None, last_perfect: bool | None) -> str:
+    """掌握程度口径（v1）：确定性聚合规则，可解释、不声称"已掌握"。
+
+    - unstarted 未开始：无已判分非跳过作答；
+    - acquainted 初识：1–2 次作答（一次重练答对不代表长期掌握，次数不足不升级）；
+    - consolidating 巩固中：≥3 次作答但正确率 < 80%，或最近一次未满分（需复核）；
+    - proficient 较熟练：≥3 次作答、正确率 ≥ 80% 且最近一次满分。
+    纯聚合计算、无隐藏状态：最近表现下降自然回落；跳过作答不计入次数与正确率
+    （与作答细分口径一致）。展示层附 attempts/accuracy/last_perfect 供解释。"""
+    if attempts_n <= 0:
+        return "unstarted"
+    if attempts_n < 3:
+        return "acquainted"
+    if accuracy is not None and accuracy >= 0.8 and last_perfect:
+        return "proficient"
+    return "consolidating"
+
+
+def student_profile(store, student_id: str, cert_id: str) -> dict[str, Any]:
+    """个人学习档案：按知识点聚合历次作答、错题、笔记与答疑提问（FR-K v1）。
+
+    全部按本人隔离；聚合只读，不改作答历史（验收：修改目标不清空历史）。
+    三类标注统计口径：标注是内容层事实（证书 × outline_version 范围），学生端
+    仅展示考证高频；个人易错来自本人作答统计（错题/掌握程度），与教师维护的
+    error_prone 标注分开呈现，不把个人错误写成公共知识事实。"""
+    with store.connect() as db:
+        if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在。", 404)
+        cert = db.execute("SELECT name FROM certificate WHERE id=?", (cert_id,)).fetchone()
+        kps = db.execute(
+            "SELECT id, code, name, subject FROM knowledge_point"
+            " WHERE certificate_id=? AND active=1 ORDER BY code", (cert_id,)).fetchall()
+        kp_ids = {r["id"] for r in kps}
+
+        rows = db.execute(
+            """SELECT id, knowledge_point_id, skipped_at, result_json, scored_at
+               FROM training_self_practice_attempts
+               WHERE student_id=? AND certificate_id=?
+               ORDER BY scored_at, created_at""", (student_id, cert_id)).fetchall()
+        agg: dict[str, dict[str, Any]] = {}
+        total = {"attempts": 0, "perfect": 0, "skipped": 0}
+        for r in rows:
+            if r["skipped_at"]:
+                total["skipped"] += 1  # 跳过留痕计数，不计入正确率与掌握程度
+                continue
+            if r["result_json"] is None:
+                continue  # 作答中，不计入统计（与作答细分口径一致）
+            try:
+                result = json.loads(r["result_json"] or "{}")
+            except ValueError:
+                result = {}
+            perfect = bool(result.get("perfect"))
+            total["attempts"] += 1
+            total["perfect"] += int(perfect)
+            if r["knowledge_point_id"] not in kp_ids:
+                continue  # 整证随机作答计入总览，不映射到具体知识点
+            entry = agg.setdefault(r["knowledge_point_id"], {
+                "attempts": 0, "perfect": 0, "last_perfect": None, "last_scored_at": None})
+            entry["attempts"] += 1
+            entry["perfect"] += int(perfect)
+            entry["last_perfect"] = perfect
+            entry["last_scored_at"] = r["scored_at"]
+
+        notes: dict[str, dict[str, Any]] = {}
+        for r in db.execute(
+                """SELECT knowledge_point_id, content, updated_at FROM student_kp_notes
+                   WHERE student_id=?""", (student_id,)).fetchall():
+            if r["knowledge_point_id"] in kp_ids:
+                notes[r["knowledge_point_id"]] = dict(r)
+        tutor_counts = {r["knowledge_point_id"]: r["n"] for r in db.execute(
+            """SELECT knowledge_point_id, count(*) n FROM training_tutor_messages
+               WHERE student_id=? AND certificate_id=? AND knowledge_point_id IS NOT NULL
+               GROUP BY knowledge_point_id""", (student_id, cert_id)).fetchall()}
+
+        items = []
+        for k in kps:
+            stat = agg.get(k["id"], {"attempts": 0, "perfect": 0,
+                                     "last_perfect": None, "last_scored_at": None})
+            n = stat["attempts"]
+            accuracy = round(stat["perfect"] / n, 4) if n else None
+            level = mastery_level(n, accuracy, stat["last_perfect"])
+            note = notes.get(k["id"])
+            items.append({
+                "id": k["id"], "code": k["code"], "name": k["name"], "subject": k["subject"],
+                "mastery": {"level": level, "label": MASTERY_LABELS[level],
+                            "attempts": n, "accuracy": accuracy,
+                            "perfect": stat["perfect"], "last_perfect": stat["last_perfect"],
+                            "last_scored_at": stat["last_scored_at"]},
+                "wrong": n - stat["perfect"],
+                "note": {"content": note["content"], "updated_at": note["updated_at"]} if note else None,
+                "tutor_questions": tutor_counts.get(k["id"], 0),
+            })
+        goal_row = db.execute(
+            "SELECT * FROM student_goal WHERE student_id=? AND certificate_id=? AND status='active'",
+            (student_id, cert_id)).fetchone()
+        goal_payload = _goal_payload(db, goal_row) if goal_row else None
+        covered = sum(1 for i in items if i["mastery"]["attempts"] > 0)
+        return {
+            "certificate": {"id": cert_id, "name": cert["name"] if cert else ""},
+            "goal": goal_payload,
+            "summary": {
+                "total_kps": len(items), "covered_kps": covered,
+                "coverage_rate": round(covered / len(items), 4) if items else None,
+                "proficient_kps": sum(1 for i in items if i["mastery"]["level"] == "proficient"),
+                "attempts": total["attempts"], "skipped": total["skipped"],
+                "accuracy": round(total["perfect"] / total["attempts"], 4) if total["attempts"] else None,
+                "notes": len(notes),
+                "tutor_questions": sum(tutor_counts.values()),
+            },
+            "knowledge_points": items,
+        }
+
+
+def get_kp_note(store, student_id: str, kp_id: str) -> dict[str, Any] | None:
+    with store.connect() as db:
+        row = db.execute("SELECT id FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("知识点不存在。", 404)
+        note = db.execute(
+            "SELECT content, created_at, updated_at FROM student_kp_notes"
+            " WHERE student_id=? AND knowledge_point_id=?", (student_id, kp_id)).fetchone()
+        return dict(note) if note else None
+
+
+def upsert_kp_note(store, student_id: str, kp_id: str, content: str) -> dict[str, Any]:
+    content = content.strip()
+    if not content:
+        raise TrainingPortalError("笔记内容不能为空；要清空请用删除。")
+    if len(content) > 5000:
+        raise TrainingPortalError("笔记内容过长（上限 5000 字符）。")
+    now = _now()
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM knowledge_point WHERE id=?", (kp_id,)).fetchone():
+            raise TrainingPortalError("知识点不存在。", 404)
+        db.execute(
+            """INSERT INTO student_kp_notes (id, student_id, knowledge_point_id, content, created_at, updated_at)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT(student_id, knowledge_point_id)
+               DO UPDATE SET content=excluded.content, updated_at=excluded.updated_at""",
+            (str(uuid.uuid4()), student_id, kp_id, content, now, now))
+        row = db.execute(
+            "SELECT content, created_at, updated_at FROM student_kp_notes"
+            " WHERE student_id=? AND knowledge_point_id=?", (student_id, kp_id)).fetchone()
+        return dict(row)
+
+
+# ---------------------------------------------------------------------------
 # 路由注册（接线模式与 classroom/mistake_book 一致）
 # ---------------------------------------------------------------------------
 
@@ -1464,6 +1619,11 @@ class KnowledgePointImportBody(BaseModel):
     text: str = Field(min_length=1, max_length=300_000)
     format: str = "checklist"
     default_outline_version: str = ""
+
+
+class NoteBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content: str = Field(min_length=1, max_length=5000)
 
 
 class KnowledgePointPatch(BaseModel):
@@ -1701,6 +1861,27 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                     session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student(session)
         return response({"coverage": coverage(store_provider(), who["id"], certificate_id)})
+
+    @app.get("/api/training/my/profile")
+    @guarded
+    def my_profile(certificate_id: str,
+                   session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"profile": student_profile(store_provider(), who["id"], certificate_id)})
+
+    @app.get("/api/training/my/knowledge-points/{kp_id}/note")
+    @guarded
+    def my_note_get(kp_id: str,
+                    session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"note": get_kp_note(store_provider(), who["id"], kp_id)})
+
+    @app.put("/api/training/my/knowledge-points/{kp_id}/note")
+    @guarded
+    def my_note_put(kp_id: str, body: NoteBody,
+                    session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"note": upsert_kp_note(store_provider(), who["id"], kp_id, body.content)})
 
     for action in ("pause", "resume", "archive"):
         def _make(action: str):
