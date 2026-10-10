@@ -59,7 +59,7 @@ EMAIL_COOKIE_NAME = "taxpearls_email_browser"
 async def lifespan(application):
     global store
     if store is None:
-        store = Store()
+        store = Store(keepalive=True)
     worker = NotificationWorker(lambda: store)
     worker.start()
     try:

@@ -136,7 +136,8 @@ class Store:
     # 实例级锁无法保护跨实例并发；跨进程部署无此场景（单进程单实例服务）。
     _LOCK = RLock()
 
-    def __init__(self, path: str | Path | None = None, *, notification_adapters=None) -> None:
+    def __init__(self, path: str | Path | None = None, *, notification_adapters=None,
+                 keepalive: bool = False) -> None:
         from webapp.notifications import channel_registry
         self.notification_adapters = channel_registry(notification_adapters)
         configured = os.environ.get("TAXPEARLS_DB")
@@ -156,33 +157,65 @@ class Store:
             sensitive_storage.migrate(db, self._field_codec)
             deployment.install(db, self.deployment, self._field_codec)
         self._fields_ready = True
+        self._keepalive = None
+        if keepalive:
+            self._open_keepalive()
+
+    def _open_keepalive(self) -> None:
+        # 哨兵空闲连接（仅长生命周期服务实例启用）：保住 WAL 的 -shm/-wal 不被
+        # "最后一个连接关闭即删除"的机制反复删建——该删建与并发连接的映射重叠，
+        # 在 Windows 上以 SQLITE_READONLY 的面目偶发打断写事务（每请求开关连接
+        # 的模式放大此窗口；tests/test_storage_concurrency 与 keep-alive 对照实验
+        # 守护）。空闲哨兵不持文件锁、不阻塞任何读写；服务退出 close() 后 WAL
+        # 正常合并，关闭服务后的主库文件备份不受影响。测试与短命脚本不开哨兵，
+        # 避免常驻句柄妨碍 TemporaryDirectory 清理。
+        self._keepalive = sqlite3.connect(self.path, timeout=10,
+                                          factory=sensitive_storage.Connection)
+        try:
+            sensitive_storage.attach(self._keepalive, self._field_codec)
+            self._keepalive.execute("SELECT 1").fetchone()
+        except BaseException:
+            self._keepalive.close()
+            self._keepalive = None
+            raise
+
+    def close(self) -> None:
+        """关闭哨兵连接；服务正常退出时调用可确保 WAL 合并回主库文件。"""
+        ka = getattr(self, "_keepalive", None)
+        if ka is not None:
+            self._keepalive = None
+            ka.close()
+
+    def __del__(self):
+        # 引用计数归零即释放哨兵句柄：测试中被替换的 Store、离开作用域的
+        # 短命实例都靠这里即时归还文件句柄（Windows 下占用句柄会妨碍
+        # TemporaryDirectory 清理）。解释器关闭期的异常一律吞掉。
+        try:
+            self.close()
+        except Exception:
+            pass
 
     @contextmanager
     def connect(self):
-        # Windows 上 WAL 库的多连接并发写会以 SQLITE_READONLY 的面目偶发失败
-        # （-shm 映射竞态；实测 4 线程 x30 次并发写失败 2 次，加锁后全过）。
-        # 锁由此统一下沉到连接层串行化库访问：教学线等新模块的写路径无须
-        # 各自加锁；既有写方法中的 self._lock 为可重入 RLock，双重加锁无死锁。
-        with self._lock:
-            db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
-            try:
-                sensitive_storage.attach(db, self._field_codec)
-                if not self._fields_ready:
-                    db.row_factory = sqlite3.Row
-                else:
-                    sensitive_storage.verify_state(db, self._field_codec)
-                    deployment.verify(db, self.deployment, self._field_codec, require_bound=True)
-                db.execute("PRAGMA foreign_keys=ON")
-                # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
-                # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
-                # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
-                yield db
-                db.commit()
-            except Exception:
-                db.rollback()
-                raise
-            finally:
-                db.close()
+        db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
+        try:
+            sensitive_storage.attach(db, self._field_codec)
+            if not self._fields_ready:
+                db.row_factory = sqlite3.Row
+            else:
+                sensitive_storage.verify_state(db, self._field_codec)
+                deployment.verify(db, self.deployment, self._field_codec, require_bound=True)
+            db.execute("PRAGMA foreign_keys=ON")
+            # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
+            # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
+            # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def _init_schema(self) -> None:
         from webapp.schema import initialize
