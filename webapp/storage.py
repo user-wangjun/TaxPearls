@@ -132,7 +132,12 @@ from src.snapshots import serialize_dataset, deserialize_dataset, serialize_find
 class Store:
     """Small SQLite repository with explicit organization and ownership checks."""
 
-    def __init__(self, path: str | Path | None = None, *, notification_adapters=None) -> None:
+    # 模块级共享锁：同进程所有 Store 实例（含指向同一库文件的多个实例）串行化库访问。
+    # 实例级锁无法保护跨实例并发；跨进程部署无此场景（单进程单实例服务）。
+    _LOCK = RLock()
+
+    def __init__(self, path: str | Path | None = None, *, notification_adapters=None,
+                 keepalive: bool = False) -> None:
         from webapp.notifications import channel_registry
         self.notification_adapters = channel_registry(notification_adapters)
         configured = os.environ.get("TAXPEARLS_DB")
@@ -140,7 +145,7 @@ class Store:
         # 相对路径一律锚定项目根，与启动时的工作目录无关（防止在子目录启动时误建空库）。
         self.path = p if p.is_absolute() else (ROOT / p).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._lock = RLock()
+        self._lock = Store._LOCK
         self._field_codec = sensitive_storage.Codec(sensitive_storage.configured_key())
         self.deployment = deployment.configured()
         self._fields_ready = False
@@ -152,6 +157,43 @@ class Store:
             sensitive_storage.migrate(db, self._field_codec)
             deployment.install(db, self.deployment, self._field_codec)
         self._fields_ready = True
+        self._keepalive = None
+        if keepalive:
+            self._open_keepalive()
+
+    def _open_keepalive(self) -> None:
+        # 哨兵空闲连接（仅长生命周期服务实例启用）：保住 WAL 的 -shm/-wal 不被
+        # "最后一个连接关闭即删除"的机制反复删建——该删建与并发连接的映射重叠，
+        # 在 Windows 上以 SQLITE_READONLY 的面目偶发打断写事务（每请求开关连接
+        # 的模式放大此窗口；tests/test_storage_concurrency 与 keep-alive 对照实验
+        # 守护）。空闲哨兵不持文件锁、不阻塞任何读写；服务退出 close() 后 WAL
+        # 正常合并，关闭服务后的主库文件备份不受影响。测试与短命脚本不开哨兵，
+        # 避免常驻句柄妨碍 TemporaryDirectory 清理。
+        self._keepalive = sqlite3.connect(self.path, timeout=10,
+                                          factory=sensitive_storage.Connection)
+        try:
+            sensitive_storage.attach(self._keepalive, self._field_codec)
+            self._keepalive.execute("SELECT 1").fetchone()
+        except BaseException:
+            self._keepalive.close()
+            self._keepalive = None
+            raise
+
+    def close(self) -> None:
+        """关闭哨兵连接；服务正常退出时调用可确保 WAL 合并回主库文件。"""
+        ka = getattr(self, "_keepalive", None)
+        if ka is not None:
+            self._keepalive = None
+            ka.close()
+
+    def __del__(self):
+        # 引用计数归零即释放哨兵句柄：测试中被替换的 Store、离开作用域的
+        # 短命实例都靠这里即时归还文件句柄（Windows 下占用句柄会妨碍
+        # TemporaryDirectory 清理）。解释器关闭期的异常一律吞掉。
+        try:
+            self.close()
+        except Exception:
+            pass
 
     @contextmanager
     def connect(self):
