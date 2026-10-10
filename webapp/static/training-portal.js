@@ -1,7 +1,8 @@
 /* 考证备考学生端（FR-K01/K02）：证书目录、学习目标与考试倒计时。 */
 "use strict";
 
-const state = { student: null, certificates: [], goals: [], kps: [], attempt: null };
+const state = { student: null, certificates: [], goals: [], kps: [], attempt: null,
+                profile: null, pfCert: null };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -153,6 +154,7 @@ async function refresh() {
   renderGoals();
   renderCerts();
   await refreshPractice().catch((err) => flash(err.message, true));
+  await refreshProfile().catch(() => {});
 }
 
 /* ---------- 自主练习（FR-K05/K06） ---------- */
@@ -528,6 +530,114 @@ document.getElementById("wb-body").addEventListener("click", async (event) => {
                     knowledge_point_id: btn.dataset.kp || null,
                     rule_id: btn.dataset.rule || null }).catch((err) => flash(err.message, true));
     document.getElementById("pr-attempt").scrollIntoView({ behavior: "smooth" });
+  }
+});
+
+/* ---------- 学习档案与知识库 ---------- */
+
+function renderProfile() {
+  const p = state.profile;
+  const sum = document.getElementById("pf-summary");
+  const list = document.getElementById("pf-list");
+  if (!p) {
+    sum.innerHTML = `<p class="muted">选择证书后加载档案。</p>`;
+    list.innerHTML = "";
+    return;
+  }
+  const s = p.summary;
+  const pct = (v) => (v === null || v === undefined) ? "—" : `${(v * 100).toFixed(0)}%`;
+  sum.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
+    <span class="badge">覆盖 ${s.covered_kps}/${s.total_kps} 知识点（${pct(s.coverage_rate)}）</span>
+    <span class="badge">较熟练 ${s.proficient_kps} 个</span>
+    <span class="badge gray">作答 ${s.attempts} 次 · 正确率 ${pct(s.accuracy)}</span>
+    <span class="badge gray">跳过 ${s.skipped}（不计入正确率）</span>
+    <span class="badge gray">笔记 ${s.notes} · 提问 ${s.tutor_questions}</span>
+    ${p.goal ? countdownBadge(p.goal.countdown) : ""}
+  </div>`;
+  if (!p.knowledge_points.length) {
+    list.innerHTML = `<p class="muted">该证书下暂无知识点，等待教师按考纲配置后即可记录。</p>`;
+    return;
+  }
+  const MASTERY_BADGE = { proficient: "badge", consolidating: "badge warn",
+                          acquainted: "badge gray", unstarted: "badge gray" };
+  list.innerHTML = p.knowledge_points.map((k) => {
+    const m = k.mastery;
+    const noteBlock = k.note
+      ? `<div class="detail ok" style="white-space:pre-wrap;">${esc(k.note.content)}</div>
+         <div class="muted">笔记更新于 ${esc((k.note.updated_at || "").slice(0, 16).replace("T", " "))}</div>`
+      : `<div class="muted">暂无笔记</div>`;
+    const last = m.last_scored_at ? ` · 最近作答 ${esc(m.last_scored_at.slice(0, 10))}` : "";
+    const flags = [];
+    if (m.attempts && m.last_perfect === false) flags.push("最近一次未满分（需复核）");
+    if (k.wrong) flags.push(`错题 ${k.wrong}`);
+    if (k.tutor_questions) flags.push(`提问 ${k.tutor_questions}`);
+    return `<div class="item" id="pf-${esc(k.id)}">
+      <div class="item-head">
+        <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
+          ${k.subject ? `<span class="chip">${esc(k.subject)}</span>` : ""}</div>
+        <span class="${MASTERY_BADGE[m.level]}" title="作答 ${m.attempts} 次 · 正确率 ${pct(m.accuracy)} · 最近${m.last_perfect === true ? "满分" : m.last_perfect === false ? "未满分" : "无作答"}">${esc(m.label)}</span>
+      </div>
+      <div class="muted">作答 ${m.attempts} 次 · 正确率 ${pct(m.accuracy)} · 满分 ${m.perfect}${last}${flags.length ? ` · ${flags.map(esc).join(" · ")}` : ""}</div>
+      ${noteBlock}
+      <div class="actions">
+        <button class="small" data-act="edit-note" data-id="${esc(k.id)}">${k.note ? "改笔记" : "写笔记"}</button>
+      </div>
+      <div class="inline-form" data-role="note-edit" hidden>
+        <textarea data-role="note-text" style="min-height:90px;">${esc(k.note ? k.note.content : "")}</textarea>
+        <div class="actions">
+          <button class="small primary" data-act="save-note" data-id="${esc(k.id)}">保存笔记</button>
+          <button class="small" data-act="cancel-note" data-id="${esc(k.id)}">取消</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+}
+
+async function refreshProfile() {
+  const sel = document.getElementById("pf-cert");
+  sel.innerHTML = state.certificates.map((c) =>
+    `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+  if (!state.pfCert || !state.certificates.some((c) => c.id === state.pfCert)) {
+    const goal = state.goals.find((g) => g.status === "active" && g.certificate);
+    state.pfCert = goal ? goal.certificate.id
+      : (state.certificates[0] ? state.certificates[0].id : null);
+  }
+  if (state.pfCert) sel.value = state.pfCert;
+  if (!state.pfCert) { state.profile = null; renderProfile(); return; }
+  try {
+    state.profile = (await api(`/api/training/my/profile?certificate_id=${state.pfCert}`)).profile;
+  } catch (err) {
+    flash(err.message, true);
+    state.profile = null;
+  }
+  renderProfile();
+}
+
+document.getElementById("load-profile").addEventListener("click", () => refreshProfile());
+
+document.getElementById("pf-cert").addEventListener("change", (event) => {
+  state.pfCert = event.target.value || null;
+  refreshProfile();
+});
+
+document.getElementById("pf-list").addEventListener("click", async (event) => {
+  const btn = event.target.closest("button[data-act]");
+  if (!btn) return;
+  const scope = document.getElementById(`pf-${btn.dataset.id}`);
+  if (!scope) return;
+  const act = btn.dataset.act;
+  if (act === "edit-note") {
+    scope.querySelector("[data-role=note-edit]").hidden = false;
+  } else if (act === "cancel-note") {
+    scope.querySelector("[data-role=note-edit]").hidden = true;
+  } else if (act === "save-note") {
+    const content = scope.querySelector("[data-role=note-text]").value;
+    try {
+      await api(`/api/training/my/knowledge-points/${btn.dataset.id}/note`,
+                { method: "PUT", body: { content } });
+      flash("笔记已保存（仅本人可见，教师无访问入口）。");
+      await refreshProfile();
+    } catch (err) { flash(err.message, true); }
   }
 });
 

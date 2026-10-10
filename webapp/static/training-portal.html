@@ -36,6 +36,8 @@
   .goal, .cert { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
                  margin-bottom: 10px; }
   .goal-head, .cert-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
+  .item-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
   .inline-form { border-top: 1px dashed var(--line); margin-top: 10px; padding-top: 10px; }
   .error { color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 18px; }
@@ -105,6 +107,16 @@
       <h2>证书目录</h2>
       <p class="muted" style="margin-top:-6px;">选择要考的证书，设定考试日期后即可开始备考倒计时。</p>
       <div id="certs"></div>
+    </div>
+
+    <div class="card" id="profile-card">
+      <h2>学习档案与知识库
+        <select id="pf-cert" style="width:auto;min-width:200px;"></select>
+        <button class="small" id="load-profile">刷新档案</button>
+      </h2>
+      <p class="muted" style="margin-top:-6px;">按知识点汇总历次作答、错题、笔记与答疑提问，仅本人可见。掌握程度为确定性规则：未开始 / 初识（1-2 次）/ 巩固中 / 较熟练（≥3 次且正确率≥80% 且最近一次满分）；一次重练答对不代表长期掌握。</p>
+      <div id="pf-summary"></div>
+      <div id="pf-list"></div>
     </div>
   </section>
 </main>

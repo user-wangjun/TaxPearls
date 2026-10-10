@@ -441,6 +441,17 @@ def initialize(store) -> None:
                 ON student_goal(student_id, certificate_id) WHERE status = 'active';  -- 同证书仅一个进行中目标
             CREATE INDEX IF NOT EXISTS idx_student_goal_student
                 ON student_goal(student_id, status);
+            CREATE TABLE IF NOT EXISTS student_kp_notes (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键；本人隔离）
+                knowledge_point_id TEXT NOT NULL REFERENCES knowledge_point(id),  -- 知识点（外键）
+                content TEXT NOT NULL,                    -- 笔记正文（学生个人知识库，按知识点一卡）
+                created_at TEXT NOT NULL,                 -- 创建时间
+                updated_at TEXT NOT NULL,                 -- 最近更新时间
+                UNIQUE(student_id, knowledge_point_id)    -- 每生每知识点一条，保存即覆盖
+            );
+            CREATE INDEX IF NOT EXISTS idx_student_kp_notes_student
+                ON student_kp_notes(student_id, updated_at DESC);
             CREATE TABLE IF NOT EXISTS training_student_sessions (
                 token_hash TEXT PRIMARY KEY,              -- 会话令牌 SHA-256（与主站 sessions 同惯例）
                 student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键）
