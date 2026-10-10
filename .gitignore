@@ -65,6 +65,9 @@ backups/
 *.tpbackup
 .playwright-cli/
 
+# WorkBuddy 本地工作数据（记忆、技能、会话状态，仅本机）
+.workbuddy/
+
 # 本地数据库、备份与私密凭据
 *.db
 *.db-wal

@@ -63,8 +63,9 @@ class ClientArchiveTests(unittest.TestCase):
                             data={"client_id": mismatch.json()["id"]},
                             files={"file": (SAMPLE.name, stream, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
                         )
-                    self.assertEqual(response.status_code, 422)
-                    self.assertIn("纳税人识别号", response.text)
+                    self.assertEqual(response.status_code, 409)
+                    self.assertIn("阻止检测", response.text)
+                    self.assertEqual(client.get('/api/dashboard').json()['records'], [])
 
                     created = client.post("/api/clients", json={
                         "name": dataset.company.name,

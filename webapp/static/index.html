@@ -5,6 +5,63 @@
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>税海拾珠 · 税务风险审计</title>
+<script id="workspaceAppearance">
+"use strict";
+/* Apply the saved appearance before styles load; no account/server data is stored. */
+(() => {
+  const key = "taxpearls.theme", choices = ["light", "dark", "system"];
+  const system = window.matchMedia?.("(prefers-color-scheme: dark)");
+  let preference = "light";
+  try { const saved = localStorage.getItem(key); if (choices.includes(saved)) preference = saved; } catch (_) {}
+  function apply() {
+    document.documentElement.dataset.theme = preference === "system" ? (system?.matches ? "dark" : "light") : preference;
+    document.documentElement.dataset.themePreference = preference;
+    const labels = {light:"亮色", dark:"暗色", system:"跟随系统"};
+    const button = document.getElementById("themeCycle");
+    const next = choices[(choices.indexOf(preference) + 1) % choices.length];
+    if (button) {
+      const hint = "当前：" + labels[preference] + "；点击切换为" + labels[next];
+      button.setAttribute("aria-label", hint);
+      button.title = hint;
+      button.dataset.themeChoice = preference;
+    }
+    document.querySelectorAll("#themeOptions [data-theme-select]").forEach(option => {
+      option.setAttribute("aria-pressed", String(option.dataset.themeSelect === preference));
+    });
+    const label = document.getElementById("themeLabel");
+    if (label) label.textContent = labels[preference];
+    document.querySelectorAll("#themeCycle [data-theme-icon]").forEach(icon => {
+      icon.toggleAttribute("hidden", icon.dataset.themeIcon !== preference);
+    });
+  }
+  function select(value) {
+    if (!choices.includes(value)) return;
+    preference = value;
+    try { localStorage.setItem(key, value); } catch (_) {}
+    apply();
+  }
+  function mount() {
+    document.querySelectorAll("#themeOptions [data-theme-select]").forEach(option => {
+      option.addEventListener("click", () => select(option.dataset.themeSelect));
+    });
+    document.getElementById("themeCycle")?.addEventListener("click", () => {
+      select(choices[(choices.indexOf(preference) + 1) % choices.length]);
+    });
+    apply();
+  }
+  apply();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount, {once:true});
+  else mount();
+  const systemChanged = () => { if (preference === "system") apply(); };
+  if (system?.addEventListener) system.addEventListener("change", systemChanged);
+  else system?.addListener?.(systemChanged);
+  window.addEventListener("storage", event => {
+    if (event.key !== key && event.key !== null) return;
+    preference = choices.includes(event.newValue) ? event.newValue : "light";
+    apply();
+  });
+})();
+</script>
 <link rel="icon" type="image/svg+xml" href="/logo">
 <style>
   :root {
@@ -138,34 +195,6 @@
 
   footer { border-top: 1px solid var(--line); padding: 22px 0 40px; color: var(--ink-3); font-size: 12px; line-height: 1.9; }
 
-  .auth-screen { min-height:100vh; display:grid; grid-template-columns:minmax(0,1.2fr) minmax(480px,1fr); padding:0; overflow:hidden; background:#f1f4f9; }
-  .auth-visual { position:relative; min-height:100vh; overflow:hidden; color:#fff; isolation:isolate; background:linear-gradient(180deg,#06162f0a,#03102366),url("/auth-ocean-data-v1.webp") center 43% / cover no-repeat,#06172f; }
-  .auth-visual::after { content:""; position:absolute; inset:0; z-index:1; pointer-events:none; background:linear-gradient(180deg,#0310260d 18%,#0310274d 54%,#020d20d9 100%),linear-gradient(90deg,#020d2052,transparent 48%,#020d2024); }
-  .auth-canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
-  .auth-pearl { position:absolute; z-index:2; left:55%; top:24%; width:108px; aspect-ratio:1; pointer-events:none; opacity:1; transform:translateY(0) scale(1); animation:auth-pearl-float 7s ease-in-out infinite; filter:drop-shadow(0 18px 30px #020912a6); }
-  .auth-pearl > img { position:relative; z-index:2; width:100%; height:100%; display:block; object-fit:contain; filter:saturate(.92) contrast(1.03); }
-  .auth-pearl::before,.auth-pearl::after { content:""; position:absolute; z-index:1; left:50%; top:66%; width:78%; height:22%; border:1px solid #eed59b80; border-radius:50%; opacity:0; transform:translate(-50%,-50%) scale(.4); animation:auth-pearl-ripple 7s ease-out infinite; }
-  .auth-pearl::after { animation-delay:.42s; }
-  .auth-pearl-caption { position:absolute; left:calc(100% + 12px); top:50%; width:max-content; padding:6px 10px; border:1px solid #f2dda73d; border-radius:999px; background:#071a35c7; color:#f2dfaf; font-size:11px; font-weight:600; letter-spacing:.08em; opacity:.88; transform:translateY(-50%); box-shadow:0 10px 24px #020b1866; animation:auth-pearl-caption 7s ease-in-out infinite; }
-  .auth-visual-mark { position:absolute; z-index:3; top:34px; left:42px; display:flex; align-items:center; gap:14px; color:#dbe9fb; font-size:13px; letter-spacing:.16em; }
-  .auth-visual-mark img { width:126px; height:auto; display:block; filter:drop-shadow(0 10px 24px #020b1899); }
-  .auth-visual-copy { position:absolute; z-index:3; left:52px; right:44px; bottom:50px; max-width:650px; animation:auth-copy-in .7s ease-out both; }
-  .auth-visual-kicker { display:inline-flex; padding:7px 11px; border:1px solid #ffffff2e; border-radius:999px; background:#ffffff12; color:#e7f1ff; font-size:11px; font-weight:700; letter-spacing:.14em; }
-  .auth-visual-copy h1 { margin-top:18px; max-width:620px; color:#fff; font-size:clamp(30px,3.5vw,48px); line-height:1.24; letter-spacing:.02em; text-shadow:0 8px 30px #0008; }
-  .auth-visual-copy p { margin-top:14px; max-width:590px; color:#d2def0; font-size:15px; line-height:1.8; text-shadow:0 4px 18px #0008; }
-  .auth-proof { display:flex; align-items:center; gap:10px; margin-top:22px; color:#bdcee4; font-size:12px; }
-  .auth-proof span { padding:6px 10px; border:1px solid #ffffff20; border-radius:999px; background:#ffffff0d; }
-  .auth-proof i { color:#d7aa51; font-style:normal; }
-  .auth-entry { min-height:100vh; display:grid; padding:0; background:radial-gradient(circle at 85% 10%,#fff 0%,transparent 28%),linear-gradient(160deg,#f8fafc 0%,#edf2f7 100%); }
-  .auth-card { position:relative; width:100%; min-width:0; min-height:100vh; overflow:hidden; display:flex; flex-direction:column; align-items:center; justify-content:center; background:#fffffffa; border:0; border-left:1px solid #dbe2ec; border-radius:0; padding:32px clamp(32px,4vw,64px); box-shadow:-18px 0 60px #15233d16; animation:auth-card-in .55s cubic-bezier(.22,.8,.25,1) both; }
-  .auth-card > * { width:100%; max-width:440px; }
-  .auth-card::before { content:""; position:absolute; inset:0 0 auto; height:4px; background:linear-gradient(90deg,#8c6507,#e2b65d,#8c6507); }
-  .auth-brand { display:flex; align-items:center; gap:18px; margin:0 0 24px; }
-  .auth-brand img { width:72px; flex-shrink:0; }
-  .auth-brand-txt { min-width:0; }
-  .auth-brand h2 { font-size:26px; line-height:1.4; }
-  .auth-brand p { color:var(--ink-2); font-size:13px; line-height:1.6; margin-top:6px; }
-  .auth-brand p:empty { display:none; }
   .field { margin:12px 0; }
   .field label { display:block; font-size:12px; color:var(--ink-2); margin-bottom:6px; }
   .field input,.field select,.field textarea { width:100%; border:1px solid var(--line); border-radius:6px; padding:10px 12px; font:inherit; background:#fff; transition:border-color .16s,box-shadow .16s,background .16s; }
@@ -207,9 +236,30 @@
   .auth-card .btn::after { content:""; position:absolute; inset:0; transform:translateX(-120%); background:linear-gradient(110deg,transparent 25%,#ffffff38 50%,transparent 75%); transition:transform .55s ease; }
   .auth-card .btn:hover { transform:translateY(-1px); box-shadow:0 16px 32px #14233f3d; }
   .auth-card .btn:hover::after { transform:translateX(120%); }
-  @keyframes auth-card-in { from { opacity:0; transform:translateY(18px) scale(.985); } to { opacity:1; transform:none; } }
   .auth-link { display:block; background:none; border:none; color:var(--navy); cursor:pointer; font-size:14px; line-height:1.5; padding:0; margin:14px auto 0; text-decoration:underline; text-underline-offset:3px; }
   .auth-link:hover { color:var(--navy-2); }
+  .auth-secondary { display:flex; flex-direction:column; gap:12px; margin-top:18px; }
+  .auth-secondary .auth-link { margin:0; }
+  .auth-secondary > .auth-link { align-self:center; }
+  .auth-secondary-row { display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 16px; }
+  .auth-secondary-row .auth-link { text-align:left; }
+  .auth-back-button { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:46px; padding:10px 16px; border:1px solid #c9d4e2; border-radius:8px; background:#f4f7fb; color:var(--navy); font:inherit; font-size:14px; line-height:1.5; cursor:pointer; box-shadow:0 2px 5px #14233f08; transition:background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s cubic-bezier(.2,.8,.2,1); }
+  .auth-back-button svg { flex:none; width:18px; height:18px; transition:transform .18s cubic-bezier(.2,.8,.2,1); }
+  .auth-back-button:hover { background:#eaf0f7; border-color:#9cacc3; box-shadow:0 7px 16px #14233f1a; transform:translateY(-2px); }
+  .auth-back-button:hover svg { transform:translateX(-4px); }
+  .auth-back-button:active { background:#dfe8f3; border-color:#7c90ad; box-shadow:0 1px 3px #14233f14; transform:translateY(0) scale(.985); transition-duration:.08s; }
+  .auth-back-button:active svg { transform:translateX(-2px); }
+  .auth-back-button:focus-visible { outline:2px solid var(--gold-2); outline-offset:2px; }
+  .auth-signup-card { position:relative; display:flex; align-items:center; gap:14px; width:100%; padding:12px 16px 12px 20px; text-align:left; font:inherit; cursor:pointer; background:#fffdf6; border:1px solid #c9a44a; border-radius:12px; transition:border-color .16s, box-shadow .16s, transform .16s; }
+  .auth-signup-card::before { content:""; position:absolute; left:0; top:10px; bottom:10px; width:4px; border-radius:0 4px 4px 0; background:linear-gradient(180deg,#8c6507,#e2b65d); }
+  .auth-signup-card:hover { border-color:#b8860b; box-shadow:0 10px 24px #8c65071f; transform:translateY(-1px); }
+  .auth-signup-card:focus-visible { outline:2px solid var(--gold-2); outline-offset:2px; }
+  .auth-signup-icon { flex:none; width:52px; height:44px; object-fit:contain; filter:drop-shadow(0 4px 8px #8c65072e); }
+  .auth-signup-body { flex:1; min-width:0; }
+  .auth-signup-body strong { display:block; color:var(--navy); font-size:16px; line-height:1.45; letter-spacing:.03em; }
+  .auth-signup-body small { display:block; margin-top:4px; color:#79839a; font-size:13px; line-height:1.6; }
+  .auth-signup-arrow { flex:none; color:#a8790a; font-size:17px; transition:transform .16s; }
+  .auth-signup-card:hover .auth-signup-arrow { transform:translateX(4px); }
   /* .auth-status 已由全局 toast 取代 */
   .auth-step { font-size:13px; color:#8a93a3; margin:12px 0 0; letter-spacing:.02em; }
   .auth-inline-link { background:none; border:none; color:var(--navy); cursor:pointer; font-size:inherit; padding:0; text-decoration:underline; text-underline-offset:3px; }
@@ -221,20 +271,6 @@
   .captcha-image { flex-shrink:0; min-width:96px; height:44px; display:block; background:#f4f7fb; border:1px solid #c9d4e2; border-radius:10px; cursor:pointer; user-select:none; }
   .captcha-refresh { flex-shrink:0; width:44px; height:44px; border:1px solid #c9d4e2; border-radius:10px; background:#f4f7fb; color:var(--navy); font-size:18px; cursor:pointer; }
   .captcha-refresh:hover { border-color:#c3942d; background:#fffdf8; }
-  @keyframes auth-copy-in { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
-  @keyframes auth-pearl-float {
-    0%,100% { transform:translateY(0) scale(1); filter:drop-shadow(0 18px 30px #020912a6); }
-    50% { transform:translateY(-7px) scale(1.025); filter:drop-shadow(0 22px 36px #d6a84b40); }
-  }
-  @keyframes auth-pearl-ripple {
-    0%,18% { opacity:0; transform:translate(-50%,-50%) scale(.35); }
-    24% { opacity:.5; }
-    58%,100% { opacity:0; transform:translate(-50%,-50%) scale(2.1); }
-  }
-  @keyframes auth-pearl-caption {
-    0%,100% { opacity:.7; transform:translate(0,-50%); }
-    50% { opacity:1; transform:translate(3px,-50%); }
-  }
   .top-tools { display:flex; align-items:center; gap:10px; font-size:12px; }
   .top-tools button { color:#fff; background:#ffffff18; border:1px solid #ffffff38; padding:6px 10px; border-radius:5px; cursor:pointer; }
   .nav { display:none; gap:8px; margin-bottom:20px; flex-wrap:wrap; }
@@ -294,11 +330,6 @@
   }
   @media (max-width: 900px) {
     .auth-screen { position:relative; display:block; min-height:100vh; overflow:hidden; background:#071b39; }
-    .auth-visual { position:absolute; inset:0; min-height:100%; height:100%; max-height:none; }
-    .auth-canvas { opacity:.5; }
-    .auth-visual-mark,.auth-visual-copy { display:none; }
-    .auth-pearl { left:auto; right:22px; top:34px; width:68px; }
-    .auth-pearl-caption { display:none; }
     .auth-entry { position:relative; z-index:2; min-height:100vh; place-items:center; padding:28px 24px; background:linear-gradient(180deg,#071b393d,#071b398f); }
     .auth-card { width:min(500px,100%); min-height:auto; border:1px solid #dbe2ec; border-radius:24px; padding:34px; box-shadow:0 28px 80px #020b186e; }
   }
@@ -313,16 +344,23 @@
     .captcha-image { width:112px; min-width:112px; object-fit:contain; }
     .auth-card .captcha-row input { padding-inline:8px; }
     .captcha-refresh { width:36px; }
+    .auth-signup-card { gap:12px; padding:11px 14px 11px 16px; border-radius:12px; }
+    .auth-signup-icon { width:44px; height:38px; }
+    .auth-signup-body strong { font-size:15px; }
+    .auth-signup-body small { font-size:12.5px; }
   }
   @media (max-width: 360px) {
     .auth-brand { flex-direction:column; align-items:flex-start; gap:12px; }
     .auth-card { padding-inline:18px; }
   }
   @media (prefers-reduced-motion: reduce) {
-    .auth-card,.auth-visual-copy { animation:none; }
+    .auth-card { animation:none; }
     .auth-card .btn,.auth-card .btn::after { transition:none; }
-    .auth-pearl { opacity:.82; transform:none; animation:none; }
-    .auth-pearl::before,.auth-pearl::after,.auth-pearl-caption { display:none; animation:none; }
+    .auth-signup-card,.auth-signup-card .auth-signup-arrow { transition:none; }
+    .auth-back-button,.auth-back-button svg { transition:none; }
+    .auth-back-button:hover,.auth-back-button:active,.auth-back-button:hover svg,.auth-back-button:active svg { transform:none; }
+    .auth-signup-card:hover { transform:none; }
+    .auth-signup-card:hover .auth-signup-arrow { transform:none; }
   }
 
   .material-review { margin:18px 0; padding:20px; background:white; border:1px solid var(--line); border-radius:12px; }
@@ -353,36 +391,68 @@
   .material-table th:nth-child(3) { width:70px; }
   .material-card pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:auto; background:var(--bg); padding:12px; font-size:12px; }
   .material-check { display:block; margin:12px 0; line-height:1.8; }
+  label .req { color: var(--high); margin-left: 3px; font-weight: 600; }
+
+  /* 上传设置卡片：去掉 fieldset 默认边框，按全站 field 控件与分组卡片组织 */
+  #uploadScope { border:0; padding:0; margin:0; min-width:0; }
+  #uploadScope:disabled { opacity:.6; }
+  #uploadScope legend { padding:0; font-size:17px; font-weight:600; color:var(--ink); margin-bottom:14px; }
+  #uploadScope .muted { margin-top:10px; }
+  #uploadScope details { margin:14px 0; border:1px solid var(--line); border-radius:10px; background:#f8fafd; }
+  #uploadScope summary { list-style:none; display:flex; align-items:center; gap:9px; padding:13px 16px; border-radius:10px; cursor:pointer; user-select:none; font-size:15px; font-weight:600; color:#2c4a78; }
+  #uploadScope summary::-webkit-details-marker { display:none; }
+  #uploadScope summary::before { content:"▸"; flex:none; font-size:11px; color:#5b8ad3; transition:transform .18s ease; }
+  #uploadScope details[open] summary::before { transform:rotate(90deg); }
+  #uploadScope summary:hover { background:#eef3fb; }
+  #uploadScope details[open] .material-company { padding:2px 16px 6px; margin:0; }
+  .upload-extraction { margin-top:20px; padding-top:18px; border-top:1px solid var(--line); }
+  .upload-extraction .field { margin:0; max-width:560px; }
+  .upload-extraction .muted { margin-top:10px; }
+
+  /* 机构总览控制行：控件与按钮等高，单字段不再横向拉伸占满整行 */
+  #orgReportPanel .row .field { flex:0 1 360px; min-width:220px; }
+  #orgReportPanel .row .field select { height:48px; min-height:48px; padding-top:0; padding-bottom:0; }
+  #orgReportPanel .row .btn { min-height:48px; }
+  #orgReportPanel .row .btn.pdf { margin-left:auto; }
+
+  /* 卡片内控制行恢复纵向节奏：field 外边距被工作台样式清零后，行与行、行与按钮会贴死 */
+  .sheet .row { margin-block:12px; }
+
+  /* 报告原件核验：列宽按内容分配，文件选择与状态提示与全站控件同风格 */
+  #reportVerification > * { max-width:960px; }
+  #reportVerification .verify-fields .field:nth-child(1) { flex:2.4; min-width:260px; }
+  #reportVerification .verify-fields .field:nth-child(2) { flex:1; min-width:150px; }
+  #reportVerification .verify-fields .field:nth-child(3) { flex:1.6; min-width:230px; }
+  #reportVerification input[type=file] { display:flex; align-items:center; gap:10px; padding:5px 12px; color:var(--ink-2); }
+  #reportVerification input[type=file]::file-selector-button { flex:none; border:0; border-radius:8px; background:#eaf1ff; color:#2865e8; padding:8px 14px; font-family:inherit; font-size:14px; cursor:pointer; transition:background .16s; }
+  #reportVerification input[type=file]::file-selector-button:hover { background:#dbe7fc; }
+  #reportVerification .verify-actions .btn { min-height:48px; }
+  #reportVerification #verificationStatus.verify-ok { color:#18835b; }
+  #reportVerification #verificationStatus.verify-bad { color:var(--high); }
+  #reportVerification #verificationDetails:not(:empty) { margin-top:12px; padding:12px 14px; border:1px solid var(--line); border-radius:10px; background:#f8fafd; font-size:13px; line-height:1.9; color:var(--ink-2); }
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=reports-training">
+<link rel="stylesheet" href="/workspace.css?v=20261009-workspace-pr-41">
+<link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
+<link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
+<link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
 </head>
 <body>
 <section class="auth-screen" id="authScreen">
-  <aside class="auth-visual" aria-label="税务证据网络动态展示">
-    <canvas class="auth-canvas" id="authCanvas" aria-hidden="true"></canvas>
-    <div class="auth-pearl" aria-hidden="true">
-      <img src="/auth-pearl-real-v1.webp" alt="">
-      <span class="auth-pearl-caption">风险线索已定位</span>
-    </div>
-    <div class="auth-visual-mark"><img src="/logo" alt="税海拾珠"><span>AI 税务审计平台</span></div>
-    <div class="auth-visual-copy">
-      <span class="auth-visual-kicker">TaxPearls</span>
-      <h1>从浩瀚数据中，拾取每一条风险线索</h1>
-      <p>连接账簿、发票、申报与资金证据，让每一条风险结论都有来源、有计算、有依据。</p>
-      <div class="auth-proof"><span>业务数据</span><i>→</i><span>交叉核验</span><i>→</i><span>风险线索</span></div>
-    </div>
-  </aside>
+  <canvas id="sceneCanvas" aria-hidden="true"></canvas>
+  <p id="oceanStatus" class="ocean-status" role="status" hidden></p>
+<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false" style="position:absolute;width:0;height:0;overflow:hidden"><defs><filter id="invite-alpha-clean" x="0" y="0" width="100%" height="100%" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncA type="linear" slope="1.111111" intercept="-.111111"/></feComponentTransfer></filter></defs></svg>
   <div class="auth-entry">
     <form class="auth-card" id="authForm" data-view="login" novalidate>
-      <div class="auth-brand"><img src="/logo" alt="税海拾珠"><div class="auth-brand-txt"><h2 id="authTitle">登录税海拾珠</h2><p class="auth-step" id="authStep"></p></div></div>
+      <div class="auth-brand"><img class="auth-logo" src="/logo" alt="税海拾珠" draggable="false"><div class="auth-brand-txt"><img class="brand-wordmark" src="/auth-wordmark.png" alt="税海拾珠" draggable="false"><span>TAXPEARLS</span></div></div>
+      <div class="auth-intro"><h2 id="authTitle">欢迎回来</h2><p id="authDescription">连接每一份证据，拾取每一条线索。</p><p class="auth-step" id="authStep"></p></div>
       <div id="viewLogin">
         <div class="field"><label for="loginUser" id="loginUserLabel">邮箱或用户名</label><input id="loginUser" name="username" autocomplete="username" inputmode="email" placeholder="name@example.com" required></div>
-        <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+        <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
       </div>
       <div class="auth-remember" id="loginRememberField">
-        <label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">在此设备保持登录 30 天</label>
+        <div class="auth-remember-row"><label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">保持登录 30 天</label><button type="button" class="auth-link" id="forgotLink">忘记密码？</button></div>
         <p id="loginRememberHint">公共电脑请勿勾选</p>
       </div>
       <div id="viewForgot" style="display:none">
@@ -395,22 +465,22 @@
       </div>
       <div id="viewEmailMagic" style="display:none"><p class="muted">仅在您本人刚刚发起邮箱登录、注册或密码重置时继续。链接须在发起请求的同一浏览器使用；若无效、已使用或过期，请返回重新申请。</p><p id="emailMagicStatus" role="status"></p></div>
       <div id="viewReset" style="display:none">
-        <div class="field"><label for="newPass">新密码</label><input id="newPass" type="password" autocomplete="new-password" required></div>
-        <div class="field"><label for="newPass2">确认新密码</label><input id="newPass2" type="password" autocomplete="new-password" required></div>
+        <div class="field"><label for="newPass">新密码</label><div class="pw-wrap"><input id="newPass" minlength="10" maxlength="128" type="password" autocomplete="new-password" required placeholder="设置新密码"><button type="button" class="pw-toggle" data-password="newPass" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+        <div class="field"><label for="newPass2">确认新密码</label><div class="pw-wrap"><input id="newPass2" minlength="10" maxlength="128" type="password" autocomplete="new-password" required placeholder="再次输入新密码"><button type="button" class="pw-toggle" data-password="newPass2" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
         <p class="muted" style="font-size:14px;margin-top:0">10–128 位，须包含大小写字母、数字、符号中的至少三类（空白不算符号）；不能使用常见弱口令或包含邮箱的 @ 前部分。重置成功后，此账号的所有登录状态将被注销。</p>
       </div>
       <div id="viewSignup" style="display:none">
         <div class="field" id="signupInviteField"><label for="signupCode">邀请码</label><input id="signupCode" maxlength="128" autocomplete="off" spellcheck="false" placeholder="平台或机构管理员提供" required></div>
         <div class="field"><label for="signupEmail">邮箱</label><input id="signupEmail" type="email" autocomplete="email" placeholder="name@example.com" required></div>
         <div class="auth-password-row">
-          <div class="field"><label for="signupPass">设置密码</label><input id="signupPass" type="password" autocomplete="new-password" aria-describedby="signupPasswordHint" required></div>
-          <div class="field"><label for="signupPass2">确认密码</label><input id="signupPass2" type="password" autocomplete="new-password" required></div>
+          <div class="field"><label for="signupPass">设置密码</label><div class="pw-wrap"><input id="signupPass" minlength="10" maxlength="128" type="password" autocomplete="new-password" aria-describedby="signupPasswordHint" required placeholder="设置你的密码"><button type="button" class="pw-toggle" data-password="signupPass" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+          <div class="field"><label for="signupPass2">确认密码</label><div class="pw-wrap"><input id="signupPass2" minlength="10" maxlength="128" type="password" autocomplete="new-password" required placeholder="再次输入密码"><button type="button" class="pw-toggle" data-password="signupPass2" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
         </div>
-        <p class="auth-help" id="signupPasswordHint">10–128 位，包含大小写字母、数字、符号中的至少三类（空白不算符号）；不能使用常见弱口令或包含邮箱的 @ 前部分。</p>
+        <p class="auth-help" id="signupPasswordHint">10–128 位，大小写字母、数字、符号至少包含三类。</p>
         <p class="auth-help" id="signupProofStatus" hidden>邮箱已验证，请设置密码完成注册；邀请凭证沿用发起验证时的绑定。</p>
         <div id="emailVerificationFields"><div class="field"><label for="captchaAnswer">人机验证</label>
           <div class="captcha-row">
-            <img class="captcha-image" id="captchaImage" alt="人机验证码加载中…" title="看不清？点击图片刷新">
+            <img class="captcha-image" id="captchaImage" alt="人机验证码加载中…" title="看不清？点击图片刷新" draggable="false">
             <input id="captchaAnswer" maxlength="4" placeholder="输入图中字符" autocomplete="off" spellcheck="false" autocapitalize="characters" required>
             <button type="button" class="captcha-refresh" id="captchaRefresh" title="换一张" aria-label="换一张">↻</button>
           </div>
@@ -420,188 +490,40 @@
             <input id="signupEmailCode" inputmode="numeric" maxlength="6" autocomplete="one-time-code" spellcheck="false" placeholder="6 位数字" required>
             <button type="button" class="btn-send" id="signupSendBtn" disabled>获取验证码</button>
           </div>
-          <p class="auth-help auth-verification-help" id="signupEmailHint">完成上方人机验证后获取验证码；10 分钟内有效，输错 5 次作废。</p>
+          <p class="auth-help auth-verification-help" id="signupEmailHint">验证码 10 分钟内有效，输错 5 次作废。</p>
         </div>
         </div>
       </div>
       <button class="btn" type="submit" id="authSubmit">登录</button>
-      <button type="button" class="auth-link" id="forgotLink">忘记密码？</button>
-      <button type="button" class="auth-link" id="emailLoginEntryLink">使用邮箱验证码 / 邮件链接登录</button>
-      <button type="button" class="auth-link" id="passwordLoginEntryLink">使用邮箱和密码登录</button>
-      <button type="button" class="auth-link" id="signupEntryLink">有邀请码？前往开户</button>
-      <button type="button" class="auth-link" id="backToLogin" style="display:none">← 返回密码登录</button>
+      <div class="auth-secondary">
+        <div class="auth-secondary-row">
+          <button type="button" class="auth-link" id="emailLoginEntryLink">使用邮箱验证码 / 邮件链接登录</button>
+          <button type="button" class="auth-link" id="passwordLoginEntryLink" style="display:none">密码登录</button>
+        </div>
+        <button type="button" class="auth-signup-card" id="signupEntryLink">
+          <img class="auth-signup-icon" src="/auth-signup-ticket-v1.png" alt="" draggable="false">
+          <span class="auth-signup-body">
+            <strong>受邀入驻</strong>
+            <small>从你的邀请码开始，让每一条风险结论有源可溯</small>
+          </span>
+          <span class="auth-signup-arrow" aria-hidden="true">→</span>
+        </button>
+        <button type="button" class="auth-back-button" id="backToLogin" style="display:none"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5m7-7-7 7 7 7"/></svg><span>返回密码登录</span></button>
+      </div>
     </form>
   </div>
 </section>
 
-<script>
-(() => {
-  const canvas = document.getElementById("authCanvas");
-  const screen = document.getElementById("authScreen");
-  if (!canvas || !screen) return;
 
-  const ctx = canvas.getContext("2d");
-  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-  const flows = [
-    {kind:"ambient",start:[-.08,.14],c1:[.2,.04],c2:[.67,.24],end:[1.08,.12]},
-    {kind:"ambient",start:[-.08,.42],c1:[.24,.26],c2:[.67,.56],end:[1.08,.34]},
-    {kind:"ambient",start:[-.08,.72],c1:[.25,.58],c2:[.7,.82],end:[1.08,.61]},
-    {kind:"collect",start:[-.08,.24],c1:[.2,.19],c2:[.47,.2]},
-    {kind:"collect",start:[-.08,.55],c1:[.2,.5],c2:[.44,.47]},
-    {kind:"collect",start:[.14,.88],c1:[.29,.72],c2:[.5,.55]},
-    {kind:"collect",start:[.34,-.08],c1:[.39,.1],c2:[.53,.2]}
-  ];
-  const motes = Array.from({length:36},(_,i) => {
-    const hash=n => Math.abs(Math.sin((i+1)*n)*43758.5453)%1;
-    return {x:hash(12.9898),y:hash(78.233),depth:.25+hash(39.425)*.75,phase:hash(93.117)*Math.PI*2};
-  });
-  let width = 0, height = 0, raf = 0, started = performance.now();
 
-  function resize() {
-    const box = canvas.getBoundingClientRect();
-    const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
-    width = Math.max(1, box.width);
-    height = Math.max(1, box.height);
-    canvas.width = Math.round(width * dpr);
-    canvas.height = Math.round(height * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    draw(performance.now());
-  }
 
-  function drawParticles(seconds) {
-    motes.forEach((mote,i) => {
-      const x=((mote.x+seconds*(.0018+.0032*mote.depth))%1)*width+Math.sin(seconds*.16+mote.phase)*5*mote.depth;
-      const y=((mote.y-seconds*(.0012+.002*mote.depth)+1)%1)*height+Math.cos(seconds*.2+mote.phase)*4;
-      const pulse=.62+.38*Math.sin(seconds*(.32+mote.depth*.28)+mote.phase);
-      const alpha=(.025+mote.depth*.11)*pulse;
-      const radius=.45+mote.depth*1.25;
-      if (mote.depth>.72 && i%3===0) {
-        const haze=ctx.createRadialGradient(x,y,0,x,y,radius*5.5);
-        haze.addColorStop(0,`rgba(207,239,252,${alpha*.7})`);
-        haze.addColorStop(1,"rgba(111,190,224,0)");
-        ctx.fillStyle=haze; ctx.beginPath(); ctx.arc(x,y,radius*5.5,0,Math.PI*2); ctx.fill();
-      }
-      ctx.fillStyle=`rgba(218,239,249,${alpha})`;
-      ctx.beginPath(); ctx.arc(x,y,radius,0,Math.PI*2); ctx.fill();
-    });
-  }
-  function cubicPoint(p0,p1,p2,p3,t) {
-    const m=1-t, m2=m*m, t2=t*t;
-    return {
-      x:m2*m*p0.x+3*m2*t*p1.x+3*m*t2*p2.x+t2*t*p3.x,
-      y:m2*m*p0.y+3*m2*t*p1.y+3*m*t2*p2.y+t2*t*p3.y
-    };
-  }
-
-  function cubicTangent(p0,p1,p2,p3,t) {
-    const m=1-t;
-    return {
-      x:3*m*m*(p1.x-p0.x)+6*m*t*(p2.x-p1.x)+3*t*t*(p3.x-p2.x),
-      y:3*m*m*(p1.y-p0.y)+6*m*t*(p2.y-p1.y)+3*t*t*(p3.y-p2.y)
-    };
-  }
-
-  function drawPearlHalo(target,seconds) {
-    for (let i=0;i<8;i++) {
-      const angle=seconds*(.16+i*.008)+i*Math.PI*.71;
-      const radius=31+(i%4)*8+Math.sin(seconds*.3+i)*3;
-      const x=target.x+Math.cos(angle)*radius;
-      const y=target.y+Math.sin(angle)*radius*.38;
-      const alpha=.16+.2*(.5+.5*Math.sin(seconds*.7+i));
-      ctx.fillStyle=`rgba(${i%3===0?"249,218,154":"190,233,248"},${alpha})`;
-      ctx.beginPath(); ctx.arc(x,y,.65+(i%3)*.35,0,Math.PI*2); ctx.fill();
-    }
-  }
-
-  function drawDataFlows(seconds) {
-    const mobile=window.innerWidth<=900;
-    const target=mobile ? {x:width-56,y:68} : {x:width*.55+54,y:height*.24+54};
-    flows.forEach((flow,index) => {
-      const start={x:flow.start[0]*width,y:flow.start[1]*height};
-      const c1={x:flow.c1[0]*width,y:flow.c1[1]*height};
-      const c2={x:flow.c2[0]*width,y:flow.c2[1]*height};
-      const end=flow.kind==="collect" ? target : {x:flow.end[0]*width,y:flow.end[1]*height};
-      const stroke=ctx.createLinearGradient(start.x,start.y,end.x,end.y);
-      stroke.addColorStop(0,"rgba(92,183,224,0)");
-      stroke.addColorStop(.48,flow.kind==="collect"?"rgba(121,211,244,.12)":"rgba(121,211,244,.055)");
-      stroke.addColorStop(1,flow.kind==="collect"?"rgba(236,201,126,.18)":"rgba(129,204,235,0)");
-      ctx.beginPath(); ctx.moveTo(start.x,start.y); ctx.bezierCurveTo(c1.x,c1.y,c2.x,c2.y,end.x,end.y);
-      ctx.strokeStyle=stroke; ctx.lineWidth=flow.kind==="collect"?1.05:.72; ctx.lineCap="round"; ctx.stroke();
-
-      const count=flow.kind==="collect"?3:2;
-      for (let particle=0; particle<count; particle++) {
-        const raw=(seconds*(.026+index*.0015)+index*.137+particle/count)%1;
-        const t=raw*raw*(3-2*raw);
-        const point=cubicPoint(start,c1,c2,end,t);
-        const tangent=cubicTangent(start,c1,c2,end,t);
-        const tangentLength=Math.max(1,Math.hypot(tangent.x,tangent.y));
-        const flutter=Math.sin(raw*Math.PI*5+index*1.7+particle)*5*(1-t);
-        point.x+=-tangent.y/tangentLength*flutter;
-        point.y+=tangent.x/tangentLength*flutter;
-        const tail=cubicPoint(start,c1,c2,end,Math.max(0,t-(flow.kind==="collect"?.038:.026)));
-        const absorption=flow.kind==="collect"&&t>.82 ? Math.max(0,(1-t)/.18) : 1;
-        const visibility=Math.sin(Math.PI*raw)*absorption;
-        const radius=(.7+t*1.25)*(.55+.45*absorption);
-        const glow=ctx.createRadialGradient(point.x,point.y,0,point.x,point.y,5+t*6);
-        if (flow.kind==="collect"&&t>.68) {
-          glow.addColorStop(0,`rgba(255,241,200,${.9*visibility})`);
-          glow.addColorStop(1,"rgba(216,163,63,0)");
-        } else {
-          glow.addColorStop(0,`rgba(190,236,255,${(flow.kind==="collect"?.68:.42)*visibility})`);
-          glow.addColorStop(1,"rgba(84,183,229,0)");
-        }
-        ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(point.x,point.y,5+t*6,0,Math.PI*2); ctx.fill();
-        const trail=ctx.createLinearGradient(tail.x,tail.y,point.x,point.y);
-        trail.addColorStop(0,"rgba(150,218,244,0)");
-        trail.addColorStop(1,flow.kind==="collect"&&t>.68?`rgba(248,218,157,${visibility*.42})`:`rgba(168,226,249,${visibility*.28})`);
-        ctx.strokeStyle=trail; ctx.lineWidth=.7+radius*.25; ctx.beginPath(); ctx.moveTo(tail.x,tail.y); ctx.lineTo(point.x,point.y); ctx.stroke();
-        ctx.fillStyle=flow.kind==="collect"&&t>.68?`rgba(255,239,196,${visibility})`:`rgba(202,240,255,${visibility})`;
-        ctx.beginPath(); ctx.arc(point.x,point.y,radius,0,Math.PI*2); ctx.fill();
-      }
-    });
-    drawPearlHalo(target,seconds);
-  }
-
-  function draw(now) {
-    if (!width || !height) return;
-    const seconds = reduced ? 3.6 : (now-started)/1000;
-    ctx.clearRect(0,0,width,height);
-    drawParticles(seconds); drawDataFlows(seconds);
-  }
-
-  function frame(now) {
-    if (document.hidden || screen.style.display === "none") { raf=0; return; }
-    draw(now); raf=requestAnimationFrame(frame);
-  }
-
-  function resume() {
-    if (!reduced && !raf && !document.hidden && screen.style.display !== "none") raf=requestAnimationFrame(frame);
-  }
-
-  new ResizeObserver(resize).observe(screen);
-  document.addEventListener("visibilitychange",resume);
-  resize();
-  if (!reduced) resume();
-})();
-</script>
-
-<header id="appHeader" style="display:none">
-  <div class="wrap hdr">
-    <div class="hdr-brand">
-      <img class="hdr-logo" src="/logo" alt="税海拾珠">
-      <div class="hdr-txt">
-        <h1>税海拾珠 · 税务风险审计</h1>
-      </div>
-    </div>
-    <div class="top-tools"><span id="currentUser"></span><button id="btnLogout">退出</button></div>
-  </div>
-</header>
 
 <main id="appMain" style="display:none">
-  <div class="wrap">
+  <div class="wrap nav-collapsed">
 
     <div class="nav" id="nav" role="navigation" aria-label="企业工作空间">
-      <div class="nav-heading"><div class="nav-caption">企业工作空间</div><button type="button" id="navToggle" aria-controls="nav" aria-expanded="true" aria-label="收起侧边栏" title="收起侧边栏"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button></div>
+      <div class="nav-brand"><img class="nav-brand-logo" src="/logo" alt="税海拾珠" draggable="false"><img class="nav-brand-wordmark" src="/auth-wordmark.png" alt="" draggable="false"></div>
+      <div class="nav-heading"><div class="nav-caption">企业工作空间</div><button type="button" id="navToggle" aria-controls="nav" aria-expanded="false" aria-label="展开侧边栏" title="展开侧边栏"><span class="nav-toggle-direction" aria-hidden="true"><span class="nav-toggle-track"><span class="nav-toggle-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></span><span class="nav-toggle-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></span></span></span></button></div>
       <button data-panel="notificationPanel" aria-label="通知订阅" title="通知订阅"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a6 6 0 0 0-6 6v5l-2 4h16l-2-4V8a6 6 0 0 0-6-6Zm-3 17h6a3 3 0 0 1-6 0Z"/></svg><span class="nav-label">通知订阅</span></button>
       <button data-panel="dashboardPanel" class="business-nav" aria-label="工作台" title="工作台"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="8" height="10" rx="2"/><rect x="13" y="3" width="8" height="6" rx="2"/><rect x="3" y="15" width="8" height="6" rx="2"/><rect x="13" y="11" width="8" height="10" rx="2"/></svg><span class="nav-label">工作台</span></button>
       <button data-panel="uploadPanel" class="business-nav" aria-label="上传材料" title="上传材料"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 15V7.4L8.7 9.7 7.3 8.3 12 3.6l4.7 4.7-1.4 1.4L13 7.4V15zM4 13h4v4h8v-4h4v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span class="nav-label">上传材料</span></button>
@@ -610,6 +532,23 @@
       <button data-panel="knowledgePanel" aria-label="知识图谱" title="知识图谱"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m11 6 2-1 6 12-2 1zM5 17 11 5l2 1-6 12zM6 17h12v2H6z"/><circle cx="12" cy="5" r="3.5"/><circle cx="5" cy="18" r="3.5"/><circle cx="19" cy="18" r="3.5"/></svg><span class="nav-label">知识图谱</span></button>
       <button data-panel="trainingPanel" class="training-nav" aria-label="实训中心" title="实训中心"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 11 5-11 5L1 8zm-7 9 7 3.2 7-3.2v5c-3.7 3.5-10.3 3.5-14 0zM21 11h2v8h-2z"/></svg><span class="nav-label">实训中心</span></button>
       <button data-panel="adminPanel" class="admin-nav" aria-label="管理" title="管理"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10" cy="7" r="4"/><path d="M2 21v-3a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v3zm16-18a4 4 0 0 1 0 8h-1a6 6 0 0 0 0-8zm.5 10a5 5 0 0 1 4.5 5v3h-3v-3a8 8 0 0 0-1.5-5z"/></svg><span class="nav-label">管理</span></button>
+      <div id="appHeader" class="nav-account" style="display:none">
+        <div id="themePicker" class="theme-picker">
+          <div id="themeOptions" role="group" aria-label="外观模式">
+            <button type="button" data-theme-select="light" aria-pressed="true" aria-label="亮色" title="亮色"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><span>亮色</span></button>
+            <button type="button" data-theme-select="dark" aria-pressed="false" aria-label="暗色" title="暗色"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/></svg><span>暗色</span></button>
+            <button type="button" data-theme-select="system" aria-pressed="false" aria-label="跟随系统" title="跟随系统"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8m-4-5v5"/></svg><span>跟随系统</span></button>
+          </div>
+          <button id="themeCycle" class="account-control" type="button" aria-label="当前：亮色；点击切换为暗色" title="当前：亮色；点击切换为暗色">
+            <span class="account-icon" aria-hidden="true"><svg data-theme-icon="light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg data-theme-icon="dark" hidden viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/></svg><svg data-theme-icon="system" hidden viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8m-4-5v5"/></svg></span><span id="themeLabel" hidden>亮色</span>
+          </button>
+        </div>
+        <div class="top-tools">
+        <button class="account-control" type="button" data-panel="userSettingsPanel" aria-label="用户设置" title="用户设置">
+          <span class="account-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg></span><span class="account-label">用户设置</span>
+        </button>
+        <button id="btnLogout" class="account-control" type="button" aria-label="退出登录" title="退出登录"><span class="account-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 3H4v18h5M9 12h12m-5-5 5 5-5 5"/></svg></span><span class="account-label">退出</span></button>
+      </div></div>
     </div>
 
     <section class="panel" id="dashboardPanel">
@@ -636,27 +575,50 @@
     <section class="panel" id="uploadPanel">
     <div class="page-head"><div><p class="eyebrow">DATA IMPORT</p><h2>上传材料</h2><p class="muted">核对企业与所属期间后，生成审计结果并更新工作台。</p></div></div>
 
-    <!-- 1. 上传区 -->
-    <div class="sheet" style="margin-bottom:16px">
+    <!-- 1. 上传设置：企业范围 + 提取方式 -->
+    <div class="sheet">
       <div class="field" id="auditClientField">
-        <label for="auditClient">关联客户档案</label>
-        <select id="auditClient"><option value="">不关联（按材料自动建档）</option></select>
-        <p class="muted">从工作台进入时会自动带入客户；所选档案的纳税人识别号必须与材料一致。</p>
+        <fieldset id="uploadScope">
+          <legend>本次分析的企业</legend>
+          <div class="field">
+            <label for="uploadCompanyMode">企业选择</label>
+            <select id="uploadCompanyMode"><option value="new">新建企业（默认）</option><optgroup id="uploadClientGroup" label="已有企业档案" hidden></optgroup></select>
+          </div>
+          <p class="muted" id="uploadProfileHint">新建企业可留空，上传后仅从无歧义材料预填；确认后才建档。</p>
+          <details class="upload-company-info"><summary>本次企业信息（可先填写，也可上传后核对）</summary>
+            <p class="muted">带 <span class="req">*</span> 的为确认检测前必填项；可先留空，由无歧义材料候选预填。</p>
+            <div class="material-company">
+              <label>企业名称<span class="req" aria-hidden="true">*</span><input id="uploadCompanyName" maxlength="200"></label>
+              <label>纳税人识别号<span class="req" aria-hidden="true">*</span><input id="uploadCompanyTaxId" maxlength="200"></label>
+              <label>所属行业<input id="uploadCompanyIndustry" maxlength="200"></label>
+              <label>地区<input id="uploadCompanyRegion" maxlength="200" placeholder="涉及房产土地时，另核对事项所在地"></label>
+              <label>本期纳税人身份<input id="uploadCompanyTaxpayerType" maxlength="200"></label>
+              <label>本次业务范围<input id="uploadCompanyBusinessScope" maxlength="200"></label>
+              <label>主期间起始日<span class="req" aria-hidden="true">*</span><input id="uploadCompanyStart" type="date"></label>
+              <label>主期间终止日<span class="req" aria-hidden="true">*</span><input id="uploadCompanyEnd" type="date"></label>
+            </div>
+          </details>
+          <p class="muted">手填值不被材料覆盖。历史信息仅供预填，本期身份和范围须确认；旧期间不自动沿用。此选择不代表符合任何税收优惠。</p>
+        </fieldset>
       </div>
-      <label for="extractionMode">数据提取方式</label>
-      <select id="extractionMode" style="padding:8px;margin:8px 0;max-width:100%">
-        <option value="auto">自动：已配置时使用 AI 提取 PDF / 非标准 Excel</option>
-        <option value="ai">使用 AI 提取（需要配置模型服务）</option>
-        <option value="local">仅本地解析</option>
-      </select>
-      <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
+      <div class="upload-extraction">
+        <div class="field">
+          <label for="extractionMode">数据提取方式</label>
+          <select id="extractionMode">
+            <option value="auto">自动：已配置时使用 AI 提取 PDF / 扫描图片 / 非标准账表</option>
+            <option value="ai">使用 AI 提取（需要配置模型服务）</option>
+            <option value="local">仅本地解析</option>
+          </select>
+        </div>
+        <p id="aiStatus" class="muted">正在读取 AI 配置状态……</p>
+      </div>
     </div>
     <div class="dropzone" id="dropzone">
-      <div class="t1">一次选择或拖拽多份 Excel、XML、PDF，也可上传 ZIP 文件包</div>
-      <div class="t2">支持账表 Excel、数电发票 XML、来源银行 Excel / 调节底稿、合同四流台账、文字 / 扫描 PDF；AI 候选数据经校验后进入核对页<br>
-        最多 20 份材料，单份 / ZIP 不超过 10MB，解压后合计 50MB · <span id="materialRetentionHint">企业原件受控留存；教学材料沿用独立核对流程</span></div>
+      <div class="t1">一次选择或拖拽多份 XLSX、受控旧版 XLS、CSV/TSV、XML、PDF、PNG/JPEG/TIFF，也可上传 ZIP 文件包</div>
+      <div class="t2">支持 XLSX、CSV/TSV 账表、数电发票 XML、来源银行 Excel / 调节底稿、合同四流台账、文字 / 扫描 PDF 和扫描图片（TIFF 最多 50 页）；AI 候选数据经校验后进入核对页<br>
+        最多 20 份材料，单份 / ZIP 不超过 10MB，解压后合计 50MB · <span id="materialRetentionHint">服务器核对实际格式和危险部件后接收；企业原件受控留存</span></div>
       <button class="pick" type="button">选择多份材料</button>
-      <input type="file" id="fileInput" accept=".xlsx,.xml,.pdf,.zip" multiple hidden>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv,.tsv,.xml,.pdf,.png,.jpg,.jpeg,.tif,.tiff,.zip" multiple hidden>
     </div>
     <div class="busy" id="busy">正在处理材料，请稍候<span class="dot">……</span></div>
 
@@ -743,8 +705,8 @@
 
     <section class="panel" id="historyPanel">
       <div class="sheet" id="reportVerification"><h2>报告原件核验</h2><p class="muted">标识和水印可以被复制，不能单独证明文件真实。登录后核对服务器冻结原件；文件在本机计算 SHA-256，只提交指纹，不上传报告内容。不提供公开报告查询，不是第三方数字签名，也不能阻止转发。旧归档没有标识时保留旧文件，归档当前报告可生成带标识的新版本。</p>
-        <div class="row"><div class="field"><label for="verificationId">追溯标识</label><input id="verificationId" maxlength="44" placeholder="TPV- 后接 40 位小写十六进制"></div><div class="field"><label for="verificationFormat">文件类型</label><select id="verificationFormat"><option value="pdf">PDF 原件</option><option value="html">HTML 原件</option></select></div><div class="field"><label for="verificationFile">待核验文件（仅本机计算）</label><input id="verificationFile" type="file" accept=".pdf,.html"></div></div>
-        <div class="row"><button class="btn re" id="verificationLookup" type="button">查看登记信息</button><button class="btn pdf" id="verificationCheck" type="button">核验所选文件</button></div><p id="verificationStatus" class="muted" role="status"></p><p id="verificationDetails" class="muted" style="overflow-wrap:anywhere;white-space:pre-line"></p>
+        <div class="row verify-fields"><div class="field"><label for="verificationId">追溯标识</label><input id="verificationId" maxlength="44" placeholder="TPV- 后接 40 位小写十六进制"></div><div class="field"><label for="verificationFormat">文件类型</label><select id="verificationFormat"><option value="pdf">PDF 原件</option><option value="html">HTML 原件</option></select></div><div class="field"><label for="verificationFile">待核验文件（仅本机计算）</label><input id="verificationFile" type="file" accept=".pdf,.html"></div></div>
+        <div class="row verify-actions"><button class="btn re" id="verificationLookup" type="button">查看登记信息</button><button class="btn pdf" id="verificationCheck" type="button">核验所选文件</button></div><p id="verificationStatus" class="muted" role="status"></p><p id="verificationDetails" class="muted" style="overflow-wrap:anywhere;white-space:pre-line"></p>
       </div>
       <div class="sheet"><h2>审计历史与报告归档</h2><p class="muted">证据快照与报告版本分开保存。品牌、模板或已校验叙述变化后生成新版本，旧版不覆盖；PDF 首次导出后保存原文件。旧审计首次归档以实际归档时间为准，不补造历史报告。</p>
         <form id="historySearch"><div class="row">
@@ -757,6 +719,35 @@
         </div></form>
         <p class="muted" id="historyStatus" role="status"></p><div class="data-list" id="historyList"></div>
         <div class="row"><button class="btn re" id="historyPrev" type="button">上一页</button><button class="btn re" id="historyNext" type="button">下一页</button></div>
+      </div>
+    </section>
+
+    <section class="panel" id="userSettingsPanel" aria-labelledby="userSettingsTitle">
+      <div class="settings-heading"><div><p class="muted">ACCOUNT SETTINGS</p><h1 id="userSettingsTitle">用户设置</h1><p class="muted">查看账号信息，管理通知偏好和报告导出。</p></div></div>
+      <div class="settings-grid">
+        <div class="sheet settings-profile"><h2>账号信息</h2><p id="currentUser" class="muted"></p>
+          <dl class="settings-account-fields">
+            <div><dt>登录账号</dt><dd id="settingsUsername">—</dd></div>
+            <div><dt>显示名称</dt><dd id="settingsDisplayName">—</dd></div>
+            <div><dt>账号角色</dt><dd id="settingsRole">—</dd></div>
+            <div><dt>注册时间</dt><dd id="settingsCreatedAt">—</dd></div>
+          </dl><p class="muted settings-note">账号信息由当前登录账号提供；如需变更，请联系管理员。</p>
+        </div>
+        <div class="sheet settings-notifications"><h2>通知偏好</h2><p class="muted">选择接收的事件和邮件渠道，保存后生效。</p>
+          <fieldset id="settingsPreferences" disabled><legend class="visually-hidden">个人通知偏好</legend>
+            <label class="settings-choice" for="settingsCompleted"><span><strong>审计完成提醒</strong><small>接收之后的审计完成通知</small></span><input type="checkbox" id="settingsCompleted"></label>
+            <label class="settings-choice" for="settingsHigh"><span><strong>高风险提醒</strong><small>单独接收高风险命中摘要</small></span><input type="checkbox" id="settingsHigh"></label>
+            <label class="settings-choice" for="settingsEmail"><span><strong>摘要邮件</strong><small>仅发送风险摘要，不含企业名称或原始财务数据</small></span><input type="checkbox" id="settingsEmail"></label>
+          </fieldset>
+          <div class="settings-actions"><button class="btn pdf" id="settingsSave" type="button" disabled>保存通知偏好</button><button class="btn re" id="settingsRefresh" type="button">重新读取</button><button class="btn re" id="settingsNoticeOpen" type="button" hidden>查看通知</button></div>
+          <p class="muted settings-note" id="settingsStatus" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+      <div class="sheet settings-exports"><h2>数据与报告导出</h2><p class="muted">从现有报告入口选择企业、期间和报告版本，再下载所需文件。</p>
+        <div class="settings-export-grid">
+          <div id="settingsHistoryExport" class="settings-export-entry" hidden><div><h3>审计报告档案</h3><p class="muted">检索历史审计，下载已归档的 HTML / PDF 报告。</p></div><button class="btn re" id="settingsHistoryOpen" type="button">前往历史档案 →</button></div>
+          <div id="settingsOrgExport" class="settings-export-entry" hidden><div><h3>机构汇总报告</h3><p class="muted">选择客户与业务期间，查看汇总报告并导出 PDF。</p></div><button class="btn re" id="settingsOrgOpen" type="button">前往机构总览 →</button></div>
+        </div><p class="muted settings-note" id="settingsExportStatus"></p>
       </div>
     </section>
 
@@ -827,7 +818,7 @@
     </section>
 
     <section class="panel" id="adminPanel">
-      <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
+      <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button class="btn re" id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
       <div class="sheet" id="inviteAdmin" style="display:none"><h2>签发机构创始码</h2><p class="muted">为企业和高校的管理员签发一次性注册码：码只与机构名称捆绑，一码一位、私聊交付，不绑定邮箱；注册时仍须通过邮箱验证码核验。明文只在签发时显示一次，系统中仅存哈希。</p><div class="row"><div class="field"><label for="inviteOrgName">企业 / 高校名称</label><input id="inviteOrgName" maxlength="120" placeholder="例如：东莞市某某税务师事务所"></div><div class="field"><label for="inviteSeats">机构总席位（含管理员）</label><select id="inviteSeats"><option value="5" selected>小型 · 5 席</option><option value="20">中型 · 20 席</option><option value="50">大型 · 50 席</option></select></div><button class="btn pdf" id="btnCreateInvite" type="button">签发邀请码</button></div><div class="data-item" id="inviteReveal" hidden><div><div id="inviteRevealCode" class="invite-code"></div><p class="muted" id="inviteRevealSeats"></p><p class="muted">仅显示这一次，关闭后无法找回，请立即复制并私聊交付给机构负责人。</p></div><div class="row"><button id="btnCopyInvite" type="button">复制</button><button id="btnHideInvite" type="button">我已保存</button></div></div><h3>邀请码台账</h3><div class="data-list" id="inviteList"></div></div>
       <div class="sheet" id="userAdmin"><h2>账号与成员管理</h2><p class="muted" id="userAdminHint">机构管理员可创建本机构会计；平台只能签发创始码，不手动开户。席位按当前在岗成员计算（含机构管理员，不含平台管理员）；停用释放席位并撤销会话，恢复后须重新登录，不删除历史业务。</p>
         <div class="row"><div class="field"><label for="memberOrg">管理机构</label><select id="memberOrg"></select></div><button class="btn" id="btnRefreshMembers">刷新成员</button></div>
@@ -859,9 +850,10 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
-<script src="/enterprise.js?v=enterprise-review-1"></script>
-<script src="/console.js?v=platform-materials-1"></script>
-<script src="/workspace.js?v=platform-access-1"></script>
+<script src="/enterprise.js?v=20261007-company-selector-2"></script>
+<script src="/console.js?v=20261009-org-overview-icon-3"></script>
+<script src="/auth-glass.js?v=20261006-login-layout-1"></script>
+<script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>

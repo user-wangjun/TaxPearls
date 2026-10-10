@@ -63,8 +63,10 @@ async def lifespan(application):
     worker = NotificationWorker(lambda: store)
     worker.start()
     try:
+        application.state.material_worker.start()
         yield
     finally:
+        application.state.material_worker.stop()
         worker.stop()
 
 
@@ -509,14 +511,31 @@ def favicon() -> Response:
     return FileResponse(LOGO_SVG, media_type="image/svg+xml")
 
 
-@app.get("/auth-ocean-data-v1.webp")
-def auth_ocean_visual() -> FileResponse:
-    return FileResponse(STATIC_DIR / "auth-ocean-data-v1.webp", media_type="image/webp")
+@app.get("/auth-signup-ticket-v1.png")
+def auth_signup_ticket() -> FileResponse:
+    return FileResponse(STATIC_DIR / "auth-signup-ticket-v1.png", media_type="image/png")
 
 
-@app.get("/auth-pearl-real-v1.webp")
-def auth_pearl_visual() -> FileResponse:
-    return FileResponse(STATIC_DIR / "auth-pearl-real-v1.webp", media_type="image/webp")
+# Explicit public asset allowlist; no arbitrary static path or directory access.
+@app.get("/auth-glass.css")
+@app.get("/auth-glass.js")
+@app.get("/auth-ocean.mjs")
+@app.get("/auth-wordmark.png")
+@app.get("/auth-ocean-poster-desktop.webp")
+@app.get("/auth-ocean-poster-mobile.webp")
+@app.get("/vendor/three.module.mjs")
+def auth_glass_asset(request: Request) -> FileResponse:
+    assets = {
+        "/auth-glass.css": ("auth-glass.css", "text/css"),
+        "/auth-glass.js": ("auth-glass.js", "text/javascript"),
+        "/auth-ocean.mjs": ("auth-ocean.mjs", "text/javascript"),
+        "/auth-wordmark.png": ("auth-wordmark.png", "image/png"),
+        "/auth-ocean-poster-desktop.webp": ("auth-ocean-poster-desktop.webp", "image/webp"),
+        "/auth-ocean-poster-mobile.webp": ("auth-ocean-poster-mobile.webp", "image/webp"),
+        "/vendor/three.module.mjs": ("vendor/three.module.mjs", "text/javascript"),
+    }
+    name, media_type = assets[request.url.path]
+    return FileResponse(STATIC_DIR / name, media_type=media_type)
 
 
 @app.get("/workspace.js")
@@ -527,6 +546,16 @@ def workspace_script() -> FileResponse:
 @app.get("/mistake-book.js")
 def mistake_book_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "mistake-book.js", media_type="text/javascript")
+
+
+@app.get("/training-certificates")
+def training_portal_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-portal.html", media_type="text/html")
+
+
+@app.get("/training-portal.js")
+def training_portal_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-portal.js", media_type="text/javascript")
 
 
 @app.get("/classroom.js")
@@ -1049,7 +1078,7 @@ async def audit(request: Request, session: str | None = Cookie(default=None, ali
     # Legacy direct import is teaching-only. Business uploads must retain
     # originals and explicitly confirm a server-side analysis revision.
     _allow(user, "teacher")
-    async with multipart(request) as form:
+    async with multipart(request, material_scope=user['org_id']) as form:
         file = single_file(form)
         if not file.filename or not file.filename.lower().endswith(".xlsx"):
             return _err(422, "仅支持 .xlsx 格式的审计材料。")
@@ -1058,6 +1087,8 @@ async def audit(request: Request, session: str | None = Cookie(default=None, ali
             return _err(422, "客户档案编号格式错误。")
         data = await file.read()
     try:
+        from src import material_format_guard
+        await run_in_threadpool(material_format_guard.check, [(file.filename, data)])
         dataset = await run_in_threadpool(loader.load_bytes, data)
     except loader.InputError as exc:
         return _err(422, f"审计材料不符合模板要求：{exc}")
@@ -1123,6 +1154,14 @@ classroom.register(app,lambda: store,_user,_allow,_is_synthetic_dataset,COOKIE_N
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
+from webapp.training_portal import register as register_training_portal
+register_training_portal(app, lambda: store, "taxpearls_training_session")
+from webapp.training_content import register as register_training_content
+register_training_content(app, lambda: store)
+from webapp.training_graph import register as register_training_graph
+register_training_graph(app, lambda: store)
+from webapp.training_tutor import register as register_training_tutor
+register_training_tutor(app, lambda: store, "taxpearls_training_session")
 
 
 @app.get("/api/audits")

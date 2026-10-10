@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>考证备考 · 税海拾珠</title>
+<style>
+  :root { --line: rgba(0,0,0,.15); --muted: #666; --accent: #0f6e56; --danger: #a32d2d; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+         background: #f5f6f4; color: #222; line-height: 1.6; }
+  header { background: #fff; border-bottom: 1px solid var(--line); padding: 14px 20px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 16px; font-weight: 500; margin: 0; }
+  main { max-width: 860px; margin: 0 auto; padding: 20px 16px 48px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px;
+          padding: 18px 20px; margin-bottom: 18px; }
+  h2 { font-size: 15px; font-weight: 500; margin: 0 0 12px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input, select { width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+                  border-radius: 8px; font-size: 14px; background: #fff; }
+  button { padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px;
+           background: #fff; font-size: 14px; cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.small { padding: 4px 10px; font-size: 12px; }
+  button:disabled { opacity: .5; cursor: default; }
+  .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 140px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px;
+           font-size: 13px; background: #e1f5ee; color: #0f6e56; }
+  .badge.warn { background: #faeeda; color: #854f0b; }
+  .badge.bad { background: #fcebeb; color: #a32d2d; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .chip { display: inline-block; border: 1px solid var(--line); border-radius: 999px;
+          padding: 1px 10px; font-size: 12px; margin-right: 6px; }
+  .goal, .cert { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+                 margin-bottom: 10px; }
+  .goal-head, .cert-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .inline-form { border-top: 1px dashed var(--line); margin-top: 10px; padding-top: 10px; }
+  .error { color: var(--danger); font-size: 13px; margin-top: 8px; min-height: 18px; }
+  .ok { color: var(--accent); font-size: 13px; min-height: 18px; margin-top: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+  th, td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; }
+  th { background: #f1efe8; font-weight: 500; }
+  .num { text-align: right; }
+  .detail { border-left: 3px solid var(--line); padding: 4px 8px; margin: 6px 0; font-size: 13px; }
+  .detail.ok { border-color: #0f6e56; }
+  .detail.miss { border-color: #ba7517; }
+  .detail.false { border-color: #a32d2d; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>税海拾珠 · 考证备考</h1>
+  <div id="who" class="muted"></div>
+</header>
+<main>
+  <section id="login-view" class="card" style="max-width:420px;margin:40px auto;">
+    <h2>学生登录</h2>
+    <label for="college">院校（选填，学号跨校重复时必填）</label>
+    <input id="college" placeholder="如：示例大学">
+    <label for="student-no">学号</label>
+    <input id="student-no" autocomplete="username">
+    <label for="password">密码</label>
+    <input id="password" type="password" autocomplete="current-password">
+    <label style="display:flex;align-items:center;gap:6px;margin-top:12px;">
+      <input type="checkbox" id="remember" style="width:auto;"> 保持登录 30 天
+    </label>
+    <div class="row" style="margin-top:14px;">
+      <button class="primary" id="login-btn" style="flex:1;">登录</button>
+    </div>
+    <div class="error" id="login-error"></div>
+  </section>
+
+  <section id="app-view" hidden>
+    <div class="card" id="workbench-card">
+      <h2>我的备考工作台</h2>
+      <div id="wb-body"></div>
+    </div>
+
+    <div class="card">
+      <h2>我的考证目标</h2>
+      <div id="goals"></div>
+      <div class="ok" id="goal-msg"></div>
+    </div>
+    <div class="card">
+      <h2>自主练习</h2>
+      <div class="row">
+        <div><label>证书范围</label><select id="pr-cert"></select></div>
+        <div><label>知识点（选填，不选则整证随机）</label><select id="pr-kp"></select></div>
+        <div style="flex:0 0 auto;"><button class="primary" id="start-practice">开始出题</button></div>
+      </div>
+      <div class="muted" id="pr-hint" style="margin-top:6px;"></div>
+      <div class="muted" id="pr-stats" style="margin-top:4px;"></div>
+      <div id="pr-kps"></div>
+      <div id="pr-open"></div>
+      <div id="pr-attempt" style="margin-top:14px;"></div>
+      <h2 style="margin-top:18px;">错题重练</h2>
+      <div id="pr-wrong"></div>
+    </div>
+
+    <div class="card">
+      <h2>证书目录</h2>
+      <p class="muted" style="margin-top:-6px;">选择要考的证书，设定考试日期后即可开始备考倒计时。</p>
+      <div id="certs"></div>
+    </div>
+  </section>
+</main>
+<script src="/training-portal.js"></script>
+</body>
+</html>
