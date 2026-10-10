@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [] };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -216,6 +216,60 @@ function renderKps() {
   }).join("");
 }
 
+function renderImportResult(data) {
+  const box = document.getElementById("import-result");
+  if (!data) { box.innerHTML = ""; return; }
+  if (data.error) {
+    box.innerHTML = `<div class="error" style="white-space:pre-wrap;">${esc(data.error)}</div>`;
+    state.importPlan = null;
+    return;
+  }
+  if (data.done) {
+    box.innerHTML = `<div class="ok">导入完成：新建 ${data.created} 条，更新 ${data.updated} 条（共 ${data.total}）。</div>`;
+    state.importPlan = null;
+    return;
+  }
+  const s = data.summary;
+  state.importPlan = data;
+  const rows = data.plan.map((p) => `<tr>
+    <td style="font-family:ui-monospace,monospace;">${esc(p.code)}</td>
+    <td>${esc(p.name)}</td>
+    <td>${p.action === "insert"
+      ? `<span class="badge">新增</span>`
+      : `<span class="badge gray">更新${p.existing_name && p.existing_name !== p.name ? `（原：${esc(p.existing_name)}）` : ""}</span>`}</td>
+    <td class="muted">${esc(p.parent_code || "—")}</td>
+    <td>${p.warnings.map((w) => `<span class="badge warn">${esc(w)}</span>`).join(" ")}</td>
+  </tr>`).join("");
+  box.innerHTML = `
+    <div style="margin-bottom:6px;">
+      <span class="badge">共 ${s.total} 行</span>
+      <span class="badge">新增 ${s.insert}</span>
+      <span class="badge gray">更新 ${s.update}</span>
+      ${s.warning ? `<span class="badge warn">警告 ${s.warning}</span>` : ""}
+    </div>
+    ${s.total ? `<div style="max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:8px;">
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead><tr style="text-align:left;background:#f5f6f4;">
+          <th style="padding:6px 8px;">编码</th><th style="padding:6px 8px;">名称</th>
+          <th style="padding:6px 8px;">动作</th><th style="padding:6px 8px;">上级编码</th>
+          <th style="padding:6px 8px;">提示</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>
+      <div class="actions" style="margin-top:10px;">
+        <button class="primary small" data-act="confirm-import">确认导入（${s.insert} 新增 / ${s.update} 更新）</button>
+        <button class="small" data-act="cancel-import-preview">放弃</button>
+      </div>` : `<p class="muted">没有可导入的行。</p>`}
+  `;
+}
+
+async function importPayload() {
+  return {
+    text: document.getElementById("if-text").value,
+    format: document.getElementById("if-format").value,
+    default_outline_version: document.getElementById("if-version").value.trim(),
+  };
+}
+
 function renderParentOptions() {
   const select = document.getElementById("kf-parent");
   select.innerHTML = [`<option value="">（无，作为顶级）</option>`].concat(
@@ -391,6 +445,36 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       withCert(async () => { await api(`/api/training/staff/dates/${id}`, { method: "DELETE" }); flash("已删除。"); });
     },
     "show-kp-form": () => { const f = q("#kp-form"); f.hidden = !f.hidden; },
+    "show-import-form": () => { const f = q("#import-form"); f.hidden = !f.hidden; },
+    "cancel-import": () => {
+      q("#import-form").hidden = true;
+      renderImportResult(null);
+    },
+    "cancel-import-preview": () => renderImportResult(null),
+    "preview-import": async () => {
+      const body = await importPayload();
+      if (!body.text.trim()) { flash("请先粘贴导入内容。", true); return; }
+      try {
+        renderImportResult(await api(
+          `/api/training/staff/certificates/${cert.id}/knowledge-points/import/preview`,
+          { method: "POST", body }));
+      } catch (err) {
+        renderImportResult({ error: err.message });
+      }
+    },
+    "confirm-import": async () => {
+      if (!state.importPlan) return;
+      const body = await importPayload();
+      try {
+        const r = await api(`/api/training/staff/certificates/${cert.id}/knowledge-points/import`,
+          { method: "POST", body });
+        await load();
+        renderImportResult({ done: true, created: r.created, updated: r.updated, total: r.total });
+        flash("知识点批量导入完成。");
+      } catch (err) {
+        renderImportResult({ error: err.message });
+      }
+    },
     "create-kp": () => withCert(async () => {
       await api(`/api/training/staff/certificates/${cert.id}/knowledge-points`, {
         method: "POST",

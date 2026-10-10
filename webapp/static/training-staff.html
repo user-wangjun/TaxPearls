@@ -153,7 +153,28 @@
     </div>
 
     <div class="card">
-      <h2>考纲知识点 <button class="small" data-act="show-kp-form">＋ 新增知识点</button></h2>
+      <h2>考纲知识点
+        <button class="small" data-act="show-kp-form">＋ 新增知识点</button>
+        <button class="small" data-act="show-import-form">⇪ 批量导入</button>
+      </h2>
+      <div id="import-form" class="inline-form" hidden>
+        <p class="muted" style="margin-top:0;">导入人工核对过的考纲清单（工具只导入、不生成内容）。支持两种格式：<b>清单</b>——大纲 PDF 预整理清单的 Markdown（`### 章节点：`编码` 名称` / `#### 节点：…`）；<b>CSV</b>——表头 code,parent_code,name,subject,description,source_ref,outline_version。按编码幂等导入：已存在的行只更新解析值非空的字段，不改动标注/关联/停用状态。</p>
+        <div class="row">
+          <div><label>格式</label>
+            <select id="if-format">
+              <option value="checklist">清单 Markdown</option>
+              <option value="csv">CSV</option>
+            </select></div>
+          <div><label>默认考纲版本（行内未填时使用）</label><input id="if-version" placeholder="如 2026"></div>
+        </div>
+        <label>导入内容</label>
+        <textarea id="if-text" style="min-height:180px;font-family:ui-monospace,monospace;"></textarea>
+        <div class="actions">
+          <button class="primary small" data-act="preview-import">预览解析</button>
+          <button class="small" data-act="cancel-import">收起</button>
+        </div>
+        <div id="import-result" style="margin-top:12px;"></div>
+      </div>
       <div id="kp-form" class="inline-form" hidden>
         <div class="row">
           <div><label>编码（证书内唯一）</label><input id="kf-code" placeholder="如 KP-01"></div>
