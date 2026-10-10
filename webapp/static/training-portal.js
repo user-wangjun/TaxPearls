@@ -246,6 +246,8 @@ function renderOpen() {
     </div></div>`).join("") : "";
 }
 
+const MASTERY_ZH = { proficient: "较熟练", consolidating: "巩固中", acquainted: "初识", unstarted: "未开始" };
+
 function renderWorkbench() {
   const box = document.getElementById("wb-body");
   const dash = state.dashboard;
@@ -263,25 +265,36 @@ function renderWorkbench() {
     const weak = g.weak.length
       ? g.weak.map((w) => `<span class="chip">${esc(w.name)}（${w.attempts} 次未满分）</span>`).join("")
       : `<span class="muted">暂无薄弱知识点</span>`;
-    const rec = g.recommendation;
-    const recButton = rec.kind === "resume"
-      ? `<button class="small primary" data-act="wb-resume" data-id="${esc(rec.attempt_id)}">继续作答</button>`
-      : (rec.kind === "practice"
-          ? `<button class="small primary" data-act="wb-practice" data-cert="${esc(rec.certificate_id)}" data-kp="${esc(rec.knowledge_point_id || "")}" data-rule="${esc(rec.rule_id || "")}">开始练习</button>`
-          : "");
+    const masteryChips = [["proficient", "badge"], ["consolidating", "badge warn"],
+      ["acquainted", "badge gray"], ["unstarted", "badge gray"]]
+      .map(([k, cls]) => `<span class="${cls}" title="口径：≥3 次且正确率≥80% 且最近一次满分为较熟练">${MASTERY_ZH[k]} ${g.mastery[k]}</span>`).join(" ");
+    const planRows = (g.plan || []).map((t) => {
+      const btn = t.kind === "resume"
+        ? `<button class="small primary" data-act="wb-resume" data-id="${esc(t.attempt_id)}">继续作答</button>`
+        : `<button class="small" data-act="wb-practice" data-cert="${esc(t.certificate_id)}" data-kp="${esc(t.knowledge_point_id || "")}" data-rule="${esc(t.rule_id || "")}">${t.kind === "review" ? "开始复习" : "开始练习"}</button>`;
+      return `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px dashed var(--line);padding:6px 0;">
+        <div><span style="font-weight:500;">${esc(t.title)}</span>
+          <span class="muted">— ${esc(t.reason)}</span></div>${btn}</div>`;
+    }).join("");
+    const pacingRow = g.pacing
+      ? `<div class="muted" style="margin-top:6px;">节奏提示：${esc(g.pacing.note)}</div>` : "";
+    const gapRow = g.gaps && g.gaps.kps_without_questions
+      ? `<div class="muted" style="margin-top:4px;">题量缺口：${g.gaps.kps_without_questions} 个知识点暂无关联题目，等教师配置后即可练习。</div>` : "";
     return `<div class="item">
       <div class="item-head">
         <div><strong>${esc(g.certificate_name)}</strong>
           <span class="muted">目标日期 ${esc(targetDate)}（${source}）</span></div>
         ${countdownBadge(g.countdown)}
       </div>
-      <div class="muted">覆盖进度：${g.coverage.covered}/${g.coverage.total} 个知识点已练 · 练习 ${g.coverage.attempts} 次 · 满分 ${g.coverage.perfect} 次</div>
+      <div class="muted">覆盖进度：${g.coverage.covered}/${g.coverage.total} 个知识点已练 · 练习 ${g.coverage.attempts} 次 · 满分 ${g.coverage.perfect} 次${g.coverage.skipped ? ` · 跳过 ${g.coverage.skipped}（不计入）` : ""}</div>
+      <div style="margin-top:6px;"><span class="muted">掌握程度：</span>${masteryChips}</div>
       <div style="margin-top:6px;">${hot || `<span class="muted">暂无常考标注</span>`}</div>
       <div style="margin-top:6px;"><span class="muted">薄弱点：</span>${weak}</div>
       <div class="inline-form" style="margin-top:10px;">
-        <div class="muted">下一步建议：${esc(rec.reason)}</div>
-        <div class="actions">${recButton}</div>
+        <div class="muted" style="margin-bottom:4px;">今日学习安排（按优先级排列，可自主选择）：</div>
+        ${planRows || `<p class="muted" style="margin:4px 0;">暂无可安排的任务；教师配置知识点与题目后，这里会给出可解释的建议。</p>`}
       </div>
+      ${pacingRow}${gapRow}
     </div>`;
   }).join("");
 }
