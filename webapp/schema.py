@@ -410,6 +410,22 @@ def initialize(store) -> None:
                 ON knowledge_point_relation(from_kp_id, relation_type);
             CREATE INDEX IF NOT EXISTS idx_kp_relation_to
                 ON knowledge_point_relation(to_kp_id, relation_type);
+            CREATE TABLE IF NOT EXISTS training_tutor_messages (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键；本人隔离）
+                certificate_id TEXT REFERENCES certificate(id),  -- 证书上下文（外键）
+                knowledge_point_id TEXT REFERENCES knowledge_point(id),  -- 知识点入口（可空）
+                attempt_id TEXT REFERENCES training_self_practice_attempts(id),  -- 题目入口（可空，须已判分）
+                question TEXT NOT NULL,                   -- 学生提问
+                answer TEXT NOT NULL,                     -- 助手回答（仅解读；标准答案以作答数据为准）
+                citations_json TEXT NOT NULL DEFAULT '[]',  -- 引用节点 id（JSON 数组）
+                grounding_json TEXT NOT NULL DEFAULT '{}',  -- 组装上下文快照（证据节点）
+                model TEXT NOT NULL DEFAULT '',           -- 模型名（降级为空）
+                degraded TEXT NOT NULL DEFAULT '',        -- 降级说明（空=正常回答）
+                created_at TEXT NOT NULL                  -- 提问时间
+            );
+            CREATE INDEX IF NOT EXISTS idx_tutor_student
+                ON training_tutor_messages(student_id, created_at DESC);
             CREATE TABLE IF NOT EXISTS student_goal (
                 id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
                 student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键）

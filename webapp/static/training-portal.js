@@ -336,6 +336,15 @@ function renderAttempt() {
           <button class="small" data-act="redo-new" data-rule="${esc(a.rule_id)}" data-kp="${esc(a.knowledge_point_id || "")}">再练新题</button>
           <button class="small" data-act="redo-same" data-rule="${esc(a.rule_id)}" data-seed="${esc(a.seed)}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>
         </div>
+      </div>
+      <div class="item">
+        <strong>AI 答疑（基于本题解析与知识点依据）</strong>
+        <div class="muted">回答仅作解读参考；标准答案与判分以系统为准，答疑记录仅本人可见。</div>
+        <div class="row" style="margin-top:6px;">
+          <input id="tutor-q" placeholder="如：为什么这项是漏检？判定依据是什么？">
+          <button class="small primary" data-act="tutor-ask" style="flex:0 0 auto;">问 AI</button>
+        </div>
+        <div id="tutor-out"></div>
       </div>`;
   }
 }
@@ -468,6 +477,20 @@ document.getElementById("pr-attempt").addEventListener("click", async (event) =>
     state.attempt = null;
     renderAttempt();
     await refreshPractice().catch(() => {});
+  } else if (act === "tutor-ask") {
+    const q = document.getElementById("tutor-q").value.trim();
+    const out = document.getElementById("tutor-out");
+    if (!q) { out.innerHTML = `<p class="error">请输入问题。</p>`; return; }
+    try {
+      const data = await api("/api/training/my/tutor", { method: "POST", body: {
+        certificate_id: state.attempt.certificate_id || state.prCert,
+        attempt_id: state.attempt.id, question: q } });
+      const m = data.message;
+      out.innerHTML = `<div class="detail ${m.degraded ? "miss" : "ok"}">${esc(m.answer).replace(/\n/g, "<br>")}</div>
+        <div class="muted">引用：${m.citations.map(esc).join("、") || "（无）"}${m.model ? " · 模型：" + esc(m.model) : ""}</div>`;
+    } catch (err) {
+      out.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    }
   } else if (act === "redo-new") {
     startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
                     rule_id: btn.dataset.rule || null, mode: "new" }).catch((err) => flash(err.message, true));
