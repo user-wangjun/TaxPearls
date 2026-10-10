@@ -392,6 +392,40 @@ def initialize(store) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_kp_mark_kp
                 ON knowledge_point_mark(knowledge_point_id, mark_type);
+            CREATE TABLE IF NOT EXISTS knowledge_point_relation (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                from_kp_id TEXT NOT NULL REFERENCES knowledge_point(id),  -- 关系主体知识点（外键）
+                to_kp_id TEXT NOT NULL REFERENCES knowledge_point(id),    -- 关系客体知识点（外键）
+                relation_type TEXT NOT NULL
+                    CHECK (relation_type IN ('prerequisite','concept','confusable')),
+                                                          -- 前置知识/概念关联/易混淆
+                basis_ref TEXT NOT NULL DEFAULT '',       -- 关系依据（考纲章节/教材说明；服务层强制必填）
+                basis_version TEXT NOT NULL DEFAULT '',   -- 依据版本
+                created_by TEXT REFERENCES college_user(id),  -- 建立人（外键）
+                created_at TEXT NOT NULL,                 -- 建立时间
+                UNIQUE(from_kp_id, to_kp_id, relation_type),
+                CHECK (from_kp_id <> to_kp_id)            -- 不允许自环
+            );
+            CREATE INDEX IF NOT EXISTS idx_kp_relation_from
+                ON knowledge_point_relation(from_kp_id, relation_type);
+            CREATE INDEX IF NOT EXISTS idx_kp_relation_to
+                ON knowledge_point_relation(to_kp_id, relation_type);
+            CREATE TABLE IF NOT EXISTS training_tutor_messages (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键；本人隔离）
+                certificate_id TEXT REFERENCES certificate(id),  -- 证书上下文（外键）
+                knowledge_point_id TEXT REFERENCES knowledge_point(id),  -- 知识点入口（可空）
+                attempt_id TEXT REFERENCES training_self_practice_attempts(id),  -- 题目入口（可空，须已判分）
+                question TEXT NOT NULL,                   -- 学生提问
+                answer TEXT NOT NULL,                     -- 助手回答（仅解读；标准答案以作答数据为准）
+                citations_json TEXT NOT NULL DEFAULT '[]',  -- 引用节点 id（JSON 数组）
+                grounding_json TEXT NOT NULL DEFAULT '{}',  -- 组装上下文快照（证据节点）
+                model TEXT NOT NULL DEFAULT '',           -- 模型名（降级为空）
+                degraded TEXT NOT NULL DEFAULT '',        -- 降级说明（空=正常回答）
+                created_at TEXT NOT NULL                  -- 提问时间
+            );
+            CREATE INDEX IF NOT EXISTS idx_tutor_student
+                ON training_tutor_messages(student_id, created_at DESC);
             CREATE TABLE IF NOT EXISTS student_goal (
                 id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
                 student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键）
@@ -475,3 +509,11 @@ def initialize(store) -> None:
             db.execute(
                 "ALTER TABLE training_self_practice_attempts"
                 " ADD COLUMN content_version_id TEXT REFERENCES training_content_version(id)")
+        # 作答细分（FR-K05/K06 待完善项）：新题/原题重做分开标记；跳过不删行、不进练习统计。
+        if "mode" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts"
+                " ADD COLUMN mode TEXT NOT NULL DEFAULT 'new'")
+        if "skipped_at" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts ADD COLUMN skipped_at TEXT")

@@ -159,6 +159,14 @@ async function refresh() {
 
 function fmtNum(v) { return v === null || v === undefined || v === "" ? "—" : esc(v); }
 
+function renderStats() {
+  const box = document.getElementById("pr-stats");
+  const s = state.prStats;
+  if (!s) { box.textContent = ""; return; }
+  const fmt = (b) => b.attempts ? `${b.attempts} 次（满分 ${b.perfect}，正确率 ${(b.accuracy * 100).toFixed(0)}%）` : "0 次";
+  box.textContent = `细分统计 —— 新题：${fmt(s.new)} · 原题重做：${fmt(s.redo_same)} · 未作答即交：${fmt(s.unanswered)} · 跳过：${s.skipped} 次（不计入正确率）`;
+}
+
 async function refreshPractice() {
   const certSel = document.getElementById("pr-cert");
   certSel.innerHTML = state.certificates.map((c) =>
@@ -167,18 +175,22 @@ async function refreshPractice() {
     state.prCert = state.certificates.length ? state.certificates[0].id : null;
   }
   if (state.prCert) certSel.value = state.prCert;
-  const [kpData, wrong, open, dash] = await Promise.all([
+  const [kpData, wrong, open, dash, stats] = await Promise.all([
     state.prCert ? api(`/api/training/my/knowledge-points?certificate_id=${state.prCert}`)
                  : Promise.resolve({ knowledge_points: [] }),
     api("/api/training/my/practice/wrong"),
     api("/api/training/my/practice?status=open"),
     api("/api/training/my/dashboard"),
+    state.prCert ? api(`/api/training/my/practice/stats?certificate_id=${state.prCert}`)
+                 : Promise.resolve(null),
   ]);
   state.kps = kpData.knowledge_points;
   state.wrong = wrong.attempts;
   state.open = open.attempts;
   state.dashboard = dash;
+  state.prStats = stats ? stats.stats : null;
   renderWorkbench();
+  renderStats();
   const kpSel = document.getElementById("pr-kp");
   kpSel.innerHTML = `<option value="">（整证随机）</option>` + state.kps.map((k) =>
     `<option value="${esc(k.id)}">${esc(k.code)} ${esc(k.name)}${k.rule_links ? "" : "（暂无题目）"}</option>`).join("");
@@ -193,14 +205,21 @@ async function refreshPractice() {
 
 function renderKpRows() {
   const box = document.getElementById("pr-kps");
-  box.innerHTML = state.kps.map((k) => `
-    <div class="item"><div class="item-head">
+  box.innerHTML = state.kps.map((k) => {
+    const rel = k.relations || {};
+    const relChips = [
+      ...(rel.prerequisite || []).map((t) => `<span class="chip" title="学本知识点前建议先学">前置：${esc(t.name)}</span>`),
+      ...(rel.confusable || []).map((t) => `<span class="chip" title="与本知识点易混淆">易混淆：${esc(t.name)}</span>`),
+      ...(rel.concept || []).map((t) => `<span class="chip" title="概念关联">关联：${esc(t.name)}</span>`),
+    ].join("");
+    return `<div class="item"><div class="item-head">
       <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
         ${k.high_freq.map((m) => `<span class="badge warn">常考${m.basis_ref ? " · " + esc(m.basis_ref) : ""}</span>`).join("")}
         ${k.rule_links ? "" : `<span class="badge gray">暂无题目</span>`}
       </div>
       <div class="muted">已练 ${k.attempts} 次 · 满分 ${k.perfect} 次</div>
-    </div></div>`).join("");
+    </div>${relChips ? `<div style="margin-top:4px;">${relChips}</div>` : ""}</div>`;
+  }).join("");
 }
 
 function renderWrong() {
@@ -296,7 +315,7 @@ function renderAttempt() {
         <div style="margin:6px 0;">${catalog}</div>
         <div class="actions">
           <button class="primary" data-act="submit">提交判分</button>
-          <button data-act="abandon">放弃本题</button>
+          <button data-act="abandon">跳过本题（留痕，不计入统计）</button>
         </div>
         <div class="error" id="pr-error"></div>
       </div>`;
@@ -317,6 +336,15 @@ function renderAttempt() {
           <button class="small" data-act="redo-new" data-rule="${esc(a.rule_id)}" data-kp="${esc(a.knowledge_point_id || "")}">再练新题</button>
           <button class="small" data-act="redo-same" data-rule="${esc(a.rule_id)}" data-seed="${esc(a.seed)}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>
         </div>
+      </div>
+      <div class="item">
+        <strong>AI 答疑（基于本题解析与知识点依据）</strong>
+        <div class="muted">回答仅作解读参考；标准答案与判分以系统为准，答疑记录仅本人可见。</div>
+        <div class="row" style="margin-top:6px;">
+          <input id="tutor-q" placeholder="如：为什么这项是漏检？判定依据是什么？">
+          <button class="small primary" data-act="tutor-ask" style="flex:0 0 auto;">问 AI</button>
+        </div>
+        <div id="tutor-out"></div>
       </div>`;
   }
 }
@@ -442,14 +470,34 @@ document.getElementById("pr-attempt").addEventListener("click", async (event) =>
       document.getElementById("pr-error").textContent = err.message + "（你的选择已保留，可修正后重新提交）";
     }
   } else if (act === "abandon") {
+    try {
+      await api(`/api/training/my/practice/${state.attempt.id}/skip`, { method: "POST" });
+      flash("已跳过：留痕统计，不计入正确率。");
+    } catch (err) { flash(err.message, true); }
     state.attempt = null;
     renderAttempt();
+    await refreshPractice().catch(() => {});
+  } else if (act === "tutor-ask") {
+    const q = document.getElementById("tutor-q").value.trim();
+    const out = document.getElementById("tutor-out");
+    if (!q) { out.innerHTML = `<p class="error">请输入问题。</p>`; return; }
+    try {
+      const data = await api("/api/training/my/tutor", { method: "POST", body: {
+        certificate_id: state.attempt.certificate_id || state.prCert,
+        attempt_id: state.attempt.id, question: q } });
+      const m = data.message;
+      out.innerHTML = `<div class="detail ${m.degraded ? "miss" : "ok"}">${esc(m.answer).replace(/\n/g, "<br>")}</div>
+        <div class="muted">引用：${m.citations.map(esc).join("、") || "（无）"}${m.model ? " · 模型：" + esc(m.model) : ""}</div>`;
+    } catch (err) {
+      out.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    }
   } else if (act === "redo-new") {
     startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
-                    rule_id: btn.dataset.rule || null }).catch((err) => flash(err.message, true));
+                    rule_id: btn.dataset.rule || null, mode: "new" }).catch((err) => flash(err.message, true));
   } else if (act === "redo-same") {
     startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
-                    rule_id: btn.dataset.rule, seed: parseInt(btn.dataset.seed, 10) }).catch((err) => flash(err.message, true));
+                    rule_id: btn.dataset.rule, seed: parseInt(btn.dataset.seed, 10),
+                    mode: "redo_same" }).catch((err) => flash(err.message, true));
   } else if (act === "resume") {
     try {
       const data = await api(`/api/training/my/practice/${btn.dataset.id}`);

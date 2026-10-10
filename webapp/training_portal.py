@@ -30,6 +30,7 @@ from webapp.login_guard import LoginGuard
 from webapp.storage import _hash_token, _now, session_max_age
 from webapp.training_content import (applicability, ensure_active_version,
                                      resolve_active_version, version_brief)
+from webapp.training_graph import relations_payload
 
 STATIC_DIR_KEYS = ("training-portal.html", "training-portal.js")
 
@@ -523,7 +524,18 @@ def _kp_payload(db, row: sqlite3.Row) -> dict[str, Any]:
     links = db.execute(
         "SELECT id, target_type, target_id, created_at FROM knowledge_point_link"
         " WHERE knowledge_point_id=? ORDER BY target_type, target_id", (row["id"],)).fetchall()
-    return dict(row) | {"marks": [dict(m) for m in marks], "links": [dict(l) for l in links]}
+    return dict(row) | {"marks": [dict(m) for m in marks], "links": [dict(l) for l in links],
+                        "relations": relations_payload(db, row["id"]),
+                        "incoming_prerequisite": _incoming_prerequisite(db, row["id"])}
+
+
+def _incoming_prerequisite(db, kp_id: str) -> list[dict[str, Any]]:
+    """哪些知识点把当前知识点当前置（教师视图展示图谱入边）。"""
+    rows = db.execute(
+        """SELECT r.id, r.basis_ref, r.basis_version, k.id AS kp_id, k.code, k.name
+           FROM knowledge_point_relation r JOIN knowledge_point k ON k.id = r.from_kp_id
+           WHERE r.to_kp_id=? AND r.relation_type='prerequisite' ORDER BY k.code""", (kp_id,)).fetchall()
+    return [dict(r) for r in rows]
 
 
 def list_knowledge_points(store, staff: dict, cert_id: str, *,
@@ -720,6 +732,7 @@ def student_knowledge_points(store, student_id: str, cert_id: str) -> list[dict[
             item = dict(row)
             item["high_freq"] = [dict(m) for m in marks]
             item["rule_links"] = rule_counts.get(row["id"], 0)
+            item["relations"] = relations_payload(db, row["id"])
             stat = coverage.get(row["id"], {"attempts": 0, "perfect": 0})
             item["attempts"] = stat["attempts"]
             item["perfect"] = stat["perfect"]
@@ -757,7 +770,12 @@ def _candidate_rules(db, cert_id: str, kp_id: str | None) -> list[str]:
 
 
 def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = None,
-                   rule_id: str | None = None, seed: int | None = None) -> dict[str, Any]:
+                   rule_id: str | None = None, seed: int | None = None,
+                   mode: str = "new") -> dict[str, Any]:
+    if mode not in ("new", "redo_same"):
+        raise TrainingPortalError("作答模式必须是 new 或 redo_same。")
+    if mode == "redo_same" and (rule_id is None or seed is None):
+        raise TrainingPortalError("原题重做必须显式提供规则与种子。")
     rules = _load_rules()
     by_id = {r.id: r for r in rules}
     with store.connect() as db:
@@ -797,10 +815,10 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
     with store.connect() as db:
         db.execute(
             """INSERT INTO training_self_practice_attempts (id, student_id, certificate_id, knowledge_point_id,
-               rule_id, seed, level, year, digest, status, content_version_id, created_at)
-               VALUES (?,?,?,?,?,?, 'normal', ?, ?, 'open', ?, ?)""",
+               rule_id, seed, level, year, digest, status, content_version_id, mode, created_at)
+               VALUES (?,?,?,?,?,?, 'normal', ?, ?, 'open', ?, ?, ?)""",
             (attempt_id, student_id, cert_id, kp_id, rule_id, seed, version["year"], digest,
-             version["id"], _now()))
+             version["id"], mode, _now()))
         row = db.execute("SELECT * FROM training_self_practice_attempts WHERE id=?", (attempt_id,)).fetchone()
         return _open_view(exercise, row, rules, db=db)
 
@@ -811,6 +829,7 @@ def _open_view(exercise, row: Any, rules: list[Any], db=None) -> dict[str, Any]:
         "id": row["id"], "status": "open",
         "certificate_id": row["certificate_id"], "knowledge_point_id": row["knowledge_point_id"],
         "level": row["level"], "year": row["year"], "created_at": row["created_at"],
+        "mode": row["mode"], "skipped": bool(row["skipped_at"]),
         "materials": _materials(exercise),
         "rule_catalog": sorted(({"id": r.id, "name": r.name} for r in rules), key=lambda x: x["name"]),
     }
@@ -873,7 +892,7 @@ def _scored_view(row: sqlite3.Row, db=None) -> dict[str, Any]:
     view = {
         "id": row["id"], "status": "scored", "certificate_id": row["certificate_id"],
         "knowledge_point_id": row["knowledge_point_id"], "rule_id": row["rule_id"],
-        "seed": row["seed"], "level": row["level"], "year": row["year"],
+        "seed": row["seed"], "level": row["level"], "year": row["year"], "mode": row["mode"],
         "answers": json.loads(row["answers_json"] or "[]"),
         "result": result, "score": result.get("score"), "perfect": result.get("perfect"),
         "created_at": row["created_at"], "scored_at": row["scored_at"],
@@ -891,6 +910,8 @@ def list_attempts(store, student_id: str, *, cert_id: str | None = None,
         clauses.append("AND certificate_id=?"); params.append(cert_id)
     if status in ("open", "scored"):
         clauses.append("AND status=?"); params.append(status)
+    if status == "open":
+        clauses.append("AND skipped_at IS NULL")  # 跳过的作答不再出现在"未完成"里
     params.append(max(1, min(int(limit), 200)))
     out = []
     with store.connect() as db:
@@ -902,9 +923,65 @@ def list_attempts(store, student_id: str, *, cert_id: str | None = None,
                 view = _scored_view(row, db)
             else:
                 view = {"id": row["id"], "status": "open", "certificate_id": row["certificate_id"],
-                        "knowledge_point_id": row["knowledge_point_id"], "created_at": row["created_at"]}
+                        "knowledge_point_id": row["knowledge_point_id"], "created_at": row["created_at"],
+                        "mode": row["mode"], "skipped": bool(row["skipped_at"])}
             out.append(view)
     return out
+
+
+def skip_practice(store, student_id: str, attempt_id: str) -> dict[str, Any]:
+    """跳过：只标记不判分，留痕供统计；已判分的作答不可跳过（跳过不计入正确率）。"""
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT * FROM training_self_practice_attempts WHERE id=? AND student_id=?",
+            (attempt_id, student_id)).fetchone()
+        if not row:
+            raise TrainingPortalError("作答记录不存在。", 404)
+        if row["status"] == "scored":
+            raise TrainingPortalError("该题已判分，不能跳过。", 409)
+        if not row["skipped_at"]:
+            db.execute("UPDATE training_self_practice_attempts SET skipped_at=? WHERE id=?",
+                       (_now(), attempt_id))
+        return {"attempt_id": attempt_id, "skipped": True}
+
+
+def practice_stats(store, student_id: str, cert_id: str) -> dict[str, Any]:
+    """作答细分统计（FR-K05/K06 待完善项）：新题/原题重做/未作答即交/跳过分开列示。
+
+    口径：accuracy=满分/已判分；未作答即交（空选择）单独计数，不与新题正确率混算；
+    跳过不计入任何正确率。"""
+    def bucket(mode: str) -> dict[str, Any]:
+        return {"attempts": 0, "perfect": 0, "accuracy": None}
+
+    stats = {"new": bucket("new"), "redo_same": bucket("redo_same"),
+             "unanswered": {"attempts": 0, "perfect": 0, "accuracy": None}, "skipped": 0}
+    with store.connect() as db:
+        if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在。", 404)
+        rows = db.execute(
+            """SELECT id, mode, answers_json, skipped_at, result_json FROM training_self_practice_attempts
+               WHERE student_id=? AND certificate_id=?""", (student_id, cert_id)).fetchall()
+    for r in rows:
+        if r["skipped_at"]:
+            stats["skipped"] += 1
+            continue
+        if r["result_json"] is None:
+            continue  # 作答中，不计入统计
+        try:
+            result = json.loads(r["result_json"] or "{}")
+        except ValueError:
+            result = {}
+        perfect = bool(result.get("perfect"))
+        empty = not json.loads(r["answers_json"] or "[]")
+        key = "unanswered" if empty else ("redo_same" if r["mode"] == "redo_same" else "new")
+        stats[key]["attempts"] += 1
+        if perfect:
+            stats[key]["perfect"] += 1
+    for b in stats.values():
+        if isinstance(b, dict) and b["attempts"]:
+            b["accuracy"] = round(b["perfect"] / b["attempts"], 4)
+    return stats
 
 
 def wrong_attempts(store, student_id: str, cert_id: str | None = None) -> list[dict[str, Any]]:
@@ -1155,6 +1232,7 @@ class PracticeStart(BaseModel):
     knowledge_point_id: str | None = None
     rule_id: str | None = None
     seed: int | None = None
+    mode: str = "new"  # new=新题 / redo_same=原题重做（错题订正，须显式给 rule_id+seed）
 
 
 class PracticeSubmit(BaseModel):
@@ -1298,7 +1376,22 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         who = student(session)
         return response({"attempt": start_practice(
             store_provider(), who["id"], body.certificate_id,
-            kp_id=body.knowledge_point_id, rule_id=body.rule_id, seed=body.seed)})
+            kp_id=body.knowledge_point_id, rule_id=body.rule_id, seed=body.seed,
+            mode=body.mode)})
+
+    @app.post("/api/training/my/practice/{attempt_id}/skip")
+    @guarded
+    def practice_skip(attempt_id: str,
+                      session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response(skip_practice(store_provider(), who["id"], attempt_id))
+
+    @app.get("/api/training/my/practice/stats")
+    @guarded
+    def practice_stats_route(certificate_id: str,
+                             session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"stats": practice_stats(store_provider(), who["id"], certificate_id)})
 
     @app.get("/api/training/my/practice/wrong")
     @guarded
