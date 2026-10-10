@@ -88,7 +88,7 @@ main>.wrap.nav-collapsed{padding-left:calc(var(--sidebar-width) + 32px)}
 @media(max-width:1150px){#knowledgePanel .graph-workspace{grid-template-columns:minmax(0,1fr) 270px}.graph-summary{display:none}.graph-filterbar{gap:10px;padding:14px}.graph-title-tag{display:none}#knowledgePanel .graph-toolbar{margin-left:12px;margin-right:12px}.graph-stage-heading{padding:18px 16px 0}}
 @media(max-width:950px){#knowledgePanel .graph-workspace{grid-template-columns:1fr}.graph-filterbar{grid-template-columns:1fr 1fr}#knowledgePanel #graphCanvas{height:440px}#knowledgePanel #knowledgeDetail,#knowledgePanel #graphAssistant{max-height:500px}}
 @media(max-width:520px){#knowledgePanel .graph-page-head h2{font-size:21px}#knowledgePanel .graph-page-head .muted{font-size:11px}.graph-stage-heading{padding:16px 14px 0}#knowledgePanel .graph-toolbar{margin:14px 10px 0;flex-wrap:wrap}#knowledgePanel .graph-toolbar button{padding:7px}#knowledgePanel #graphCanvas{height:350px}#knowledgePanel .graph-legend{padding:12px 14px;gap:12px}.graph-filterbar{gap:12px}#knowledgePanel .graph-hint{padding:4px 14px 14px}}
-.risk-chart-panel{position:relative}.risk-segment{cursor:help;pointer-events:visibleStroke;transition:opacity .15s}.risk-segment.is-highlighted,.risk-segment:focus-visible{stroke-width:32;opacity:.88;outline:none}.risk-legend-row{cursor:help;border-radius:8px}.risk-legend-row:focus-visible{outline:2px solid #98baf6;outline-offset:3px}.risk-hover-card{position:absolute;z-index:25;width:300px;max-width:calc(100% - 16px);padding:15px 17px;background:#fff;border:1px solid #dde5f1;border-radius:6px;box-shadow:0 3px 10px #23395716;pointer-events:none;color:#344763;font-size:12px}.risk-hover-card[hidden]{display:none}.risk-hover-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;padding-bottom:10px;border-bottom:1px solid #edf1f6}.risk-hover-heading>span{font-size:11px;color:#7b8aa0;white-space:nowrap}.risk-hover-findings{padding-left:17px;margin:10px 0 0;line-height:1.8;overflow-wrap:anywhere}.risk-hover-findings li+li{margin-top:6px}
+.risk-chart-panel{position:relative}.risk-segment{cursor:help;pointer-events:visibleStroke;transition:opacity .15s}.risk-segment.is-highlighted,.risk-segment:focus-visible{stroke-width:42;opacity:.95;outline:none}.risk-legend-row{cursor:help;border-radius:8px}.risk-legend-row:focus-visible{outline:2px solid #98baf6;outline-offset:3px}.risk-hover-card{position:absolute;z-index:25;width:300px;max-width:calc(100% - 16px);padding:15px 17px;background:#fff;border:1px solid #dde5f1;border-radius:6px;box-shadow:0 3px 10px #23395716;pointer-events:none;color:#344763;font-size:12px}.risk-hover-card[hidden]{display:none}.risk-hover-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;padding-bottom:10px;border-bottom:1px solid #edf1f6}.risk-hover-heading>span{font-size:11px;color:#7b8aa0;white-space:nowrap}.risk-hover-findings{padding-left:17px;margin:10px 0 0;line-height:1.8;overflow-wrap:anywhere}.risk-hover-findings li+li{margin-top:6px}
 @media(prefers-reduced-motion:reduce){.risk-segment{transition:none}}
 
 /* Readable workspace scale and balanced dashboard layout. */
@@ -204,11 +204,11 @@ footer{font-size:13.5px}
 
 /* 工作台与审计详情的字体和侧栏尺寸。 */
 /* 工作台与审计详情的字体和侧栏尺寸。 */
-body{--sidebar-width:256px;font-size:17px}
+body{--sidebar-width:272px;font-size:17px}
 body:has(.nav-collapsed){--sidebar-width:76px}
 .nav-collapsed .nav{width:76px}
-@media(max-width:1050px){body{--sidebar-width:210px}}
-@media(min-width:1800px){body{--sidebar-width:280px}}
+@media(max-width:1050px){body{--sidebar-width:244px}}
+@media(min-width:1800px){body{--sidebar-width:288px}}
 .nav{padding:24px 11px}
 .nav-caption{font-size:14px}
 .nav button[data-panel]{min-height:52px;padding:14px 10px;font-size:17px}
@@ -259,3 +259,888 @@ body:has(.nav-collapsed){--sidebar-width:76px}
 /* 长列表（操作日志、通知、各类台账）在卡片内部滚动，不再把页面撑得很长 */
 .data-list{max-height:520px;overflow-y:auto;overscroll-behavior:contain;overflow-wrap:anywhere;scrollbar-width:thin;scrollbar-color:#c7d6ec transparent}
 @media(max-width:600px){.stat-row{grid-template-columns:repeat(2,minmax(0,1fr))}.stat .l{line-height:1.5}}
+
+/* Confirmed platinum workspace shell; authentication keeps its own presentation. */
+body.workspace-ready {
+  --bg: #eef1f4;
+  --card: #fdfdfd;
+  --line: #dce3e9;
+  --ink: #253340;
+  --ink-2: #536471;
+  --ink-3: #687988;
+  --navy: #314d65;
+  --navy-2: #49667d;
+  --gold: #806840;
+  --platinum-face: linear-gradient(#fdfdfd, #f4f4f4);
+  --platinum-rim: linear-gradient(135deg, #fafafa, #c8c8c8, #f0e6cc, #9a9a9a, #e8e2d2, #ffffff);
+  --platinum-shadow: 0 1px 0 #ffffff inset, 0 -1px 0 #8195a326 inset, 0 2px 3px #32485b12, 0 8px 16px #32485b0a;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+}
+#appMain > .wrap,
+#appMain > .wrap.nav-collapsed {
+  padding: 28px 32px 60px calc(var(--sidebar-width) + 32px);
+  min-height: 100dvh;
+}
+#appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector) {
+  border: 3px solid transparent;
+  border-radius: 24px;
+  background: var(--platinum-face) padding-box, var(--platinum-rim) border-box;
+  box-shadow: var(--platinum-shadow);
+}
+#appMain .dropzone:hover,
+#appMain .dropzone.drag {
+  border-color: transparent;
+  background: linear-gradient(#ffffff, #f5f3ed) padding-box, var(--platinum-rim) border-box;
+}
+#appMain .nav {
+  top: 0;
+  bottom: 0;
+  padding: 16px 14px;
+  border: 3px solid transparent;
+  border-radius: 0 36px 36px 0;
+  background: var(--platinum-face) padding-box, var(--platinum-rim) border-box;
+  box-shadow: var(--platinum-shadow);
+  scrollbar-width: none;
+  scrollbar-color: #a7b7c6 transparent;
+ gap: 6px; overflow: visible; overscroll-behavior: auto;}
+#appMain .nav > button { flex-shrink: 0; }
+.nav-brand { display: flex; align-items: center; justify-content: center; gap: 8px; flex-shrink: 0; padding: 0 0 16px; text-align: center; }
+.nav-brand img { user-select: none; -webkit-user-select: none; -webkit-user-drag: none; }
+.nav-brand-logo { display: block; width: 80px; height: auto; flex: 0 0 80px; object-fit: contain; }
+.nav-brand-wordmark { display: block; width: 150px; max-width: calc(100% - 88px); min-width: 0; height: auto; object-fit: contain; }
+#appMain .nav-collapsed .nav-brand-logo { width: 80px; flex-basis: 80px; }
+#appMain .nav-collapsed .nav-brand-wordmark { display: none; }
+
+
+
+
+#appMain .nav-heading { border-color: #d9e1e8;  min-height: 32px; padding-bottom: 8px; margin-bottom: 8px; flex-shrink: 0;}
+#appMain .nav-caption { color: var(--ink-2); letter-spacing: 1px; }
+#appMain .nav button[data-panel] { border: 1px solid transparent; border-radius: 999px; color: var(--ink-2);  min-height: 44px; padding: 10px; font-size: 16px; line-height: 20px;}
+#appMain .nav button[data-panel]:hover { background: #e9eef2; }
+#appMain .nav button[data-panel].active {
+  color: #ffffff;
+  border-color: #a8bac8;
+  border-top-color: #d0dce6;
+  border-bottom-color: #324b5e;
+  background: linear-gradient(155deg, #526c80, #3e586d 35%, #2c4254 78%, #365068);
+  box-shadow: 0 1px 0 #dce7f04d inset, 0 -1px 0 #10253666 inset, 0 2px 3px #243b4e26;
+}
+#appMain .nav button[data-panel].active .nav-icon { color: #e7d4a7; }
+#appMain .nav #navToggle { color: var(--ink-2); border-radius: 999px; }
+#appMain .nav #navToggle:hover { background: #e3eaf0; }
+#appMain #appHeader {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  padding: 12px 0 0;
+  margin-top: auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  color: var(--ink);
+}
+#appHeader .top-tools { flex-direction: column; align-items: stretch; gap: 10px; }
+#appHeader #currentUser { font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+#appHeader #btnLogout { border: 1px solid #b9c8d4; border-radius: 999px; padding: 8px 12px; background: linear-gradient(#ffffff, #e8eef3); color: var(--navy); box-shadow: 0 1px 0 #ffffff inset, 0 2px 3px #32485b14; }
+#appMain .nav-collapsed .nav-brand { padding: 6px 0 24px; }
+#appMain .nav-collapsed #currentUser { display: none; }
+#appMain .nav-collapsed .nav { padding-left: 10px; padding-right: 10px; }
+#appMain .nav-collapsed #btnLogout { font-size: 12px; padding: 7px 4px; }
+/* Collapsing hides labels while preserving logo, row heights and vertical spacing. */
+@media (min-width: 761px) {
+  body:has(.nav-collapsed) { --sidebar-width: 114px; }
+  #appMain .nav-collapsed .nav { width: var(--sidebar-width); padding: 16px 14px; align-items: center; }
+  #appMain .nav-brand, #appMain .nav-collapsed .nav-brand { width: 100%; height: 80px; padding: 0 0 16px; }
+  #appMain .nav-collapsed .nav-brand { gap: 0; }
+  #appMain .nav-heading, #appMain .nav-collapsed .nav-heading { width: 100%; height: 44px; min-height: 44px; margin-bottom: 8px; }
+  #appMain .nav > button[data-panel], #appMain .nav-collapsed .nav > button[data-panel] { display: flex; align-items: center; height: 46px; min-height: 46px; padding: 10px; }
+  #appMain .nav-collapsed .nav > button[data-panel] { justify-content: center; }
+  #appMain .nav-icon { margin: 0; }
+  #appMain .nav-collapsed #appHeader { width: 100%; }
+  #appMain .nav-collapsed #appHeader .account-control { height: 50px; margin-inline: auto; }
+}
+@media (min-width: 761px) and (max-height: 780px) {
+  #appMain .nav, #appMain .nav-collapsed .nav { padding-block: 10px; gap: 4px; }
+}
+#reportVerification, #ruleEditor { scroll-margin-top: 24px; }
+body.workspace-ready #appFooter { background: transparent; color: var(--ink-2); }
+@media (max-width: 1050px) {
+  #appMain > .wrap, #appMain > .wrap.nav-collapsed { padding-right: 24px; padding-left: calc(var(--sidebar-width) + 24px); }
+}
+@media (max-width: 760px) {
+  #appMain > .wrap, #appMain > .wrap.nav-collapsed { padding: 0 16px 32px; }
+  #appMain .nav, #appMain .nav-collapsed .nav {
+    position: relative; top: auto; bottom: auto; width: calc(100% + 32px); margin: 0 -16px 24px;
+    padding: 16px; border-radius: 0 0 24px 24px; flex-direction: row; flex-wrap: wrap;
+  }
+  .nav-brand { width: 100%; padding: 0 0 8px; }
+  .nav-brand-logo { width: 80px; }
+
+
+  #appMain #appHeader { width: 100%; margin: 8px 0 0; padding: 12px 0 0; border-top: 1px solid #d9e1e8; }
+  #appHeader .top-tools { flex-direction: row; justify-content: space-between; }
+  #appHeader #btnLogout { font-size: 13px; padding: 7px 14px; }
+  #appMain .nav-collapsed .nav-brand { display: none; }
+  #appMain .nav-collapsed #currentUser { display: block; }
+  #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector) { border-radius: 18px; }
+}
+
+@media (min-width: 761px) and (max-height: 760px) {
+  #appMain .nav {
+    position: absolute;
+    bottom: auto;
+    min-height: 100dvh;
+  }
+  #appMain > .wrap,
+  #appMain > .wrap.nav-collapsed { min-height: 700px; }
+}
+
+/* Native workspace forms share the confirmed metal controls. */
+#appMain .field :is(input:not([type=checkbox]):not([type=radio]), select, textarea),
+#appMain .dropdown-toggle,
+#appMain .material-company input {
+  min-width: 0;
+  border: 1px solid #c1cdd7;
+  border-radius: 12px;
+  background: linear-gradient(#ffffff, #f5f7f9);
+  color: var(--ink);
+  box-shadow: 0 1px 2px #32485b12 inset, 0 1px 0 #ffffff;
+}
+#appMain .field :is(input:not([type=checkbox]):not([type=radio]), select),
+#appMain .dropdown-toggle { min-height: 46px; }
+#appMain .field textarea { min-height: 90px; resize: vertical; }
+#appMain .field input::placeholder,
+#appMain .field textarea::placeholder { color: #778896; }
+#appMain .field :is(input, select, textarea):focus-visible,
+#appMain .dropdown-toggle:focus-visible { outline: 2px solid #688aa6; outline-offset: 2px; }
+#appMain .btn { border-radius: 12px; min-height: 44px; }
+#appMain .btn.pdf,
+#appMain .dropzone .pick {
+  border: 1px solid #a8bac8;
+  border-top-color: #d0dce6;
+  border-bottom-color: #324b5e;
+  background: linear-gradient(155deg, #526c80, #3e586d 35%, #2c4254 78%, #365068);
+  color: #ffffff;
+  box-shadow: 0 1px 0 #dce7f04d inset, 0 2px 3px #243b4e26;
+}
+#appMain .btn.pdf:hover,
+#appMain .dropzone .pick:hover { background: linear-gradient(155deg, #607b8f, #405d73 40%, #324c60); }
+#appMain .btn.re {
+  border: 1px solid #bac8d4;
+  border-top-color: #ffffff;
+  border-bottom-color: #a5b6c4;
+  background: linear-gradient(#ffffff, #e8eef3);
+  color: var(--navy);
+  box-shadow: 0 1px 0 #ffffff inset, 0 2px 3px #32485b14;
+}
+#appMain .btn.re:hover { background: linear-gradient(#ffffff, #f0f4f7); }
+#appMain .btn:active { box-shadow: 0 1px 2px #32485b26 inset; }
+#appMain .btn:disabled { opacity: .55; cursor: not-allowed; }
+#appMain .field input[type=file] {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  height: 56px;
+  min-height: 56px;
+  padding: 10px 12px;
+  font-size: 14px;
+  line-height: 32px;
+}
+#appMain input[type=file]::file-selector-button {
+  border: 1px solid #a6b8c7;
+  border-radius: 8px;
+  box-sizing: border-box;
+  height: 32px;
+  padding: 5px 12px;
+  margin: 0 12px 0 0;
+  background: linear-gradient(#ffffff, #e8eef3);
+  color: var(--navy);
+  font: inherit;
+  line-height: 20px;
+  vertical-align: middle;
+  cursor: pointer;
+  box-shadow: 0 1px 0 #ffffff inset;
+}
+#appMain input[type=file]::file-selector-button:hover { background: #f5f8fa; }
+#appMain #uploadScope details { border-color: #c8d3dd; border-radius: 16px; background: linear-gradient(#eef2f6, #f8fafc); }
+#appMain #uploadScope summary { color: var(--navy); border-radius: 16px; }
+#appMain #uploadScope summary::before { color: #68879f; }
+#appMain #uploadScope summary:hover { background: #e8eef3; }
+#appMain #orgSettingsAdmin > .row { margin-top: 18px; }
+#appMain #orgSettingsAdmin .org-logo-editor > div { flex: 1; min-width: 0; }
+
+/* Keep workspace cards comfortable to scan on wide displays. */
+#appMain > .wrap > .panel {
+  width: 96%;
+  max-width: 1280px;
+  margin-inline: auto;
+  min-width: 0;
+}
+#appMain #uploadScope > .field { max-width: 800px; }
+@media (max-width: 1050px) {
+  #appMain > .wrap > .panel { width: 100%; }
+}
+
+/* Keep report template file selection and actions in separate rows. */
+#appMain #orgSettingsAdmin .org-logo-editor { margin-block: 20px; align-items: start; }
+#appMain #orgSettingsAdmin .org-logo-editor > div { display: grid; gap: 16px; }
+#appMain #orgSettingsAdmin .org-logo-editor .field { margin: 0; }
+#appMain #orgSettingsAdmin .org-logo-editor .row { margin: 0; align-items: center; gap: 12px; }
+#appMain #orgSettingsAdmin > .row:last-child {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+  align-items: center;
+  gap: 14px;
+}
+#appMain #orgSettingsAdmin #orgSettingsStatus { margin: 0; }
+
+/* Account actions use the existing logout frame with circular metal icons. */
+#appMain #appHeader .account-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 50px;
+  padding: 0 12px 0 0;
+  border: 1px solid #b9c8d4;
+  border-radius: 999px;
+  background: linear-gradient(#ffffff, #e8eef3);
+  color: var(--navy);
+  box-shadow: 0 1px 0 #ffffff inset, 0 2px 3px #32485b14;
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+  list-style: none;
+}
+#appMain #appHeader .account-control::-webkit-details-marker { display: none; }
+#appMain #appHeader .account-control:hover { background: linear-gradient(#ffffff, #f0f4f7); }
+#appMain #appHeader .account-control:focus-visible { outline: 2px solid #688aa6; outline-offset: 3px; }
+.account-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 48px;
+  width: 48px;
+  height: 48px;
+  border: 1px solid #adbdcb;
+  border-radius: 50%;
+  background: linear-gradient(#ffffff, #dce6ee);
+  box-shadow: 0 1px 0 #ffffff inset, 0 1px 2px #32485b17;
+}
+.account-icon svg { display: block; width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+#appMain .nav-collapsed #appHeader .account-control { justify-content: center; padding: 0; }
+#appMain .nav-collapsed #appHeader .account-label { display: none; }
+@media (max-width: 760px) {
+  #appHeader .top-tools { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  #appMain .nav-collapsed #appHeader .account-control { justify-content: flex-start; padding: 0 12px 0 0; }
+  #appMain .nav-collapsed #appHeader .account-label { display: inline; }
+}
+
+/* Keep the sidebar content in one layout throughout the width transition. */
+@media (min-width: 761px) {
+  #appMain > .wrap { --nav-duration: .38s; --nav-layout-delay: 0s; --nav-ease: cubic-bezier(.22, 1, .36, 1); transition: padding-left var(--nav-duration) var(--nav-ease) var(--nav-layout-delay); }
+  #appMain > .wrap.nav-collapsed { --nav-layout-delay: .2s; }
+  #appMain .nav, #appMain .nav-collapsed .nav { align-items: stretch; transition: width var(--nav-duration) var(--nav-ease) var(--nav-layout-delay); }
+  #appMain .nav-brand, #appMain .nav-collapsed .nav-brand { position: relative; overflow: hidden; }
+  #appMain .nav-brand-logo { position: absolute; left: 0; top: 32px; transform: translateY(-50%); }
+  #appMain .nav-brand-wordmark, #appMain .nav-collapsed .nav-brand-wordmark { display: block; position: absolute; left: 88px; top: 32px; width: 150px; max-width: none; transform: translateY(-50%); opacity: 1; transition: opacity .2s ease-in-out .24s; }
+  #appMain .nav-collapsed .nav-brand-wordmark { opacity: 0; transition-delay: 0s; }
+  #appMain .nav-heading, #appMain .nav-collapsed .nav-heading { position: relative; display: block; overflow: hidden; }
+  #appMain .nav-caption, #appMain .nav-collapsed .nav-caption { display: block; position: absolute; left: 0; top: 0; white-space: nowrap; opacity: 1; will-change: opacity; transition: opacity .2s ease-in-out .24s; }
+  #appMain .nav-collapsed .nav-caption { opacity: 0; pointer-events: none; transition-delay: 0s; }
+  #appMain .nav #navToggle { position: absolute; right: 0; top: 0; transition: right var(--nav-duration) var(--nav-ease) var(--nav-layout-delay), background-color .18s ease; }
+  #appMain #navToggle svg { transition: transform var(--nav-duration) var(--nav-ease); }
+  #appMain .nav > button[data-panel], #appMain .nav-collapsed .nav > button[data-panel] { position: relative; justify-content: flex-start; width: 100%; margin-inline: auto; overflow: hidden; transition: width var(--nav-duration) var(--nav-ease) var(--nav-layout-delay), background-color .18s ease, box-shadow .18s ease, transform .18s ease, filter .2s ease; }
+  #appMain .nav-collapsed .nav > button[data-panel] { width: 46px; }
+  #appMain .nav > button[data-panel] .nav-icon { position: absolute; left: 10.5px; top: 50%; transform: translateY(-50%); }
+  #appMain .nav-label, #appMain .nav-collapsed .nav-label { display: inline-block; margin-left: 35px; flex-shrink: 0; white-space: nowrap; opacity: 1; transition: opacity .2s ease-in-out .24s; }
+  #appMain .nav-collapsed .nav-label { opacity: 0; pointer-events: none; transition-delay: 0s; }
+  #appMain #appHeader .account-control, #appMain .nav-collapsed #appHeader .account-control { position: relative; justify-content: flex-start; width: 100%; height: 50px; padding: 0; margin-inline: auto; overflow: hidden; white-space: nowrap; transition: width var(--nav-duration) var(--nav-ease) var(--nav-layout-delay), box-shadow .18s ease, transform .18s ease, filter .2s ease; }
+  #appMain .nav-collapsed #appHeader .account-control { width: 50px; }
+  #appMain #appHeader .account-icon { flex-shrink: 0; }
+  #appMain #appHeader .account-label, #appMain .nav-collapsed #appHeader .account-label { display: inline-block; flex-shrink: 0; white-space: nowrap; opacity: 1; transition: opacity .2s ease-in-out .24s; }
+  #appMain .nav-collapsed #appHeader .account-label { opacity: 0; pointer-events: none; transition-delay: 0s; }
+  body.workspace-ready #appFooter { transition: margin-left .38s cubic-bezier(.22, 1, .36, 1); }
+  body.workspace-ready:has(.nav-collapsed) #appFooter { transition-delay: .2s; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #appMain > .wrap, #appMain .nav, #appMain .nav *, body.workspace-ready #appFooter { transition: none !important; }
+}
+
+/* Compact dashboard risk summary, with the legend alongside its title. */
+#dashboardPanel .dash-grid { margin-bottom: 20px; }
+#dashboardPanel .dash-grid > .sheet { margin-bottom: 0; }
+#dashboardPanel .risk-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+#dashboardPanel .risk-card-heading h2 { margin: 0; }
+#dashboardPanel .risk-card-heading .risk-breakdown { flex: 0 0 auto; min-width: 0; display: grid; gap: 4px; }
+#dashboardPanel .risk-card-heading .risk-legend-row { padding: 0; margin: 0; font-size: 12px; line-height: 18px; }
+#dashboardPanel .risk-distribution { margin: 6px 0 12px; }
+#dashboardPanel .risk-donut { flex-basis: 160px; margin-inline: auto; }
+#dashboardPanel .risk-details { border-color: var(--line); margin: 0; padding-top: 4px; }
+#dashboardPanel .risk-detail { padding-top: 12px; font-size: 14px; line-height: 1.6; }
+#dashboardPanel .risk-detail strong { font-size: 14px; }
+#dashboardPanel .risk-detail p { margin: 4px 0; }
+#dashboardPanel .risk-chart-panel > .btn { min-height: 40px; padding: 8px 14px; margin-top: 12px; }
+#dashboardPanel .risk-chart-panel > .source-note { margin-top: 10px; font-size: 12px; line-height: 1.6; }
+
+/* Equal chart cards; explanations expand within the risk card. */
+#dashboardPanel .dash-grid { align-items: stretch; }
+#dashboardPanel .dash-grid > .sheet {
+  height: 480px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+#dashboardPanel .dash-grid > .sheet > h2,
+#dashboardPanel .dash-grid > .sheet > p,
+#dashboardPanel .dash-grid > .sheet > .legend,
+#dashboardPanel .risk-card-heading { flex-shrink: 0; }
+#dashboardPanel .dash-grid .chart { flex: 1 1 auto; min-height: 0; }
+#dashboardPanel .risk-distribution {
+  flex: 0 0 160px;
+  height: 160px;
+  min-height: 160px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+#dashboardPanel .risk-donut { width: 160px; height: 160px; max-width: 100%; flex: 0 0 160px; }
+#dashboardPanel .risk-donut svg { width: 100%; height: 100%; }
+.trend-area-start { stop-opacity: .16; }
+html[data-theme=dark] #appMain .trend-area-start { stop-opacity: .22; }
+.risk-ring-track { stroke: #dce3e966; }
+.risk-segment { transition: stroke-width .18s ease, opacity .15s; }
+@media (prefers-reduced-motion: reduce) { .risk-segment { transition: none; } }
+#dashboardPanel .risk-explanations {
+  flex-shrink: 0;
+  margin: 0;
+  border: 1px solid #c4d0da;
+  border-radius: 12px;
+  background: linear-gradient(#ffffff, #eef3f7);
+}
+#dashboardPanel .risk-explanations summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--navy);
+  cursor: pointer;
+  list-style: none;
+}
+#dashboardPanel .risk-explanations summary::-webkit-details-marker { display: none; }
+#dashboardPanel .risk-explanations summary::after { content: ""; width: 7px; height: 7px; flex-shrink: 0; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(45deg); }
+#dashboardPanel .risk-explanations[open] summary::after { transform: rotate(225deg); }
+#dashboardPanel .risk-explanations summary:focus-visible { outline: 2px solid #688aa6; outline-offset: 2px; border-radius: 12px; }
+#dashboardPanel .risk-explanations .risk-details {
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 0 12px 10px;
+  scrollbar-width: thin;
+  scrollbar-color: #a7b7c6 transparent;
+}
+#dashboardPanel .risk-chart-panel > .btn { flex-shrink: 0; align-self: flex-start; }
+#dashboardPanel .risk-chart-panel > .risk-empty { flex-shrink: 0; }
+@media (max-width: 760px) {
+  #dashboardPanel .dash-grid > .sheet { height: auto; }
+  #dashboardPanel .dash-grid .chart { flex: none; }
+  #dashboardPanel .risk-distribution { flex: none; height: 160px; }
+  #dashboardPanel .risk-explanations .risk-details { max-height: 180px; }
+}
+
+/* Each risk level remains visible and has its own explanation disclosure. */
+#dashboardPanel .risk-explanation-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+  gap: 6px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: #a7b7c6 transparent;
+}
+#dashboardPanel .risk-explanation-list .risk-explanations summary { padding: 6px 12px; }
+#dashboardPanel .risk-explanation-list .risk-detail { border-top: 1px solid var(--line); padding: 8px 12px 10px; }
+#dashboardPanel .risk-explanation-list .risk-empty { margin: 4px 0; text-align: left; font-size: 13px; line-height: 1.6; }
+@media (max-width: 760px) {
+  #dashboardPanel .dash-grid > .risk-chart-panel { height: 480px; }
+}
+
+/* Personal settings use the shared silver cards and compact account controls. */
+#userSettingsPanel .settings-heading { margin: 0 0 24px; }
+#userSettingsPanel .settings-heading h1 { font-size: 30px; margin: 8px 0 12px; }
+#userSettingsPanel .settings-heading p { margin: 0; }
+#userSettingsPanel .settings-heading > div > p:first-child { font-size: 12px; letter-spacing: 2px; }
+#userSettingsPanel .settings-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr); gap: 24px; align-items: stretch; margin-bottom: 20px; }
+#userSettingsPanel .sheet { min-width: 0; }
+#userSettingsPanel .settings-account-fields { display: grid; gap: 0; margin: 24px 0 8px; }
+#userSettingsPanel .settings-account-fields > div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+#userSettingsPanel dt { color: var(--ink-3); font-size: 14px; }
+#userSettingsPanel dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; font-size: 14px; }
+#userSettingsPanel fieldset { border: 0; margin: 18px 0; padding: 0; min-width: 0; }
+#userSettingsPanel .settings-choice { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 0; margin: 0; border-bottom: 1px solid var(--line); cursor: pointer; }
+#userSettingsPanel .settings-choice strong { display: block; color: var(--ink); font-size: 14px; font-weight: 600; }
+#userSettingsPanel .settings-choice small { display: block; color: var(--ink-3); font-size: 12px; margin-top: 6px; line-height: 1.6; }
+#userSettingsPanel .settings-choice input { flex-shrink: 0; width: 18px; height: 18px; margin: 0; accent-color: var(--navy); }
+#userSettingsPanel .settings-choice:has(input:disabled) { cursor: default; }
+#userSettingsPanel .settings-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+#userSettingsPanel .settings-note { font-size: 12px; line-height: 1.8; margin: 16px 0 0; overflow-wrap: anywhere; }
+#userSettingsPanel .settings-exports { margin-top: 0; }
+#userSettingsPanel .settings-export-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 20px; }
+#userSettingsPanel .settings-export-entry { border: 1px solid var(--line); border-radius: 16px; padding: 20px; display: flex; flex-direction: column; gap: 16px; justify-content: space-between; }
+#userSettingsPanel .settings-export-entry[hidden] { display: none; }
+#userSettingsPanel .settings-export-entry h3 { margin: 0 0 10px; font-size: 16px; }
+#userSettingsPanel .settings-export-entry p { margin: 0; font-size: 13px; line-height: 1.8; }
+#userSettingsPanel .settings-export-entry .btn { align-self: flex-start; }
+#appMain #appHeader .account-control.active { border-color: #8098aa; box-shadow: inset 0 1px 0 #fff, 0 2px 5px #23394824; }
+#userSettingsPanel .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (max-width: 1000px) {
+  #userSettingsPanel .settings-grid { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+}
+
+/* Expanded navigation offers direct choices; the compact rail keeps one cycle button. */
+#appMain #themePicker { position: relative; width: 100%; height: 50px; margin: 0 auto 10px; }
+#appMain #themeOptions { --theme-index: 0; --theme-weight: 1; position: absolute; inset: 0; isolation: isolate; display: grid; grid-template-columns: 1fr 1fr 1.45fr; gap: 2px; padding: 2px; border: 1px solid #bac8d4; border-radius: 999px; opacity: 1; visibility: visible; }
+#appMain #themeOptions::before { content: ""; position: absolute; pointer-events: none; z-index: -1; top: 3px; left: calc(3px + var(--theme-index) * ((100% - 10px) / 3.45 + 2px)); width: calc((100% - 10px) / 3.45 * var(--theme-weight)); height: calc(100% - 6px); border: 1px solid #adbdcb; border-radius: 999px; transition: left .3s cubic-bezier(.22, 1, .36, 1), width .3s cubic-bezier(.22, 1, .36, 1); }
+html[data-theme-preference=dark] #appMain #themeOptions { --theme-index: 1; }
+html[data-theme-preference=system] #appMain #themeOptions { --theme-index: 2; --theme-weight: 1.45; }
+#appMain #appHeader #themeOptions button { display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 999px; background: transparent; color: var(--ink-2); font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; }
+#appMain #appHeader #themeOptions button[aria-pressed=true] { color: var(--navy); }
+#appMain #themeOptions svg { width: 14px; height: 14px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#appMain #appHeader #themeCycle { position: absolute; left: 0; top: 0; width: 50px; height: 50px; padding: 0; margin: 0; opacity: 0; visibility: hidden; pointer-events: none; }
+#appMain #themeCycle [data-theme-icon][hidden] { display: none; }
+@media (min-width: 761px) {
+  #appMain #themePicker { transition: width var(--nav-duration) var(--nav-ease) var(--nav-layout-delay); }
+  #appMain .nav-collapsed #themePicker { width: 50px; }
+  #appMain #themeOptions { transition: opacity .2s ease-in-out .24s, visibility 0s; }
+  #appMain .nav-collapsed #themeOptions { opacity: 0; visibility: hidden; pointer-events: none; transition-delay: 0s, .2s; }
+  #appMain #appHeader #themeCycle { transition: opacity .2s ease-in-out, visibility 0s .2s; }
+  #appMain .nav-collapsed #appHeader #themeCycle { opacity: 1; visibility: visible; pointer-events: auto; transition-delay: .32s, .32s; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #appMain #themePicker, #appMain #themeOptions, #appMain #themeOptions::before, #appMain #appHeader #themeCycle { transition: none !important; }
+}
+
+/* Charcoal appearance keeps the existing geometry and chart semantics. */
+html[data-theme=dark] body.workspace-ready {
+  color-scheme: dark;
+  --bg: #111214; --card: #25272a; --line: #42454b;
+  --ink: #f0f3f6; --ink-2: #c8c9cc; --ink-3: #b6b9bd;
+  --navy: #e0e1e3; --navy-2: #c4c6ca; --gold: #c9b687;
+  --high: #f08489; --high-bg: #422c34; --medium: #ebba70; --medium-bg: #3c3428;
+  --low: #95b9f7; --low-bg: #28394f; --pass: #8cc7ad; --pass-bg: #283d37; --skip: #afbecd; --skip-bg: #313d49;
+  --platinum-face: linear-gradient(155deg, #303237 0%, #292b30 50%, #242629 100%);
+  --platinum-rim: linear-gradient(145deg, #cbd9e2 0%, #b1c3d0 15%, #8c9fac 38%, #516b7e 65%, #314b60 80%, #829aaa 100%);
+  --platinum-shadow: inset 0 0 0 1px #0b1e2e70, inset 0 2px 1px #dae8f23d, inset 1px 0 1px #c4d9e726, inset 0 -3px 3px #07182780, 0 2px 2px #06152370, 0 7px 14px #07121e38;
+}
+html[data-theme=dark] #appMain :is(.muted, .source-note, .risk-findings, .risk-empty, .legend, .eyebrow, .rule-param-path) { color: var(--ink-3); }
+html[data-theme=dark] #appMain :is(.data-item, .co-name, .kpi .value, .card-head .name) { color: var(--ink); }
+html[data-theme=dark] #appMain .risk-total { fill: var(--ink); }
+html[data-theme=dark] #appMain :is(.chart-label, .risk-center-label) { fill: var(--ink-3); }
+html[data-theme=dark] #appMain .chart line[stroke="#edf0f6"] { stroke: var(--line); }
+html[data-theme=dark] #appMain .risk-ring-track { stroke: #ffffff0d; }
+html[data-theme=dark] #appMain .nav-heading { border-color: var(--line); }
+html[data-theme=dark] #appMain .nav button[data-panel]:hover { background: #2a2c2e; }
+html[data-theme=dark] #appMain :is(.field input:not([type=checkbox]):not([type=radio]), .field select, .field textarea, .dropdown-toggle, .material-company input, .dropdown-menu, .dropdown-list, #graphQuestion) { background: var(--control-field-face); border-color: #696d72; color: var(--ink); box-shadow: 0 1px 2px #00000030 inset; }
+html[data-theme=dark] #appMain :is(input, textarea)::placeholder { color: var(--ink-3); }
+html[data-theme=dark] #appMain :is(.btn.re, .account-control, .account-icon, .risk-explanations, .fold-btn, :where(#uploadScope) summary, .dropdown-item:hover, .dropdown-item.selected) { background: var(--control-face) padding-box, var(--control-rim) border-box; color: var(--control-text); border-color: transparent; box-shadow: 0 1px 0 #ffffff0e inset, 0 2px 3px #00000025; }
+html[data-theme=dark] #appMain :is(.btn.re, .account-control):hover { background: var(--control-face) padding-box, var(--control-active-rim) border-box; }
+html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, :where(.nav) button[data-panel].active) {
+  background: var(--control-face) padding-box, var(--control-active-rim) border-box;
+  color: #f0f3f6;
+  border-color: #a0a3a6;
+  border-top-color: #c4c6c7;
+  border-bottom-color: #74777a;
+  box-shadow: 0 1px 0 #ffffff20 inset, 0 2px 3px #00000030;
+}
+html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, :where(.nav) button[data-panel].active):hover { background: var(--control-face) padding-box, var(--control-active-rim) border-box; }
+html[data-theme=dark] #appMain :is(.risk-hover-card, .trend-tooltip, .rule-editor, .rule-trial-result, .knowledge-rule, .graph-node, .graph-toolbar, .graph-tools, .inspector-heading, .inspector-tabs, .table-wrap thead) { background: #232527; border-color: var(--line); color: var(--ink); }
+html[data-theme=dark] #appMain :is(.graph-node.rule, .knowledge-rule.active) { background: #303235; color: #eeefed; }
+html[data-theme=dark] #appMain :is(.graph-node.law, .graph-node.trade) { background: #35324b; color: #dfd9f6; }
+html[data-theme=dark] #appMain :is(.table-wrap, .data-item, .risk-detail, .risk-details, .settings-export-entry) { border-color: var(--line); }
+html[data-theme=dark] #appMain .dropzone:hover, html[data-theme=dark] #appMain .dropzone.drag { background: linear-gradient(#292b2d, #202224) padding-box, var(--platinum-rim) border-box; }
+html[data-theme=dark] #appMain input[type=file]::file-selector-button { background: var(--control-face) padding-box, var(--control-rim) border-box; border-color: #a0a3a6; color: var(--ink); }
+
+#dashboardPanel .risk-explanation-list > .source-note { margin: 6px 12px 0; flex-shrink: 0; }
+html[data-theme=dark] #appMain .dropdown-item:hover, html[data-theme=dark] #appMain .dropdown-item.selected { background: #303235; }
+html[data-theme=dark] #appMain :is(.inspector-heading strong, #knowledgeDetail h3, #knowledgeDetail .kv, .graph-summary strong, .graph-toolbar button, .ai-question, .node-label) { color: var(--ink); fill: var(--ink); }
+html[data-theme=dark] #appMain :is(.inspector-heading > span, .node-kind, .ai-context, .ai-welcome-icon, .graph-legend) { background: #292b2e; color: #e4e5e3; border-color: var(--line); }
+html[data-theme=dark] #appMain :is(.inspector-tabs button.active, .graph-toolbar button.selected) { background: #343638; color: #f0f3f6; }
+html[data-theme=dark] #appMain #knowledgeDetail > .btn { background: #202224; border-color: var(--line); color: var(--ink); }
+html[data-theme=dark] #appMain #graphCanvas rect[fill="#fff"], html[data-theme=dark] #appMain #graphCanvas rect[fill="#f4f8ff"] { fill: #242628; stroke: #a0a3a6; }
+html[data-theme=dark] #appMain #graphCanvas rect[fill="#f2f6fc"] { fill: #202224; }
+html[data-theme=dark] #appMain #graphCanvas text[fill="#263c58"] { fill: var(--ink); }
+html[data-theme=dark] #appMain #graphCanvas text[fill="#8a9ab0"] { fill: var(--ink-3); }
+html[data-theme=dark] #appMain #graphCanvas circle[fill=white] { fill: #242628; }
+html[data-theme=dark] #appMain .network-node .node-label { fill: var(--ink); }
+
+html[data-theme=dark] #appMain #appHeader .account-control { background: var(--control-face) padding-box, var(--control-rim) border-box; color: var(--navy); border-color: #a0a3a6; box-shadow: 0 1px 0 #ffffff0e inset, 0 2px 3px #00000025; }
+html[data-theme=dark] #appMain #appHeader .account-control:hover { background: var(--control-face) padding-box, var(--control-active-rim) border-box; }
+
+/* Settings cards share one grid row; only their controls lift on interaction. */
+#userSettingsPanel .settings-grid > .sheet { display: flex; flex-direction: column; margin: 0; transform: none; }
+#userSettingsPanel .settings-grid > .sheet > .settings-note { margin-top: auto; padding-top: 16px; }
+#userSettingsPanel .settings-notifications fieldset { margin-top: 24px; }
+#userSettingsPanel #currentUser { overflow-wrap: anywhere; }
+
+/* Theme-aware small labels and list actions retain readable foregrounds. */
+#appMain .role-chip { flex-shrink: 0; white-space: nowrap; line-height: 1.5; font-weight: 600; color: var(--navy); background: #e8eef3; border: 1px solid #c5d0da; }
+html[data-theme=dark] #appMain .role-chip { color: #e4e5e3; background: #292b2e; border-color: #a0a3a6; }
+html[data-theme=dark] #appMain .data-item button:not(.pdf) { color: var(--ink); background: var(--control-face) padding-box, var(--control-rim) border-box; border-color: #a0a3a6; }
+html[data-theme=dark] #userSettingsPanel :is(dt, .settings-choice small, .settings-note) { color: var(--ink-2); }
+html[data-theme=dark] #appMain .data-list { scrollbar-color: #74777c var(--bg); }
+
+/* Nested and dynamically rendered workspace surfaces need the same dark pairing. */
+html[data-theme=dark] body.workspace-ready { --muted: var(--ink-3); }
+html[data-theme=dark] #appMain #uploadScope details,
+html[data-theme=dark] #appMain #verificationDetails:not(:empty),
+html[data-theme=dark] #appMain :is(.material-review, .finding-ai-panel, .audit-narrative-paragraph) {
+  background: var(--platinum-face);
+  border-color: #74777c;
+  color: var(--ink);
+}
+html[data-theme=dark] #appMain #uploadScope :is(.material-company label, summary) { color: var(--ink); }
+html[data-theme=dark] #appMain #uploadScope summary::before { color: var(--navy-2); }
+html[data-theme=dark] #appMain #uploadScope summary:hover { background: var(--control-face) padding-box, var(--control-active-rim) border-box; }
+html[data-theme=dark] #appMain #graphAIStatus,
+html[data-theme=dark] #appMain :is(.calc-box, .enterprise-feedback, .graph-legend, .graph-mode) {
+  background: #202224;
+  color: var(--ink);
+  border-color: var(--line);
+}
+html[data-theme=dark] #appMain tr.emph td { background: #242628; color: var(--ink); }
+html[data-theme=dark] #appMain tr.emph td.v { color: var(--high); }
+html[data-theme=dark] #appMain .calc-box { border-left-color: var(--gold); }
+html[data-theme=dark] #appMain table.ev td { border-color: var(--line); }
+html[data-theme=dark] #appMain .card-head:hover { background: #2a2c2e; }
+html[data-theme=dark] #appMain #trainingPanel button:not(.btn),
+html[data-theme=dark] #appMain #reportVerification input[type=file]::file-selector-button,
+html[data-theme=dark] #appMain :is(.material-review button, .finding-ai-btn, .ai-prompts button) {
+  background: var(--control-face) padding-box, var(--control-rim) border-box;
+  border-color: #74777c;
+  color: var(--ink);
+}
+html[data-theme=dark] #appMain .material-review button.primary { background: var(--control-face) padding-box, var(--control-active-rim) border-box; color: var(--ink); border-color: #a0a3a6; }
+html[data-theme=dark] #appMain .material-review :is(input:not([type=checkbox]):not([type=radio]), select, textarea) {
+  background: var(--control-field-face);
+  color: var(--ink);
+  border-color: #696d72;
+}
+html[data-theme=dark] #appMain :is(.finding-ai-locked, .audit-narrative-locked, .ai-welcome > span) { background: #282a2c; color: #e4e5e3; }
+html[data-theme=dark] #appMain .finding-ai-error { background: #422c34; color: var(--high); }
+html[data-theme=dark] #appMain .enterprise-feedback.blocking { border-color: var(--high); }
+html[data-theme=dark] #appMain .enterprise-feedback.limited { border-color: var(--medium); }
+html[data-theme=dark] #appMain .rule-trial-result.hit { border-left-color: var(--high); }
+html[data-theme=dark] #appMain .rule-trial-result.pass { border-left-color: var(--pass); }
+html[data-theme=dark] #appMain .rule-trial-result.skipped { border-left-color: var(--medium); }
+html[data-theme=dark] #appMain :is(.material-note, .training-stat-warning) { color: var(--medium); }
+html[data-theme=dark] #appMain #reportVerification #verificationStatus.verify-ok { color: var(--pass); }
+html[data-theme=dark] #appMain #knowledgeDetail .ev-title,
+html[data-theme=dark] #appMain :is(.empty, .risk-percent, .kpi .unit, .graph-summary span, .graph-filterbar label, .graph-stage-heading p, .graph-hint, .inspector-heading p, .ai-welcome p, .risk-hover-heading > span) { color: var(--ink-3); }
+html[data-theme=dark] #appMain :is(.trend-hover-value, .graph-stage-heading strong, .ai-welcome h3, .graph-node button, .graph-toolbar button, .inspector-tabs button) { color: var(--ink); }
+html[data-theme=dark] #appMain :is(.graph-toolbar button, .inspector-tabs button) { background: #242628; color: var(--ink); border-color: #696d72; }
+html[data-theme=dark] #appMain :is(.graph-toolbar button.selected, .inspector-tabs button.active) { background: #343638; color: var(--ink); }
+html[data-theme=dark] #appMain :is(.graph-toolbar button:hover, .ai-prompts button:hover) { background: #303235; color: var(--ink); }
+html[data-theme=dark] #appMain .graph-live-dot { box-shadow: 0 0 0 4px #292b2e; }
+html[data-theme=dark] #appMain :is(.node-label, .edge-label) { stroke: #242628; }
+html[data-theme=dark] #appMain .edge-label { fill: var(--ink-3); }
+html[data-theme=dark] #appMain #navToggle:hover { background: #2a2c2e; }
+
+/* Native picker popups need opaque option colors as well as a themed select. */
+#appMain select { color-scheme: light; }
+#appMain select :is(option, optgroup) { background-color: #fdfdfd; color: #253340; }
+html[data-theme=dark] #appMain select {
+  color-scheme: dark;
+  background-color: #1b1d1f;
+  color: var(--ink);
+  scrollbar-color: #74777c #1b1d1f;
+}
+html[data-theme=dark] #appMain select :is(option, optgroup) { background-color: #1b1d1f; color: var(--ink); }
+html[data-theme=dark] #appMain select optgroup { color: #c8c9cc; }
+html[data-theme=dark] #appMain select option:checked { background-color: #36383b; color: #f0f3f6; }
+html[data-theme=dark] #appMain select :is(option, optgroup):disabled { color: #b6b9bd; }
+html[data-theme=dark] #appMain .dropdown-menu { background: #1b1d1f; border-color: #74777c; scrollbar-color: #74777c #1b1d1f; }
+html[data-theme=dark] #appMain .dropdown-item { background: #1b1d1f; color: var(--ink); }
+html[data-theme=dark] #appMain .dropdown-item:is(:hover, :focus-visible) { background: #303235; color: var(--ink); }
+html[data-theme=dark] #appMain .dropdown-item[aria-selected=true] { background: #36383b; color: #f0f3f6; }
+html[data-theme=dark] #appMain .dropdown-menu::-webkit-scrollbar-thumb { background: #74777c; }
+html[data-theme=dark] #appMain .dropdown-menu::-webkit-scrollbar-track { background: #1b1d1f; }
+
+/* Silver metal glass uses a translucent face and a thin masked reflection at the edge. */
+html[data-theme=light] body.workspace-ready {
+  --ink-3: #5b6a78;
+  --glass-face: radial-gradient(ellipse at 18% -18%, #ffffff73, transparent 65%) padding-box, linear-gradient(145deg, #f9fbfd99 0%, #d2dde780 29%, #ffffffb3 49%, #aebfce66 73%, #eef4f999 100%) padding-box;
+  --glass-edge: linear-gradient(135deg, #ffffff 0%, #a5b3c599 27%, #f7fbffeb 49%, #8293a873 73%, #f9fcffde 100%);
+  --glass-shadow: inset 0 1px 0 #ffffff, inset 0 -1px 0 #55677933, inset 0 12px 26px #ffffff26, 0 8px 20px #22354a12, 0 24px 48px #253c5517;
+  --glass-fallback: linear-gradient(145deg, #f9fbfd, #dce5ee 35%, #ffffff 52%, #d3dfe9 78%, #edf3f8);
+  background: radial-gradient(ellipse at 70% 0%, #ffffffbb, transparent 55%), radial-gradient(ellipse at 14% 82%, #c2ccd926, transparent 48%), var(--bg);
+}
+html[data-theme=dark] body.workspace-ready {
+  --glass-face: radial-gradient(ellipse at 18% -18%, #ffffff1f, transparent 65%) padding-box, linear-gradient(145deg, #eef3f817 0%, #c3cdd60a 30%, #ffffff17 49%, #727e8a0a 72%, #11121419 100%) padding-box;
+  --glass-edge: linear-gradient(135deg, #e9f2fb99 0%, #77869547 27%, #dce7f580 49%, #48556333 73%, #c5d3e66b 100%);
+  --glass-shadow: inset 0 1px 0 #eaf3ff40, inset 0 -1px 0 #05080d66, 0 8px 18px #00000026, 0 24px 48px #00000033;
+  --glass-fallback: linear-gradient(145deg, #31353c, #252a30 48%, #2c3036);
+  background: radial-gradient(ellipse at 70% 0%, #ffffff08, transparent 55%), var(--bg);
+}
+html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav) {
+  background: var(--glass-face);
+  border-color: transparent;
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(10px) saturate(105%);
+  backdrop-filter: blur(10px) saturate(105%);
+}
+html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review) { position: relative; }
+html[data-theme=light] #appMain :is(.sheet, .card, .material-review) :is(.sheet, .card, .material-review) { --glass-face: linear-gradient(145deg, #ffffff8c 0%, #c8d5e066 35%, #ffffff99 58%, #b8c8d64d 100%) padding-box; }
+html[data-theme=dark] #appMain :is(.sheet, .card, .material-review) :is(.sheet, .card, .material-review) { --glass-face: linear-gradient(145deg, #3a404866 0%, #171b226b 40%, #434b565e 65%, #12171d80 100%) padding-box; }
+html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav)::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: var(--glass-edge);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review):focus-within { z-index: 30; }
+html[data-theme] #appMain :is(.dropzone:hover, .dropzone.drag) { background: var(--glass-face); }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav) { background: var(--glass-fallback); }
+}
+@supports not ((mask-composite: exclude) or (-webkit-mask-composite: xor)) {
+  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav)::before { display: none; }
+}
+
+/* Small hover/focus lift and press feedback without moving the surrounding layout. */
+body.workspace-ready { --button-bevel: #ffffff80; --button-lift-shadow: 0 5px 12px #243b4e24; --button-press-shadow: inset 0 2px 3px #243b4e26; }
+html[data-theme=dark] body.workspace-ready { --button-bevel: #ffffff20; --button-lift-shadow: 0 6px 14px #00000050; --button-press-shadow: inset 0 2px 3px #00000045; }
+#appMain :is(button, a.btn, .dropzone .pick):not(#navToggle):not([data-theme-choice]):not(.dropdown-toggle):not(.dropdown-item):not(.nav button) {
+  transition: transform .2s cubic-bezier(.22, 1, .36, 1), box-shadow .2s ease, border-color .2s ease, filter .2s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  #appMain :is(button, a.btn, .dropzone .pick):not(#navToggle):not([data-theme-choice]):not(.dropdown-toggle):not(.dropdown-item):not(:disabled):not([aria-disabled=true]):hover {
+    transform: translateY(-2px);
+    box-shadow: inset 0 1px 0 var(--button-bevel), var(--button-lift-shadow);
+  }
+}
+#appMain :is(button, a.btn, .dropzone .pick):not(#navToggle):not([data-theme-choice]):not(.dropdown-toggle):not(.dropdown-item):not(:disabled):not([aria-disabled=true]):focus-visible {
+  transform: translateY(-2px);
+  box-shadow: inset 0 1px 0 var(--button-bevel), var(--button-lift-shadow);
+}
+#appMain :is(button, a.btn, .dropzone .pick):not(#navToggle):not([data-theme-choice]):not(.dropdown-toggle):not(.dropdown-item):not(:disabled):not([aria-disabled=true]):active {
+  transform: translateY(0) scale(.985);
+  box-shadow: var(--button-press-shadow);
+  transition-duration: .08s;
+}
+@media (prefers-reduced-motion: reduce) {
+  #appMain :is(button, a.btn, .dropzone .pick):not(#navToggle):not([data-theme-choice]):not(.dropdown-toggle):not(.dropdown-item),
+  #appMain :is(button, a.btn, .dropzone .pick):not(#navToggle):not([data-theme-choice]):not(.dropdown-toggle):not(.dropdown-item):not(:disabled):not([aria-disabled=true]):is(:hover, :focus-visible, :active) {
+    transform: none;
+    transition: none;
+  }
+}
+
+/* Appearance controls share the workspace material and keep their selection highlight. */
+#appMain #themePicker {
+  --metal-face: var(--glass-face);
+  --metal-border: #97a8bb99;
+  --metal-shadow: var(--glass-shadow);
+  --metal-selected: linear-gradient(165deg, #ffffffeb 0%, #bdcddbba 47%, #f5f8fbe6 78%, #9eb4c699 100%);
+  --metal-fallback: var(--glass-fallback);
+}
+#appMain #themeOptions { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); -webkit-backdrop-filter: blur(10px) saturate(105%); backdrop-filter: blur(10px) saturate(105%); }
+#appMain #themeOptions::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #ffffff80, inset 0 -1px 0 #65798d24, 0 2px 4px #152b421a; }
+html[data-theme=dark] #appMain #themeOptions { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); }
+html[data-theme=dark] #appMain #themeOptions::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #eaf3ff4d, inset 0 -1px 0 #05080d66, 0 2px 4px #00000033; }
+html[data-theme] #appMain #appHeader #themeCycle, html[data-theme] #appMain #appHeader #themeCycle .account-icon { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: var(--metal-shadow); }
+#appMain #appHeader #themeOptions button:is(:hover, :focus-visible, :active) { transform: none; box-shadow: none; }
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  html[data-theme] #appMain #themeOptions { background: var(--metal-fallback); }
+}
+
+
+
+/* Light primary actions follow the existing white-blue disclosure controls. */
+html[data-theme=light] body.workspace-ready {
+  --primary-light-face: linear-gradient(#ffffff, #eef3f7);
+  --primary-light-ink: #314d65;
+  --primary-light-line: #c4d0da;
+}
+html[data-theme=light] #appMain :is(.btn.pdf, .dropzone .pick, .material-review button.primary) {
+  background: var(--primary-light-face);
+  color: var(--primary-light-ink);
+  border: 1px solid var(--primary-light-line);
+  box-shadow: inset 0 1px 0 #ffffff, 0 2px 3px #32485b14;
+}
+@media (hover: hover) and (pointer: fine) {
+  html[data-theme=light] #appMain :is(.btn.pdf, .dropzone .pick, .material-review button.primary):not(:disabled):not([aria-disabled=true]):hover {
+    background: var(--primary-light-face);
+    color: var(--primary-light-ink);
+    filter: brightness(1.02);
+  }
+}
+html[data-theme=light] #appMain :is(.btn.pdf, .dropzone .pick, .material-review button.primary):focus-visible {
+  outline: 2px solid #688aa6;
+  outline-offset: 3px;
+}
+html[data-theme=light] #appMain .material-review button.primary:disabled { opacity: .55; cursor: not-allowed; }
+
+/* Graphite controls with a soft silver rim, matching the selected button reference. */
+html[data-theme=dark] body.workspace-ready {
+  --control-face: linear-gradient(150deg, #1c1d1e, #121314 70%, #171819);
+  --control-rim: linear-gradient(120deg, #ffffff22, #747779 32%, #c4c6c7 72%, #8f9294);
+  --control-active-rim: linear-gradient(120deg, #797c7e, #d1d3d4 72%, #9a9d9f);
+  --control-text: #f0f0ee;
+  --control-field-face: linear-gradient(150deg, #202224, #181a1c);
+  --control-shadow: inset 0 1px 0 #ffffff08, inset 0 -1px 0 #00000055, 0 3px 8px #00000030;
+}
+html[data-theme=dark] #appMain :is(.btn, .dropzone .pick, .data-item button, .material-review button, .finding-ai-btn, .ai-prompts button, .graph-toolbar button, .inspector-tabs button),
+html[data-theme=dark] #appMain #trainingPanel button:not(.btn),
+html[data-theme=dark] #appMain #knowledgeDetail > .btn,
+html[data-theme=dark] #appMain #appHeader :is(.account-control, .account-icon) {
+  background: var(--control-face) padding-box, var(--control-rim) border-box;
+  color: var(--control-text);
+  border: 1px solid transparent;
+  box-shadow: var(--control-shadow);
+}
+html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, .material-review button.primary, .graph-toolbar button.selected, .inspector-tabs button.active),
+html[data-theme=dark] #appMain #appHeader .account-control.active,
+html[data-theme=dark] #appMain .nav button[data-panel].active {
+  background: var(--control-face) padding-box, var(--control-active-rim) border-box;
+  color: #fafaf8;
+  border: 1px solid transparent;
+  box-shadow: var(--control-shadow);
+}
+html[data-theme=dark] #appMain .nav button[data-panel].active .nav-icon { color: #f0f0ee; }
+html[data-theme=dark] #appMain .nav button[data-panel]:not(.active):hover { background: #ffffff0a; }
+html[data-theme=dark] #appMain #reportVerification input[type=file]::file-selector-button,
+html[data-theme=dark] #appMain input[type=file]::file-selector-button {
+  background: var(--control-face) padding-box, var(--control-rim) border-box;
+  color: var(--control-text);
+  border: 1px solid transparent;
+  box-shadow: var(--control-shadow);
+}
+html[data-theme=dark] #appMain #themePicker {
+  --metal-face: linear-gradient(145deg, #212223, #18191a);
+  --metal-border: #84878966;
+  --metal-selected: var(--control-face) padding-box, var(--control-active-rim) border-box;
+  --metal-shadow: var(--control-shadow);
+  --metal-fallback: #18191a;
+}
+html[data-theme=dark] #appMain #themeOptions::before,
+html[data-theme=dark] #appMain #appHeader #themeCycle,
+html[data-theme=dark] #appMain #appHeader #themeCycle .account-icon {
+  border-color: transparent;
+  color: var(--control-text);
+}
+html[data-theme=dark] #appMain #appHeader #themeOptions button[aria-pressed=true] { color: var(--control-text); }
+html[data-theme=dark] #appMain :is(.btn, .dropzone .pick, .material-review button, .finding-ai-btn, .ai-prompts button, .graph-toolbar button, .inspector-tabs button):not(:disabled):not([aria-disabled=true]):focus-visible,
+html[data-theme=dark] #appMain #appHeader .account-control:focus-visible {
+  outline: 2px solid #c4c6c7;
+  outline-offset: 3px;
+}
+@media (hover: hover) and (pointer: fine) {
+  html[data-theme=dark] #appMain :is(.btn, .dropzone .pick, .data-item button, .material-review button, .finding-ai-btn, .ai-prompts button, .graph-toolbar button, .inspector-tabs button):not(:disabled):not([aria-disabled=true]):hover,
+  html[data-theme=dark] #appMain #trainingPanel button:not(.btn):not(:disabled):hover,
+  html[data-theme=dark] #appMain #knowledgeDetail > .btn:hover,
+  html[data-theme=dark] #appMain #appHeader .account-control:hover,
+  html[data-theme=dark] #appMain .nav button[data-panel].active:hover,
+  html[data-theme=dark] #appMain input[type=file]::file-selector-button:hover,
+  html[data-theme=dark] #appMain #reportVerification input[type=file]::file-selector-button:hover {
+    background: var(--control-face) padding-box, var(--control-active-rim) border-box;
+    filter: brightness(1.14);
+  }
+}
+
+
+/* Form and disclosure states share the same neutral palette, including dynamic review controls. */
+html[data-theme=dark] #appMain :is(.dropdown-menu, .dropdown-list) {
+  background: #1b1d1f;
+  border-color: #696d72;
+  scrollbar-color: #74777c #1b1d1f;
+}
+html[data-theme=dark] #appMain :is(.field input:not([type=checkbox]):not([type=radio]), .field select, .field textarea, .dropdown-toggle, .material-company input, .material-review input:not([type=checkbox]):not([type=radio]), .material-review select, .material-review textarea, #graphQuestion):focus-visible,
+html[data-theme=dark] #appMain :is(.fold-btn, .risk-explanations summary):focus-visible,
+html[data-theme=dark] #appMain #uploadScope summary:focus-visible {
+  outline: 2px solid #c4c6c7;
+  outline-offset: 2px;
+}
+html[data-theme=dark] #appMain :is(input:not([type=checkbox]):not([type=radio]), select, textarea):disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+html[data-theme=dark] #appMain input:is([type=checkbox], [type=radio]) { accent-color: #c4c6c7; }
+html[data-theme=dark] #appMain .material-review summary { color: var(--control-text); }
+html[data-theme=dark] #appMain #uploadScope summary,
+html[data-theme=dark] #appMain .fold-btn {
+  transition: filter .2s ease, box-shadow .2s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  html[data-theme=dark] #appMain #uploadScope summary:hover,
+  html[data-theme=dark] #appMain .fold-btn:not(:disabled):hover { filter: brightness(1.14); }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme=dark] #appMain #uploadScope summary,
+  html[data-theme=dark] #appMain .fold-btn { transition: none; }
+}
+
+/* Ring swap and sliding arrows adapted from the user-supplied Uiverse.io xopc333 reference. */
+html[data-theme] #appMain .nav #navToggle {
+  --toggle-ring: #b4c5d8b3;
+  --toggle-accent: #7ba4c3;
+  width: 38px; height: 38px; padding: 0; isolation: isolate; overflow: hidden;
+  border: 0; border-radius: 50%;
+  background: linear-gradient(145deg, #ffffff8c, #dce7f03d);
+  box-shadow: inset 0 1px 0 #ffffffd9, inset 0 -1px 0 #8fa6ba33, 0 2px 5px #1c32451a;
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  transition: right var(--nav-duration, .38s) var(--nav-ease, ease) var(--nav-layout-delay, 0s), box-shadow .2s ease;
+}
+html[data-theme=dark] #appMain .nav #navToggle {
+  --toggle-ring: #dce8f080; --toggle-accent: #96daf0;
+  background: linear-gradient(145deg, #eef6ff1f, #b9cedd08);
+  box-shadow: inset 0 1px 0 #ffffff33, inset 0 -1px 0 #00000040, 0 2px 5px #00000026;
+}
+#appMain .nav #navToggle::before, #appMain .nav #navToggle::after {
+  content: ""; position: absolute; inset: 1px; border-radius: 50%; pointer-events: none;
+}
+#appMain .nav #navToggle::before {
+  border: 1.5px solid var(--toggle-ring); opacity: 1; transform: scale(1);
+  transition: opacity .4s cubic-bezier(.77, 0, .175, 1) 80ms, transform .5s cubic-bezier(.455, .03, .515, .955) 80ms;
+}
+#appMain .nav #navToggle::after {
+  border: 1.5px solid var(--toggle-accent); opacity: 0; transform: scale(1.3);
+  transition: opacity .4s cubic-bezier(.165, .84, .44, 1), transform .5s cubic-bezier(.25, .46, .45, .94);
+}
+#appMain #navToggle .nav-toggle-direction { position: absolute; inset: 0; transform: rotate(0deg); transition: transform var(--nav-duration, .38s) var(--nav-ease, ease); }
+#appMain .nav-collapsed #navToggle .nav-toggle-direction { transform: rotate(180deg); }
+#appMain #navToggle .nav-toggle-track { display: flex; width: 76px; height: 38px; transform: translateX(0); transition: transform .4s cubic-bezier(.22, 1, .36, 1); }
+#appMain #navToggle .nav-toggle-arrow { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 38px; }
+#appMain #navToggle svg { display: block; width: 20px; height: 20px; transform: none; transition: none; }
+#appMain .nav #navToggle:focus-visible::before { opacity: 0; transform: scale(.7); transition-delay: 0s; }
+#appMain .nav #navToggle:focus-visible::after { opacity: 1; transform: scale(1); transition-delay: 80ms; }
+#appMain #navToggle:focus-visible .nav-toggle-track { transform: translateX(-38px); }
+@media (hover: hover) and (pointer: fine) {
+  #appMain .nav #navToggle:hover::before { opacity: 0; transform: scale(.7); transition-delay: 0s; }
+  #appMain .nav #navToggle:hover::after { opacity: 1; transform: scale(1); transition-delay: 80ms; }
+  #appMain #navToggle:hover .nav-toggle-track { transform: translateX(-38px); }
+}
+@media (min-width: 761px) {
+  #appMain .nav-heading, #appMain .nav-collapsed .nav-heading { padding-bottom: 4px; }
+  #appMain .nav-collapsed #navToggle { right: calc(50% - 19px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #appMain #navToggle, #appMain #navToggle *, #appMain #navToggle::before, #appMain #navToggle::after { transition: none !important; }
+  #appMain #navToggle .nav-toggle-track { transform: none !important; }
+}

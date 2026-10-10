@@ -3,30 +3,30 @@ from __future__ import annotations
 from src import periods
 
 from dataclasses import asdict
+from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
 from hashlib import sha256
 from io import BytesIO
-from pathlib import PurePosixPath
 import re
 from xml.etree import ElementTree
-from zipfile import ZipFile, BadZipFile
 
 import pdfplumber
 
-from . import config, loader, related_graph, material_review
+from . import config, loader, related_graph, material_review, material_security, material_formats, material_format_guard, financial_import
 from . import material_provenance as provenance
 from .models import (
     Account, Company, Dataset, Metric, RelatedGraph, RelatedRelation,
     RelatedSubject, RelatedTrade,
 )
 from .ai_extraction import ExtractionError
-from .workbooks import MAX_FILE, MAX_EXPANDED, open_workbook
+from .workbooks import MAX_FILE as MAX_FILE, MAX_EXPANDED, open_workbook, formula_values
 
 InputError = loader.InputError
 MAX_TOTAL = MAX_EXPANDED
 MAX_FILES = 20
 COMPANY_KEYS = ("name", "taxpayer_id", "industry", "period")
+SCOPE_FIELDS = {'地区': 'region', '纳税人身份': 'taxpayer_type', '业务构成': 'business_scope'}
 
 
 def _text(value):
@@ -46,59 +46,55 @@ def _serial(value):
 
 
 def expand_uploads(files):
-    """Never extract archives to disk; validate all entries before decompressing."""
-    if not files or len(files) > MAX_FILES:
-        raise InputError("每次请选择 1–20 个文件。")
-    if sum(len(data) for _, data in files) > MAX_TOTAL:
-        raise InputError("上传总大小不能超过 50MB。")
-    output, total = [], 0
-    for name, data in files:
-        if not data or len(data) > MAX_FILE:
-            raise InputError(f"{name}：文件为空或超过 10MB。")
-        name = name.replace("\\", "/").split("/")[-1]
-        if not name.lower().endswith(".zip"):
-            output.append((name, data))
-            total += len(data)
-        else:
-            try:
-                with ZipFile(BytesIO(data)) as archive:
-                    entries = archive.infolist()
-                    if len(entries) > 100:
-                        raise InputError(f"{name}：ZIP 条目过多。")
-                    candidates = []
-                    for item in entries:
-                        path = PurePosixPath(item.filename.replace("\\", "/"))
-                        if path.is_absolute() or ".." in path.parts or ":" in item.filename:
-                            raise InputError(f"{name}：ZIP 含不安全路径。")
-                        if item.is_dir():
-                            continue
-                        if item.flag_bits & 1 or (item.external_attr >> 16) & 0o170000 == 0o120000:
-                            raise InputError(f"{name}：不支持加密文件或符号链接。")
-                        if item.filename.lower().endswith(".zip"):
-                            raise InputError(f"{name}：不支持嵌套 ZIP。")
-                        if item.file_size > MAX_FILE or item.file_size > max(1, item.compress_size) * 250:
-                            raise InputError(f"{name}：解压大小或压缩比例超限。")
-                        candidates.append(item)
-                    if not candidates:
-                        raise InputError(f"{name}：ZIP 中没有文件。")
-                    total += sum(i.file_size for i in candidates)
-                    if total > MAX_TOTAL or len(output) + len(candidates) > MAX_FILES:
-                        raise InputError("解压后最多 20 个文件、合计 50MB。")
-                    for item in candidates:
-                        output.append((f"{name}/{item.filename}", archive.read(item)))
-            except (BadZipFile, RuntimeError, NotImplementedError) as exc:
-                raise InputError(f"{name}：ZIP 无法读取或已损坏。") from exc
-        if total > MAX_TOTAL or len(output) > MAX_FILES:
-            raise InputError("解压后最多 20 个文件、合计 50MB。")
-    return output
+    """Validate the complete batch in a bounded worker before exposing its contents."""
+    return [(name, raw) for name, raw, _ in material_format_guard.check(files, expand=True, wait=True)]
 
 
-def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False):
+def _table_workbook(name, data, extension):
+    from openpyxl import Workbook
+    rows = material_formats.table_rows(data, extension)
+    stem = name.rsplit('/', 1)[-1].rsplit('.', 1)[0]
+    known = {**{k: v[0] for k, v in material_review.TABLES.items()},
+             config.SHEET_INVOICES: config.COL_INVOICES,
+             config.SHEET_BANK: config.COL_BANK,
+             config.SHEET_BANK_ADJUSTMENTS: config.COL_BANK_ADJUSTMENTS,
+             config.SHEET_HUMAN: config.COL_HUMAN,
+             config.SHEET_CONTRACTS: config.COL_CONTRACTS,
+             config.SHEET_FULFILLMENTS: config.COL_FULFILLMENTS,
+             config.SHEET_CONTRACT_LINKS: config.COL_CONTRACT_LINKS}
+    headers = [loader._header_token(c) for c in rows[0]]
+    matching = [sheet for sheet, cols in known.items()
+                if headers[:len(cols)] == [loader._header_token(c) for c in cols]]
+    source_kind = financial_import.table_kind(rows)
+    sheet = source_kind or (stem if stem in matching else matching[0] if len(matching) == 1 else '上传表格')
+    wb = Workbook()
+    try:
+        wb.active.title = sheet
+        for row in rows:
+            wb.active.append(row)
+        out = BytesIO()
+        wb.save(out)
+        return out.getvalue()
+    finally:
+        wb.close()
+
+
+def _image(data, doc):
+    info = doc.get('format_check') or material_format_guard.metadata(doc['name'], data)
+    frames = info['pages'] if info else material_formats.image_pages(data, doc['kind'])
+    doc.update(page_count=len(frames), review_required=True,
+               pages=[{**page, 'text': '', 'label': f"扫描图片第 {page['page']} 页"} for page in frames],
+               summary=f'{len(frames)} 页扫描图片；须核对图片中的企业、期间、单位和金额。')
+    doc['warnings'].append('图片不含可验证文本，需 AI 视觉提取或人工补录，并对照原图逐项核对。')
+
+
+def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False, keys=None, import_options=None):
     try:
         wb = open_workbook(data)
     except ValueError as exc:
         raise InputError(str(exc)) from exc
     try:
+        material_security.scan_workbook(wb, doc)
         company = Company("", "", "", "")
         if config.SHEET_COMPANY in wb.sheetnames:
             company = loader._read_company(wb, allow_incomplete=allow_incomplete_company)
@@ -109,11 +105,18 @@ def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False)
             if len(periods) != 1:
                 raise InputError("补充指标必须具有唯一的核对所属期。")
             company.period = periods.pop()
-        accounts = loader._read_accounts(wb) if config.SHEET_ACCOUNTS in wb.sheetnames else []
-        declarations = loader._read_declarations(wb) if config.SHEET_DECLARATION in wb.sheetnames else {}
+        saved_formulas = formula_values(data) if any(
+            cell.data_type == 'f' for sheet in wb for cell in sheet._cells.values()) else {}
+        imported = financial_import.read(wb, asdict(company), keys, import_options, saved_formulas)
+        exported = {s['sheet'] for s in imported['sheets']} if imported else set()
+        if imported:
+            company = Company(**imported['company'])
+        accounts = loader._read_accounts(wb) if config.SHEET_ACCOUNTS in wb.sheetnames and config.SHEET_ACCOUNTS not in exported else []
+        declarations = loader._read_declarations(wb) if config.SHEET_DECLARATION in wb.sheetnames and config.SHEET_DECLARATION not in exported else {}
         metrics = {}
         for sheet in (config.SHEET_INCOME, config.SHEET_BALANCE, config.SHEET_CASHFLOW):
-            loader._read_statement(wb, sheet, sheet, metrics)
+            if sheet not in exported:
+                loader._read_statement(wb, sheet, sheet, metrics)
         period_series = loader._read_history(wb, company, metrics)
         invoices = loader._read_invoices(wb, company)
         bank_transactions = loader._read_bank_transactions(wb)
@@ -124,12 +127,14 @@ def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False)
         contract_links = loader._read_contract_links(wb)
         graph = related_graph.read_workbook(wb, company)
         loader._read_supplement(wb, company, metrics)
-        tables = material_review.capture(wb) if capture_standard else {}
+        tables = material_review.capture(wb, excluded=exported) if capture_standard else {}
         reviewable = material_review.fields({'standard_tables': tables})
         if (not accounts and not declarations and not metrics and not period_series and not invoices
                 and not bank_transactions and not bank_adjustments and not human_records
-                and not contracts and not fulfillments and not contract_links and graph is None and not reviewable):
-            raise InputError("没有找到支持的账表；请保留标准工作表名称和列名。")
+                and not contracts and not fulfillments and not contract_links and graph is None and not reviewable and not imported):
+            raise InputError("当前未识别该来源的账表结构，尚未采用金额。原件不修改；"
+                             "请提供支持格式的来源导出，或将此材料保留待适配。"
+                             "不要仅重命名工作表或列名来通过检查。")
         serialized_series = [
             {
                 "name": name,
@@ -151,11 +156,33 @@ def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False)
                    fulfillments=_serial([asdict(item) for item in fulfillments]),
                    contract_links=_serial([asdict(item) for item in contract_links]),
                    related_graph=_serial(asdict(graph)) if graph else None)
+        if config.SHEET_COMPANY in wb.sheetnames:
+            for row in wb[config.SHEET_COMPANY].iter_rows(min_row=2, values_only=True):
+                if len(row) >= 2 and _text(row[0]) in SCOPE_FIELDS and _text(row[1]):
+                    doc['company'][SCOPE_FIELDS[_text(row[0])]] = _text(row[1])
         if capture_standard:
             doc['standard_tables'] = tables
             material_review.annotate(doc, tables, {})
+        if imported:
+            imported['base'] = {key: deepcopy(doc.get(key, default)) for key, default in (
+                ('accounts', []), ('declarations', {}), ('rows', []),
+                ('account_cell_sources', {}), ('declaration_cell_sources', {}))}
+            doc['import_model'] = imported
+            doc['import_mapping'] = {'version': imported['version'], 'sheets': imported['sheets'],
+                'unmapped': imported['unmapped'], 'ignored_sheets': imported['ignored_sheets'],
+                'pending': imported['pending'],
+                'formula_cells': [deepcopy(cell) for cell in imported['cells'].values() if cell.get('formula')],
+                'source_digest': provenance.digest(imported)}
+            doc['warnings'].extend(imported['warnings'])
+            doc['warnings'].append('财务导出映射须复核栏次、单位和实际期间；未映射项目不参与检测，空白不作零。')
+            # Only derived financial values change here. Replacing the entire
+            # document with the evaluator's deepcopy would detach the live local
+            # extraction record and leave a successful parse marked "running".
+            evaluated = financial_import.evaluate(doc)
+            for key in ('accounts', 'declarations', 'rows', 'account_cell_sources', 'declaration_cell_sources'):
+                doc[key] = evaluated[key]
         doc["summary"] = (
-            f"{len(accounts)} 行科目、{len(declarations)} 项申报、{len(metrics)} 项补充/报表指标、"
+            f"{len(doc['accounts'])} 行科目、{len(doc['declarations'])} 项申报、{len(doc['rows'])} 项补充/报表指标、"
             f"{len(serialized_series)} 条期间序列、{len(invoices)} 张发票、"
             f"{len(bank_transactions)} 笔银行流水、{len(bank_adjustments)} 条银行调节、"
             f"{len(human_records)} 条人力记录、{len(contracts)} 份合同、"
@@ -199,7 +226,8 @@ def _xml(data, doc):
     if re.search(br"<!\s*(?:DOCTYPE|ENTITY)\b", data, re.IGNORECASE):
         raise InputError("XML 不允许 DTD 或实体声明。")
     try:
-        root = ElementTree.fromstring(data)
+        root = material_formats.xml_root(data)
+        material_security.add_findings(doc, material_security.detect('\n'.join(root.itertext()), location='XML'))
     except ElementTree.ParseError as exc:
         raise InputError(f"XML 无法解析：{exc}") from exc
     root_name = root.tag.rsplit("}", 1)[-1].lower()
@@ -297,28 +325,189 @@ def _xml(data, doc):
     doc["summary"] = f"1 张 XML 数电发票：{number}，{kind or '购销方向提交时按企业税号判定'}，{status}"
 
 
-def _pdf(data, doc, keys):
+def pdf_range(value, total):
+    """A server-validated source-page interval, never renumbered derived pages."""
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != {'first', 'last'} or
+            any(type(value[k]) is not int for k in ('first', 'last')) or
+            not 1 <= value['first'] <= value['last'] <= total or
+            value['last'] - value['first'] + 1 > material_formats.PDF_SEGMENT_PAGES):
+        raise InputError(f'PDF 片段须为原件有效起止页码，每次最多 {material_formats.PDF_SEGMENT_PAGES} 页。')
+    return deepcopy(value)
+
+
+def _pdf_statement_columns(page, text, doc, keys, page_no):
+    """Read explicitly bounded native statements, not flattened numeric order.
+
+    Annual flows need an explicit year; a balance date is an endpoint only.
+    Side-by-side balance sections retain their own labels and current column.
+    """
+    lines = text.splitlines()
+    title = re.sub(r'\s+', '', lines[0]) if lines else ''
+    kind = re.sub(r'^(?:母公司|合并)', '', title)
+    if kind not in {'利润表', '资产负债表', '现金流量表'}:
+        return False
+    header = '\n'.join(lines[:8])
+    years = re.findall(r'(?m)^\s*(\d{4})\s*年度\s*$', header)
+    as_of = ''
+    if kind == '资产负债表':
+        dates = re.findall(r'(?m)^\s*(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日\s*$', header)
+        if len(dates) != 1 or years:
+            return False
+        try:
+            as_of = date(*map(int, dates[0])).isoformat()
+        except ValueError:
+            raise InputError('PDF 资产负债表时点无效，请核对原件。') from None
+    elif len(years) != 1:
+        return False
+    if not re.search(r'单位[:：]\s*人民币元(?:\s|$)', header):
+        return False
+    words = page.extract_words()
+    current_labels = {'期末数', '期末金额'} if as_of else {'本期数', '本期金额'}
+    previous_labels = {'上年年末数', '期初数', '期初金额'} if as_of else {'上年同期数', '上期金额'}
+    current = sorted((w for w in words if w['text'] in current_labels), key=lambda w: w['x0'])
+    previous = sorted((w for w in words if w['text'] in previous_labels), key=lambda w: w['x0'])
+    if len(current) not in ({1, 2} if as_of else {1}) or len(current) != len(previous):
+        return False
+    if any(abs(c['top'] - p['top']) > 2 or c['x1'] >= p['x0'] or
+           (i and previous[i - 1]['x1'] >= c['x0']) for i, (c, p) in enumerate(zip(current, previous))):
+        return False
+    money = financial_import._money_metadata(header, title)
+    if not money['currency_supported'] or not money['unit_supported'] or money['factor'] != '1':
+        raise InputError('PDF 财务报表币种或金额单位冲突，不能按人民币元读取。')
+    edges = [e for e in page.edges if e['orientation'] == 'v' and e['bottom'] - e['top'] > 25]
+    columns = []
+    for i, (c, p) in enumerate(zip(current, previous)):
+        left = max((e['x0'] for e in edges if e['x0'] < c['x0']), default=None)
+        right = min((e['x0'] for e in edges if e['x0'] > c['x1']), default=None)
+        label_start = min((e['x0'] for e in edges if e['x0'] > previous[i - 1]['x1']), default=None) if i else float('-inf')
+        if left is None or right is None or label_start is None or not left < c['x0'] < c['x1'] < right < p['x0']:
+            return False
+        label_end = min((e['x0'] for e in edges if label_start + 1 < e['x0'] <= left), default=None)
+        if label_end is None:
+            return False
+        columns.append((c, left, right, label_start, label_end))
+    bottom = max(e['bottom'] for e in edges)
+    rows = []
+    for word in sorted(words, key=lambda w: (w['top'], w['x0'])):
+        # Font bounding boxes can extend fractionally beyond a ruling even
+        # when glyphs sit inside its final row; allow at most one PDF point.
+        if word['top'] <= max(w['bottom'] for w in current + previous) + 2 or word['bottom'] > bottom + 1:
+            continue
+        if not rows or abs(rows[-1][0]['top'] - word['top']) > 2:
+            rows.append([])
+        rows[-1].append(word)
+    candidates = []
+    for row in rows:
+        row.sort(key=lambda w: w['x0'])
+        for column, left, right, label_start, label_end in columns:
+            label = ''.join(w['text'] for w in row if w['x0'] >= label_start and w['x1'] < label_end)
+            label = re.sub(r'^[一二三四五六七八九十]+[、．.]|^(?:减|加)[:：]', '', label)
+            # Only these explicit operating components, never wider totals.
+            if kind == '利润表' and label in {'其中：营业收入', '其中:营业收入', '其中：营业成本', '其中:营业成本'}:
+                label = label[3:]
+            label = financial_import.ITEM_ALIASES.get(kind, {}).get(label, label)
+            label = re.sub(r'[（(].*$', '', label)
+            name = kind + '.' + label
+            if kind == '现金流量表':
+                name = {'期初现金及现金等价物余额': '现金.期初现金及等价物',
+                        '期末现金及现金等价物余额': '现金.期末现金及等价物'}.get(label, name)
+            if name not in keys:
+                continue
+            if any(not any(abs(edge['x0'] - boundary) < 1 and edge['top'] <= row[0]['top'] and
+                           edge['bottom'] + 1 >= max(w['bottom'] for w in row) for edge in edges)
+                   for boundary in (left, right)):
+                continue
+            amount = ''.join(w['text'] for w in row if w['x0'] >= left and w['x1'] <= right)
+            if not re.fullmatch(r'[-+−]?(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?', amount):
+                continue  # Blank, crossing-cell and ambiguous amounts are not zero.
+            number = loader._number(amount.replace(',', '').replace('−', '-'), f'PDF 第 {page_no} 页')
+            if number is not None:
+                timing = f'报表时点 {as_of}（不代表完整期间）' if as_of else f'实际期间 {years[0]}年度'
+                candidates.append({'name': name, 'value': str(number), 'page': page_no,
+                    'detail': f'{title}；本期栏次 {column["text"]}；{timing}；单位 人民币元；'
+                              f'原行 {" | ".join(w["text"] for w in row)}；'
+                              f'原页金额列 x={left:.2f}–{right:.2f}，行 y={row[0]["top"]:.2f}'})
+    if len({r['name'] for r in candidates}) != len(candidates):
+        raise InputError('PDF 本期财务报表项目重复，请核对原页，不静默选择或汇总。')
+    basis = 'consolidated' if title.startswith('合并') else 'parent' if title.startswith('母公司') else 'unspecified'
+    if doc.get('pdf_statement_basis') not in {None, basis}:
+        raise InputError('PDF 中母公司/合并财务报表口径混杂，请分别选择原页，不混用金额。')
+    names = re.findall(r'编制单位[:：]\s*(.+?)(?=\s+单位[:：]|\n|$)', header)
+    for key, value in [('period', '' if as_of else years[0]), ('name', names[0] if len(names) == 1 else '')]:
+        if value and doc['company'].get(key) not in {'', value}:
+            raise InputError('PDF 财务报表企业或年度冲突，请分别选择原页。')
+        if value:
+            doc['company'][key] = value
+    doc['pdf_statement_basis'] = basis
+    doc.setdefault('pdf_statements', []).append({'page': page_no, 'title': title, 'basis': basis,
+                                                'period': '' if as_of else years[0], 'as_of': as_of})
+    doc['rows'].extend(candidates)
+    return True  # Recognized structure with blank values must not use a flattened fallback.
+
+
+def _pdf(data, doc, keys, selected_range=None):
+    doc['pdf_parser_version'] = provenance.PDF_VERSION
+    local = doc.setdefault('extraction', {}).setdefault('local', {})
+    local.update(program=provenance.program('local'), status='running', started_at=provenance.now())
+    doc.pop('pdf_income_basis', None)  # A changed page range must not retain the previous basis.
+    doc.pop('pdf_statement_basis', None)
+    doc.pop('pdf_statements', None)
     aliases = dict(zip(config.COMPANY_FIELDS, COMPANY_KEYS))
+    aliases.update(SCOPE_FIELDS)
     aliases.update({"纳税人名称": "name", "编制单位": "name", "统一社会信用代码": "taxpayer_id", "税号": "taxpayer_id"})
     seen = set()
     with pdfplumber.open(BytesIO(data)) as pdf:
-        if not 1 <= len(pdf.pages) <= 50:
-            raise InputError("PDF 须为 1–50 页。")
+        if not 1 <= len(pdf.pages) <= material_formats.MAX_PDF_PAGES:
+            raise InputError(f'PDF 须为 1–{material_formats.MAX_PDF_PAGES} 页。')
         doc["page_count"] = len(pdf.pages)
-        for page_no, page in enumerate(pdf.pages, 1):
+        selected_range = pdf_range(selected_range, doc['page_count'])
+        if doc['page_count'] > material_formats.PDF_SEGMENT_PAGES or selected_range is not None:
+            first, last = (selected_range['first'], selected_range['last']) if selected_range else (None, None)
+            doc['pdf_selection'] = {'version': 'pdf-source-range-v1', 'source_sha256': sha256(data).hexdigest(),
+                'total_pages': doc['page_count'], 'first': first, 'last': last, 'pending': selected_range is None,
+                'max_segment_pages': material_formats.PDF_SEGMENT_PAGES,
+                'segments': [{'first': i, 'last': min(i + material_formats.PDF_SEGMENT_PAGES - 1, doc['page_count'])}
+                             for i in range(1, doc['page_count'] + 1, material_formats.PDF_SEGMENT_PAGES)],
+                'unprocessed_ranges': ([{'first': 1, 'last': first - 1}] if first and first > 1 else []) +
+                    ([{'first': last + 1, 'last': doc['page_count']}] if last and last < doc['page_count'] else [])}
+            if selected_range is None:
+                doc['pdf_selection']['unprocessed_ranges'] = [{'first': 1, 'last': doc['page_count']}]
+                doc['summary'] = f"{doc['page_count']} 页 PDF 原件已保留；请选择同一企业、同一期间的原始页码片段。"
+                local.update(status='awaiting_selection', finished_at=provenance.now())
+                return
+            doc['warnings'].append(f"本次只读取原件第 {first}–{last} 页，共 {doc['page_count']} 页；未选页不参与检测，不表示已完成整份材料解析。")
+        first, last = (selected_range['first'], selected_range['last']) if selected_range else (1, doc['page_count'])
+        for page_no in range(first, last + 1):
+            page = pdf.pages[page_no - 1]
             text = (page.extract_text() or "")
             if len(text) > 30000:
                 raise InputError(f"PDF 第 {page_no} 页文字过多。")
             doc["pages"].append({"page": page_no, "text": text})
             if not text.strip():
                 doc["warnings"].append(f"第 {page_no} 页无可提取文字，可能为扫描页；可使用 AI 视觉提取候选值，仍须对照原件人工核对。")
+                page.close()
+                continue
+            if _pdf_statement_columns(page, text, doc, keys, page_no):
+                page.close()
+                continue
+            cumulative_titles = [re.sub(r'\s+', '', line) for line in text.splitlines()]
+            if any(re.fullmatch(r'(?:\d+[、.．])?(?:合并|母公司)?年初(?:到|至)报告期末(?:利润表|现金流量表)',
+                                title) for title in cumulative_titles):
+                # A single displayed amount still belongs to this cumulative
+                # statement, not a quarter inferred from the report cover.
+                doc['warnings'].append(f'第 {page_no} 页含年初到报告期末累计财务表，本地暂未适配其期间和跨页金额栏；'
+                    '本期发生额不能直接当作本季度金额，不使用通用单金额回退。请提供明确实际起止期间和金额栏的受支持原表，'
+                    '或单独授权提取候选后对照原件核对；未读取的金额保持缺失。')
+                page.close()
                 continue
             for line in text.splitlines():
                 for label, key in aliases.items():
                     match = re.fullmatch(r"\s*" + re.escape(label) + r"\s*[:：]\s*(.+?)\s*", line)
                     if match:
                         value = match[1]
-                        if doc["company"][key] and doc["company"][key] != value:
+                        if doc["company"].get(key) and doc["company"][key] != value:
                             raise InputError(f"PDF 中出现不一致的{label}，请拆分为同一企业、同一期间的材料。")
                         doc["company"][key] = value
             # Only extract an explicit single value, never choose between amount columns.
@@ -351,10 +540,14 @@ def _pdf(data, doc, keys):
                     continue
                 seen.add((page_no, key, value))
                 doc["rows"].append({"name": key, "value": str(number), "page": page_no, "detail": excerpt})
+            page.close()
         if len(doc["rows"]) > 500:
             raise InputError("PDF 候选指标超过 500 项，请拆分材料。")
     doc["warnings"].insert(0, "PDF 结果是待核对候选值：请核实企业、期间、单位、金额列及指标口径；未识别项目可手工添加。金额统一为元，空白保持缺失。")
     doc["summary"] = f"{doc['page_count']} 页 PDF，识别到 {len(doc['rows'])} 项候选指标"
+    local.update(status='succeeded', finished_at=provenance.now())
+    if selected_range is not None:
+        doc['summary'] = f"原件共 {doc['page_count']} 页，本次解析第 {first}–{last} 页，识别到 {len(doc['rows'])} 项候选指标"
 
 
 def _unmapped_excel(data, doc):
@@ -394,43 +587,53 @@ def _unmapped_excel(data, doc):
 def preview(files, keys, extractor=None, *, allow_incomplete_company=False, capture_standard=False):
     docs = []
     parser = provenance.program('local')
-    for index, (name, data) in enumerate(expand_uploads(files)):
+    for index, (name, data, format_check) in enumerate(material_format_guard.check(files, expand=True, wait=True)):
         suffix = name.lower().rsplit(".", 1)[-1] if "." in name else ""
         doc = {"id": str(index), "name": name, "fingerprint": sha256(data).hexdigest()[:16],
                "sha256": sha256(data).hexdigest(),
+               "format_check": format_check,
                "kind": suffix, "company": dict.fromkeys(COMPANY_KEYS, ""),
                "accounts": [], "declarations": {}, "rows": [], "period_series": [], "invoices": [],
                 "bank_transactions": [], "bank_adjustments": [],
                 "human_records": [], "contracts": [], "fulfillments": [], "contract_links": [],
                 "related_graph": None,
                "pages": [], "warnings": [], "error": "",
+               'security': {'version': material_security.VERSION, 'findings': []},
                "extraction": {"method": "local", 'local': {
                    'program': parser, 'status': 'running', 'started_at': provenance.now()}}}
         local = doc['extraction']['local']
         try:
-            if name.lower().endswith(".xlsx"):
+            if suffix in {"xlsx", "xls", "csv", "tsv"}:
+                parsed = _table_workbook(name, data, suffix) if suffix in {"csv", "tsv"} else data
                 try:
-                    _excel(data, doc, allow_incomplete_company=allow_incomplete_company, capture_standard=capture_standard)
+                    _excel(parsed, doc, allow_incomplete_company=allow_incomplete_company, capture_standard=capture_standard, keys=keys)
                 except InputError:
                     local.update(status='failed', finished_at=provenance.now())
                     if extractor is None:
                         raise
-                    _unmapped_excel(data, doc)
+                    _unmapped_excel(parsed, doc)
                     local['fallback'] = 'unmapped_workbook_text'
                     extractor.enrich(doc, data)
             elif name.lower().endswith(".xml"):
                 _xml(data, doc)
-            elif name.lower().endswith(".pdf"):
-                _pdf(data, doc, keys)
+            elif suffix == "pdf" or suffix in material_formats.IMAGE_FORMATS:
+                if suffix == "pdf":
+                    _pdf(data, doc, keys)
+                else:
+                    _image(data, doc)
                 local.update(status='succeeded', finished_at=provenance.now())
-                if extractor is not None:
+                if doc.get('pdf_selection', {}).get('pending'):
+                    local['status'] = 'awaiting_selection'
+                    if extractor is not None:
+                        doc['warnings'].append('长 PDF 未发送至模型；选择片段后保存只做本地解析，须人工核对。')
+                elif extractor is not None:
                     try:
                         extractor.enrich(doc, data)
                     except ExtractionError as exc:
                         doc['extraction']['method'] = 'ai_failed'
                         doc["warnings"].insert(0, f"AI 未完成：{exc} 当前仅显示本地解析候选，需人工核对或重新上传。")
             else:
-                raise InputError("不支持此文件类型；请选择 .xlsx、.xml 或 .pdf（也可放入 ZIP）。")
+                raise InputError("不支持此文件类型；请选择支持的账表、票据或扫描图片（也可放入 ZIP）。")
         except InputError as exc:
             doc["error"] = str(exc)
             if local['status'] == 'running':
@@ -446,6 +649,7 @@ def preview(files, keys, extractor=None, *, allow_incomplete_company=False, capt
             if local['status'] == 'running':
                 local['status'] = 'succeeded'
             local.setdefault('finished_at', provenance.now())
+        material_security.scan_pages(doc)
         docs.append(doc)
     return docs
 
@@ -462,11 +666,21 @@ def build_dataset(documents, selections, company_override, keys):
     bank_transactions, bank_adjustments, human_records, unkeyed_bank_docs = {}, {}, {}, set()
     contracts, fulfillments, contract_links = {}, {}, {}
     graph = None
+    statement_basis = None
     account_sources, declaration_sources = {}, {}
     for doc in documents:
         selection = selections[doc["id"]]
         if doc["error"]:
             raise InputError(f"{doc['name']}：{doc['error']}")
+        blocked = material_security.blockers(doc, selection, selection.get('evidence_scope'),
+                                            require_review='evidence_scope' in selection)
+        if blocked:
+            raise InputError(f"{doc['name']}：{blocked[0]['message']} 请对照原件核对或排除材料。")
+        basis = financial_import.statement_basis(doc)
+        if basis:
+            if statement_basis not in {None, basis}:
+                raise InputError('母公司/合并或未明确口径的财务报表不能跨材料混用，请排除不同口径材料。')
+            statement_basis = basis
         company = dict(doc["company"])
         edits = selection.get("company", {})
         if not isinstance(edits, dict):
@@ -482,6 +696,14 @@ def build_dataset(documents, selections, company_override, keys):
             if company[key]:
                 _merge_value(company_data, key, company[key], "企业或期间不一致")
         source = f"{doc['name']} [SHA256:{doc['fingerprint']}]"
+        for sheet in doc.get('import_mapping', {}).get('sheets', []):
+            if (not sheet.get('excluded') and sheet.get('as_of') and
+                    sheet['as_of'] != periods.parse_period(company['period'], '检测期间').end.isoformat()):
+                raise InputError('原文财务报表时点与检测期间终点不同，补填不能消除原文冲突。')
+        for statement in doc.get('pdf_statements', []):
+            if (doc.get('kind') != 'history' and statement.get('as_of') and
+                    statement['as_of'] != periods.parse_period(company['period'], '检测期间').end.isoformat()):
+                raise InputError('PDF 资产负债表时点与检测期间终点不同，补填不能消除原文冲突。')
         raw_graph = doc.get("related_graph")
         if raw_graph is not None:
             if graph is not None:
@@ -738,13 +960,21 @@ def build_dataset(documents, selections, company_override, keys):
                 raise InputError("口径说明超过 2000 字。")
             if editable:
                 page = row.get("page")
-                if type(page) is not int or not 1 <= page <= doc["page_count"] or not detail:
+                selected_pdf = doc.get('pdf_selection')
+                if (type(page) is not int or not 1 <= page <= doc["page_count"] or not detail or
+                        (selected_pdf and (selected_pdf['pending'] or not selected_pdf['first'] <= page <= selected_pdf['last']))):
                     raise InputError("PDF 指标须填写有效页码和口径说明。")
                 origin = f"PDF 第 {page} 页" if doc["kind"] == "pdf" else doc["pages"][page - 1]["label"]
                 row_source = f"{source} / {origin}（人工核对/录入）"
+                if selected_pdf:
+                    row_source += f"；本次仅解析原件第 {selected_pdf['first']}–{selected_pdf['last']} 页/共 {selected_pdf['total_pages']} 页"
                 original = [r for r in doc["rows"] if r["name"] == key and r["page"] == page]
-                detail += "；识别候选原值：" + ("、".join(r["value"] for r in original) or "无，人工补录")
-                if doc.get("extraction", {}).get("method") == "ai":
+                ai_source = doc.get("extraction", {}).get("method") == "ai"
+                original_values = [_text(r.get('ai_raw_value') if ai_source else r.get('value')) for r in original]
+                original_values = [value for value in original_values if value]
+                missing = "缺失，人工补录" if original else "无，人工补录"
+                detail += "；识别候选原值：" + ("、".join(original_values) or missing)
+                if ai_source:
                     row_source += f"；AI 提取模型 {doc['extraction']['model']}"
                     detail += "；AI 原始证据：" + "；".join(f"{r.get('ai_raw_value')} {r.get('ai_unit')}；{r.get('ai_quote')}" for r in original)
             else:

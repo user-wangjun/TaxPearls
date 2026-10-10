@@ -1,11 +1,6 @@
 "use strict";
 const workspace = document.querySelector("#appMain > .wrap");
 const navToggle = document.getElementById("navToggle");
-// 标题换行或缩放后，侧栏仍紧贴页头底边。
-new ResizeObserver(([entry]) => {
-  const height = entry.target.getBoundingClientRect().height;
-  document.body.style.setProperty("--app-header-height", `${height}px`);
-}).observe(document.getElementById("appHeader"));
 function setNavCollapsed(collapsed) {
   workspace.classList.toggle("nav-collapsed", collapsed);
   navToggle.setAttribute("aria-expanded", String(!collapsed));
@@ -13,7 +8,12 @@ function setNavCollapsed(collapsed) {
   navToggle.setAttribute("aria-label", label);
   navToggle.title = label;
 }
-try { setNavCollapsed(localStorage.getItem("taxpearls.navCollapsed") === "true"); } catch (_) {}
+let initialNavCollapsed = !(window.matchMedia?.("(max-width: 760px)").matches ?? false);
+try {
+  const savedNavCollapsed = localStorage.getItem("taxpearls.navCollapsed");
+  if (savedNavCollapsed === "true" || savedNavCollapsed === "false") initialNavCollapsed = savedNavCollapsed === "true";
+} catch (_) {}
+setNavCollapsed(initialNavCollapsed);
 navToggle.addEventListener("click", () => {
   const collapsed = !workspace.classList.contains("nav-collapsed");
   setNavCollapsed(collapsed);
@@ -208,40 +208,53 @@ function renderRiskDistribution(box,record){
     target.addEventListener("focus",()=>show(null));target.addEventListener("blur",hideTooltip);target.addEventListener("click",show);target.addEventListener("keydown",e=>{if(e.key==="Escape")hideTooltip();});
   }
   const svg=svgNode("svg",{viewBox:"0 0 180 180",role:"img","aria-label":total?"风险分布，共 "+total+" 项命中":"暂无命中风险"});
-  svg.append(svgNode("circle",{cx:90,cy:90,r:70,fill:"none",stroke:"#eef2f7","stroke-width":32}));
-  const legend=el("div","risk-breakdown"),details=el("div","risk-details");
+  const radius=66,ringWidth=40;
+  const shares=levels.map(([key])=>total?hits.filter(f=>f.severity===key).length/total*100:0).filter(share=>share>0);
+  /* Small separators preserve the continuous ring and keep tiny slices visible. */
+  const gap=shares.length>1?Math.min(.55,Math.min(...shares)*.12):0;
+  svg.append(svgNode("circle",{cx:90,cy:90,r:radius,fill:"none","stroke-width":ringWidth,class:"risk-ring-track"}));
+  const legend=el("div","risk-breakdown"),details=el("div","risk-explanation-list");
+  const heading=el("div","risk-card-heading"),title=box.querySelector("h2");
+  if(title)heading.append(title);
+  heading.append(legend);box.prepend(heading);
   let offset=0,segCount=0;
   for(const [key,label,color,advice] of levels){
     const findings=hits.filter(f=>f.severity===key),count=findings.length,share=total?count/total*100:0;
     const percent=Number(share.toFixed(1))+"%";
     let segment=null;
     if(count){
-      segment=svgNode("circle",{cx:90,cy:90,r:70,fill:"none",stroke:color,"stroke-width":32,pathLength:100,"stroke-dasharray":share+" "+(100-share),"stroke-dashoffset":-offset,transform:"rotate(-90 90 90)",class:"risk-segment","aria-label":label+"："+count+" 项，占 "+percent});
+      const visibleShare=share-gap,targetDash=visibleShare+" "+(100-visibleShare);
+      segment=svgNode("circle",{cx:90,cy:90,r:radius,fill:"none",stroke:color,"stroke-width":ringWidth,"stroke-linecap":"butt",pathLength:100,"stroke-dasharray":targetDash,"stroke-dashoffset":-(offset+gap/2),transform:"rotate(-90 90 90)",class:"risk-segment","aria-label":label+"："+count+" 项，占 "+percent});
       if(!REDUCED_MOTION){
         /* 描边生长：先归零，进帧后过渡到目标弧长，多段依次错峰展开。 */
         segment.style.strokeDasharray="0 100";
-        segment.style.transition="stroke-dasharray .8s cubic-bezier(0.22,1,0.36,1) "+(segCount*140)+"ms, opacity .15s";
-        requestAnimationFrame(()=>requestAnimationFrame(()=>{segment.style.strokeDasharray=share+" "+(100-share);}));
+        segment.style.opacity="0";
+        segment.style.transition="stroke-dasharray .8s cubic-bezier(0.22,1,0.36,1) "+(segCount*140)+"ms, opacity .15s, stroke-width .18s ease";
+        requestAnimationFrame(()=>requestAnimationFrame(()=>{segment.style.opacity="1";segment.style.strokeDasharray=targetDash;}));
       }
       bindTooltip(segment,label,color,findings,percent,segment);svg.append(segment);offset+=share;segCount++;
     }
     const row=el("div","risk-legend-row"),labelNode=el("span","risk-label",label);labelNode.style.setProperty("--risk-color",color);
-    row.append(labelNode,el("strong",null,count+" 项"),el("span","risk-percent",percent));legend.append(row);
+    row.append(labelNode);row.setAttribute("aria-label",label+"："+count+" 项，占 "+percent);legend.append(row);
     bindTooltip(row,label,color,findings,percent,segment);
-    if(count){
-      const detail=el("div","risk-detail"),heading=el("strong","risk-label",label+" · "+count+" 项");heading.style.setProperty("--risk-color",color);
-      detail.append(heading,el("p","risk-findings",findings.slice(0,2).map(f=>f.name).join("；")+(count>2?"等 "+count+" 项":"")),el("p","muted",advice));details.append(detail);
-    }
+    const explanation=el("details","risk-explanations"),summary=el("summary"),caption=el("span","risk-label",label+" · "+count+" 项");
+    explanation.setAttribute("name","dashboard-risk-explanations");
+    caption.style.setProperty("--risk-color",color);summary.append(caption);
+    const detail=el("div","risk-detail");
+    if(count)detail.append(el("p","risk-findings",findings.slice(0,2).map(f=>f.name).join("；")+(count>2?"等 "+count+" 项":"")),el("p","muted",advice));
+    else detail.append(el("p","risk-empty","当前没有"+label+"的命中事项。"));
+    explanation.append(summary,detail);details.append(explanation);
   }
   const totalText=svgNode("text",{x:90,y:88,"text-anchor":"middle",class:"risk-total"},"0");
   totalText.style.fontVariantNumeric="tabular-nums";
   svg.append(totalText,svgNode("text",{x:90,y:112,"text-anchor":"middle",class:"risk-center-label"},"命中事项"));
   if(total)countUpWhenVisible(svg,totalText,total,{duration:800});
-  chart.append(svg);layout.append(chart,legend);box.append(layout);
-  if(total)box.append(details,action("查看风险证据",()=>openAudit(record.id)));
-  else box.append(el("p","risk-empty","当前没有命中的风险事项。"));
+  chart.append(svg);layout.append(chart);box.append(layout);
+  details.setAttribute("tabindex","0");details.setAttribute("role","region");details.setAttribute("aria-label","风险分级解释");
+  box.append(details);
+  if(total)box.append(action("查看风险证据",()=>openAudit(record.id)));
   const skipped=record.summary.skipped||0;
-  box.append(el("p","source-note","占比按已命中事项数量计算。"+(skipped?"另有 "+skipped+" 项检查未执行，需补齐材料后复核。":"")));
+  details.append(el("p","source-note","占比按已命中事项数量计算。"+(skipped?"另有 "+skipped+" 项检查未执行，需补齐材料后复核。":"")));
 }
 function svgNode(tag,attrs,text){const n=document.createElementNS("http://www.w3.org/2000/svg",tag);for(const [k,v]of Object.entries(attrs))n.setAttribute(k,v);if(text!==undefined)n.textContent=text;return n;}
 // Only connect comparable, explicitly recognized period granularities.
@@ -277,6 +290,8 @@ function renderTrend(box,rows){
   const values=data.flatMap(r=>["营业收入","营业成本"].map(k=>metricOf(r,k)).filter(Boolean).map(m=>Number(m.value)));
   if(!values.length){box.append(emptyChart("所选期间没有收入或成本数据","上传含利润表的材料后，这里会展示趋势折线图"));return;}
   const low=Math.min(0,...values),high=Math.max(1,...values),x=i=>65+i*520/(data.length-1),y=v=>190-(v-low)/(high-low)*160;
+  const defs=svgNode("defs",{}),areaLayer=svgNode("g",{class:"trend-areas","aria-hidden":"true","pointer-events":"none"});
+  svg.append(defs,areaLayer);
   for(let i=0;i<4;i++){const v=low+(high-low)*i/3,yy=y(v);svg.append(svgNode("line",{x1:65,y1:yy,x2:590,y2:yy,stroke:"#edf0f6"}),svgNode("text",{x:57,y:yy+4,"text-anchor":"end",class:"chart-label"},(v/10000).toFixed(1)+"万"));}
   /* 折线生长动画 + 悬停浮卡：线段 dashoffset 扫描展开、数据点沿线点亮；悬停出浮卡 + 竖向参考线。 */
   const SWEEP=800;
@@ -313,6 +328,25 @@ function renderTrend(box,rows){
   }
   for(const [key,color]of [["营业收入","#2865e8"],["营业成本","#6bbda9"]]){
     const pts=data.map((r,i)=>{const m=metricOf(r,key);return m?{x:x(i),y:y(Number(m.value)),i,periodLabel:r.period,valueText:amount(m)+" 元"}:null;});
+    const areaId=key==="营业收入"?"dashboardTrendIncomeArea":"dashboardTrendCostArea",zeroY=y(0);
+    const ys=pts.filter(Boolean).map(p=>p.y),gradientTop=Math.min(zeroY,...ys),gradientBottom=Math.max(gradientTop+1,zeroY,...ys);
+    const gradient=svgNode("linearGradient",{id:areaId,gradientUnits:"userSpaceOnUse",x1:0,y1:gradientTop,x2:0,y2:gradientBottom});
+    gradient.append(svgNode("stop",{offset:"0%","stop-color":color,class:"trend-area-start"}),svgNode("stop",{offset:"100%","stop-color":color,"stop-opacity":0}));
+    const clipId=areaId+"Reveal",clip=svgNode("clipPath",{id:clipId,clipPathUnits:"userSpaceOnUse"});
+    const reveal=svgNode("rect",{x:65,y:22,width:REDUCED_MOTION?520:0,height:174});clip.append(reveal);defs.append(gradient,clip);
+    const areas=svgNode("g",{"clip-path":"url(#"+clipId+")"});areaLayer.append(areas);
+    /* Each contiguous run closes to zero; missing metrics never receive a fill bridge. */
+    let contiguous=[];
+    const finishArea=()=>{
+      if(contiguous.length>1){
+        const first=contiguous[0],last=contiguous[contiguous.length-1];
+        const d="M "+first.x+" "+zeroY+contiguous.map(p=>" L "+p.x+" "+p.y).join("")+" L "+last.x+" "+zeroY+" Z";
+        areas.append(svgNode("path",{d,fill:"url(#"+areaId+")"}));
+      }
+      contiguous=[];
+    };
+    for(const p of pts){if(p)contiguous.push(p);else finishArea();}finishArea();
+    if(!REDUCED_MOTION){reveal.style.transition="width "+SWEEP+"ms linear";requestAnimationFrame(()=>requestAnimationFrame(()=>{reveal.style.width="520px";}));}
     const segs=[];
     for(let j=0;j<pts.length-1;j++)if(pts[j]&&pts[j+1])segs.push([pts[j],pts[j+1]]);
     const spacing=segs.length?SWEEP/segs.length:0,dur=Math.round(spacing+150);

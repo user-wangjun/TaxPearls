@@ -17,6 +17,9 @@ import secrets
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from src import material_format_guard
+from src.input_errors import InputError
+
 from webapp.access import AccessDenied, audit_row, current_actor
 from webapp import members, material_operations as operations
 
@@ -68,6 +71,15 @@ def migrate(db):
         );
     ''')
     operations.migrate(db)
+    columns = {row[1] for row in db.execute('PRAGMA table_info(material_events)')}
+    for name, definition in [('job_id','TEXT'), ('revision','INTEGER'), ('system','INTEGER NOT NULL DEFAULT 0'), ('seq','INTEGER')]:
+        if name not in columns:
+            db.execute(f'ALTER TABLE material_events ADD COLUMN {name} {definition}')
+    db.execute('UPDATE material_events SET seq=rowid WHERE seq IS NULL')
+    db.execute('CREATE UNIQUE INDEX IF NOT EXISTS material_events_batch_seq ON material_events(batch_id,seq)')
+    db.execute('CREATE INDEX IF NOT EXISTS material_events_job ON material_events(job_id,seq)')
+    from webapp import material_jobs
+    material_jobs.migrate(db)
 
 
 def _key():
@@ -130,20 +142,22 @@ def _authorize(db, actor, batch_id):
     return batch
 
 
-def _event(db, batch, actor, action, detail):
+def _event(db, batch, actor, action, detail, *, job_id=None, revision=None, system=False):
     event_id, stamp = secrets.token_hex(16), members.now()
     operation_id = operations.committed(db, actor, batch, action)
     if operation_id:
         detail = {**detail, 'operation_id': operation_id}
     cipher = _seal(_json(detail), _context(batch['org_id'], batch['id'], 'event:' + action, event_id))
-    db.execute('INSERT INTO material_events VALUES (?,?,?,?,?,?)',
-               (event_id, batch['id'], action, cipher, actor['id'], stamp))
+    sequence = db.execute('SELECT COALESCE(MAX(seq),0)+1 FROM material_events WHERE batch_id=?',(batch['id'],)).fetchone()[0]
+    db.execute('INSERT INTO material_events(id,batch_id,action,detail_cipher,actor_id,created_at,job_id,revision,system,seq) VALUES (?,?,?,?,?,?,?,?,?,?)',
+               (event_id, batch['id'], action, cipher, actor['id'], stamp,job_id,
+                revision if revision is not None else batch['revision'],int(system),sequence))
     # Only opaque identifiers enter the shared operations log. Sensitive
     # detail is accessible through this batch's current business permission.
     members.log(db, actor, 'material_' + action, 'material_batch', batch['id'], 'event=' + event_id)
 
 
-def validate_uploads(uploads):
+def validate_uploads(uploads, *, wait=False):
     if not isinstance(uploads, list) or not 1 <= len(uploads) <= 20:
         raise MaterialStorageError('请选择 1–20 份原始材料。')
     total = 0
@@ -158,13 +172,23 @@ def validate_uploads(uploads):
         total += len(raw)
     if total > MAX_TOTAL:
         raise MaterialStorageError('原始材料合计不超过 50MB。')
+    try:
+        checked = material_format_guard.check(uploads, wait=wait)
+    except InputError as exc:
+        raise MaterialStorageError(str(exc)) from None
+    return {name: ({'version': 'material-formats-v1', 'type': 'zip', 'status': 'passed',
+                   'members_checked': True, 'members': [{'name': member, 'info': info}
+                       for member, _, info in checked if member.startswith(name + '/')]} if name.lower().endswith('.zip')
+                  else next(info for member, _, info in checked if member == name))
+            for name, _ in uploads}
 
 
-def _files(db, batch, actor, uploads, payload=None):
+def _files(db, batch, actor, uploads, payload=None, *, format_checks=None):
     files = []
     for name, raw in uploads:
         file_id = secrets.token_hex(16)
-        metadata = {'name': name, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+        metadata = {'name': name, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
+                    'format_check': (format_checks or {}).get(name)}
         db.execute('INSERT INTO material_originals VALUES (?,?,?,?,?,?,NULL,NULL)',
                    (file_id, batch['id'], actor['id'], members.now(),
                     _seal(_json(metadata), _context(batch['org_id'], batch['id'], 'metadata', file_id)),
@@ -179,7 +203,7 @@ def _files(db, batch, actor, uploads, payload=None):
 
 def create(store, actor, uploads, client_id=None, *, initial_payload=None):
     """Retain original upload bytes atomically; never deduplicate across tenants."""
-    validate_uploads(uploads)
+    format_checks = validate_uploads(uploads)
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         current_actor(db, actor, ROLES)
@@ -192,7 +216,7 @@ def create(store, actor, uploads, client_id=None, *, initial_payload=None):
         db.execute('INSERT INTO material_batches VALUES (?,?,?,?,0,?)',
                    (batch_id, actor['org_id'], actor['id'], client_id, stamp))
         batch = _authorize(db, actor, batch_id)
-        files = _files(db, batch, actor, uploads, initial_payload)
+        files = _files(db, batch, actor, uploads, initial_payload, format_checks=format_checks)
         _event(db, batch, actor, 'upload', {'files': files})
         revision = 0
         if initial_payload is not None:
@@ -201,13 +225,13 @@ def create(store, actor, uploads, client_id=None, *, initial_payload=None):
 
 
 def supplement(store, actor, batch_id, expected_revision, uploads, payload):
-    validate_uploads(uploads)
+    format_checks = validate_uploads(uploads)
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         batch = _authorize(db, actor, batch_id)
         if type(expected_revision) is not int or batch['revision'] != expected_revision:
             raise AccessDenied('材料已变化，请重新读取后补传。', 409)
-        files = _files(db, batch, actor, uploads, payload)
+        files = _files(db, batch, actor, uploads, payload, format_checks=format_checks)
         _event(db, batch, actor, 'supplement', {'files': files, 'previous_revision': expected_revision})
         return _append(db, batch, actor, 'analysis', payload)
 
@@ -238,13 +262,13 @@ def listing(store, actor):
             'LEFT JOIN clients c ON c.id=b.client_id WHERE ' + where + ' ORDER BY b.rowid DESC LIMIT 100', args)]
 
 
-def _append(db, batch, actor, kind, payload):
+def _append(db, batch, actor, kind, payload, *, job_id=None):
     revision = batch['revision'] + 1
     cipher = _seal(_json(payload), _context(batch['org_id'], batch['id'], 'revision:' + kind, revision))
     db.execute('INSERT INTO material_revisions VALUES (?,?,?,?,?,?)',
                (batch['id'], revision, kind, cipher, actor['id'], members.now()))
     db.execute('UPDATE material_batches SET revision=? WHERE id=?', (revision, batch['id']))
-    _event(db, batch, actor, kind, {'revision': revision})
+    _event(db, batch, actor, kind, {'revision': revision}, revision=revision,job_id=job_id,system=job_id is not None)
     return revision
 
 
@@ -271,6 +295,8 @@ def read(store, actor, batch_id):
         batch = _authorize(db, actor, batch_id)
         result = dict(batch)
         result['files'], result['versions'], result['events'] = [], [], []
+        from webapp import material_jobs
+        result['jobs'] = material_jobs.listing(db,batch_id)
         result['executions'] = [dict(row) for row in db.execute(
             'SELECT * FROM material_executions WHERE batch_id=? ORDER BY analysis_revision', (batch_id,))]
         for row in db.execute('SELECT * FROM material_originals WHERE batch_id=? ORDER BY uploaded_at,id', (batch_id,)):
@@ -283,10 +309,11 @@ def read(store, actor, batch_id):
                                       _context(batch['org_id'], batch_id, 'revision:' + row['kind'], row['revision'])))
             result['versions'].append({'revision': row['revision'], 'kind': row['kind'], 'payload': payload,
                                        'created_by': row['created_by'], 'created_at': row['created_at']})
-        for row in db.execute('SELECT * FROM material_events WHERE batch_id=? ORDER BY rowid', (batch_id,)):
+        for row in db.execute('SELECT * FROM material_events WHERE batch_id=? ORDER BY seq', (batch_id,)):
             detail = json.loads(_open(row['detail_cipher'],
                                      _context(batch['org_id'], batch_id, 'event:' + row['action'], row['id'])))
-            result['events'].append({'action': row['action'], 'detail': detail,
+            result['events'].append({'action': row['action'], 'detail': detail, 'seq': row['seq'],
+                                    'job_id': row['job_id'], 'revision': row['revision'], 'system': bool(row['system']),
                                      'actor_id': row['actor_id'], 'created_at': row['created_at']})
         _event(db, batch, actor, 'view', {'revision': batch['revision']})
         return result
@@ -467,6 +494,11 @@ def record_execution(db, actor, audit_id, client_id, dataset, findings, context)
         raise AccessDenied('执行规则与确认的检查范围不一致。', 409)
     if batch['client_id'] and batch['client_id'] != client_id:
         raise AccessDenied('材料客户归属不匹配。', 409)
+    if client_id:
+        from webapp.enterprise_scope import identity
+        client = db.execute('SELECT id,taxpayer_id FROM clients WHERE id=? AND org_id=?', (client_id, actor['org_id'])).fetchone()
+        if not client or identity(client['taxpayer_id']) != identity(dataset.company.taxpayer_id):
+            raise AccessDenied('企业档案身份已变化，请重新核对材料归属。', 409)
     revision = _append(db, batch, actor, 'confirmation', {'analysis_revision': expected,
                       'analysis_sha256': context['sha256'], 'audit_id': audit_id,
                       'scope': analysis['company'], 'files': analysis['files'],

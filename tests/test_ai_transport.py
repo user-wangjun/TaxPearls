@@ -237,6 +237,83 @@ class AIKeyFailoverTests(unittest.TestCase):
         self.assertEqual(caught.exception.kind, "timeout")
         self.assertEqual(opener.open.call_count, 1)
 
+    def test_material_guard_and_failover_share_the_original_deadline(self):
+        now, admitted, released, timeouts = [100.0], [], [], []
+
+        @contextmanager
+        def guard(remaining):
+            admitted.append(remaining)
+            now[0] += 1
+            try:
+                yield
+            finally:
+                released.append(True)
+
+        opener = Mock()
+
+        def respond(_request, *, timeout):
+            timeouts.append(timeout)
+            if opener.open.call_count == 1:
+                now[0] += 1
+                raise rejection(402)
+            return BytesIO(envelope())
+
+        opener.open.side_effect = respond
+        token = ai_transport.REQUEST_GUARD.set(guard)
+        try:
+            with patch("src.ai_transport.time.monotonic", side_effect=lambda: now[0]), \
+                    patch("src.ai_transport.build_opener", return_value=opener), self.assertLogs("src.ai_transport"):
+                self.assertEqual(chat_content(SETTINGS, [], 5), "{}")
+        finally:
+            ai_transport.REQUEST_GUARD.reset(token)
+        self.assertEqual(admitted, [5, 3])
+        self.assertEqual(timeouts, [4, 2])
+        self.assertEqual(released, [True, True])
+        self.assertEqual(opener.open.call_count, 2)
+
+    def test_material_guard_exhaustion_does_not_send_or_fail_over(self):
+        now, released = [100.0], []
+
+        @contextmanager
+        def guard(_remaining):
+            now[0] += 6
+            try:
+                yield
+            finally:
+                released.append(True)
+
+        opener = Mock()
+        token = ai_transport.REQUEST_GUARD.set(guard)
+        try:
+            with patch("src.ai_transport.time.monotonic", side_effect=lambda: now[0]), \
+                    patch("src.ai_transport.build_opener", return_value=opener):
+                with self.assertRaises(TransportError) as caught:
+                    chat_content(SETTINGS, [], 5)
+        finally:
+            ai_transport.REQUEST_GUARD.reset(token)
+        self.assertEqual(caught.exception.kind, "timeout")
+        opener.open.assert_not_called()
+        self.assertEqual(released, [True])
+        self.assertEqual(ai_transport._key_failures, {})
+
+    def test_material_guard_wait_timeout_is_a_transport_timeout_without_http(self):
+        @contextmanager
+        def guard(_remaining):
+            raise TimeoutError("synthetic guard wait")
+            yield
+
+        opener = Mock()
+        token = ai_transport.REQUEST_GUARD.set(guard)
+        try:
+            with patch("src.ai_transport.build_opener", return_value=opener):
+                with self.assertRaises(TransportError) as caught:
+                    chat_content(SETTINGS, [], 5)
+        finally:
+            ai_transport.REQUEST_GUARD.reset(token)
+        self.assertEqual(caught.exception.kind, "timeout")
+        opener.open.assert_not_called()
+        self.assertEqual(ai_transport._key_failures, {})
+
 
 if __name__ == "__main__":
     unittest.main()
