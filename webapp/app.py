@@ -548,6 +548,16 @@ def mistake_book_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "mistake-book.js", media_type="text/javascript")
 
 
+@app.get("/training-certificates")
+def training_portal_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-portal.html", media_type="text/html")
+
+
+@app.get("/training-portal.js")
+def training_portal_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-portal.js", media_type="text/javascript")
+
+
 @app.get("/classroom.js")
 def classroom_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "classroom.js", media_type="text/javascript")
@@ -1144,6 +1154,10 @@ classroom.register(app,lambda: store,_user,_allow,_is_synthetic_dataset,COOKIE_N
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
+from webapp.training_portal import register as register_training_portal
+register_training_portal(app, lambda: store, "taxpearls_training_session")
+from webapp.training_content import register as register_training_content
+register_training_content(app, lambda: store)
 
 
 @app.get("/api/audits")
