@@ -916,6 +916,55 @@ def delete_mark(store, staff: dict, mark_id: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+def mark_stats(store, staff: dict, cert_id: str) -> dict[str, Any]:
+    """教师侧内容运营统计（三类标注口径定版后的报表 v1）。
+
+    口径：标注是内容层事实，统计范围 = 证书 × 标注依据版本（high_freq 的
+    basis_version 即考纲版本）；只统计教师维护的标注与题目关联，不含学生
+    个人作答数据——咨询频率不等同于风险等级，个人错误不写成公共知识事实。"""
+    mark_types = ("high_freq", "risk_context", "error_prone")
+    with store.connect() as db:
+        if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
+            raise TrainingPortalError("证书不存在。", 404)
+        kps = db.execute(
+            "SELECT id, subject FROM knowledge_point WHERE certificate_id=? AND active=1",
+            (cert_id,)).fetchall()
+        kp_ids = [r["id"] for r in kps]
+        by_subject: dict[str, int] = {}
+        for r in kps:
+            key = r["subject"] or "（未填科目）"
+            by_subject[key] = by_subject.get(key, 0) + 1
+        linked = {r["knowledge_point_id"] for r in db.execute(
+            f"""SELECT DISTINCT knowledge_point_id FROM knowledge_point_link
+                WHERE target_type='rule'
+                AND knowledge_point_id IN ({','.join('?' * len(kp_ids)) or "''"})""",
+            kp_ids).fetchall()} if kp_ids else set()
+        marks = db.execute(
+            f"""SELECT m.mark_type, m.basis_version, m.knowledge_point_id FROM knowledge_point_mark m
+                WHERE m.knowledge_point_id IN ({','.join('?' * len(kp_ids)) or "''"})""",
+            kp_ids).fetchall() if kp_ids else []
+        by_type: dict[str, dict[str, Any]] = {}
+        for mt in mark_types:
+            rows = [m for m in marks if m["mark_type"] == mt]
+            points = {m["knowledge_point_id"] for m in rows}
+            entry = {"count": len(rows), "points": len(points),
+                     "unmarked_points": len(kp_ids) - len(points)}
+            if mt == "high_freq":
+                versions: dict[str, int] = {}
+                for m in rows:
+                    v = m["basis_version"] or "（未填版本）"
+                    versions[v] = versions.get(v, 0) + 1
+                entry["by_basis_version"] = versions
+            by_type[mt] = entry
+        return {
+            "knowledge_points": {"total": len(kp_ids), "with_questions": len(linked),
+                                 "without_questions": len(kp_ids) - len(linked),
+                                 "by_subject": by_subject},
+            "marks": by_type,
+            "generated_at": _now(),
+        }
+
+
 # ---------------------------------------------------------------------------
 # 知识点-题目关联（FR-K05）
 # ---------------------------------------------------------------------------
@@ -2095,6 +2144,13 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         who = staff(session)
         return response({"knowledge_point": update_knowledge_point(
             store_provider(), who, kp_id, fields=_patch_fields(body))})
+
+    @app.get("/api/training/staff/certificates/{cert_id}/mark-stats")
+    @guarded
+    def staff_mark_stats(cert_id: str,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"mark_stats": mark_stats(store_provider(), who, cert_id)})
 
     @app.post("/api/training/staff/knowledge-points/{kp_id}/marks")
     @guarded
