@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [] };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -126,6 +126,16 @@ function renderRelations(k) {
   ).join(" ")}</div>`;
 }
 
+function renderRuleLinks(k) {
+  const rules = (k.links || []).filter((l) => l.target_type === "rule");
+  if (!rules.length) return "";
+  return `<div style="margin-top:6px;">${rules.map((l) => {
+    const r = state.rules.find((x) => x.id === l.target_id);
+    return `<span class="chip">练习规则：${r ? esc(r.name) : esc(l.target_id)}
+      <button class="small danger" style="padding:0 6px;" data-act="delete-link" data-id="${esc(l.id)}">删</button></span>`;
+  }).join(" ")}</div>`;
+}
+
 function renderKps() {
   const box = document.getElementById("kps");
   if (!state.kps.length) {
@@ -158,10 +168,20 @@ function renderKps() {
       </div>
       ${marks}
       ${renderRelations(k)}
+      ${renderRuleLinks(k)}
       <div class="actions">
         <button class="small" data-act="edit-kp" data-id="${esc(k.id)}">编辑</button>
         <button class="small" data-act="show-mark-form" data-id="${esc(k.id)}">＋ 标注</button>
         <button class="small" data-act="show-relation-form" data-id="${esc(k.id)}">＋ 关系</button>
+        <button class="small" data-act="show-link-form" data-id="${esc(k.id)}">＋ 规则</button>
+      </div>
+      <div class="inline-form" data-role="link-form" hidden>
+        <div class="row">
+          <div><label>练习规则（题目来源，当前为规则仿真题）</label>
+            <select data-role="lf-rule">${state.rules.map((r) =>
+              `<option value="${esc(r.id)}">${esc(r.id)} ${esc(r.name)}</option>`).join("")}</select></div>
+        </div>
+        <div class="actions"><button class="small primary" data-act="create-link" data-id="${esc(k.id)}">关联规则</button></div>
       </div>
       <div class="inline-form" data-role="relation-form" hidden>
         <div class="row">
@@ -365,6 +385,7 @@ async function load() {
     const vs = await api(`/api/training/staff/certificates/${state.currentId}/content-versions`);
     state.versions = vs.versions;
   }
+  try { state.rules = (await api("/api/training/staff/rules")).rules; } catch (err) { state.rules = []; }
   renderAll();
   await loadMarkStats().catch(() => {});
 }
@@ -607,6 +628,19 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     "delete-mark": () => {
       if (!window.confirm("确认删除该标注？")) return;
       withCert(async () => { await api(`/api/training/staff/marks/${id}`, { method: "DELETE" }); flash("标注已删除。"); });
+    },
+    "show-link-form": () => { const f = q(`#kp-${id} [data-role=link-form]`); f.hidden = !f.hidden; },
+    "create-link": () => withCert(async () => {
+      const scope = q(`#kp-${id}`);
+      await api(`/api/training/staff/knowledge-points/${id}/links`, {
+        method: "POST",
+        body: { target_type: "rule", target_id: q("[data-role=lf-rule]", scope).value },
+      });
+      flash("规则已关联；学生可从该知识点进入规则仿真练习。");
+    }),
+    "delete-link": () => {
+      if (!window.confirm("确认删除该规则关联？")) return;
+      withCert(async () => { await api(`/api/training/staff/links/${id}`, { method: "DELETE" }); flash("规则关联已删除。"); });
     },
   };
 
