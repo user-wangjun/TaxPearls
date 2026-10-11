@@ -459,11 +459,19 @@ function showApp(loggedIn) {
   document.getElementById("app-view").hidden = !loggedIn;
   document.getElementById("who").innerHTML = loggedIn
     ? `${esc(state.staff.display_name)}（${esc(state.staff.role)} · ${esc(state.staff.college)}）
+       <button class="small" id="pass-btn">改密码</button>
        <button class="small" id="logout-btn">退出</button>` : "";
-  if (loggedIn) document.getElementById("logout-btn").addEventListener("click", async () => {
-    await api("/api/training/staff/auth/logout", { method: "POST" });
-    showApp(false);
-  });
+  if (loggedIn) {
+    document.getElementById("logout-btn").addEventListener("click", async () => {
+      await api("/api/training/staff/auth/logout", { method: "POST" });
+      showApp(false);
+    });
+    document.getElementById("pass-btn").addEventListener("click", () => {
+      const f = document.getElementById("pass-form");
+      f.hidden = !f.hidden;
+      if (!f.hidden) f.scrollIntoView({ behavior: "smooth" });
+    });
+  }
 }
 
 async function withCert(mutator) {
@@ -544,6 +552,24 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     "show-kp-form": () => { const f = q("#kp-form"); f.hidden = !f.hidden; },
     "show-import-form": () => { const f = q("#import-form"); f.hidden = !f.hidden; },
     "refresh-mark-stats": () => loadMarkStats(),
+    "hide-pass-form": () => { q("#pass-form").hidden = true; },
+    "change-pass": () => {
+      const oldPw = q("#pw-old").value, newPw = q("#pw-new").value, newPw2 = q("#pw-new2").value;
+      if (!oldPw || !newPw) { flash("请填写当前密码和新密码。", true); return; }
+      if (newPw !== newPw2) { flash("两次输入的新密码不一致。", true); return; }
+      (async () => {
+        try {
+          await api("/api/training/staff/auth/change-password", {
+            method: "POST", body: { old_password: oldPw, new_password: newPw } });
+          q("#pw-old").value = ""; q("#pw-new").value = ""; q("#pw-new2").value = "";
+          q("#pass-form").hidden = true;
+          flash("密码已修改，请用新密码重新登录。");
+          showApp(false);
+        } catch (err) {
+          flash(err.message, true);
+        }
+      })();
+    },
     "show-student-form": () => { q("#student-form").hidden = !q("#student-form").hidden; },
     "show-student-import": () => { q("#student-import-form").hidden = !q("#student-import-form").hidden; },
     "refresh-students": () => withCert(loadStudents),

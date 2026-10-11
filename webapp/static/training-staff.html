@@ -76,6 +76,18 @@
       <button class="primary" id="new-cert-btn">＋ 新建证书</button>
     </div>
 
+    <div id="pass-form" class="card" hidden>
+      <h2>修改我的密码</h2>
+      <div class="row">
+        <div><label>当前密码</label><input id="pw-old" type="password" autocomplete="current-password"></div>
+        <div><label>新密码（至少 8 位）</label><input id="pw-new" type="password" autocomplete="new-password"></div>
+        <div><label>再输一遍新密码</label><input id="pw-new2" type="password" autocomplete="new-password"></div>
+      </div>
+      <div class="actions"><button class="primary small" data-act="change-pass">确认修改</button>
+        <button class="small" data-act="hide-pass-form">收起</button></div>
+      <p class="muted">修改成功后所有登录会话失效，需用新密码重新登录（包括本页）。</p>
+    </div>
+
     <div id="new-cert-form" class="card" hidden>
       <h2>新建证书</h2>
       <div class="row">
