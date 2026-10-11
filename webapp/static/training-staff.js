@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [] };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [] };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -389,6 +389,50 @@ async function load() {
   await loadStudents().catch(() => { state.students = []; });
   renderAll();
   await loadMarkStats().catch(() => {});
+  await loadRoster().catch(() => { state.classes = []; state.classHistory = []; renderRoster(); });
+}
+
+/* ---------- 班级与教师名册（FR-U03） ---------- */
+
+async function loadRoster() {
+  const college = state.staff ? state.staff.college : (document.getElementById("cm-college")?.value.trim() || "");
+  if (!college) { renderRoster(); return; }
+  state.classes = (await api(`/api/training/staff/classes?college=${encodeURIComponent(college)}`)).classes;
+  state.classHistory = (await api(`/api/training/staff/class-history?college=${encodeURIComponent(college)}&limit=20`)).history;
+  renderRoster();
+}
+
+function renderRoster() {
+  const box = document.getElementById("classes");
+  const hist = document.getElementById("class-history");
+  const names = document.getElementById("class-names");
+  const classes = state.classes || [];
+  names.innerHTML = classes.map((c) => `<option value="${esc(c.class_name)}">`).join("");
+  if (!classes.length) {
+    box.innerHTML = `<p class="muted">该院校暂无班级数据（学生名册「班级」字段聚合）。</p>`;
+  } else {
+    box.innerHTML = `<table style="width:100%;border-collapse:collapse;">
+      <tr><th style="text-align:left;">班级</th><th style="text-align:left;">在读</th><th style="text-align:left;">含停用</th></tr>
+      ${classes.map((c) => `<tr><td>${esc(c.class_name)}</td><td>${c.active_students}</td><td>${c.students}</td></tr>`).join("")}
+    </table>`;
+  }
+  const h = state.classHistory || [];
+  if (!h.length) {
+    hist.innerHTML = `<p class="muted">暂无班级变更记录。</p>`;
+  } else {
+    hist.innerHTML = h.map((r) => `<div class="item"><div class="item-head">
+      <div>${esc(r.student_no)} ${esc(r.name)}：${esc(r.from_class || "（未分班）")} → <strong>${esc(r.to_class || "（未分班）")}</strong></div>
+      <span class="muted">${esc((r.created_at || "").slice(0, 16).replace("T", " "))}${r.changed_by_name ? ` · 操作人 ${esc(r.changed_by_name)}` : ""}</span>
+    </div></div>`).join("");
+  }
+}
+
+function parseTeacherRows(text) {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const parts = line.split(/[，,]/).map((p) => p.trim());
+    return { username: parts[0] || "", display_name: parts[1] || "",
+             email: parts[2] || null, phone: null };
+  }).filter((r) => r.username);
 }
 
 /* ---------- 学生管理 ---------- */
@@ -457,6 +501,7 @@ document.getElementById("logout-btn")?.addEventListener("click", async () => {
 function showApp(loggedIn) {
   document.getElementById("login-view").hidden = loggedIn;
   document.getElementById("app-view").hidden = !loggedIn;
+  document.getElementById("teacher-import-btn").hidden = !(loggedIn && state.staff && state.staff.role === "admin");
   document.getElementById("who").innerHTML = loggedIn
     ? `${esc(state.staff.display_name)}（${esc(state.staff.role)} · ${esc(state.staff.college)}）
        <button class="small" id="pass-btn">改密码</button>
@@ -573,6 +618,47 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     "show-student-form": () => { q("#student-form").hidden = !q("#student-form").hidden; },
     "show-student-import": () => { q("#student-import-form").hidden = !q("#student-import-form").hidden; },
     "refresh-students": () => withCert(loadStudents),
+    "refresh-roster": () => loadRoster().catch((err) => flash(err.message, true)),
+    "show-teacher-import": () => { q("#teacher-import-form").hidden = !q("#teacher-import-form").hidden; },
+    "migrate-class": async () => {
+      const college = q("#cm-college").value.trim();
+      const fromClass = q("#cm-from").value.trim();
+      const toClass = q("#cm-to").value.trim();
+      if (!college || !fromClass || !toClass) { flash("院校、原班级、新班级均必填。", true); return; }
+      try {
+        const data = (await api("/api/training/staff/classes/migrate", {
+          method: "POST",
+          body: { college, from_class: fromClass, to_class: toClass },
+        })).migration;
+        document.getElementById("class-migrate-result").innerHTML =
+          `<p class="ok">迁移完成：${data.migrated} 名在读学生已从「${esc(fromClass)}」改入「${esc(toClass)}」，归属变更已写入追溯。</p>`;
+        q("#cm-from").value = ""; q("#cm-to").value = "";
+        await loadRoster();
+      } catch (err) {
+        flash(err.message, true);
+      }
+    },
+    "import-teachers": async () => {
+      const rows = parseTeacherRows(q("#ti-text").value);
+      if (!rows.length) { flash("没有可导入的行。格式：登录名,姓名,邮箱可选", true); return; }
+      const college = q("#ti-college").value.trim();
+      const defaultPassword = q("#ti-pass").value.trim();
+      if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
+      try {
+        const data = (await api("/api/training/staff/teachers/import", {
+          method: "POST",
+          body: { college, default_password: defaultPassword, rows },
+        })).import;
+        const skippedNote = data.skipped.length
+          ? `；跳过 ${data.skipped.length} 行：` + data.skipped.map((s) => `${s.username || `第${s.line}行`}（${s.reason}）`).join("；")
+          : "";
+        document.getElementById("teacher-import-result").innerHTML =
+          `<p class="ok">导入完成：新增 ${data.created.length} 个教师账号${esc(skippedNote)}</p>`;
+        q("#ti-text").value = ""; q("#ti-pass").value = "";
+      } catch (err) {
+        flash(err.message, true);
+      }
+    },
     "create-student": () => withCert(async () => {
       await api("/api/training/staff/students", {
         method: "POST",
@@ -607,8 +693,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
         : "";
       document.getElementById("student-import-result").innerHTML =
         `<p class="ok">导入完成：新增 ${data.created.length} 人${esc(skippedNote)}</p>`;
-      await loadStudents();
-    }),
+      await loadStudents();    }),
     "reset-student-pass": () => {
       const stu = state.students.find((s) => s.id === id);
       const input = window.prompt(`为 ${stu ? stu.student_no + " " + stu.name : "该学生"} 设置新密码（至少 8 位，重置后其登录立即失效）：`);
