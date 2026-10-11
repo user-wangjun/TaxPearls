@@ -583,7 +583,10 @@ function renderProfile() {
     const flags = [];
     if (m.attempts && m.last_perfect === false) flags.push("最近一次未满分（需复核）");
     if (k.wrong) flags.push(`错题 ${k.wrong}`);
-    if (k.tutor_questions) flags.push(`提问 ${k.tutor_questions}`);
+    const tutorBlock = k.tutor_questions
+      ? `<div class="actions"><button class="small" data-act="toggle-tutor" data-id="${esc(k.id)}">展开答疑记录（${k.tutor_questions}）</button></div>
+         <div data-role="tutor-log" hidden></div>`
+      : "";
     return `<div class="item" id="pf-${esc(k.id)}">
       <div class="item-head">
         <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
@@ -594,6 +597,7 @@ function renderProfile() {
       ${noteBlock}
       <div class="actions">
         <button class="small" data-act="edit-note" data-id="${esc(k.id)}">${k.note ? "改笔记" : "写笔记"}</button>
+        ${k.note ? `<button class="small" data-act="delete-note" data-id="${esc(k.id)}">删笔记</button>` : ""}
       </div>
       <div class="inline-form" data-role="note-edit" hidden>
         <textarea data-role="note-text" style="min-height:90px;">${esc(k.note ? k.note.content : "")}</textarea>
@@ -602,6 +606,7 @@ function renderProfile() {
           <button class="small" data-act="cancel-note" data-id="${esc(k.id)}">取消</button>
         </div>
       </div>
+      ${tutorBlock}
     </div>`;
   }).join("");
 }
@@ -650,6 +655,28 @@ document.getElementById("pf-list").addEventListener("click", async (event) => {
                 { method: "PUT", body: { content } });
       flash("笔记已保存（仅本人可见，教师无访问入口）。");
       await refreshProfile();
+    } catch (err) { flash(err.message, true); }
+  } else if (act === "delete-note") {
+    if (!confirm("删除这条笔记？删除后不可恢复。")) return;
+    try {
+      await api(`/api/training/my/knowledge-points/${btn.dataset.id}/note`, { method: "DELETE" });
+      flash("笔记已删除。");
+      await refreshProfile();
+    } catch (err) { flash(err.message, true); }
+  } else if (act === "toggle-tutor") {
+    const box = scope.querySelector("[data-role=tutor-log]");
+    if (!box.hidden) { box.hidden = true; btn.textContent = btn.textContent.replace("收起", "展开"); return; }
+    try {
+      const rows = (await api(`/api/training/my/tutor/history?knowledge_point_id=${btn.dataset.id}&limit=20`)).messages;
+      box.innerHTML = rows.length
+        ? rows.map((r) => `<div class="detail" style="margin-top:8px;">
+            <div class="muted">${esc((r.created_at || "").slice(0, 16).replace("T", " "))}${r.degraded ? " · 降级回答" : ""}</div>
+            <div><strong>问：</strong>${esc(r.question)}</div>
+            <div style="white-space:pre-wrap;"><strong>答：</strong>${esc(r.answer)}</div>
+          </div>`).join("")
+        : `<p class="muted">暂无答疑记录。</p>`;
+      box.hidden = false;
+      btn.textContent = btn.textContent.replace(/（\d+）/, `（${rows.length}）`).replace("展开", "收起");
     } catch (err) { flash(err.message, true); }
   }
 });

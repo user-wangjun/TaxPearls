@@ -1662,6 +1662,19 @@ def upsert_kp_note(store, student_id: str, kp_id: str, content: str) -> dict[str
         return dict(row)
 
 
+def delete_kp_note(store, student_id: str, kp_id: str) -> dict[str, Any]:
+    """删除本人某知识点笔记（待补项：笔记删除入口）；本人隔离，他人笔记不可见不可删。"""
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM knowledge_point WHERE id=?", (kp_id,)).fetchone():
+            raise TrainingPortalError("知识点不存在。", 404)
+        cur = db.execute("DELETE FROM student_kp_notes WHERE student_id=? AND knowledge_point_id=?",
+                         (student_id, kp_id))
+        if not cur.rowcount:
+            raise TrainingPortalError("笔记不存在或已删除。", 404)
+        return {"ok": True}
+
+
 # ---------------------------------------------------------------------------
 # 路由注册（接线模式与 classroom/mistake_book 一致）
 # ---------------------------------------------------------------------------
@@ -2002,6 +2015,13 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                     session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student(session)
         return response({"note": upsert_kp_note(store_provider(), who["id"], kp_id, body.content)})
+
+    @app.delete("/api/training/my/knowledge-points/{kp_id}/note")
+    @guarded
+    def my_note_delete(kp_id: str,
+                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response(delete_kp_note(store_provider(), who["id"], kp_id))
 
     for action in ("pause", "resume", "archive"):
         def _make(action: str):
