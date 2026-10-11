@@ -633,6 +633,30 @@ async function refreshProfile() {
 
 document.getElementById("load-profile").addEventListener("click", () => refreshProfile());
 
+document.getElementById("export-profile").addEventListener("click", async () => {
+  if (!state.pfCert) { flash("请先选择证书。", true); return; }
+  try {
+    const res = await fetch(`/api/training/my/profile/export?certificate_id=${encodeURIComponent(state.pfCert)}`,
+      { credentials: "same-origin" });
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.detail || `导出失败（${res.status}）`);
+    }
+    const blob = await res.blob();
+    const m = (res.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = m ? m[1] : "profile-export.md";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+    flash("档案已导出为 Markdown 文件（导出时刻的快照副本）。");
+  } catch (err) {
+    flash(err.message, true);
+  }
+});
+
 document.getElementById("pf-cert").addEventListener("change", (event) => {
   state.pfCert = event.target.value || null;
   refreshProfile();
