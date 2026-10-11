@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [] };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [] };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -386,8 +386,45 @@ async function load() {
     state.versions = vs.versions;
   }
   try { state.rules = (await api("/api/training/staff/rules")).rules; } catch (err) { state.rules = []; }
+  await loadStudents().catch(() => { state.students = []; });
   renderAll();
   await loadMarkStats().catch(() => {});
+}
+
+/* ---------- 学生管理 ---------- */
+
+async function loadStudents() {
+  state.students = (await api("/api/training/staff/students")).students;
+  renderStudents();
+}
+
+function renderStudents() {
+  const box = document.getElementById("students");
+  if (!state.students.length) {
+    box.innerHTML = `<p class="muted">还没有学生。点上方「添加学生」或「批量导入」。</p>`;
+    return;
+  }
+  box.innerHTML = state.students.map((s) => `
+    <div class="item">
+      <div class="item-head">
+        <div><strong>${esc(s.student_no)}</strong> ${esc(s.name)}
+          <span class="chip">${esc(s.college)}</span>
+          ${s.class_name ? `<span class="chip">${esc(s.class_name)}</span>` : ""}
+          ${s.active ? `<span class="badge">启用中</span>` : `<span class="badge gray">已停用</span>`}
+        </div>
+        <div class="actions">
+          <button class="small" data-act="reset-student-pass" data-id="${esc(s.id)}" data-no="${esc(s.student_no)}">重置密码</button>
+          <button class="small ${s.active ? "danger" : ""}" data-act="toggle-student" data-id="${esc(s.id)}">${s.active ? "停用" : "启用"}</button>
+        </div>
+      </div>
+    </div>`).join("");
+}
+
+function parseStudentRows(text) {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const parts = line.split(/[，,]/).map((p) => p.trim());
+    return { student_no: parts[0] || "", name: parts[1] || "", class_name: parts[2] || null };
+  }).filter((r) => r.student_no && r.name);
 }
 
 /* ---------- 事件 ---------- */
@@ -507,6 +544,65 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     "show-kp-form": () => { const f = q("#kp-form"); f.hidden = !f.hidden; },
     "show-import-form": () => { const f = q("#import-form"); f.hidden = !f.hidden; },
     "refresh-mark-stats": () => loadMarkStats(),
+    "show-student-form": () => { q("#student-form").hidden = !q("#student-form").hidden; },
+    "show-student-import": () => { q("#student-import-form").hidden = !q("#student-import-form").hidden; },
+    "refresh-students": () => withCert(loadStudents),
+    "create-student": () => withCert(async () => {
+      await api("/api/training/staff/students", {
+        method: "POST",
+        body: {
+          college: q("#sf-college").value.trim(),
+          student_no: q("#sf-no").value.trim(),
+          name: q("#sf-name").value.trim(),
+          class_name: q("#sf-class").value.trim() || null,
+          initial_password: q("#sf-pass").value || null,
+          email: q("#sf-email").value.trim() || null,
+        },
+      });
+      q("#sf-no").value = ""; q("#sf-name").value = ""; q("#sf-pass").value = ""; q("#sf-email").value = "";
+      q("#student-form").hidden = true;
+      await loadStudents();
+      flash("学生已添加。");
+    }),
+    "import-students": () => withCert(async () => {
+      const rows = parseStudentRows(q("#si-text").value);
+      if (!rows.length) { flash("没有可导入的行。格式：学号,姓名,班级", true); return; }
+      const college = q("#si-college").value.trim();
+      const defaultPassword = q("#si-pass").value.trim();
+      if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
+      const result = await api("/api/training/staff/students/import", {
+        method: "POST",
+        body: { college, default_password: defaultPassword,
+                default_class_name: q("#si-class").value.trim() || null, rows },
+      });
+      const data = result.import;
+      const skippedNote = data.skipped.length
+        ? `；跳过 ${data.skipped.length} 行：` + data.skipped.map((s) => `${s.student_no || `第${s.line}行`}（${s.reason}）`).join("；")
+        : "";
+      document.getElementById("student-import-result").innerHTML =
+        `<p class="ok">导入完成：新增 ${data.created.length} 人${esc(skippedNote)}</p>`;
+      await loadStudents();
+    }),
+    "reset-student-pass": () => {
+      const stu = state.students.find((s) => s.id === id);
+      const input = window.prompt(`为 ${stu ? stu.student_no + " " + stu.name : "该学生"} 设置新密码（至少 8 位，重置后其登录立即失效）：`);
+      if (input === null) return;
+      withCert(async () => {
+        await api(`/api/training/staff/students/${id}/reset-password`, {
+          method: "POST", body: { new_password: input.trim() } });
+        flash("密码已重置，该学生的旧登录已全部失效。");
+      });
+    },
+    "toggle-student": () => {
+      const stu = state.students.find((s) => s.id === id);
+      if (!stu) return;
+      if (stu.active && !window.confirm(`确认停用 ${stu.student_no} ${stu.name}？停用后立即无法登录。`)) return;
+      withCert(async () => {
+        await api(`/api/training/staff/students/${id}/toggle`, {
+          method: "POST", body: { active: !stu.active } });
+        flash(stu.active ? "已停用。" : "已启用。");
+      });
+    },
     "cancel-import": () => {
       q("#import-form").hidden = true;
       renderImportResult(null);
