@@ -2165,6 +2165,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return response({"knowledge_point": update_knowledge_point(
             store_provider(), who, kp_id, fields=_patch_fields(body))})
 
+    @app.get("/api/training/staff/rules")
+    @guarded
+    def staff_rules(session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        # 轻量规则目录：供教师把知识点关联到规则仿真题（练习题源）。
+        return response({"rules": sorted(
+            ({"id": r.id, "name": r.name} for r in _load_rules()), key=lambda x: x["id"])})
+
     @app.get("/api/training/staff/certificates/{cert_id}/mark-stats")
     @guarded
     def staff_mark_stats(cert_id: str,
