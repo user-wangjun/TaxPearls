@@ -528,3 +528,18 @@ def initialize(store) -> None:
         if "skipped_at" not in attempt_columns:
             db.execute(
                 "ALTER TABLE training_self_practice_attempts ADD COLUMN skipped_at TEXT")
+        # 班级归属追溯（FR-U03：账号与班级归属可追溯）。整建制/单点改班各记一行，不改写历史。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS roster_class_history (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键）
+                from_class TEXT,                          -- 原班级（可空=建档未分班）
+                to_class TEXT,                            -- 新班级（可空=移出分班）
+                changed_by TEXT REFERENCES college_user(id),  -- 操作人（外键）
+                created_at TEXT NOT NULL                  -- 变更时间（ISO 8601 文本）
+            );
+            CREATE INDEX IF NOT EXISTS idx_roster_class_history_student
+                ON roster_class_history(student_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_roster_class_history_time
+                ON roster_class_history(created_at);
+        """)

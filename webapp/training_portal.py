@@ -252,6 +252,108 @@ def set_student_active(store, student_id: str, active: bool) -> dict[str, Any]:
     return dict(row)
 
 
+# ---- 班级与教师名册（FR-U03 第一期：班级统计 / 整建制迁移 / 教师批量导入） ----
+
+def list_classes(store, college: str) -> list[dict[str, Any]]:
+    """按院校聚合班级与人数（自由文本 class_name 去重；空班级名不列示）。"""
+    with store.connect() as db:
+        rows = db.execute(
+            """SELECT class_name,
+                      count(*) AS students,
+                      sum(CASE WHEN active=1 THEN 1 ELSE 0 END) AS active_students
+               FROM student_info
+               WHERE college=? AND class_name IS NOT NULL AND TRIM(class_name) != ''
+               GROUP BY class_name ORDER BY class_name""", (college,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def migrate_class(store, changed_by: str, college: str, from_class: str, to_class: str) -> dict[str, Any]:
+    """学期初整建制迁移：把一个班级的全部在读学生改入新班级，逐生写入归属追溯。
+
+    只迁移在读（active=1）学生，停用学生名册保持原班级便于复查；不开新学期
+    归档（学期实体属 FR-U01，另行排期）。"""
+    from_class = (from_class or "").strip()
+    to_class = (to_class or "").strip()
+    if not from_class or not to_class:
+        raise TrainingPortalError("原班级与新班级均必填。")
+    if from_class == to_class:
+        raise TrainingPortalError("新班级与原班级相同，无需迁移。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        students = db.execute(
+            """SELECT id, student_no, name FROM student_info
+               WHERE college=? AND class_name=? AND active=1
+               ORDER BY student_no""", (college, from_class)).fetchall()
+        if not students:
+            raise TrainingPortalError("该院校下没有此班级的在读学生。", 404)
+        now = _now()
+        for s in students:
+            db.execute("UPDATE student_info SET class_name=? WHERE id=?", (to_class, s["id"]))
+            db.execute(
+                """INSERT INTO roster_class_history (id, student_id, from_class, to_class, changed_by, created_at)
+                   VALUES (?,?,?,?,?,?)""",
+                (str(uuid.uuid4()), s["id"], from_class, to_class, changed_by, now))
+        moved = [dict(s) | {"from_class": from_class, "to_class": to_class} for s in students]
+    return {"migrated": len(moved), "students": moved}
+
+
+def list_class_history(store, college: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit), 200))
+    with store.connect() as db:
+        rows = db.execute(
+            """SELECT h.id, h.student_id, s.student_no, s.name, h.from_class, h.to_class,
+                      u.display_name AS changed_by_name, h.created_at
+               FROM roster_class_history h
+               JOIN student_info s ON s.id = h.student_id
+               LEFT JOIN college_user u ON u.id = h.changed_by
+               WHERE s.college=?
+               ORDER BY h.created_at DESC, h.id LIMIT ?""", (college, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
+                       default_password: str, created_by: str) -> dict[str, Any]:
+    """批量建教师账号（FR-U03）；仅管理员可调用（路由层强制）。
+
+    逐行导入，单行失败不中断整批；重复/错误行带原因返回，不部分静默成功。
+    批量导入只建 teacher 角色；admin 账号仍走人工建立，避免批量提权。"""
+    _validate_student_password(default_password)
+    college = (college or "").strip()
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        username = str(row.get("username") or "").strip()
+        display_name = str(row.get("display_name") or "").strip()
+        line_no = f"{username or f'第{index}行'}"
+        if not username or re.search(r"\s", username) or len(username) < 2:
+            skipped.append({"line": index, "username": username,
+                            "reason": "登录名必填、不含空格且至少 2 位。"})
+            continue
+        if not display_name:
+            skipped.append({"line": index, "username": line_no, "reason": "姓名必填。"})
+            continue
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            dup = db.execute("SELECT id FROM college_user WHERE username=?", (username,)).fetchone()
+            if dup:
+                skipped.append({"line": index, "username": line_no,
+                                "reason": "登录名已存在（全局唯一）。"})
+                continue
+            uid = str(uuid.uuid4())
+            db.execute(
+                """INSERT INTO college_user
+                   (id, username, password_hash, display_name, college, department, email, phone,
+                    role, active, created_at)
+                   VALUES (?,?,?,?,?,NULL,?,?, 'teacher', 1, ?)""",
+                (uid, username, _passwords.hash(default_password), display_name, college,
+                 (str(row.get("email") or "").strip() or None),
+                 (str(row.get("phone") or "").strip() or None), _now()))
+        created.append({"id": uid, "username": username, "display_name": display_name})
+    return {"created": created, "skipped": skipped}
+
+
 # ---------------------------------------------------------------------------
 # 证书目录（FR-K01）
 # ---------------------------------------------------------------------------
@@ -1885,6 +1987,28 @@ class StudentImportBody(BaseModel):
     rows: list[StudentImportRow] = Field(min_length=1)
 
 
+class StaffImportRow(BaseModel):
+    # 不设 min_length：空登录名/姓名是可预期的错误行，由服务层逐行给原因（不整批拒绝）。
+    username: str = ""
+    display_name: str = ""
+    email: str | None = None
+    phone: str | None = None
+
+
+class StaffImportBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str = Field(min_length=1)
+    default_password: str = Field(min_length=1)
+    rows: list[StaffImportRow] = Field(min_length=1)
+
+
+class ClassMigrateBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str = Field(min_length=1)
+    from_class: str = Field(min_length=1)
+    to_class: str = Field(min_length=1)
+
+
 class StudentPasswordReset(BaseModel):
     model_config = ConfigDict(extra="forbid")
     new_password: str = Field(min_length=1)
@@ -2268,6 +2392,12 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
             raise HTTPException(status_code=401, detail="请先使用教师或管理员账号登录。")
         return who
 
+    def admin(session: str | None) -> dict[str, Any]:
+        who = staff(session)
+        if who.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="该操作仅限实训管理员。")
+        return who
+
     @app.post("/api/training/staff/auth/login")
     @guarded
     def staff_login(body: StaffLoginBody, request: Request) -> Response:
@@ -2481,6 +2611,40 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         staff(session)
         return response({"student": set_student_active(store_provider(), student_id, body.active)})
+
+    # ---- 班级与教师名册（FR-U03 第一期） ----
+
+    @app.get("/api/training/staff/classes")
+    @guarded
+    def staff_classes(college: str,
+                      session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"classes": list_classes(store_provider(), college)})
+
+    @app.post("/api/training/staff/classes/migrate")
+    @guarded
+    def staff_class_migrate(body: ClassMigrateBody,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"migration": migrate_class(
+            store_provider(), who["id"], body.college, body.from_class, body.to_class)})
+
+    @app.get("/api/training/staff/class-history")
+    @guarded
+    def staff_class_history(college: str, limit: int = 50,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"history": list_class_history(store_provider(), college, limit=limit)})
+
+    @app.post("/api/training/staff/teachers/import")
+    @guarded
+    def staff_teacher_import(body: StaffImportBody,
+                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = admin(session)
+        return response({"import": import_staff_users(
+            store_provider(), body.college,
+            [r.model_dump() for r in body.rows],
+            default_password=body.default_password, created_by=who["id"])})
 
     @app.get("/training-certificates")
     def training_portal_page() -> FileResponse:

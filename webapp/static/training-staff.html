@@ -241,6 +241,36 @@
       </div>
       <div id="students" class="muted">加载中…</div>
     </div>
+    <div class="card">
+      <h2>班级与教师名册
+        <button class="small" data-act="refresh-roster">刷新</button>
+        <button class="small" id="teacher-import-btn" data-act="show-teacher-import" hidden>⇪ 教师批量导入（管理员）</button>
+      </h2>
+      <p class="muted" style="margin-top:-6px;">班级为名册「班级」字段的聚合。学期初整建制迁移：把一个班级的全部在读学生整体改入新班级，逐生写入归属追溯（可审计、不改写历史）；停用学生保持原班级。教师批量导入仅限管理员，只建教师角色账号，每行：登录名,姓名,邮箱可选（空行忽略，重复/错误行带原因反馈）。</p>
+      <div id="class-migrate-form" class="inline-form">
+        <div class="row">
+          <div><label>院校（必填）</label><input id="cm-college" value="演示财经职业学院"></div>
+          <div><label>原班级</label><input id="cm-from" list="class-names" placeholder="如 会计2601"></div>
+          <datalist id="class-names"></datalist>
+          <div><label>新班级</label><input id="cm-to" placeholder="如 会计2602"></div>
+        </div>
+        <div class="actions"><button class="primary small" data-act="migrate-class">整建制迁移</button></div>
+        <div id="class-migrate-result"></div>
+      </div>
+      <div id="teacher-import-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>院校（必填）</label><input id="ti-college" value="演示财经职业学院"></div>
+          <div><label>统一初始密码（至少 8 位）</label><input id="ti-pass" placeholder="如 Staff2026!"></div>
+        </div>
+        <label>教师名单（每行：登录名,姓名,邮箱可选）</label>
+        <textarea id="ti-text" style="min-height:120px;font-family:ui-monospace,monospace;" placeholder="teacher01,王老师&#10;teacher02,李老师,t@demo.edu"></textarea>
+        <div class="actions"><button class="primary small" data-act="import-teachers">开始导入</button></div>
+        <div id="teacher-import-result"></div>
+      </div>
+      <div id="classes" class="muted">加载中…</div>
+      <h3 style="margin-top:16px;">班级归属追溯（最近变更）</h3>
+      <div id="class-history" class="muted"></div>
+    </div>
     <div class="error" id="app-error"></div>
   </section>
 </main>
