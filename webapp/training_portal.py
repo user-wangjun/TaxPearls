@@ -134,6 +134,28 @@ def logout_student(store, token: str | None) -> None:
             db.execute("DELETE FROM training_student_sessions WHERE token_hash=?", (_hash_token(token),))
 
 
+def change_staff_password(store, staff: dict[str, Any], old_password: str, new_password: str) -> dict[str, Any]:
+    """教师本人修改密码：验证当前密码，更新后清除自己全部会话（需重新登录）。"""
+    new_password = (new_password or "").strip()
+    if len(new_password) < _MIN_PASSWORD_LEN:
+        raise TrainingPortalError(f"新密码至少 {_MIN_PASSWORD_LEN} 位。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_user WHERE id=? AND active=1", (staff["id"],)).fetchone()
+        if not row:
+            raise TrainingPortalError("账号不存在或已停用。", 404)
+        try:
+            _passwords.verify(row["password_hash"], old_password or "")
+        except (VerifyMismatchError, InvalidHashError):
+            raise TrainingPortalError("当前密码不正确。", 401) from None
+        if old_password == new_password:
+            raise TrainingPortalError("新密码不能与当前密码相同。")
+        db.execute("UPDATE college_user SET password_hash=? WHERE id=?",
+                   (_passwords.hash(new_password), row["id"]))
+        db.execute("DELETE FROM training_staff_sessions WHERE staff_id=?", (row["id"],))
+    return {"password_changed": True}
+
+
 # ---------------------------------------------------------------------------
 # 教师端学生名册管理（小范围真实使用：单个添加 + 批量导入）
 # ---------------------------------------------------------------------------
@@ -1833,6 +1855,12 @@ def delete_kp_note(store, student_id: str, kp_id: str) -> dict[str, Any]:
 # 路由注册（接线模式与 classroom/mistake_book 一致）
 # ---------------------------------------------------------------------------
 
+class StaffPasswordChange(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    old_password: str = Field(min_length=1)
+    new_password: str = Field(min_length=1)
+
+
 class StudentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     college: str = Field(min_length=1)
@@ -2271,6 +2299,16 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_me(session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         return response({"staff": staff(session)})
+
+    @app.post("/api/training/staff/auth/change-password")
+    @guarded
+    def staff_change_password(body: StaffPasswordChange,
+                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        result = change_staff_password(store_provider(), who, body.old_password, body.new_password)
+        resp = response(result)
+        resp.delete_cookie(STAFF_COOKIE, path="/")
+        return resp
 
     @app.get("/api/training/staff/certificates")
     @guarded

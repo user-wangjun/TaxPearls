@@ -177,5 +177,30 @@ class StaffStudentManagementTests(unittest.TestCase):
         self.assertEqual(ok.status_code, 200, ok.text)
 
 
+    # ---- 教师改密码 ------------------------------------------------------
+
+    def test_staff_change_password_flow(self):
+        self._staff_login()
+        # 旧密码错 → 401
+        bad = self.client.post("/api/training/staff/auth/change-password", json={
+            "old_password": "wrong-pass", "new_password": "BrandNew88"})
+        self.assertEqual(bad.status_code, 401, bad.text)
+        # 新密码太短 → 422
+        short = self.client.post("/api/training/staff/auth/change-password", json={
+            "old_password": "staff-pass", "new_password": "short"})
+        self.assertEqual(short.status_code, 422, short.text)
+        # 成功 → 会话失效（me 401），新密码可登录，旧密码不可
+        ok = self.client.post("/api/training/staff/auth/change-password", json={
+            "old_password": "staff-pass", "new_password": "BrandNew88"})
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual(self.client.get("/api/training/staff/auth/me").status_code, 401)
+        old = self.client.post("/api/training/staff/auth/login", json={
+            "username": "admin1", "password": "staff-pass"})
+        self.assertEqual(old.status_code, 401)
+        new = self.client.post("/api/training/staff/auth/login", json={
+            "username": "admin1", "password": "BrandNew88"})
+        self.assertEqual(new.status_code, 200, new.text)
+
+
 if __name__ == "__main__":
     unittest.main()
