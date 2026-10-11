@@ -135,6 +135,102 @@ def logout_student(store, token: str | None) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 教师端学生名册管理（小范围真实使用：单个添加 + 批量导入）
+# ---------------------------------------------------------------------------
+
+_STUDENT_COLS = "id, college, student_no, name, class_name, active, created_at"
+_MIN_PASSWORD_LEN = 8
+
+
+def _validate_student_password(password: str) -> str:
+    password = (password or "").strip()
+    if len(password) < _MIN_PASSWORD_LEN:
+        raise TrainingPortalError(f"密码至少 {_MIN_PASSWORD_LEN} 位。")
+    return password
+
+
+def list_students(store, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        where = "" if include_inactive else "WHERE active=1"
+        rows = db.execute(
+            f"SELECT {_STUDENT_COLS} FROM student_info {where} ORDER BY college, student_no"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_student(store, college: str, student_no: str, name: str, *,
+                   class_name: str | None = None, initial_password: str | None = None,
+                   email: str | None = None) -> dict[str, Any]:
+    college = (college or "").strip()
+    student_no = (student_no or "").strip()
+    name = (name or "").strip()
+    if not college or not student_no or not name:
+        raise TrainingPortalError("院校、学号、姓名均不能为空。")
+    password = _validate_student_password(initial_password or f"Tp#{student_no}2026")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        dup = db.execute(
+            "SELECT id FROM student_info WHERE college=? AND student_no=?", (college, student_no)
+        ).fetchone()
+        if dup:
+            raise TrainingPortalError(f"该院校下已存在学号 {student_no}。")
+        sid = str(uuid.uuid4())
+        db.execute(
+            """INSERT INTO student_info
+               (id, college, student_no, name, class_name, password_hash, email, active, created_at)
+               VALUES (?,?,?,?,?,?,?,1,?)""",
+            (sid, college, student_no, name, (class_name or "").strip() or None,
+             _passwords.hash(password), (email or "").strip() or None, _now()),
+        )
+        row = db.execute(f"SELECT {_STUDENT_COLS} FROM student_info WHERE id=?", (sid,)).fetchone()
+    return dict(row)
+
+
+def import_students(store, college: str, rows: list[dict[str, Any]], *,
+                    default_password: str, default_class_name: str | None = None) -> dict[str, Any]:
+    """逐行导入学生；单行失败不中断整批，返回 created/skipped 明细。"""
+    _validate_student_password(default_password)
+    created: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        student_no = str(row.get("student_no") or "").strip()
+        try:
+            created.append(create_student(
+                store, college, student_no, str(row.get("name") or ""),
+                class_name=row.get("class_name") or default_class_name,
+                initial_password=default_password))
+        except TrainingPortalError as exc:
+            skipped.append({"line": index, "student_no": student_no, "reason": str(exc)})
+    return {"created": created, "skipped": skipped}
+
+
+def reset_student_password(store, student_id: str, new_password: str) -> dict[str, Any]:
+    password = _validate_student_password(new_password)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT id FROM student_info WHERE id=?", (student_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("学生不存在。")
+        db.execute("UPDATE student_info SET password_hash=? WHERE id=?",
+                   (_passwords.hash(password), student_id))
+        db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (student_id,))
+    return {"id": student_id, "password_reset": True}
+
+
+def set_student_active(store, student_id: str, active: bool) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT id FROM student_info WHERE id=?", (student_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("学生不存在。")
+        db.execute("UPDATE student_info SET active=? WHERE id=?", (1 if active else 0, student_id))
+        if not active:
+            db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (student_id,))
+        row = db.execute(f"SELECT {_STUDENT_COLS} FROM student_info WHERE id=?", (student_id,)).fetchone()
+    return dict(row)
+
+
+# ---------------------------------------------------------------------------
 # 证书目录（FR-K01）
 # ---------------------------------------------------------------------------
 
@@ -1679,6 +1775,40 @@ def delete_kp_note(store, student_id: str, kp_id: str) -> dict[str, Any]:
 # 路由注册（接线模式与 classroom/mistake_book 一致）
 # ---------------------------------------------------------------------------
 
+class StudentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str = Field(min_length=1)
+    student_no: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    class_name: str | None = None
+    initial_password: str | None = None
+    email: str | None = None
+
+
+class StudentImportRow(BaseModel):
+    student_no: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    class_name: str | None = None
+
+
+class StudentImportBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str = Field(min_length=1)
+    default_password: str = Field(min_length=1)
+    default_class_name: str | None = None
+    rows: list[StudentImportRow] = Field(min_length=1)
+
+
+class StudentPasswordReset(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    new_password: str = Field(min_length=1)
+
+
+class StudentToggle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    active: bool
+
+
 class LoginBody(BaseModel):
     student_no: str = Field(min_length=1)
     password: str = Field(min_length=1)
@@ -2202,6 +2332,48 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                           session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         who = staff(session)
         return response(delete_mark(store_provider(), who, mark_id))
+
+    @app.get("/api/training/staff/students")
+    @guarded
+    def staff_student_list(include_inactive: bool = True,
+                           session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"students": list_students(store_provider(), include_inactive=include_inactive)})
+
+    @app.post("/api/training/staff/students")
+    @guarded
+    def staff_student_create(body: StudentCreate,
+                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"student": create_student(
+            store_provider(), body.college, body.student_no, body.name,
+            class_name=body.class_name, initial_password=body.initial_password,
+            email=body.email)})
+
+    @app.post("/api/training/staff/students/import")
+    @guarded
+    def staff_student_import(body: StudentImportBody,
+                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"import": import_students(
+            store_provider(), body.college,
+            [r.model_dump() for r in body.rows],
+            default_password=body.default_password,
+            default_class_name=body.default_class_name)})
+
+    @app.post("/api/training/staff/students/{student_id}/reset-password")
+    @guarded
+    def staff_student_reset_password(student_id: str, body: StudentPasswordReset,
+                                     session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response(reset_student_password(store_provider(), student_id, body.new_password))
+
+    @app.post("/api/training/staff/students/{student_id}/toggle")
+    @guarded
+    def staff_student_toggle(student_id: str, body: StudentToggle,
+                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"student": set_student_active(store_provider(), student_id, body.active)})
 
     @app.get("/training-certificates")
     def training_portal_page() -> FileResponse:

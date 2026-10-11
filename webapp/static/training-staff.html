@@ -196,6 +196,39 @@
       <p class="muted" style="margin-top:-6px;">标注是内容层事实，统计范围=证书×标注依据版本；只统计教师维护的标注与题目关联，不含学生个人作答数据。个人易错情况请在学生作答统计中查看，不反向写入公共标注。</p>
       <div id="mark-stats"></div>
     </div>
+    <div class="card">
+      <h2>学生管理（考证线名册）
+        <button class="small" data-act="show-student-form">＋ 添加学生</button>
+        <button class="small" data-act="show-student-import">⇪ 批量导入</button>
+        <button class="small" data-act="refresh-students">刷新</button>
+      </h2>
+      <p class="muted" style="margin-top:-6px;">学生以「学号 + 密码」登录学生页；停用后立即无法登录且会话失效。批量导入每行一条：学号,姓名,班级（班级可省略，用默认班级）。重置密码会立即踢下线。</p>
+      <div id="student-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>院校（必填）</label><input id="sf-college" value="演示财经职业学院"></div>
+          <div><label>学号</label><input id="sf-no"></div>
+          <div><label>姓名</label><input id="sf-name"></div>
+          <div><label>班级（选填）</label><input id="sf-class"></div>
+        </div>
+        <div class="row">
+          <div><label>初始密码（留空 = Tp#学号2026）</label><input id="sf-pass"></div>
+          <div><label>邮箱（选填）</label><input id="sf-email"></div>
+        </div>
+        <div class="actions"><button class="primary small" data-act="create-student">添加学生</button></div>
+      </div>
+      <div id="student-import-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>院校（必填）</label><input id="si-college" value="演示财经职业学院"></div>
+          <div><label>默认班级（选填，行内可覆盖）</label><input id="si-class"></div>
+          <div><label>统一初始密码（至少 8 位）</label><input id="si-pass" placeholder="如 Class2026!"></div>
+        </div>
+        <label>名单（每行：学号,姓名,班级可选；空行自动忽略）</label>
+        <textarea id="si-text" style="min-height:140px;font-family:ui-monospace,monospace;" placeholder="2026001,张三,会计2601&#10;2026002,李四"></textarea>
+        <div class="actions"><button class="primary small" data-act="import-students">开始导入</button></div>
+        <div id="student-import-result"></div>
+      </div>
+      <div id="students" class="muted">加载中…</div>
+    </div>
     <div class="error" id="app-error"></div>
   </section>
 </main>
