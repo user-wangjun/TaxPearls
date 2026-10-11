@@ -1724,6 +1724,64 @@ def student_profile(store, student_id: str, cert_id: str) -> dict[str, Any]:
         }
 
 
+def _md_cell(text: Any) -> str:
+    """Markdown 表格单元格转义：竖线与换行不破坏表格结构。"""
+    return str(text if text is not None else "").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def student_profile_export(store, student_id: str, cert_id: str) -> tuple[str, str]:
+    """学生本人自助导出学习档案为 Markdown（档案导出细则 v1，只读）。
+
+    边界：导出是快照副本，不改动在线作答/笔记/答疑数据；按本人隔离，
+    教师不设导出入口；导出内容与 /api/training/my/profile 同一口径
+    （掌握程度四级、跳过不计入正确率），不额外补造数据。"""
+    profile = student_profile(store, student_id, cert_id)
+    s = profile["summary"]
+    generated = _now()[:19].replace("T", " ")
+    pct = lambda v: "—" if v is None else f"{round(v * 100, 1)}%"
+    lines: list[str] = [
+        f"# 学习档案导出 · {profile['certificate']['name']}",
+        "",
+        f"- 导出时间：{generated}（本文件为导出时刻的快照副本，不代表之后的学习记录）",
+        "- 掌握程度口径：未开始 / 初识（1-2 次）/ 巩固中 / 较熟练（≥3 次且正确率≥80% 且最近一次满分）；跳过不计入正确率。",
+        "",
+    ]
+    if profile["goal"]:
+        g = profile["goal"]
+        target = (g["official_date"]["exam_date"] if g.get("official_date")
+                  else g.get("planned_date")) or "未定"
+        lines.append(f"- 学习目标：{g['certificate']['name'] if g['certificate'] else ''}"
+                     f"（状态：{g['status']}；目标日期：{target}）")
+    lines += [
+        "",
+        "## 总览",
+        "",
+        f"- 知识点覆盖：{s['covered_kps']}/{s['total_kps']}（{pct(s['coverage_rate'])}）",
+        f"- 较熟练知识点：{s['proficient_kps']} 个",
+        f"- 累计作答：{s['attempts']} 次，总正确率 {pct(s['accuracy'])}（跳过 {s['skipped']} 次，不计入）",
+        f"- 笔记 {s['notes']} 条 · 答疑提问 {s['tutor_questions']} 次",
+        "",
+        "## 知识点明细",
+        "",
+        "| 编码 | 知识点 | 科目 | 掌握程度 | 作答 | 正确率 | 错题 | 最近作答 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for k in profile["knowledge_points"]:
+        m = k["mastery"]
+        lines.append(
+            f"| {_md_cell(k['code'])} | {_md_cell(k['name'])} | {_md_cell(k['subject'])} "
+            f"| {_md_cell(m['label'])} | {m['attempts']} | {pct(m['accuracy'])} "
+            f"| {k['wrong']} | {_md_cell((m['last_scored_at'] or '—')[:10])} |")
+    noted = [k for k in profile["knowledge_points"] if k["note"]]
+    if noted:
+        lines += ["", "## 我的笔记", ""]
+        for k in noted:
+            lines += [f"### {k['code']} {k['name']}", "",
+                      k["note"]["content"], ""]
+    filename = f"profile-{profile['certificate']['id']}-{_now()[:10]}.md"
+    return "\n".join(lines) + "\n", filename
+
+
 def get_kp_note(store, student_id: str, kp_id: str) -> dict[str, Any] | None:
     with store.connect() as db:
         row = db.execute("SELECT id FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
@@ -2131,6 +2189,17 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                    session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student(session)
         return response({"profile": student_profile(store_provider(), who["id"], certificate_id)})
+
+    @app.get("/api/training/my/profile/export")
+    @guarded
+    def my_profile_export(certificate_id: str,
+                          session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        markdown, filename = student_profile_export(store_provider(), who["id"], certificate_id)
+        return Response(
+            content=markdown, media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                     "Cache-Control": "private, no-store"})
 
     @app.get("/api/training/my/knowledge-points/{kp_id}/note")
     @guarded
