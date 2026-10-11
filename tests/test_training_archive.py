@@ -189,6 +189,41 @@ class KnowledgePointArchiveTests(unittest.TestCase):
         s = self._profile().json()["profile"]["summary"]
         self.assertEqual(s["notes"], 1)
 
+    def test_note_delete_and_isolation(self):
+        # 待补项（TODO：笔记删除入口）：本人可删；他人删不了我的（404 且原笔记还在）
+        kp = self.kps["KP-01"]
+        self._login("2026001", "pass-a")
+        self.client.put(f"/api/training/my/knowledge-points/{kp}/note",
+                        json={"content": "待删除的笔记。"})
+        self.assertEqual(self.client.delete(
+            f"/api/training/my/knowledge-points/{kp}/note").status_code, 200)
+        self.assertIsNone(self.client.get(
+            f"/api/training/my/knowledge-points/{kp}/note").json()["note"])
+        # 删除后再删 → 404
+        self.assertEqual(self.client.delete(
+            f"/api/training/my/knowledge-points/{kp}/note").status_code, 404)
+        # 他人隔离：B 删 A 的笔记 → 404 且 A 的笔记不受影响
+        self.client.put(f"/api/training/my/knowledge-points/{kp}/note",
+                        json={"content": "A 的笔记。"})
+        self._login("2026002", "pass-b")
+        self.assertEqual(self.client.delete(
+            f"/api/training/my/knowledge-points/{kp}/note").status_code, 404)
+        self._login("2026001", "pass-a")
+        self.assertEqual(self.client.get(
+            f"/api/training/my/knowledge-points/{kp}/note").json()["note"]["content"], "A 的笔记。")
+        # 不存在的知识点 → 404
+        self.assertEqual(self.client.delete(
+            f"/api/training/my/knowledge-points/{uuid.uuid4().hex}/note").status_code, 404)
+
+    def test_note_delete_updates_profile_count(self):
+        self._login("2026001", "pass-a")
+        kp = self.kps["KP-03"]
+        self.client.put(f"/api/training/my/knowledge-points/{kp}/note",
+                        json={"content": "政府会计双分录。"})
+        self.assertEqual(self._profile().json()["profile"]["summary"]["notes"], 1)
+        self.client.delete(f"/api/training/my/knowledge-points/{kp}/note")
+        self.assertEqual(self._profile().json()["profile"]["summary"]["notes"], 0)
+
     # ---- 边界与认证 ---------------------------------------------------------
 
     def test_profile_unknown_certificate_404(self):
