@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 PREFIX = 'tp-field-v1:'
 REGISTRY = {
+    'ai_service_keys': (('id',), ('secret_value',)),
     'clients': (('id',), ('taxpayer_id',)),
     'audits': (('id',), ('taxpayer_id', 'dataset_json', 'findings_json')),
     'audit_report_versions': (('audit_id', 'version'), ('html', 'manifest_json', 'pdf_bytes')),

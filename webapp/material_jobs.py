@@ -18,6 +18,7 @@ from src.input_errors import InputError
 from src import material_security, periods, material_provenance
 from webapp import material_batches as batches, material_operations as operations
 from webapp.access import AccessDenied, current_actor
+from webapp import ai_keys
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,7 @@ def submit(store, user, uploads, mode, rules, *, client_id=None, batch_id=None, 
     names = [name for name, _ in uploads]
     if len(set(names)) != len(names) or any('/' in name or '\\' in name for name in names):
         raise batches.MaterialStorageError('同批文件名须唯一且不能包含目录路径。')
-    settings = AISettings.from_env()
+    settings = ai_keys.apply(AISettings.from_env(), store, usage='extraction')
     if mode == 'ai' and settings.problem():
         raise batches.MaterialStorageError(settings.problem())
     config = QueueSettings.from_env()
@@ -156,7 +157,7 @@ def public(job):
 
 def submit_pdf(store, user, batch_id, revision, request, rules):
     """Reserve an explicit, saved PDF extraction before any external request."""
-    settings, config = AISettings.from_env(), QueueSettings.from_env()
+    settings, config = ai_keys.apply(AISettings.from_env(), store, usage='extraction'), QueueSettings.from_env()
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         batch = batches._authorize(db, user, batch_id)

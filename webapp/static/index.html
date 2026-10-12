@@ -433,7 +433,7 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=20261012-workspace-button-theme-42">
+<link rel="stylesheet" href="/workspace.css?v=20261012-ai-key-pr-43">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -532,6 +532,7 @@
       <button data-panel="knowledgePanel" aria-label="知识图谱" title="知识图谱"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m11 6 2-1 6 12-2 1zM5 17 11 5l2 1-6 12zM6 17h12v2H6z"/><circle cx="12" cy="5" r="3.5"/><circle cx="5" cy="18" r="3.5"/><circle cx="19" cy="18" r="3.5"/></svg><span class="nav-label">知识图谱</span></button>
       <button data-panel="trainingPanel" class="training-nav" aria-label="实训中心" title="实训中心"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 11 5-11 5L1 8zm-7 9 7 3.2 7-3.2v5c-3.7 3.5-10.3 3.5-14 0zM21 11h2v8h-2z"/></svg><span class="nav-label">实训中心</span></button>
       <button data-panel="adminPanel" class="admin-nav" aria-label="管理" title="管理"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10" cy="7" r="4"/><path d="M2 21v-3a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v3zm16-18a4 4 0 0 1 0 8h-1a6 6 0 0 0 0-8zm.5 10a5 5 0 0 1 4.5 5v3h-3v-3a8 8 0 0 0-1.5-5z"/></svg><span class="nav-label">管理</span></button>
+      <button data-panel="aiKeysPanel" style="display:none" aria-label="AI 密钥检测" title="AI 密钥检测"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h18v18H3z"/><path fill="var(--bg,#fff)" d="M5 11h4l2-5 3 11 2-6h3v2h-2l-3 8-3-10-1 2H5z"/></svg><span class="nav-label">AI 密钥检测</span></button>
       <div id="appHeader" class="nav-account" style="display:none">
         <div id="themePicker" class="theme-picker">
           <div id="themeOptions" role="group" aria-label="外观模式">
@@ -562,6 +563,47 @@
         <p class="muted" id="orgReportStatus" role="status"></p><p class="muted" id="orgReportWarnings"></p><div id="orgReportSummary"></div><div class="data-list" id="orgReportClients"></div>
       </div>
       <div class="sheet"><h2>已生成机构报告（最近 100 份）</h2><p class="muted">报告冻结生成时的客户、审计、品牌与规则口径；后续修改或补传材料不会覆盖。PDF 首次导出后冻结原文件，校验和不等于防伪签名。</p><div id="orgReportSaved" class="data-list"></div><div id="orgReportDetail" hidden></div></div>
+    </section>
+    <section class="panel" id="aiKeysPanel">
+      <div class="probe-page-header">
+        <div class="probe-heading"><div><h2>AI 密钥检测</h2><p class="muted">分配用途，检查活性与余额。</p></div><div class="probe-header-actions"><button id="btnRefreshAIKeys" type="button" class="btn pdf">刷新</button><button id="btnAddAIKey" type="button" class="btn">＋ 加入密钥</button></div></div>
+        <div class="probe-page-meta"><p id="aiKeyStatus" role="status" aria-live="polite"></p><details class="probe-help"><summary>检测说明</summary><p>仅平台管理员可操作。测活使用合成样本，检查文字与 JSON 调用，可能产生费用；开启思考时耗时与费用可能增加。图片能力尚未检测。结果为检测时点状态。金额按原币种显示，共享账户余额请勿相加。</p></details></div>
+      </div>
+      <div id="aiKeyCards" class="probe-grid"></div>
+      <dialog id="aiKeyAddDialog" class="probe-add-dialog" aria-labelledby="aiKeyAddTitle">
+        <form id="aiKeyAddForm">
+          <div class="probe-editor-heading"><h2 id="aiKeyAddTitle">加入密钥</h2><p class="muted">配置模型服务与用途，key 加密保存。</p></div>
+          <div class="probe-editor-body">
+            <div class="probe-editor-grid">
+              <label class="field">名称<input id="aiKeyAddName" maxlength="80" required placeholder="例如：材料提取备用"></label>
+            </div>
+            <div id="aiKeyAddUsage" class="probe-editor-usages"></div>
+            <div class="probe-endpoint-fields">
+              <label class="field">地址预设<select id="aiKeyAddProvider"><option value="configured">当前配置</option><option value="deepseek">DeepSeek 官方</option><option value="openrouter">OpenRouter 官方</option></select></label>
+              <label class="field">接口 URL<input id="aiKeyAddURL" type="url" maxlength="500" required placeholder="https://服务地址/v1"></label>
+            </div>
+            <div class="field"><label for="aiKeyAddSecret">API key</label><div class="probe-secret-row"><input id="aiKeyAddSecret" type="password" maxlength="4096" required autocomplete="off" spellcheck="false" placeholder="填写 API key"><button id="btnRevealAIKey" type="button" class="btn pdf" hidden>查看 key</button></div></div>
+            <div class="field probe-model-field"><div class="probe-field-heading"><label for="aiKeyAddModel">模型名称</label><button id="btnFetchAIModels" type="button" class="btn pdf">从上游获取</button></div><div class="probe-model-combobox"><input id="aiKeyAddModel" maxlength="200" required placeholder="手动填写或从上游获取" role="combobox" aria-autocomplete="none" aria-controls="aiKeyModelChoices" aria-expanded="false" autocomplete="off"><button id="btnChooseAIModel" class="probe-model-toggle" type="button" aria-label="选择上游模型" aria-controls="aiKeyModelChoices" aria-expanded="false" hidden><span aria-hidden="true"></span></button><div id="aiKeyModelChoices" class="probe-model-choices" role="listbox" aria-label="上游模型列表" hidden></div></div><span id="aiKeyModelStatus" class="muted" role="status" aria-live="polite"></span></div>
+            <details class="probe-edit-options"><summary>更多设置<span class="muted">余额查询与模型参数</span></summary>
+              <label class="field">余额查询设置<select id="aiKeyEditProtocol"><option value="auto">自动识别</option><option value="deepseek">DeepSeek 账户余额</option><option value="openrouter">OpenRouter 密钥额度</option><option value="credit_grants">兼容额度接口（USD）</option></select></label>
+              <div class="field probe-reasoning-field"><label for="aiKeyReasoning">思考程度</label><select id="aiKeyReasoning"><option value="default">上游默认</option></select><span id="aiKeyReasoningStatus" class="muted" role="status" aria-live="polite"></span></div>
+              <div class="probe-model-options"><label><input id="aiKeyEditJSON" type="checkbox"> 要求 JSON 输出</label><label><input id="aiKeyEditVision" type="checkbox"> 允许图片输入（须模型支持）</label></div>
+            </details>
+          </div>
+          <div class="probe-editor-footer"><p id="aiKeyAddStatus" class="muted" role="status" aria-live="polite"></p><div class="probe-header-actions"><button id="btnCancelAIKey" type="button" class="btn pdf">取消</button><button id="btnSaveAIKey" type="submit" class="btn">加入密钥</button></div></div>
+        </form>
+      </dialog>
+      <details class="sheet probe-temporary">
+        <summary>临时密钥检测<span class="muted">不保存 key，仅检测一次</span></summary><p class="muted">提交后清空输入，不更改业务配置。“当前配置地址”使用服务端配置的接口。</p>
+        <div class="probe-form">
+          <label class="field">服务地址<select id="aiTemporaryProvider"><option value="configured">当前配置地址</option><option value="deepseek">DeepSeek 官方</option><option value="openrouter">OpenRouter 官方</option></select></label>
+          <label class="field">模型名称<input id="aiTemporaryModel" maxlength="200" placeholder="当前配置地址可留空；OpenRouter 测活须填写模型"></label>
+          <label class="field">临时 API key<input id="aiTemporaryKey" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="仅用于本次检测"></label>
+          <label class="field">余额查询协议<select id="aiTemporaryProtocol"><option value="auto">自动识别</option><option value="deepseek">DeepSeek 账户余额</option><option value="openrouter">OpenRouter 密钥额度</option><option value="credit_grants">兼容额度接口（USD）</option></select></label>
+        </div>
+        <div class="probe-actions"><button id="btnTemporaryHealth" type="button" class="btn">测活临时密钥</button><button id="btnTemporaryBalance" type="button" class="btn pdf">查询临时密钥金额</button></div>
+        <div id="aiTemporaryResult" role="status" aria-live="polite"></div>
+      </details>
     </section>
     <section class="panel" id="knowledgePanel">
       <div class="page-head graph-page-head"><div><p class="eyebrow">税务洞察 / KNOWLEDGE EXPLORER</p><h2>让每一条关联，都有据可循<span class="graph-title-tag">知识图谱</span></h2><p class="muted">从一个指标出发，探索业务、风险与法规之间的证据网络。</p></div><div id="graphSummary" class="graph-summary"></div></div>
@@ -851,7 +893,8 @@
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/enterprise.js?v=20261007-company-selector-2"></script>
-<script src="/console.js?v=20261009-org-overview-icon-3"></script>
+<script src="/ai-keys.js?v=20261012-model-combobox-11"></script>
+<script src="/console.js?v=20261012-ai-probes-1"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>

@@ -109,13 +109,13 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 {
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
   const code = source.slice(source.indexOf("function defaultWorkspacePanel()"), source.indexOf("/* ---------- 多材料上传"));
-  const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel"];
+  const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel"];
   const permitted = {
-    org_admin: panels.filter(id => id !== "trainingPanel"),
-    accountant: panels.filter(id => !["trainingPanel", "orgReportPanel"].includes(id)),
-    teacher: panels.filter(id => id !== "orgReportPanel"),
+    org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel"].includes(id)),
+    accountant: panels.filter(id => !["trainingPanel", "orgReportPanel", "aiKeysPanel"].includes(id)),
+    teacher: panels.filter(id => !["orgReportPanel", "aiKeysPanel"].includes(id)),
     student: ["trainingPanel", "knowledgePanel", "userSettingsPanel"],
-    platform_admin: ["adminPanel", "knowledgePanel", "userSettingsPanel"],
+    platform_admin: ["adminPanel", "knowledgePanel", "userSettingsPanel", "aiKeysPanel"],
   };
   function navigation(role, href = "http://localhost/?view=test") {
     const calls = [], url = new URL(href);
@@ -131,6 +131,7 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
       $:id=>views.find(view=>view.id===id),
       document:{querySelectorAll:selector=>selector===".panel"?views:buttons},
       noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0,
+      aiKeyProbes:{load(){calls.push("loadAIKeys");},reset(){}},
       refreshAIStatus(){calls.push("ai");},refreshAuditClients(){calls.push("clients");},enterpriseMaterials:{refresh(){calls.push("materials");}}};
     for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge"])ctx[name]=()=>calls.push(name);
     vm.createContext(ctx);vm.runInContext(code,ctx);
@@ -151,6 +152,8 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
     ["student","adminPanel","trainingPanel"],
     ["platform_admin","dashboardPanel","adminPanel"],
     ["accountant","orgReportPanel","dashboardPanel"],
+    ["org_admin","aiKeysPanel","dashboardPanel"],
+    ["student","aiKeysPanel","trainingPanel"],
     ["org_admin","unknownPanel","dashboardPanel"],
   ]) {
     const view=navigation(role,"http://localhost/#panel="+requested);

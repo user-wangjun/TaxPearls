@@ -656,6 +656,21 @@ class Store:
                 rows = db.execute("SELECT * FROM audit_log WHERE org_id=? ORDER BY id DESC LIMIT 300", (user["org_id"],))
             return [dict(row) for row in rows]
 
+    def list_ai_key_probes(self, user: dict[str, Any], key_ids: list[str]) -> list[dict[str, Any]]:
+        """Read only the latest health/balance outcome for each configured key."""
+        with self.connect() as db:
+            db.execute('BEGIN')
+            current_actor(db, user, {'platform_admin'})
+            if not key_ids:
+                return []
+            placeholders = ','.join('?' for _ in key_ids)
+            rows = db.execute(f"""SELECT * FROM audit_log WHERE id IN (
+                SELECT MAX(id) FROM audit_log WHERE action='ai_key_probe'
+                AND target_type IN ('ai_key_health','ai_key_balance')
+                AND target_id IN ({placeholders}) GROUP BY target_id,target_type
+            ) ORDER BY id DESC""", key_ids)
+            return [dict(row) for row in rows]
+
     def upsert_client(self, user: dict[str, Any], name: str, taxpayer_id: str, accountant_id: str | None = None) -> dict[str, Any]:
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')

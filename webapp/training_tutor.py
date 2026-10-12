@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.settings import AISettings
+from webapp import ai_keys
 from webapp.storage import _now
 from webapp.training_content import version_brief
 from webapp.training_graph import relations_payload
@@ -157,7 +158,7 @@ def ask_tutor(store, student_id: str, *, certificate_id: str, question: str,
         if not nodes:
             raise _portal_error("请先选择知识点或题目，答疑需要依据上下文。")
         allowed = {n["id"] for n in nodes}
-    settings = AISettings.from_env()
+    settings = ai_keys.apply(AISettings.from_env(), store, usage='tutor')
     degraded, model_name, answer_text, citations = "", "", "", []
     if settings.problem():
         degraded = "模型未配置或不可用。"

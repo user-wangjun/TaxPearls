@@ -107,6 +107,14 @@ def initialize(store) -> None:
                 target_type TEXT NOT NULL, target_id TEXT NOT NULL,
                 detail TEXT NOT NULL, created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS ai_service_keys (
+                id TEXT PRIMARY KEY, name TEXT NOT NULL, base_url TEXT NOT NULL,
+                model TEXT NOT NULL, secret_value TEXT NOT NULL,
+                disable_thinking INTEGER NOT NULL, revision TEXT NOT NULL, created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS ai_key_exclusions (
+                id TEXT PRIMARY KEY, created_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS notification_preferences (
                 user_id TEXT PRIMARY KEY REFERENCES users(id),
                 audit_completed INTEGER NOT NULL DEFAULT 0,
@@ -543,3 +551,5 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_roster_class_history_time
                 ON roster_class_history(created_at);
         """)
+        from webapp import ai_keys
+        ai_keys.migrate(db)
