@@ -429,7 +429,8 @@ body.workspace-ready #appFooter { background: transparent; color: var(--ink-2); 
 }
 #appMain .btn.pdf:hover,
 #appMain .dropzone .pick:hover { background: linear-gradient(155deg, #607b8f, #405d73 40%, #324c60); }
-#appMain .btn.re {
+#appMain .btn.re,
+#appMain .panel button:where(:not(.pdf, .re, .primary, .knowledge-rule, .dropdown-toggle, .dropdown-item, .fold-btn, .graph-node button, .graph-toolbar button, .inspector-tabs button)) {
   border: 1px solid #bac8d4;
   border-top-color: #ffffff;
   border-bottom-color: #a5b6c4;
@@ -437,9 +438,13 @@ body.workspace-ready #appFooter { background: transparent; color: var(--ink-2); 
   color: var(--navy);
   box-shadow: 0 1px 0 #ffffff inset, 0 2px 3px #32485b14;
 }
-#appMain .btn.re:hover { background: linear-gradient(#ffffff, #f0f4f7); }
+#appMain .btn.re:hover,
+#appMain .panel button:where(:not(.pdf, .re, .primary, .knowledge-rule, .dropdown-toggle, .dropdown-item, .fold-btn, .graph-node button, .graph-toolbar button, .inspector-tabs button)):hover:not(:disabled):not([aria-disabled=true]) { background: linear-gradient(#ffffff, #f0f4f7); }
+#appMain .panel button { font-family: inherit; }
 #appMain .btn:active { box-shadow: 0 1px 2px #32485b26 inset; }
-#appMain .btn:disabled { opacity: .55; cursor: not-allowed; }
+#appMain .btn:disabled,
+#appMain .panel button:disabled,
+#appMain .panel button[aria-disabled=true] { opacity: .55; cursor: not-allowed; }
 #appMain .field input[type=file] {
   display: block;
   width: 100%;
@@ -752,8 +757,9 @@ html[data-theme=dark] #appMain .nav-heading { border-color: var(--line); }
 html[data-theme=dark] #appMain .nav button[data-panel]:hover { background: #2a2c2e; }
 html[data-theme=dark] #appMain :is(.field input:not([type=checkbox]):not([type=radio]), .field select, .field textarea, .dropdown-toggle, .material-company input, .dropdown-menu, .dropdown-list, #graphQuestion) { background: var(--control-field-face); border-color: #696d72; color: var(--ink); box-shadow: 0 1px 2px #00000030 inset; }
 html[data-theme=dark] #appMain :is(input, textarea)::placeholder { color: var(--ink-3); }
-html[data-theme=dark] #appMain :is(.btn.re, .account-control, .account-icon, .risk-explanations, .fold-btn, :where(#uploadScope) summary, .dropdown-item:hover, .dropdown-item.selected) { background: var(--control-face) padding-box, var(--control-rim) border-box; color: var(--control-text); border-color: transparent; box-shadow: 0 1px 0 #ffffff0e inset, 0 2px 3px #00000025; }
-html[data-theme=dark] #appMain :is(.btn.re, .account-control):hover { background: var(--control-face) padding-box, var(--control-active-rim) border-box; }
+html[data-theme=dark] #appMain :is(.btn.re, .panel button:where(:not(.pdf, .re, .primary, .knowledge-rule, .dropdown-toggle, .dropdown-item, .fold-btn, .graph-node button, .graph-toolbar button, .inspector-tabs button)), .account-control, .account-icon, .risk-explanations, .fold-btn, :where(#uploadScope) summary, .dropdown-item:hover, .dropdown-item.selected) { background: var(--control-face) padding-box, var(--control-rim) border-box; color: var(--control-text); border-color: transparent; box-shadow: 0 1px 0 #ffffff0e inset, 0 2px 3px #00000025; }
+html[data-theme=dark] #appMain :is(.btn.re, .account-control):hover,
+html[data-theme=dark] #appMain .panel button:where(:not(.pdf, .re, .primary, .knowledge-rule, .dropdown-toggle, .dropdown-item, .fold-btn, .graph-node button, .graph-toolbar button, .inspector-tabs button)):hover:not(:disabled):not([aria-disabled=true]) { background: var(--control-face) padding-box, var(--control-active-rim) border-box; }
 html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, :where(.nav) button[data-panel].active) {
   background: var(--control-face) padding-box, var(--control-active-rim) border-box;
   color: #f0f3f6;
