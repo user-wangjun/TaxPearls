@@ -433,7 +433,7 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=20261012-ai-key-multi-use-10">
+<link rel="stylesheet" href="/workspace.css?v=20261012-ai-model-combobox-11">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -583,7 +583,7 @@
               <label class="field">接口 URL<input id="aiKeyAddURL" type="url" maxlength="500" required placeholder="https://服务地址/v1"></label>
             </div>
             <div class="field"><label for="aiKeyAddSecret">API key</label><div class="probe-secret-row"><input id="aiKeyAddSecret" type="password" maxlength="4096" required autocomplete="off" spellcheck="false" placeholder="填写 API key"><button id="btnRevealAIKey" type="button" class="btn pdf" hidden>查看 key</button></div></div>
-            <div class="field probe-model-field"><div class="probe-field-heading"><label for="aiKeyAddModel">模型名称</label><button id="btnFetchAIModels" type="button" class="btn pdf">从上游获取</button></div><input id="aiKeyAddModel" maxlength="200" required placeholder="手动填写或从上游获取"><select id="aiKeyModelChoices" aria-label="上游模型列表" hidden></select><span id="aiKeyModelStatus" class="muted" role="status" aria-live="polite"></span></div>
+            <div class="field probe-model-field"><div class="probe-field-heading"><label for="aiKeyAddModel">模型名称</label><button id="btnFetchAIModels" type="button" class="btn pdf">从上游获取</button></div><div class="probe-model-combobox"><input id="aiKeyAddModel" maxlength="200" required placeholder="手动填写或从上游获取" role="combobox" aria-autocomplete="none" aria-controls="aiKeyModelChoices" aria-expanded="false" autocomplete="off"><button id="btnChooseAIModel" class="probe-model-toggle" type="button" aria-label="选择上游模型" aria-controls="aiKeyModelChoices" aria-expanded="false" hidden><span aria-hidden="true"></span></button><div id="aiKeyModelChoices" class="probe-model-choices" role="listbox" aria-label="上游模型列表" hidden></div></div><span id="aiKeyModelStatus" class="muted" role="status" aria-live="polite"></span></div>
             <details class="probe-edit-options"><summary>更多设置<span class="muted">余额查询与模型参数</span></summary>
               <label class="field">余额查询设置<select id="aiKeyEditProtocol"><option value="auto">自动识别</option><option value="deepseek">DeepSeek 账户余额</option><option value="openrouter">OpenRouter 密钥额度</option><option value="credit_grants">兼容额度接口（USD）</option></select></label>
               <div class="field probe-reasoning-field"><label for="aiKeyReasoning">思考程度</label><select id="aiKeyReasoning"><option value="default">上游默认</option></select><span id="aiKeyReasoningStatus" class="muted" role="status" aria-live="polite"></span></div>
@@ -893,7 +893,7 @@
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/enterprise.js?v=20261007-company-selector-2"></script>
-<script src="/ai-keys.js?v=20261012-multi-use-10"></script>
+<script src="/ai-keys.js?v=20261012-model-combobox-11"></script>
 <script src="/console.js?v=20261012-ai-probes-1"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>

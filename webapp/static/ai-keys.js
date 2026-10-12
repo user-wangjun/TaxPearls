@@ -5,6 +5,7 @@ function createAIKeyProbes({api, el, $, user}) {
   let adding = false;
   let editing = null, editorEpoch = 0, defaults = {};
   let modelsEpoch = 0;
+  let upstreamModels = [], activeModel = -1;
   let modelCapabilities = {}, capabilityCredential = "", revealedSavedKey = "";
   const effortLabels = {default:"上游默认",none:"关闭思考",enabled:"开启思考",
     minimal:"极低（minimal）",low:"低（low）",medium:"中（medium）",high:"高（high）",
@@ -228,15 +229,58 @@ function createAIKeyProbes({api, el, $, user}) {
   }
   function clearModels() {
     modelsEpoch++;
-    $("aiKeyModelChoices").replaceChildren(); $("aiKeyModelChoices").hidden = true;
+    upstreamModels = []; activeModel = -1;
+    closeModelChoices(); $("aiKeyModelChoices").replaceChildren(); $("btnChooseAIModel").hidden = true;
     $("aiKeyModelStatus").textContent = ""; $("btnFetchAIModels").disabled = false;
     modelCapabilities = {}; capabilityCredential = "";
     renderReasoning();
   }
   for (const id of ["aiKeyAddURL", "aiKeyAddSecret"]) $(id).addEventListener("input", () => { clearModels(); renderReasoning("default"); });
-  $("aiKeyAddModel").addEventListener("input", () => renderReasoning("default"));
-  $("aiKeyModelChoices").addEventListener("change", () => {
-    if ($("aiKeyModelChoices").value) { $("aiKeyAddModel").value = $("aiKeyModelChoices").value; renderReasoning("default"); }
+  function closeModelChoices() {
+    $("aiKeyModelChoices").hidden = true;
+    $("aiKeyAddModel").setAttribute("aria-expanded", "false");
+    $("btnChooseAIModel").setAttribute("aria-expanded", "false");
+    $("aiKeyAddModel").removeAttribute("aria-activedescendant");
+  }
+  function highlightModel(index) {
+    activeModel = (index + upstreamModels.length) % upstreamModels.length;
+    [...$("aiKeyModelChoices").children].forEach((option, i) => option.classList.toggle("is-active", i === activeModel));
+    const option = $("aiKeyModelChoices").children[activeModel];
+    $("aiKeyAddModel").setAttribute("aria-activedescendant", option.id);
+    option.scrollIntoView({block:"nearest"});
+  }
+  function openModelChoices() {
+    if (!upstreamModels.length) return;
+    [...$("aiKeyModelChoices").children].forEach((option, i) => option.setAttribute("aria-selected", String(upstreamModels[i] === $("aiKeyAddModel").value)));
+    $("aiKeyModelChoices").hidden = false;
+    $("aiKeyAddModel").setAttribute("aria-expanded", "true");
+    $("btnChooseAIModel").setAttribute("aria-expanded", "true");
+    highlightModel(Math.max(0, upstreamModels.indexOf($("aiKeyAddModel").value)));
+  }
+  function chooseModel(index) {
+    $("aiKeyAddModel").value = upstreamModels[index];
+    [...$("aiKeyModelChoices").children].forEach((option, i) => option.setAttribute("aria-selected", String(i === index)));
+    closeModelChoices(); renderReasoning("default"); $("aiKeyAddModel").focus({preventScroll:true});
+  }
+  $("aiKeyAddModel").addEventListener("input", () => { closeModelChoices(); renderReasoning("default"); });
+  $("btnChooseAIModel").addEventListener("click", () => {
+    if ($("aiKeyModelChoices").hidden) { $("aiKeyAddModel").focus({preventScroll:true}); openModelChoices(); }
+    else closeModelChoices();
+  });
+  $("aiKeyAddModel").addEventListener("keydown", event => {
+    if (!upstreamModels.length) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if ($("aiKeyModelChoices").hidden) openModelChoices();
+      else highlightModel(activeModel + (event.key === "ArrowDown" ? 1 : -1));
+    } else if (!$("aiKeyModelChoices").hidden && event.key === "Enter") {
+      event.preventDefault(); chooseModel(activeModel);
+    } else if (!$("aiKeyModelChoices").hidden && event.key === "Escape") {
+      event.preventDefault(); event.stopPropagation(); closeModelChoices();
+    } else if (event.key === "Tab") closeModelChoices();
+  });
+  $("aiKeyAddDialog").addEventListener("pointerdown", event => {
+    if (!event.target.closest(".probe-model-combobox")) closeModelChoices();
   });
   $("btnFetchAIModels").addEventListener("click", async () => {
     if (adding || user()?.role !== "platform_admin") return;
@@ -253,11 +297,15 @@ function createAIKeyProbes({api, el, $, user}) {
       if (!valid()) return;
       modelCapabilities = data.capabilities || {}; capabilityCredential = credentialContext();
       renderReasoning();
-      const choices = $("aiKeyModelChoices"), placeholder = el("option", null, "请选择上游模型");
-      placeholder.value = ""; choices.append(placeholder);
-      for (const model of data.models) { const option = el("option", null, model); option.value = model; choices.append(option); }
-      choices.hidden = !data.models.length;
-      choices.value = data.models.includes($("aiKeyAddModel").value) ? $("aiKeyAddModel").value : "";
+      upstreamModels = data.models;
+      const choices = $("aiKeyModelChoices");
+      for (const [index, model] of upstreamModels.entries()) {
+        const option = el("button", "probe-model-option", model); option.type = "button"; option.tabIndex = -1;
+        option.id = "aiKeyModelOption-" + index; option.setAttribute("role", "option");
+        option.setAttribute("aria-selected", String(model === $("aiKeyAddModel").value));
+        option.addEventListener("click", () => chooseModel(index)); choices.append(option);
+      }
+      $("btnChooseAIModel").hidden = !upstreamModels.length;
       $("aiKeyModelStatus").textContent = data.models.length ? `获取到 ${data.models.length} 个模型，请选择；也可手动填写。` : "上游返回了空模型列表，可手动填写。";
     } catch (err) { if (valid()) $("aiKeyModelStatus").textContent = err.message + (err.message.includes("手动填写") ? "" : " 可手动填写模型名称。"); }
     finally { if (valid()) $("btnFetchAIModels").disabled = false; }
