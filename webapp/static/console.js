@@ -45,6 +45,7 @@ async function api(url, options = {}) {
   return body;
 }
 
+const aiKeyProbes = createAIKeyProbes({api, el, $, user:()=>currentUser});
 function defaultWorkspacePanel() {
   return currentUser?.role === "student" ? "trainingPanel" : currentUser?.role === "platform_admin" ? "adminPanel" : "dashboardPanel";
 }
@@ -66,7 +67,7 @@ function rememberWorkspacePanel(id) {
 function switchPanel(id) {
   if (!currentUser) return;
   if (!canOpenWorkspacePanel(id)) id = defaultWorkspacePanel();
-  if(currentUser?.role==="platform_admin" && !["adminPanel","knowledgePanel","userSettingsPanel"].includes(id)) id="adminPanel";
+  if(currentUser?.role==="platform_admin" && !["adminPanel","aiKeysPanel","knowledgePanel","userSettingsPanel"].includes(id)) id="adminPanel";
   if (id !== "notificationPanel") noticeRequest++;
   if (id !== "userSettingsPanel") settingsRequest++;
   if (id !== "knowledgePanel" && typeof invalidateGraph === "function") invalidateGraph();
@@ -80,6 +81,8 @@ function switchPanel(id) {
   if (id === "userSettingsPanel") loadUserSettings();
   if (id === "trainingPanel") loadAssignments();
   if (id === "adminPanel") loadAdmin();
+  if (id === "aiKeysPanel") aiKeyProbes.load();
+  else aiKeyProbes.reset();
   if (id === "dashboardPanel") loadDashboard();
   if (id === "orgReportPanel") loadOrgOverview();
   if (id === "knowledgePanel") loadKnowledge();
@@ -881,6 +884,8 @@ function enterApp(user) {
   $("appHeader").style.display = "block"; $("appMain").style.display = "block"; $("appFooter").style.display = "block";
   $("nav").style.display = "flex";
   $("currentUser").textContent = user.display_name + " · " + ({teacher:"教师",student:"学生",org_admin:"机构管理员",accountant:"会计",platform_admin:"平台管理员"}[user.role] || user.role);
+  aiKeyProbes.reset();
+  document.querySelector('[data-panel="aiKeysPanel"]').style.display = user.role === "platform_admin" ? "" : "none";
   document.querySelectorAll(".training-nav").forEach((n) => n.style.display = ["teacher","student"].includes(user.role) ? "" : "none");
   document.querySelectorAll(".admin-nav").forEach((n) => n.style.display = ["platform_admin","org_admin","teacher","accountant"].includes(user.role) ? "" : "none");
   $("teacherBox").style.display = user.role === "teacher" ? "block" : "none";

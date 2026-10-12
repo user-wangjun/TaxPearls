@@ -27,15 +27,9 @@ STUDENT_COOKIE = "test_training_cookie"
 NOW = "2026-10-09T23:30:00"
 
 
-class _StubSettings:
-    def __init__(self, configured: bool):
-        self._configured = configured
-        self.effective_model = "stub-model"
-        self.timeout = 5
-        self.max_tokens = 512
-
-    def problem(self):
-        return not self._configured
+def _stub_settings(configured):
+    return settings.AISettings(enabled=configured, api_key='synthetic-tutor-key' if configured else '',
+                               model='stub-model', timeout=5, max_tokens=512)
 
 
 class TrainingTutorTests(unittest.TestCase):
@@ -99,7 +93,7 @@ class TrainingTutorTests(unittest.TestCase):
         return self.client.post("/api/training/my/tutor", json=body)
 
     def _stub(self, configured: bool):
-        training_tutor.AISettings = SimpleNamespace(from_env=lambda: _StubSettings(configured))
+        training_tutor.AISettings = SimpleNamespace(from_env=lambda: _stub_settings(configured))
 
     def test_normal_answer_with_citation_validation(self):
         self._stub(True)

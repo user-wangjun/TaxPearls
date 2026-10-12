@@ -1,0 +1,323 @@
+"use strict";
+
+function createAIKeyProbes({api, el, $, user}) {
+  let revision = 0;
+  let adding = false;
+  let editing = null, editorEpoch = 0, defaults = {};
+  let modelsEpoch = 0;
+  let modelCapabilities = {}, capabilityCredential = "", revealedSavedKey = "";
+  const effortLabels = {default:"上游默认",none:"关闭思考",enabled:"开启思考",
+    minimal:"极低（minimal）",low:"低（low）",medium:"中（medium）",high:"高（high）",
+    xhigh:"超高（xhigh）",max:"最大（max）"};
+  function credentialContext() {
+    const secret = $("aiKeyAddSecret").value.trim();
+    return JSON.stringify([$("aiKeyAddURL").value.trim().replace(/\/+$/, ""),
+      editing && (!secret || secret === revealedSavedKey) ? "saved:" + editing.id : "draft:" + secret]);
+  }
+  function currentCapability() {
+    const model = $("aiKeyAddModel").value.trim();
+    if (capabilityCredential === credentialContext()) return modelCapabilities[model] || {state:"unknown",levels:[]};
+    if (editing && model === editing.model && $("aiKeyAddURL").value.trim().replace(/\/+$/, "") === editing.base_url &&
+        (!$("aiKeyAddSecret").value.trim() || $("aiKeyAddSecret").value.trim() === revealedSavedKey)) return editing.reasoning_capability || {state:"unknown",levels:[]};
+    return {state:"unknown",levels:[]};
+  }
+  function renderReasoning(value=$("aiKeyReasoning").value || "default") {
+    const info = currentCapability(), select = $("aiKeyReasoning");
+    const modes = ["default", ...(info.can_disable === true ? ["none"] : []),
+      ...(info.can_enable === true && (!info.levels?.length || value === "enabled") ? ["enabled"] : []), ...(info.levels || [])];
+    select.replaceChildren();
+    for (const mode of modes) { const option = el("option",null,effortLabels[mode]); option.value = mode; select.append(option); }
+    if (!modes.includes(value)) {
+      const legacy = editing?.reasoning_legacy && value === editing.reasoning_effort && info.state === "unknown";
+      const option = el("option",null,(effortLabels[value] || value) + (legacy ? "（原配置，未确认支持）" : "（未确认支持，请更换）"));
+      option.value = value; option.disabled = !legacy; select.append(option);
+    }
+    select.value = value;
+    const message = {unknown:"请从上游获取模型能力，未确认的等级不可选。",
+      unsupported:"上游未声明支持调节，保持默认。",
+      toggle:"仅支持思考开关，不提供等级调节。",
+      levels:(info.levels || []).includes("medium") ? "仅展示上游支持的等级。" : "此模型不提供 medium（中）档。"};
+    $("aiKeyReasoningStatus").textContent = (message[info.state] || message.unknown) +
+      (info.can_enable && info.can_disable === false ? " 必须开启思考，不能关闭。" : "");
+  }
+  const usages = [["all","通用（当前模型）"],["extraction","材料提取兜底"],["knowledge","知识问答"],
+    ["report","风险解读与报告"],["tutor","教学答疑"],["none","仅检测"]];
+  function reset() {
+    revision++;
+    $("aiKeyCards").replaceChildren();
+    $("aiTemporaryKey").value = "";
+    $("aiTemporaryResult").replaceChildren();
+    $("aiKeyStatus").textContent = "";
+    $("aiKeyAddForm").reset();
+    if ($("aiKeyAddDialog").open) $("aiKeyAddDialog").close();
+    clearEditor();
+  }
+  function current(token, owner) {
+    return token === revision && user()?.id === owner && user()?.role === "platform_admin";
+  }
+  function summarize(summary, result, operation) {
+    if (!summary) return;
+    summary.replaceChildren();
+    summary.classList.remove("probe-ok", "probe-failed");
+    if (operation === "health") {
+      const labels = {ok:"可用",invalid_key:"密钥失效",insufficient_balance:"余额不足",
+        forbidden:"权限不足",rate_limited:"限流",timeout:"超时",network:"连接失败"};
+      summary.textContent = result ? labels[result.status] || "检测失败" : "待检测";
+    } else {
+      summary.append(el("span", "muted", result?.scope === "key_limit" ? "密钥额度" : "余额 / 额度"));
+      summary.append(el("strong", "probe-balance-value", result?.status === "ok" && result.balances
+        ? result.balances.map(item => item.total === null ? "未设额度上限" : `${item.currency} ${item.total}`).join(" / ")
+        : result ? "暂无法查询" : "尚未查询"));
+      if (result) summary.append(el("span", "muted probe-checked", new Date(result.checked_at).toLocaleString("zh-CN", {hour12:false})));
+    }
+    if (result) {
+      summary.title = result.message;
+      summary.classList.add(result.status === "ok" && result.available !== false ? "probe-ok" : "probe-failed");
+    }
+  }
+  function display(box, result, operation, summary) {
+    summarize(summary, result, operation);
+    box.replaceChildren();
+    if (!result) { box.append(el("p", "muted", operation === "health" ? "尚未测活" : "尚未查询金额")); return; }
+    box.append(el("p", result.status === "ok" ? "probe-ok" : "probe-failed",
+      (operation === "health" ? "测活：" : "金额：") + result.message));
+    if (result.status === "ok" && result.balances) {
+      for (const balance of result.balances) {
+        box.append(el("p", "probe-amount", balance.total === null
+          ? "未设置密钥额度上限（账户余额未查询）" : `${balance.currency} ${balance.total}`));
+        const detail = [];
+        if (balance.granted !== undefined) detail.push("赠金 " + balance.granted);
+        if (balance.topped_up !== undefined) detail.push("充值余额 " + balance.topped_up);
+        if (balance.usage !== undefined) detail.push("累计用量 " + balance.usage);
+        if (detail.length) box.append(el("p", "muted", detail.join(" · ") + " " + balance.currency));
+      }
+      if (result.available === false) box.append(el("p", "probe-failed", "服务商报告当前账户无可用余额。"));
+    }
+    const date = new Date(result.checked_at).toLocaleString("zh-CN", {hour12:false});
+    box.append(el("p", "muted", `${date} · ${result.elapsed_ms} ms` +
+      (result.http_status ? ` · HTTP ${result.http_status}` : "") +
+      (result.protocol ? ` · 协议 ${result.protocol}` : "")));
+  }
+  async function probe(body, box, button, operation, summary) {
+    const token = revision, owner = user()?.id;
+    button.disabled = true;
+    box.replaceChildren(el("p", "muted", operation === "health" ? "正在测活…" : "正在查询金额…"));
+    if (summary) {
+      summary.textContent = operation === "health" ? "检测中…" : "查询中…";
+      summary.classList.remove("probe-ok", "probe-failed"); summary.removeAttribute("title");
+    }
+    try {
+      const result = await api("/api/admin/ai-keys/probe", {
+        method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)
+      });
+      if (current(token, owner)) display(box, result, operation, summary);
+    } catch (err) {
+      if (current(token, owner)) {
+        box.replaceChildren(el("p", "probe-failed", err.message));
+        if (summary) { summary.textContent = "检测失败"; summary.classList.add("probe-failed"); }
+      }
+    } finally { if (current(token, owner)) button.disabled = false; }
+  }
+  function usageSelect(value) {
+    const select = el("select"); select.setAttribute("aria-label", "用于哪里");
+    for (const [id, label] of usages) { const option = el("option", null, label); option.value = id; select.append(option); }
+    select.value = value || "all"; return select;
+  }
+  async function load() {
+    if (user()?.role !== "platform_admin") return;
+    const token = ++revision, owner = user().id;
+    $("aiTemporaryKey").value = ""; $("aiTemporaryResult").replaceChildren();
+    $("aiKeyStatus").textContent = "正在读取密钥配置…"; $("aiKeyCards").replaceChildren();
+    try {
+      const data = await api("/api/admin/ai-keys");
+      if (!current(token, owner)) return;
+      defaults = data;
+      $("aiKeyStatus").textContent = `${data.keys.length} 把密钥 · 业务 AI ${data.enabled ? "已启用" : "未启用，可手动检测"}`;
+      if (!data.keys.length) $("aiKeyCards").append(el("p", "muted", "服务端尚未配置密钥，可使用下面的临时密钥检测。"));
+      for (const key of data.keys) {
+        const card = el("article", "sheet probe-card");
+        const identity = el("div", "probe-identity"), icon = el("span", "probe-service-icon", "AI");
+        try { const host = new URL(key.base_url).hostname; icon.textContent = host === "api.deepseek.com" ? "DS" : host === "openrouter.ai" ? "OR" : "AI"; } catch (_) {}
+        icon.setAttribute("aria-hidden", "true");
+        const info = el("div", "probe-info"), title = el("div", "probe-title"), badge = el("span", "probe-badge");
+        badge.setAttribute("role", "status");
+        title.append(el("h3", null, key.name), badge);
+        info.append(title, el("p", "probe-endpoint", key.base_url || "接口配置待核对"),
+          el("p", "muted probe-model", key.model + " · " + key.masked_key));
+        identity.append(icon, info);
+        const brief = el("div", "probe-balance-brief");
+        brief.setAttribute("role", "status");
+        const actions = el("div", "probe-actions"), health = el("div", "probe-result"), balance = el("div", "probe-result");
+        const test = el("button", "btn", "测活"), money = el("button", "btn pdf", "查询金额"),
+          edit = el("button", "btn pdf", "编辑"), drop = el("button", "btn probe-delete", "删除");
+        test.type = money.type = edit.type = drop.type = "button";
+        const select = usageSelect(key.usage); test.disabled = money.disabled = !!key.problem;
+        test.addEventListener("click", () => probe({key_id:key.id, operation:"health"}, health, test, "health", badge));
+        money.addEventListener("click", () => probe({key_id:key.id, operation:"balance"}, balance, money, "balance", brief));
+        edit.addEventListener("click", () => openEditor(key));
+        select.addEventListener("change", async () => {
+          const token = revision, owner = user()?.id;
+          select.disabled = true;
+          try {
+            await api("/api/admin/ai-keys/" + encodeURIComponent(key.id), {method:"PUT",
+              headers:{"Content-Type":"application/json"}, body:JSON.stringify({revision:key.revision, usage:select.value})});
+            if (current(token, owner)) await load();
+          } catch (err) {
+            if (current(token, owner)) { select.value = key.usage; $("aiKeyStatus").textContent = "用途保存失败：" + err.message; }
+          } finally { select.disabled = false; }
+        });
+        drop.addEventListener("click", async () => {
+          if (!confirm(`从本系统删除「${key.name}」？后续网页调用将不再使用它。`)) return;
+          const owner = user()?.id;
+          drop.disabled = true;
+          try {
+            await api("/api/admin/ai-keys/" + encodeURIComponent(key.id), {
+              method:"DELETE", headers:{"Content-Type":"application/json"}, body:JSON.stringify({revision:key.revision})
+            });
+            if (user()?.id === owner && user()?.role === "platform_admin") await load();
+          } catch (err) {
+            if (user()?.id === owner) $("aiKeyStatus").textContent = "删除失败：" + err.message;
+          } finally { drop.disabled = false; }
+        });
+        const purpose = el("label", "probe-purpose");
+        purpose.append(el("span", "muted", "用于哪里"), select);
+        actions.append(test, money, edit, drop);
+        const details = el("details", "probe-details"), detailBody = el("div", "probe-detail-body");
+        details.append(el("summary", null, "检测详情")); detailBody.append(health, balance); details.append(detailBody);
+        card.append(identity, brief, purpose, actions, details);
+        if (key.problem) { card.append(el("p", "probe-failed probe-config-problem", key.problem)); details.open = true; }
+        display(health, key.health, "health", badge); display(balance, key.balance, "balance", brief); $("aiKeyCards").append(card);
+      }
+    } catch (err) { if (current(token, owner)) $("aiKeyStatus").textContent = err.message; }
+  }
+  $("btnRefreshAIKeys").addEventListener("click", load);
+  function clearEditor() {
+    editing = null; editorEpoch++;
+    $("aiKeyAddForm").reset(); $("aiKeyAddSecret").type = "password";
+    $("aiKeyAddSecret").value = ""; $("btnRevealAIKey").textContent = "查看 key";
+    $("btnRevealAIKey").disabled = false;
+    revealedSavedKey = "";
+    $("aiKeyAddForm").querySelectorAll("details").forEach(item => { item.open = false; });
+    clearModels();
+  }
+  function clearModels() {
+    modelsEpoch++;
+    $("aiKeyModelChoices").replaceChildren(); $("aiKeyModelChoices").hidden = true;
+    $("aiKeyModelStatus").textContent = ""; $("btnFetchAIModels").disabled = false;
+    modelCapabilities = {}; capabilityCredential = "";
+    renderReasoning();
+  }
+  for (const id of ["aiKeyAddURL", "aiKeyAddSecret"]) $(id).addEventListener("input", () => { clearModels(); renderReasoning("default"); });
+  $("aiKeyAddModel").addEventListener("input", () => renderReasoning("default"));
+  $("aiKeyModelChoices").addEventListener("change", () => {
+    if ($("aiKeyModelChoices").value) { $("aiKeyAddModel").value = $("aiKeyModelChoices").value; renderReasoning("default"); }
+  });
+  $("btnFetchAIModels").addEventListener("click", async () => {
+    if (adding || user()?.role !== "platform_admin") return;
+    const body = {base_url:$("aiKeyAddURL").value.trim(), api_key:$("aiKeyAddSecret").value.trim()};
+    if (!body.base_url || (!body.api_key && !editing)) { $("aiKeyModelStatus").textContent = "请先填写接口 URL 和 key。"; return; }
+    if (editing) { body.key_id = editing.id; body.revision = editing.revision; }
+    clearModels();
+    const token = editorEpoch, requestToken = modelsEpoch, owner = user()?.id;
+    const valid = () => token === editorEpoch && requestToken === modelsEpoch &&
+      user()?.id === owner && user()?.role === "platform_admin" && $("aiKeyAddDialog").open && !adding;
+    $("btnFetchAIModels").disabled = true; $("aiKeyModelStatus").textContent = "正在从上游获取…";
+    try {
+      const data = await api("/api/admin/ai-keys/models", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+      if (!valid()) return;
+      modelCapabilities = data.capabilities || {}; capabilityCredential = credentialContext();
+      renderReasoning();
+      const choices = $("aiKeyModelChoices"), placeholder = el("option", null, "请选择上游模型");
+      placeholder.value = ""; choices.append(placeholder);
+      for (const model of data.models) { const option = el("option", null, model); option.value = model; choices.append(option); }
+      choices.hidden = !data.models.length;
+      choices.value = data.models.includes($("aiKeyAddModel").value) ? $("aiKeyAddModel").value : "";
+      $("aiKeyModelStatus").textContent = data.models.length ? `获取到 ${data.models.length} 个模型，请选择；也可手动填写。` : "上游返回了空模型列表，可手动填写。";
+    } catch (err) { if (valid()) $("aiKeyModelStatus").textContent = err.message + (err.message.includes("手动填写") ? "" : " 可手动填写模型名称。"); }
+    finally { if (valid()) $("btnFetchAIModels").disabled = false; }
+  });
+  function openEditor(key=null) {
+    if (user()?.role !== "platform_admin" || adding) return;
+    clearEditor(); editing = key;
+    $("aiKeyAddTitle").textContent = key ? "编辑密钥" : "加入密钥";
+    $("btnSaveAIKey").textContent = key ? "保存修改" : "加入密钥";
+    $("aiKeyAddName").value = key?.name || "";
+    $("aiKeyAddURL").value = key?.base_url || defaults.default_base_url || "";
+    $("aiKeyAddModel").value = key?.model || defaults.default_model || "";
+    $("aiKeyAddUsage").value = key?.usage || "none";
+    $("aiKeyEditProtocol").value = key?.balance_protocol || "auto";
+    $("aiKeyEditJSON").checked = key?.json_mode ?? defaults.default_json_mode ?? true;
+    $("aiKeyEditVision").checked = key?.vision ?? defaults.default_vision ?? false;
+    renderReasoning(key?.reasoning_effort || "default");
+    $("aiKeyAddSecret").required = !key;
+    $("aiKeyAddSecret").placeholder = key ? "已保存；留空保持原 key" : "填写 API key";
+    $("btnRevealAIKey").hidden = !key;
+    $("aiKeyAddStatus").textContent = ""; $("aiKeyAddDialog").showModal();
+    $("aiKeyAddForm").querySelector(".probe-editor-body").scrollTop = 0;
+  }
+  $("btnAddAIKey").addEventListener("click", () => openEditor());
+  $("btnCancelAIKey").addEventListener("click", () => { if (!adding) $("aiKeyAddDialog").close(); });
+  $("aiKeyAddDialog").addEventListener("cancel", event => { if (adding) event.preventDefault(); });
+  $("aiKeyAddDialog").addEventListener("close", clearEditor);
+  $("aiKeyAddProvider").addEventListener("change", () => {
+    clearModels();
+    const provider = $("aiKeyAddProvider").value;
+    $("aiKeyAddURL").value = provider === "deepseek" ? "https://api.deepseek.com" : provider === "openrouter" ? "https://openrouter.ai/api/v1" : defaults.default_base_url || "";
+    $("aiKeyAddModel").value = provider === "deepseek" ? "deepseek-flash" : provider === "configured" ? defaults.default_model || "" : "";
+    renderReasoning("default");
+  });
+  $("btnRevealAIKey").addEventListener("click", async () => {
+    if (!editing || adding) return;
+    if ($("aiKeyAddSecret").type === "text") { $("aiKeyAddSecret").type = "password"; $("btnRevealAIKey").textContent = "查看 key"; return; }
+    const token = editorEpoch, key = editing, owner = user()?.id;
+    $("btnRevealAIKey").disabled = true;
+    try {
+      if (!$("aiKeyAddSecret").value) {
+        const result = await api("/api/admin/ai-keys/" + encodeURIComponent(key.id) + "/reveal", {method:"POST",
+          headers:{"Content-Type":"application/json"}, body:JSON.stringify({revision:key.revision})});
+        if (token !== editorEpoch || owner !== user()?.id || !$("aiKeyAddDialog").open) return;
+        revealedSavedKey = result.api_key;
+        if (!$("aiKeyAddSecret").value) $("aiKeyAddSecret").value = result.api_key;
+      }
+      if (token === editorEpoch && owner === user()?.id) { $("aiKeyAddSecret").type = "text"; $("btnRevealAIKey").textContent = "隐藏 key"; }
+    } catch (err) { if (token === editorEpoch && owner === user()?.id) $("aiKeyAddStatus").textContent = err.message; }
+    finally { if (token === editorEpoch) $("btnRevealAIKey").disabled = false; }
+  });
+  $("aiKeyAddForm").addEventListener("submit", async event => {
+    event.preventDefault();
+    if (adding || user()?.role !== "platform_admin") return;
+    renderReasoning();
+    if ($("aiKeyReasoning").selectedOptions[0]?.disabled) { $("aiKeyAddStatus").textContent = "当前模型未确认支持此思考程度，请在更多设置中选择可用档位。"; return; }
+    const owner = user().id, key = editing, token = editorEpoch;
+    const body = {name:$("aiKeyAddName").value.trim(), api_key:$("aiKeyAddSecret").value.trim(),
+      base_url:$("aiKeyAddURL").value.trim(), model:$("aiKeyAddModel").value.trim(),
+      usage:$("aiKeyAddUsage").value, balance_protocol:$("aiKeyEditProtocol").value,
+      json_mode:$("aiKeyEditJSON").checked, vision:$("aiKeyEditVision").checked,
+      reasoning_effort:$("aiKeyReasoning").value};
+    if (editing?.reasoning_legacy && currentCapability().state === "unknown" && body.reasoning_effort === editing.reasoning_effort) delete body.reasoning_effort;
+    if (key) body.revision = key.revision;
+    else body.provider = $("aiKeyAddProvider").value;
+    clearModels(); adding = true; $("btnFetchAIModels").disabled = true; $("btnSaveAIKey").disabled = true; $("btnCancelAIKey").disabled = true;
+    $("aiKeyAddSecret").value = ""; $("aiKeyAddStatus").textContent = "正在加密保存…";
+    try {
+      await api("/api/admin/ai-keys" + (key ? "/" + encodeURIComponent(key.id) : ""), {method:key ? "PUT" : "POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+      if (user()?.id === owner && user()?.role === "platform_admin" && token === editorEpoch) { $("aiKeyAddDialog").close(); await load(); }
+    } catch (err) { if (user()?.id === owner && token === editorEpoch) $("aiKeyAddStatus").textContent = "保存失败：" + err.message; }
+    finally { adding = false; $("btnFetchAIModels").disabled = false; $("btnSaveAIKey").disabled = false; $("btnCancelAIKey").disabled = false; }
+  });
+  $("aiTemporaryProvider").addEventListener("change", () => {
+    $("aiTemporaryModel").value = $("aiTemporaryProvider").value === "deepseek" ? "deepseek-flash" : "";
+    $("aiTemporaryResult").replaceChildren();
+  });
+  for (const operation of ["health", "balance"]) {
+    const button = $(operation === "health" ? "btnTemporaryHealth" : "btnTemporaryBalance");
+    button.addEventListener("click", () => {
+      const key = $("aiTemporaryKey").value.trim();
+      if (!key) { $("aiTemporaryResult").replaceChildren(el("p", "probe-failed", "请先填写临时密钥。")); return; }
+      const body = {operation, api_key:key, provider:$("aiTemporaryProvider").value,
+        model:$("aiTemporaryModel").value.trim(), balance_protocol:$("aiTemporaryProtocol").value};
+      $("aiTemporaryKey").value = ""; probe(body, $("aiTemporaryResult"), button, operation);
+    });
+  }
+  return {load, reset};
+}

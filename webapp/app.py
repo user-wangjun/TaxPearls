@@ -6,8 +6,10 @@ Enterprise originals and sensitive evidence use authenticated encryption at rest
 """
 from __future__ import annotations
 from src import periods
+from src.ai_transport import TransportError
 
 import base64
+import json
 from copy import deepcopy
 from contextlib import asynccontextmanager
 from dataclasses import asdict, replace
@@ -34,7 +36,7 @@ from src import engine, loader, render, training, sandbox_feedback
 from src import settings as _environment_settings  # noqa: F401 - Load .env before Store and route initialization.
 from src.mailer import MailError, send_password_reset_email, send_registration_code_email, send_login_code_email
 from src.models import Dataset, Rule
-from webapp import captcha, classroom, members, email_auth
+from webapp import captcha, classroom, members, email_auth, ai_probes, ai_keys
 from webapp.access import AccessDenied
 from webapp.sensitive_storage import SensitiveStorageError
 from webapp.notifications import NotificationWorker, email_delivery_enabled
@@ -100,6 +102,7 @@ async def invalid_request(_request: Request, exc: RequestValidationError):
         {"loc":error["loc"],"type":error["type"],"msg":error["msg"]} for error in exc.errors()
     ]},headers={"Cache-Control":"no-store"})
 store: Store | None = None
+ai_keys.STORE_PROVIDER = lambda: store
 login_guard = LoginGuard()
 reset_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})
 register_code_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})
@@ -108,6 +111,232 @@ reset_confirm_limiter = RateLimiter({"token": (5, 15 * 60), "ip": (40, 15 * 60)}
 captcha_limiter = RateLimiter({"ip": (30, 60)})
 email_verify_limiter = RateLimiter({"token": (10, 15 * 60), "ip": (60, 15 * 60)})
 email_login_limiter = RateLimiter({"email": (10, 15 * 60), "ip": (60, 15 * 60)})
+ai_probe_limiter = RateLimiter({'actor': (30, 60), 'target': (4, 60)})
+
+
+class AIProbeBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    operation: Literal['health', 'balance']
+    key_id: str = Field(default='', max_length=64)
+    api_key: str = Field(default='', max_length=4096, repr=False)
+    provider: Literal['configured', 'deepseek', 'openrouter'] = 'configured'
+    model: str = Field(default='', max_length=200)
+    balance_protocol: Literal['auto', 'deepseek', 'openrouter', 'credit_grants'] = 'auto'
+
+
+class AIKeyCreateBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    name: str = Field(min_length=1, max_length=80)
+    api_key: str = Field(min_length=1, max_length=4096, repr=False)
+    provider: Literal['configured', 'deepseek', 'openrouter'] = 'configured'
+    model: str = Field(default='', max_length=200)
+    base_url: str = Field(default='', max_length=500)
+    usage: Literal['all', 'extraction', 'knowledge', 'report', 'tutor', 'none'] | None = None
+    balance_protocol: Literal['auto', 'deepseek', 'openrouter', 'credit_grants'] = 'auto'
+    json_mode: bool | None = Field(default=None, strict=True)
+    vision: bool | None = Field(default=None, strict=True)
+    disable_thinking: bool | None = Field(default=None, strict=True)
+    reasoning_effort: Literal['default', 'none', 'enabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] | None = None
+
+
+class AIKeyEditBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: str = Field(min_length=1, max_length=64)
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    api_key: str = Field(default='', max_length=4096, repr=False)
+    base_url: str | None = Field(default=None, max_length=500)
+    model: str | None = Field(default=None, max_length=200)
+    usage: Literal['all', 'extraction', 'knowledge', 'report', 'tutor', 'none'] | None = None
+    balance_protocol: Literal['auto', 'deepseek', 'openrouter', 'credit_grants'] | None = None
+    json_mode: bool | None = Field(default=None, strict=True)
+    vision: bool | None = Field(default=None, strict=True)
+    disable_thinking: bool | None = Field(default=None, strict=True)
+    reasoning_effort: Literal['default', 'none', 'enabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] | None = None
+
+
+class AIKeyDeleteBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    revision: str = Field(min_length=1, max_length=64)
+
+
+class AIModelsBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(default='', max_length=4096, repr=False)
+    key_id: str = Field(default='', max_length=64)
+    revision: str = Field(default='', max_length=64)
+
+
+def _ai_key_origin(request):
+    origin = request.headers.get('origin')
+    if (request.headers.get('sec-fetch-site') == 'cross-site' or
+            (origin and origin.rstrip('/') != str(request.base_url).rstrip('/'))):
+        raise HTTPException(403, '请从本站管理员页面发起操作。')
+
+
+@app.post('/api/admin/ai-keys')
+def ai_key_create(body: AIKeyCreateBody, request: Request,
+                  session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, 'platform_admin')
+    _ai_key_origin(request)
+    try:
+        settings = _environment_settings.AISettings.from_env()
+    except ValueError:
+        raise HTTPException(503, 'AI 环境配置无效，请检查服务端配置。') from None
+    return ai_keys.add(store, user, settings, name=body.name, key=body.api_key,
+                       provider=body.provider, model=body.model, base_url=body.base_url,
+                       usage=body.usage, balance_protocol=body.balance_protocol,
+                       json_mode=body.json_mode, vision=body.vision, disable_thinking=body.disable_thinking,
+                       reasoning_effort=body.reasoning_effort)
+
+
+@app.put('/api/admin/ai-keys/{key_id}')
+def ai_key_edit(key_id: str, body: AIKeyEditBody, request: Request,
+                session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, 'platform_admin')
+    _ai_key_origin(request)
+    try:
+        settings = _environment_settings.AISettings.from_env()
+    except ValueError:
+        raise HTTPException(503, 'AI 环境配置无效，请检查服务端配置。') from None
+    return ai_keys.update(store, user, settings, key_id, body.revision, name=body.name, key=body.api_key,
+                          base_url=body.base_url, model=body.model, usage=body.usage,
+                          balance_protocol=body.balance_protocol, json_mode=body.json_mode,
+                          vision=body.vision, disable_thinking=body.disable_thinking, reasoning_effort=body.reasoning_effort)
+
+
+@app.post('/api/admin/ai-keys/{key_id}/reveal')
+def ai_key_reveal(key_id: str, body: AIKeyDeleteBody, request: Request,
+                  session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, 'platform_admin')
+    _ai_key_origin(request)
+    if not ai_probe_limiter.allow(actor=user['id'], target=key_id + ':reveal'):
+        raise HTTPException(429, '查看过于频繁，请一分钟后重试。')
+    try:
+        settings = _environment_settings.AISettings.from_env()
+    except ValueError:
+        raise HTTPException(503, 'AI 环境配置无效，请检查服务端配置。') from None
+    return ai_keys.reveal(store, user, settings, key_id, body.revision)
+
+
+@app.delete('/api/admin/ai-keys/{key_id}')
+def ai_key_delete(key_id: str, body: AIKeyDeleteBody, request: Request,
+                  session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, 'platform_admin')
+    _ai_key_origin(request)
+    try:
+        settings = _environment_settings.AISettings.from_env()
+    except ValueError:
+        raise HTTPException(503, 'AI 环境配置无效，请检查服务端配置。') from None
+    return ai_keys.remove(store, user, settings, key_id, body.revision)
+
+
+@app.get('/api/admin/ai-keys')
+def ai_key_catalog(session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, 'platform_admin')
+    try:
+        settings = _environment_settings.AISettings.from_env()
+        return ai_keys.catalog(settings, store, user)
+    except ValueError:
+        raise HTTPException(503, 'AI 环境配置无效，请检查服务端配置。') from None
+
+
+@app.post('/api/admin/ai-keys/models')
+def ai_key_models(body: AIModelsBody, request: Request,
+                  session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, 'platform_admin')
+    _ai_key_origin(request)
+    try:
+        settings = _environment_settings.AISettings.from_env()
+    except ValueError:
+        raise HTTPException(503, 'AI 环境配置无效，请检查服务端配置。') from None
+    if body.key_id:
+        with store.connect() as db:
+            entry = ai_keys._find(db, user, settings, body.key_id, body.revision)
+        key = body.api_key.strip() or entry['settings'].api_key
+    else:
+        if body.revision:
+            raise HTTPException(422, '请核对密钥选择。')
+        key = body.api_key.strip()
+    target = replace(settings, enabled=True, base_url=body.base_url.strip().rstrip('/'),
+                     api_key=key, backup_api_keys=(), model='model-list')
+    if target.problem():
+        raise HTTPException(422, '请填写有效的接口 URL 和 key 后获取模型。')
+    if not ai_probe_limiter.allow(actor=user['id'], target=ai_probes.identity(target) + ':models'):
+        raise HTTPException(429, '获取过于频繁，请一分钟后重试。')
+    try:
+        data = ai_probes.models(target, with_capabilities=True)
+    except TransportError as exc:
+        message = ('上游未提供兼容的模型列表接口，请手动填写模型名称。' if exc.status == 404 else
+                   ai_probes.MESSAGES.get({401:'invalid_key',402:'insufficient_balance',403:'forbidden',
+                       429:'rate_limited'}.get(exc.status,exc.kind), '获取模型列表失败，请核对上游服务。'))
+        raise HTTPException(502, message) from None
+    user = _user(session)
+    _allow(user, 'platform_admin')
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        from webapp.access import current_actor
+        current_actor(db, user, {'platform_admin'})
+        if body.key_id:
+            ai_keys._find(db, user, _environment_settings.AISettings.from_env(), body.key_id, body.revision)
+        ai_keys.save_capabilities(db, target, data['capabilities'])
+        store._log(db, user, 'ai_models_fetched', 'ai_key', body.key_id or 'temporary',
+                   json.dumps({'count': len(data['models'])}))
+    return data
+
+
+@app.post('/api/admin/ai-keys/probe')
+def ai_key_probe(body: AIProbeBody, request: Request,
+                 session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, 'platform_admin')
+    _ai_key_origin(request)
+    try:
+        settings = _environment_settings.AISettings.from_env()
+        if body.key_id:
+            if body.api_key or body.provider != 'configured' or body.model:
+                raise HTTPException(422, '已配置密钥检测不能混用临时密钥或覆盖模型。')
+            selected_entry = next((entry for entry in ai_keys.entries(settings, store)
+                                   if ai_probes.identity(entry['settings']) == body.key_id), None)
+            target = selected_entry['settings'] if selected_entry else None
+            if target is None:
+                raise HTTPException(404, '密钥配置已变更，请刷新列表后重试。')
+            with store.connect() as db:
+                if body.operation == 'health' and not ai_keys._reasoning_valid(db, target):
+                    raise HTTPException(422, '已保存的思考程度不被上游支持，请编辑配置后测活。')
+        else:
+            if not body.api_key.strip():
+                raise HTTPException(422, '请选择已配置密钥或填写临时密钥。')
+            target = ai_probes.temporary(settings, body.provider, body.api_key.strip(), body.model.strip())
+        validation = replace(target, model=target.model or ('balance-only' if body.operation == 'balance' else ''))
+        if validation.problem():
+            raise HTTPException(422, '检测配置无效，请核对密钥格式、接口地址与模型名称。')
+    except ValueError:
+        raise HTTPException(503, 'AI 环境配置无效，请检查服务端配置。') from None
+    target_id = ai_probes.identity(target)
+    if body.key_id and body.balance_protocol == 'auto':
+        protocol = selected_entry['balance_protocol']
+    else:
+        protocol = body.balance_protocol
+    if not ai_probe_limiter.allow(actor=user['id'], target=target_id + ':' + body.operation):
+        raise HTTPException(429, '检测过于频繁，请一分钟后重试。')
+    result = ai_probes.run(target, body.operation, protocol)
+    user = _user(session)
+    _allow(user, 'platform_admin')
+    # Audit sanitized outcomes only; temporary credentials/results are never persisted.
+    if body.key_id and not any(ai_probes.identity(entry['settings']) == body.key_id
+                               for entry in ai_keys.entries(settings, store)):
+        raise HTTPException(409, '检测期间密钥已删除，请刷新列表。')
+    store.log(user, 'ai_key_probe', 'ai_key_' + body.operation, target_id if body.key_id else 'temporary',
+              json.dumps(result, ensure_ascii=False) if body.key_id else
+              json.dumps({'operation': body.operation, 'status': result['status']}, ensure_ascii=False))
+    return result
 
 
 @app.get("/healthz")
@@ -568,6 +797,11 @@ def classroom_script() -> FileResponse:
 @app.get("/console.js")
 def console_script():
     return FileResponse(STATIC_DIR / "console.js", media_type="text/javascript")
+
+
+@app.get('/ai-keys.js')
+def ai_keys_script():
+    return FileResponse(STATIC_DIR / 'ai-keys.js', media_type='text/javascript')
 
 
 @app.get("/enterprise.js")
