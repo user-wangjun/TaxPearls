@@ -433,6 +433,48 @@ class ProbeAPITests(unittest.TestCase):
         config=self.client.get('/api/materials/config').json()
         self.assertEqual(config['model'],'extraction-model')
 
+    def test_one_key_can_serve_multiple_purposes_and_changes_survive_restart(self):
+        self.login(self.root)
+        body={'name':'提取和问答','api_key':'synthetic-multi-key','base_url':'https://multi.example/v1',
+              'model':'multi-model','usages':['extraction','knowledge'],'reasoning_effort':'default'}
+        response=self.client.post('/api/admin/ai-keys',json=body)
+        self.assertEqual(response.status_code,200,response.text)
+        row=next(key for key in self.client.get('/api/admin/ai-keys').json()['keys'] if key['name']==body['name'])
+        self.assertEqual(row['usages'],['extraction','knowledge'])
+        for purpose in ['extraction','knowledge']:
+            effective=ai_keys.apply(replace(SETTINGS,enabled=True),Store(self.store.path),usage=purpose)
+            self.assertEqual(effective.api_keys,(body['api_key'],))
+            self.assertEqual(effective.model,'multi-model')
+        for purpose in ['report','tutor']:
+            self.assertNotIn(body['api_key'],ai_keys.apply(SETTINGS,self.store,usage=purpose).api_keys)
+        response=self.client.put('/api/admin/ai-keys/'+row['id'],json={'revision':row['revision'],'usages':['knowledge','report','tutor']})
+        self.assertEqual(response.status_code,200,response.text)
+        updated=next(key for key in self.client.get('/api/admin/ai-keys').json()['keys'] if key['name']==body['name'])
+        self.assertNotEqual(updated['revision'],row['revision'])
+        self.assertNotIn(body['api_key'],ai_keys.apply(SETTINGS,self.store,usage='extraction').api_keys)
+        for purpose in ['knowledge','report','tutor']:
+            self.assertEqual(ai_keys.apply(SETTINGS,Store(self.store.path),usage=purpose).api_keys,(body['api_key'],))
+        self.assertEqual(self.client.put('/api/admin/ai-keys/'+updated['id'],json={'revision':updated['revision'],'usages':[]}).status_code,200)
+        for purpose in ['extraction','knowledge','report','tutor']:
+            self.assertNotIn(body['api_key'],ai_keys.apply(SETTINGS,self.store,usage=purpose).api_keys)
+
+    def test_multi_use_validation_legacy_compatibility_and_conflicts(self):
+        self.login(self.root)
+        row=self.client.get('/api/admin/ai-keys').json()['keys'][0]
+        self.assertEqual(row['usages'],['extraction','knowledge','report','tutor'])
+        for change in [{'usages':['unknown']},{'usages':['none','knowledge']},{'usages':['all']},
+                       {'usages':['knowledge','knowledge']},{'usages':['knowledge'],'usage':'report'},
+                       {'usages':'knowledge'},{'usages':None}]:
+            response=self.client.put('/api/admin/ai-keys/'+row['id'],json={'revision':row['revision'],**change})
+            self.assertEqual(response.status_code,422,response.text)
+        self.assertEqual(self.client.put('/api/admin/ai-keys/'+row['id'],json={'revision':row['revision'],'usages':['extraction','knowledge']}).status_code,200)
+        fresh=self.client.get('/api/admin/ai-keys').json()['keys'][0]
+        self.assertEqual(self.client.put('/api/admin/ai-keys/'+fresh['id'],json={'revision':row['revision'],'usages':['tutor']}).status_code,409)
+        self.assertEqual(ai_keys.apply(SETTINGS,self.store,usage='extraction').api_keys,(SECRET,'synthetic-backup'))
+        self.assertEqual(ai_keys.apply(SETTINGS,self.store,usage='report').api_keys,('synthetic-backup',))
+        self.assertEqual(self.client.put('/api/admin/ai-keys/'+fresh['id'],json={'revision':fresh['revision'],'usage':'tutor'}).status_code,200)
+        self.assertEqual(self.client.get('/api/admin/ai-keys').json()['keys'][0]['usages'],['tutor'])
+
     def test_edit_url_secret_preservation_reveal_and_revision_conflicts(self):
         self.login(self.root)
         primary=self.client.get('/api/admin/ai-keys').json()['keys'][0]

@@ -433,7 +433,7 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=20261012-ai-key-reasoning-8">
+<link rel="stylesheet" href="/workspace.css?v=20261012-ai-key-multi-use-10">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -576,8 +576,8 @@
           <div class="probe-editor-body">
             <div class="probe-editor-grid">
               <label class="field">名称<input id="aiKeyAddName" maxlength="80" required placeholder="例如：材料提取备用"></label>
-              <label class="field">用于哪里<select id="aiKeyAddUsage"><option value="all">通用（当前模型）</option><option value="extraction">材料提取兜底</option><option value="knowledge">知识问答</option><option value="report">风险解读与报告</option><option value="tutor">教学答疑</option><option value="none">仅检测</option></select></label>
             </div>
+            <div id="aiKeyAddUsage" class="probe-editor-usages"></div>
             <div class="probe-endpoint-fields">
               <label class="field">地址预设<select id="aiKeyAddProvider"><option value="configured">当前配置</option><option value="deepseek">DeepSeek 官方</option><option value="openrouter">OpenRouter 官方</option></select></label>
               <label class="field">接口 URL<input id="aiKeyAddURL" type="url" maxlength="500" required placeholder="https://服务地址/v1"></label>
@@ -893,7 +893,7 @@
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/enterprise.js?v=20261007-company-selector-2"></script>
-<script src="/ai-keys.js?v=20261012-reasoning-9"></script>
+<script src="/ai-keys.js?v=20261012-multi-use-10"></script>
 <script src="/console.js?v=20261012-ai-probes-1"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>

@@ -27,7 +27,7 @@ from urllib.parse import quote, urlsplit
 from fastapi import BackgroundTasks, Cookie, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response
-from pydantic import BaseModel, Field, ConfigDict, AwareDatetime
+from pydantic import BaseModel, Field, ConfigDict, AwareDatetime, model_validator
 from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
 from webapp.uploads import multipart, single_file
@@ -124,7 +124,20 @@ class AIProbeBody(BaseModel):
     balance_protocol: Literal['auto', 'deepseek', 'openrouter', 'credit_grants'] = 'auto'
 
 
-class AIKeyCreateBody(BaseModel):
+class AIKeyUsageBody(BaseModel):
+    usage: Literal['all', 'extraction', 'knowledge', 'report', 'tutor', 'none'] | None = None
+    usages: list[Literal['extraction', 'knowledge', 'report', 'tutor']] | None = Field(default=None, max_length=4)
+
+    @model_validator(mode='after')
+    def check_usages(self):
+        if 'usages' in self.model_fields_set and (self.usages is None or 'usage' in self.model_fields_set):
+            raise ValueError('请使用用途多选或旧版单用途格式，不能混用。')
+        if self.usages is not None and len(self.usages) != len(set(self.usages)):
+            raise ValueError('用途不能重复。')
+        return self
+
+
+class AIKeyCreateBody(AIKeyUsageBody):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1, max_length=80)
     api_key: str = Field(min_length=1, max_length=4096, repr=False)
@@ -139,7 +152,7 @@ class AIKeyCreateBody(BaseModel):
     reasoning_effort: Literal['default', 'none', 'enabled', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] | None = None
 
 
-class AIKeyEditBody(BaseModel):
+class AIKeyEditBody(AIKeyUsageBody):
     model_config = ConfigDict(extra='forbid')
     revision: str = Field(min_length=1, max_length=64)
     name: str | None = Field(default=None, min_length=1, max_length=80)
@@ -188,7 +201,7 @@ def ai_key_create(body: AIKeyCreateBody, request: Request,
                        provider=body.provider, model=body.model, base_url=body.base_url,
                        usage=body.usage, balance_protocol=body.balance_protocol,
                        json_mode=body.json_mode, vision=body.vision, disable_thinking=body.disable_thinking,
-                       reasoning_effort=body.reasoning_effort)
+                       reasoning_effort=body.reasoning_effort, usages=body.usages)
 
 
 @app.put('/api/admin/ai-keys/{key_id}')
@@ -204,7 +217,8 @@ def ai_key_edit(key_id: str, body: AIKeyEditBody, request: Request,
     return ai_keys.update(store, user, settings, key_id, body.revision, name=body.name, key=body.api_key,
                           base_url=body.base_url, model=body.model, usage=body.usage,
                           balance_protocol=body.balance_protocol, json_mode=body.json_mode,
-                          vision=body.vision, disable_thinking=body.disable_thinking, reasoning_effort=body.reasoning_effort)
+                          vision=body.vision, disable_thinking=body.disable_thinking, reasoning_effort=body.reasoning_effort,
+                          usages=body.usages)
 
 
 @app.post('/api/admin/ai-keys/{key_id}/reveal')

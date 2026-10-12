@@ -40,8 +40,26 @@ function createAIKeyProbes({api, el, $, user}) {
     $("aiKeyReasoningStatus").textContent = (message[info.state] || message.unknown) +
       (info.can_enable && info.can_disable === false ? " 必须开启思考，不能关闭。" : "");
   }
-  const usages = [["all","通用（当前模型）"],["extraction","材料提取兜底"],["knowledge","知识问答"],
-    ["report","风险解读与报告"],["tutor","教学答疑"],["none","仅检测"]];
+  const usages = [["extraction","材料提取兜底"],["knowledge","知识问答"],
+    ["report","风险解读与报告"],["tutor","教学答疑"]];
+  function usageName(values) { return values.length ? values.map(value=>usages.find(item=>item[0]===value)?.[1] || value).join("、") : "仅检测"; }
+  function usageChoices(container, values=[], name="") {
+    container.replaceChildren();
+    const fields = el("fieldset", "probe-usage-choices"), legend = el("legend",null,"业务用途（可多选）");
+    fields.append(legend);
+    for (const [value, label] of usages) {
+      const item = el("label"), box = el("input"); box.type="checkbox"; box.value=value; box.checked=values.includes(value);
+      if (name) box.name=name;
+      item.append(box,el("span",null,label)); fields.append(item);
+    }
+    const only = el("label", "probe-only-detection"), toggle = el("input"); toggle.type="checkbox"; toggle.checked=!values.length;
+    only.append(toggle,el("span",null,"仅检测（不参与业务调用）"));
+    const update = () => { for (const box of fields.querySelectorAll("input")) box.disabled=toggle.checked; };
+    toggle.addEventListener("change", update); update();
+    container.append(fields,only);
+    return () => toggle.checked ? [] : [...fields.querySelectorAll("input:checked")].map(box=>box.value);
+  }
+  let editorUsages = () => [];
   function reset() {
     revision++;
     $("aiKeyCards").replaceChildren();
@@ -118,11 +136,6 @@ function createAIKeyProbes({api, el, $, user}) {
       }
     } finally { if (current(token, owner)) button.disabled = false; }
   }
-  function usageSelect(value) {
-    const select = el("select"); select.setAttribute("aria-label", "用于哪里");
-    for (const [id, label] of usages) { const option = el("option", null, label); option.value = id; select.append(option); }
-    select.value = value || "all"; return select;
-  }
   async function load() {
     if (user()?.role !== "platform_admin") return;
     const token = ++revision, owner = user().id;
@@ -151,20 +164,35 @@ function createAIKeyProbes({api, el, $, user}) {
         const test = el("button", "btn", "测活"), money = el("button", "btn pdf", "查询金额"),
           edit = el("button", "btn pdf", "编辑"), drop = el("button", "btn probe-delete", "删除");
         test.type = money.type = edit.type = drop.type = "button";
-        const select = usageSelect(key.usage); test.disabled = money.disabled = !!key.problem;
+        test.disabled = money.disabled = !!key.problem;
         test.addEventListener("click", () => probe({key_id:key.id, operation:"health"}, health, test, "health", badge));
         money.addEventListener("click", () => probe({key_id:key.id, operation:"balance"}, balance, money, "balance", brief));
         edit.addEventListener("click", () => openEditor(key));
-        select.addEventListener("change", async () => {
+        const purpose = el("details", "probe-purpose"), summary = el("summary",null,usageName(key.usages));
+        summary.setAttribute("aria-label", "修改用途：" + usageName(key.usages));
+        const chooser = el("div", "probe-usage-popover"), choices = el("div");
+        let readChoices = usageChoices(choices,key.usages);
+        const savePurpose = el("button","btn pdf","保存用途"), cancelPurpose = el("button","btn pdf","取消");
+        savePurpose.type=cancelPurpose.type="button";
+        const choiceActions=el("div","probe-header-actions");choiceActions.append(cancelPurpose,savePurpose);
+        const choiceStatus=el("p","muted");choiceStatus.setAttribute("role","status");
+        chooser.append(choices,choiceStatus,choiceActions);purpose.append(summary,chooser);
+        cancelPurpose.addEventListener("click",()=>{purpose.open=false; readChoices=usageChoices(choices,key.usages); choiceStatus.textContent="";});
+        purpose.addEventListener("toggle",()=>{
+          if (purpose.open) $("aiKeyCards").querySelectorAll(".probe-purpose").forEach(item=>{if(item!==purpose)item.open=false;});
+        });
+        savePurpose.addEventListener("click", async () => {
           const token = revision, owner = user()?.id;
-          select.disabled = true;
+          const selected = readChoices();
+          if (!selected.length && !choices.querySelector(".probe-only-detection input").checked) { choiceStatus.textContent="请勾选业务用途，或开启仅检测。";return; }
+          savePurpose.disabled = true; choiceStatus.textContent="正在保存…";
           try {
             await api("/api/admin/ai-keys/" + encodeURIComponent(key.id), {method:"PUT",
-              headers:{"Content-Type":"application/json"}, body:JSON.stringify({revision:key.revision, usage:select.value})});
+              headers:{"Content-Type":"application/json"}, body:JSON.stringify({revision:key.revision, usages:selected})});
             if (current(token, owner)) await load();
           } catch (err) {
-            if (current(token, owner)) { select.value = key.usage; $("aiKeyStatus").textContent = "用途保存失败：" + err.message; }
-          } finally { select.disabled = false; }
+            if (current(token, owner)) choiceStatus.textContent = "用途保存失败：" + err.message;
+          } finally { savePurpose.disabled = false; }
         });
         drop.addEventListener("click", async () => {
           if (!confirm(`从本系统删除「${key.name}」？后续网页调用将不再使用它。`)) return;
@@ -179,8 +207,6 @@ function createAIKeyProbes({api, el, $, user}) {
             if (user()?.id === owner) $("aiKeyStatus").textContent = "删除失败：" + err.message;
           } finally { drop.disabled = false; }
         });
-        const purpose = el("label", "probe-purpose");
-        purpose.append(el("span", "muted", "用于哪里"), select);
         actions.append(test, money, edit, drop);
         const details = el("details", "probe-details"), detailBody = el("div", "probe-detail-body");
         details.append(el("summary", null, "检测详情")); detailBody.append(health, balance); details.append(detailBody);
@@ -244,7 +270,7 @@ function createAIKeyProbes({api, el, $, user}) {
     $("aiKeyAddName").value = key?.name || "";
     $("aiKeyAddURL").value = key?.base_url || defaults.default_base_url || "";
     $("aiKeyAddModel").value = key?.model || defaults.default_model || "";
-    $("aiKeyAddUsage").value = key?.usage || "none";
+    editorUsages = usageChoices($("aiKeyAddUsage"),key?.usages || [],"ai-business-usage");
     $("aiKeyEditProtocol").value = key?.balance_protocol || "auto";
     $("aiKeyEditJSON").checked = key?.json_mode ?? defaults.default_json_mode ?? true;
     $("aiKeyEditVision").checked = key?.vision ?? defaults.default_vision ?? false;
@@ -289,9 +315,11 @@ function createAIKeyProbes({api, el, $, user}) {
     renderReasoning();
     if ($("aiKeyReasoning").selectedOptions[0]?.disabled) { $("aiKeyAddStatus").textContent = "当前模型未确认支持此思考程度，请在更多设置中选择可用档位。"; return; }
     const owner = user().id, key = editing, token = editorEpoch;
+    const selectedUsages = editorUsages();
+    if (!selectedUsages.length && !$("aiKeyAddUsage").querySelector(".probe-only-detection input").checked) { $("aiKeyAddStatus").textContent="请勾选业务用途，或开启仅检测。"; return; }
     const body = {name:$("aiKeyAddName").value.trim(), api_key:$("aiKeyAddSecret").value.trim(),
       base_url:$("aiKeyAddURL").value.trim(), model:$("aiKeyAddModel").value.trim(),
-      usage:$("aiKeyAddUsage").value, balance_protocol:$("aiKeyEditProtocol").value,
+      usages:selectedUsages, balance_protocol:$("aiKeyEditProtocol").value,
       json_mode:$("aiKeyEditJSON").checked, vision:$("aiKeyEditVision").checked,
       reasoning_effort:$("aiKeyReasoning").value};
     if (editing?.reasoning_legacy && currentCapability().state === "unknown" && body.reasoning_effort === editing.reasoning_effort) delete body.reasoning_effort;

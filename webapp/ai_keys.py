@@ -13,6 +13,34 @@ STORE_PROVIDER = lambda: None
 USES = {'all': '通用（当前模型）', 'extraction': '材料提取兜底', 'knowledge': '知识问答',
         'report': '风险解读与报告', 'tutor': '教学答疑', 'none': '仅检测'}
 PROTOCOLS = {'auto', 'deepseek', 'openrouter', 'credit_grants'}
+BUSINESS_USES = ('extraction', 'knowledge', 'report', 'tutor')
+
+
+def selected_usages(value):
+    if value == 'all':
+        return list(BUSINESS_USES)
+    if value == 'none':
+        return []
+    if value in BUSINESS_USES:
+        return [value]
+    try:
+        items = json.loads(value)
+        if isinstance(items, list) and all(item in BUSINESS_USES for item in items):
+            return [item for item in BUSINESS_USES if item in items]
+    except (ValueError, TypeError):
+        pass
+    return []
+
+
+def encode_usages(usage, usages):
+    if usages is None:
+        if usage not in USES:
+            raise HTTPException(422, '用途无效。')
+        return usage
+    if (not isinstance(usages, list) or any(item not in BUSINESS_USES for item in usages) or
+            len(set(usages)) != len(usages)):
+        raise HTTPException(422, '请选择不重复的有效业务用途。')
+    return json.dumps([item for item in BUSINESS_USES if item in usages])
 
 
 def migrate(db):
@@ -100,6 +128,8 @@ def _entries(settings, db):
         item = _saved_settings(settings, row)
         entries.append({'settings': item, 'name': row['name'], 'source': 'database', 'revision': row['revision'],
                         'usage': row['usage'], 'balance_protocol': row['balance_protocol']})
+    for entry in entries:
+        entry['usages'] = selected_usages(entry['usage'])
     return entries
 
 
@@ -119,7 +149,7 @@ def apply(settings, store=None, *, usage='all'):
     with store.connect() as db:
         items = _entries(settings, db)
         valid = {ai_probes.identity(entry['settings']) for entry in items if _reasoning_valid(db, entry['settings'])}
-    dedicated = [entry for entry in items if entry['usage'] == usage and usage not in ('all', 'none')]
+    dedicated = [entry for entry in items if entry['usage'] != 'all' and usage in entry['usages']]
     shared = [entry for entry in items if entry['usage'] == 'all' and in_pool(entry['settings'], settings)]
     selected = (dedicated[0]['settings'] if dedicated else shared[0]['settings'] if shared else settings)
     candidates = [*dedicated, *shared]
@@ -150,9 +180,10 @@ def catalog(settings, store, user):
             if not _reasoning_valid(db, entry['settings']):
                 row['problem'] = '上游未确认支持已保存的思考程度，请编辑配置。'
         row.update(name=entry['name'], source=entry['source'], revision=entry['revision'],
-                   in_call_pool=entry['usage'] not in ('none', 'all') or
-                   entry['usage'] == 'all' and in_pool(entry['settings'], settings),
-                   usage=entry['usage'], balance_protocol=entry['balance_protocol'],
+                   in_call_pool=bool(entry['usages']) and (entry['usage'] != 'all' or
+                   in_pool(entry['settings'], settings)),
+                   usage=entry['usage'] if entry['usage'] in USES else 'multiple' if entry['usages'] else 'none',
+                   usages=entry['usages'], balance_protocol=entry['balance_protocol'],
                    json_mode=entry['settings'].json_mode, vision=entry['settings'].vision,
                    disable_thinking=entry['settings'].disable_thinking,
                    reasoning_effort=ai_reasoning.mode(entry['settings']), reasoning_capability=info,
@@ -162,7 +193,7 @@ def catalog(settings, store, user):
 
 
 def add(store, user, settings, *, name, key, provider, model, base_url='', usage=None,
-        balance_protocol='auto', json_mode=None, vision=None, disable_thinking=None, reasoning_effort=None):
+        balance_protocol='auto', json_mode=None, vision=None, disable_thinking=None, reasoning_effort=None, usages=None):
     target = ai_probes.temporary(settings, provider, key.strip(), model.strip())
     if base_url:
         target = replace(target, base_url=base_url.strip().rstrip('/'))
@@ -170,7 +201,8 @@ def add(store, user, settings, *, name, key, provider, model, base_url='', usage
                      vision=target.vision if vision is None else vision,
                      disable_thinking=target.disable_thinking if disable_thinking is None else disable_thinking)
     usage = usage if usage is not None else 'all' if in_pool(target, settings) else 'none'
-    if usage not in USES or balance_protocol not in PROTOCOLS:
+    usage = encode_usages(usage, usages)
+    if balance_protocol not in PROTOCOLS:
         raise HTTPException(422, '用途或余额协议无效。')
     if not name.strip() or target.problem():
         raise HTTPException(422, '请填写名称、有效密钥和模型名称，并核对服务端接口配置。')
@@ -184,7 +216,7 @@ def add(store, user, settings, *, name, key, provider, model, base_url='', usage
             raise HTTPException(409, '此接口的密钥已经存在，请勿重复加入。')
         if len(existing) >= 30:
             raise HTTPException(409, '密钥列表最多保留 30 把，请先移除不再使用的密钥。')
-        if usage != 'none' and sum(entry['usage'] != 'none' and same_profile(entry['settings'], target) for entry in existing) >= 10:
+        if selected_usages(usage) and sum(bool(entry['usages']) and same_profile(entry['settings'], target) for entry in existing) >= 10:
             raise HTTPException(409, '同一业务接口和模型的主备密钥合计最多 10 把。')
         db.execute('DELETE FROM ai_key_exclusions WHERE id=?', (cid,))
         db.execute('''INSERT INTO ai_service_keys(id,name,base_url,model,secret_value,disable_thinking,revision,created_at,
@@ -210,7 +242,7 @@ def _find(db, user, settings, key_id, revision):
 
 
 def update(store, user, settings, key_id, revision, *, name=None, key='', base_url=None, model=None,
-           usage=None, balance_protocol=None, json_mode=None, vision=None, disable_thinking=None, reasoning_effort=None):
+           usage=None, balance_protocol=None, json_mode=None, vision=None, disable_thinking=None, reasoning_effort=None, usages=None):
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         entry = _find(db, user, settings, key_id, revision)
@@ -223,15 +255,17 @@ def update(store, user, settings, key_id, revision, *, name=None, key='', base_u
                          disable_thinking=old.disable_thinking if disable_thinking is None else disable_thinking)
         name = entry['name'] if name is None else name.strip()
         usage = entry['usage'] if usage is None else usage
+        if usages is not None or usage != entry['usage']:
+            usage = encode_usages(usage, usages)
         balance_protocol = entry['balance_protocol'] if balance_protocol is None else balance_protocol
         target = _reasoning_settings(db, target, reasoning_effort)
-        if not name or target.problem() or usage not in USES or balance_protocol not in PROTOCOLS:
+        if not name or target.problem() or balance_protocol not in PROTOCOLS:
             raise HTTPException(422, '请核对名称、接口地址、模型、密钥和用途。')
         oldcid, cid = credential_id(old), credential_id(target)
         others = [item for item in _entries(settings, db) if credential_id(item['settings']) != oldcid]
         if any(credential_id(item['settings']) == cid for item in others):
             raise HTTPException(409, '此接口的密钥已存在，不能覆盖另一条记录。')
-        if usage != 'none' and sum(item['usage'] != 'none' and same_profile(item['settings'], target) for item in others) >= 10:
+        if selected_usages(usage) and sum(bool(item['usages']) and same_profile(item['settings'], target) for item in others) >= 10:
             raise HTTPException(409, '同一服务配置的主备密钥最多 10 把。')
         if oldcid != cid:
             db.execute('INSERT OR IGNORE INTO ai_key_exclusions(id,created_at) VALUES (?,?)', (oldcid, store_now()))
