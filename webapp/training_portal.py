@@ -415,7 +415,6 @@ def create_course(store, operator_id: str, college: str, name: str, *,
 
 def update_course(store, course_id: str, fields: dict[str, Any],
                   class_names: list[str] | None = None) -> dict[str, Any]:
-    allowed = {"name", "semester", "teacher_id", "description", "active"}
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         if not db.execute("SELECT 1 FROM course WHERE id=?", (course_id,)).fetchone():
