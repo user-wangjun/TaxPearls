@@ -16,6 +16,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src import settings  # noqa: F401 - 先加载 .env，Store 需要 FIELD_KEY
+import webapp.training_portal as training_portal_module
+from webapp.login_guard import LoginGuard
 from webapp.storage import Store
 from webapp.training_portal import register
 
@@ -31,11 +33,17 @@ class StudentPasswordTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self._tmp.name) / "sp.db")
+        # LoginGuard 是模块级全局实例：CI 全量 discover 共享同一进程与
+        # TestClient IP，失败计数跨文件累积会以 429 打爆后续登录。
+        # 本文件换用全新实例——既隔离外部累积，也不向后续文件泄漏记录。
+        self._orig_guard = training_portal_module.login_guard
+        training_portal_module.login_guard = LoginGuard()
         self.app = FastAPI()
         register(self.app, lambda: self.store, COOKIE)
         self._seed()
 
     def tearDown(self):
+        training_portal_module.login_guard = self._orig_guard
         self._tmp.cleanup()
 
     def _seed(self):
