@@ -555,5 +555,42 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_roster_class_history_time
                 ON roster_class_history(created_at);
         """)
+        # 高校组织架构（FR-U01 第一期）：院系 / 学年学期 / 班级实体。
+        # 与现有两层模型并存：student_info.class_name 文本名册不动，班级实体
+        # 经 (college, name) 对齐在读人数；层级变更不改写既有数据归属。
+        # 同院校下班级名在同学期内唯一（term_id 为空时由服务层校验，
+        # SQLite UNIQUE 不约束 NULL），故此处只建查询索引。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS college_department (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                name TEXT NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(college, name)
+            );
+            CREATE TABLE IF NOT EXISTS college_term (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                name TEXT NOT NULL,
+                start_date TEXT,
+                end_date TEXT,
+                is_current INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(college, name)
+            );
+            CREATE TABLE IF NOT EXISTS college_class (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                name TEXT NOT NULL,
+                department_id TEXT REFERENCES college_department(id),
+                term_id TEXT REFERENCES college_term(id),
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_college_class_lookup
+                ON college_class(college, name);
+        """)
         from webapp import ai_keys
         ai_keys.migrate(db)
