@@ -23,9 +23,11 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
+import openpyxl
+
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from fastapi import Cookie, HTTPException, Request, Response
+from fastapi import Cookie, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -224,6 +226,79 @@ def import_students(store, college: str, rows: list[dict[str, Any]], *,
         except TrainingPortalError as exc:
             skipped.append({"line": index, "student_no": student_no, "reason": str(exc)})
     return {"created": created, "skipped": skipped}
+
+
+_XLSX_MAX_BYTES = 2_000_000   # 名册文件大小上限（约 2MB，远超正常班级名册）
+_XLSX_MAX_ROWS = 1000         # 单次导入数据行上限；超出整体拒绝，请分批
+
+
+def _xlsx_cell_text(cells: tuple, index: int | None) -> str:
+    """读取单元格为文本：数字学号（int/整值 float）转为无小数点字符串。"""
+    if index is None or index >= len(cells) or cells[index] is None:
+        return ""
+    value = cells[index]
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value).strip()
+
+
+def parse_student_xlsx(data: bytes, *,
+                       max_bytes: int = _XLSX_MAX_BYTES,
+                       max_rows: int = _XLSX_MAX_ROWS) -> list[dict[str, Any]]:
+    """Excel 名册直读（FR-U03 第二期）：把 .xlsx 名册解析为 import_students 的行。
+
+    边界沿用项目惯例：只读单元格缓存值（data_only=True），不执行公式——公式
+    单元格无缓存按空值处理，不补造；第一行必须是表头且含「学号」「姓名」列
+    （「班级」列可选），不按列序猜测；整行全空的行忽略（与文本导入一致）；
+    文件大小与数据行数超上限整体拒绝，不静默截断。"""
+    if not data:
+        raise TrainingPortalError("文件为空。", 400)
+    if len(data) > max_bytes:
+        raise TrainingPortalError(f"文件超过大小上限（{max_bytes // 1024} KB），请分批导入。", 413)
+    try:
+        workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:
+        # 外部上传的字节流无法保证可解析：zip 损坏（BadZipFile）、旧版 .xls
+        # （InvalidFileException）、缺关键部件（KeyError）等一律按"无法读取"拒绝。
+        raise TrainingPortalError(
+            "无法读取的 Excel 文件，仅支持 .xlsx（旧版 .xls 请先另存为 .xlsx）。", 400) from None
+    try:
+        sheet = workbook.worksheets[0]  # 只读第一个工作表，不按表名猜测
+        data_rows = sheet.iter_rows(values_only=True)
+        header = next(data_rows, None)
+        if header is None:
+            raise TrainingPortalError("工作表为空。", 422)
+        col_no = col_name = col_class = None
+        for index, raw in enumerate(header):
+            text = str(raw or "").strip()
+            if col_no is None and "学号" in text:
+                col_no = index
+            elif col_name is None and "姓名" in text:
+                col_name = index
+            elif col_class is None and "班级" in text:
+                col_class = index
+        if col_no is None or col_name is None:
+            raise TrainingPortalError(
+                "第一行需为表头且包含「学号」和「姓名」列（「班级」列可选）。", 422)
+        rows: list[dict[str, Any]] = []
+        for cells in data_rows:
+            if len(rows) >= max_rows:
+                raise TrainingPortalError(
+                    f"数据行超过单次上限（{max_rows} 行），请分批导入。", 422)
+            student_no = _xlsx_cell_text(cells, col_no)
+            name = _xlsx_cell_text(cells, col_name)
+            class_name = _xlsx_cell_text(cells, col_class)
+            if not student_no and not name and not class_name:
+                continue
+            rows.append({"student_no": student_no, "name": name,
+                         "class_name": class_name or None})
+        if not rows:
+            raise TrainingPortalError("未读取到数据行（表头之外没有有效内容）。", 422)
+        return rows
+    finally:
+        workbook.close()
 
 
 def reset_student_password(store, student_id: str, new_password: str) -> dict[str, Any]:
@@ -2597,6 +2672,25 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
             [r.model_dump() for r in body.rows],
             default_password=body.default_password,
             default_class_name=body.default_class_name)})
+
+    @app.post("/api/training/staff/students/import-xlsx")
+    @guarded
+    def staff_student_import_xlsx(file: UploadFile = File(...),
+                                  college: str = Form(...),
+                                  default_password: str = Form(...),
+                                  default_class_name: str = Form(""),
+                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """Excel 名册直读（FR-U03 第二期）：教师上传 .xlsx 名册批量建学生号。
+
+        与文本导入共用 import_students 下游（逐行导入、重复/错误行带原因返回、
+        不部分静默成功）；解析边界见 parse_student_xlsx（只读缓存值、不执行
+        公式、表头识别、不按列序猜测）。"""
+        staff(session)
+        rows = parse_student_xlsx(file.file.read())
+        return response({"import": import_students(
+            store_provider(), college, rows,
+            default_password=default_password,
+            default_class_name=(default_class_name or "").strip() or None)})
 
     @app.post("/api/training/staff/students/{student_id}/reset-password")
     @guarded
