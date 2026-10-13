@@ -596,9 +596,11 @@ function renderProfile() {
       <div class="muted">作答 ${m.attempts} 次 · 正确率 ${pct(m.accuracy)} · 满分 ${m.perfect}${last}${flags.length ? ` · ${flags.map(esc).join(" · ")}` : ""}</div>
       ${noteBlock}
       <div class="actions">
+        <button class="small" data-act="show-history" data-id="${esc(k.id)}">作答明细</button>
         <button class="small" data-act="edit-note" data-id="${esc(k.id)}">${k.note ? "改笔记" : "写笔记"}</button>
         ${k.note ? `<button class="small" data-act="delete-note" data-id="${esc(k.id)}">删笔记</button>` : ""}
       </div>
+      <div class="inline-form" data-role="kp-history" hidden></div>
       <div class="inline-form" data-role="note-edit" hidden>
         <textarea data-role="note-text" style="min-height:90px;">${esc(k.note ? k.note.content : "")}</textarea>
         <div class="actions">
@@ -702,7 +704,61 @@ document.getElementById("pf-list").addEventListener("click", async (event) => {
       box.hidden = false;
       btn.textContent = btn.textContent.replace(/（\d+）/, `（${rows.length}）`).replace("展开", "收起");
     } catch (err) { flash(err.message, true); }
+  } else if (act === "show-history") {
+    await toggleKpHistory(btn, scope, btn.dataset.id);
+  } else if (act === "history-redo") {
+    const seed = Number(btn.dataset.seed), ruleId = btn.dataset.rule;
+    try {
+      await startPractice({ certificate_id: state.pfCert, knowledge_point_id: btn.dataset.id,
+                            rule_id: ruleId, seed, mode: "redo_same" });
+      flash("已载入原题重做（错题订正），完成后回到本知识点可查看新结果。");
+      document.getElementById("pr-card")?.scrollIntoView({ behavior: "smooth" });
+    } catch (err) { flash(err.message, true); }
+  } else if (act === "history-new") {
+    try {
+      await startPractice({ certificate_id: state.pfCert, knowledge_point_id: btn.dataset.id, mode: "new" });
+      flash("已生成一道新题，去练习区作答。");
+      document.getElementById("pr-card")?.scrollIntoView({ behavior: "smooth" });
+    } catch (err) { flash(err.message, true); }
   }
 });
+
+async function toggleKpHistory(btn, scope, kpId) {
+  const box = scope.querySelector("[data-role=kp-history]");
+  if (!box.hidden) { box.hidden = true; btn.textContent = "作答明细"; return; }
+  box.innerHTML = `<p class="muted">加载中…</p>`;
+  box.hidden = false;
+  try {
+    const rows = (await api(`/api/training/my/practice?certificate_id=${state.pfCert}&kp_id=${kpId}`)).attempts;
+    if (!rows.length) {
+      box.innerHTML = `<p class="muted">该知识点还没有作答记录。</p>`;
+      return;
+    }
+    const MODE = { new: "新题", redo_same: "原题重做" };
+    box.innerHTML = `<div class="muted" style="margin-bottom:6px;">最近 ${rows.length} 次（新到旧）：</div>` +
+      rows.map((a) => {
+        const scored = a.status === "scored";
+        const score = scored && a.result ? `${a.result.score} 分${a.result.score >= 100 ? " · 满分" : ""}`
+          : (a.status === "open" ? (a.skipped ? "已跳过" : "未完成") : esc(a.status));
+        const mode = MODE[a.mode] || esc(a.mode || "new");
+        return `<div class="detail" style="margin-top:6px;">
+          <div class="item-head">
+            <div class="muted">${esc((a.created_at || "").slice(0, 16).replace("T", " "))} · ${mode}
+              ${a.rule_id ? ` · 规则 ${esc(a.rule_id)}` : ""}</div>
+            <div><strong>${esc(score)}</strong></div>
+          </div>
+          <div class="actions">
+            ${scored && a.rule_id && a.seed ? `<button class="small" data-act="history-redo" data-id="${esc(kpId)}"
+              data-rule="${esc(a.rule_id)}" data-seed="${esc(a.seed)}">原题重做</button>` : ""}
+            <button class="small" data-act="history-new" data-id="${esc(kpId)}">再练一道</button>
+          </div>
+        </div>`;
+      }).join("");
+    btn.textContent = "收起明细";
+  } catch (err) {
+    box.hidden = true;
+    flash(err.message, true);
+  }
+}
 
 boot();
