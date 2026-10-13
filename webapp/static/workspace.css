@@ -259,3 +259,21 @@ body:has(.nav-collapsed){--sidebar-width:76px}
 /* 长列表（操作日志、通知、各类台账）在卡片内部滚动，不再把页面撑得很长 */
 .data-list{max-height:520px;overflow-y:auto;overscroll-behavior:contain;overflow-wrap:anywhere;scrollbar-width:thin;scrollbar-color:#c7d6ec transparent}
 @media(max-width:600px){.stat-row{grid-template-columns:repeat(2,minmax(0,1fr))}.stat .l{line-height:1.5}}
+
+/* Core evidence preparation stays inside the enterprise upload page. */
+#coreLegacyToggle:not([hidden]) ~ #legacyInputFlow { display:none; }
+#coreLegacyToggle[open] ~ #legacyInputFlow { display:block; }
+#coreLegacyToggle { margin:16px 0; padding:14px; border:1px solid var(--line); border-radius:10px; }
+#coreInputs fieldset { border:1px solid var(--line); border-radius:10px; padding:16px; margin:16px 0; min-width:0; }
+#coreInputs legend { padding:0 6px; font-weight:600; }
+#coreInputs .core-slots { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:20px 0; }
+#coreInputs input[type=file] { width:100%; min-width:0; margin-top:12px; }
+#coreInputs input[type=checkbox] { width:auto; margin-right:7px; }
+#coreInputs p, #coreInputs a, #coreInputs button { overflow-wrap:anywhere; }
+#coreInputs .material-company { margin:12px 0; }
+#coreInputs .material-company input:not([type=checkbox]), #coreInputs .material-company select { width:100%; min-width:0; box-sizing:border-box; }
+#coreInputs label { display:block; margin:8px 0; }
+#coreTaskHistory { display:flex; flex-direction:column; align-items:stretch; gap:8px; margin-top:20px; }
+#coreInputs details { margin:12px 0; }
+@media(max-width:900px) { #coreInputs .core-slots { grid-template-columns:1fr; } }
+@media(max-width:600px) { #coreInputs .material-company { grid-template-columns:1fr; } }

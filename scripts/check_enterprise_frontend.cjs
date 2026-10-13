@@ -423,7 +423,8 @@ async function main() {
   assert.equal($("uploadCompanyStart").value,"");assert.equal($("uploadScope").disabled,false);
   $("uploadCompanyMode").value="new";await controller.selectClient("");
   assert.equal($("uploadCompanyTaxId").value,"");assert.equal($("uploadCompanyName").value,"手填企业");
-  assert.equal($("auditClient").disabled,true);
+  assert.equal($("uploadCompanyMode").value,"new");
+  assert.equal($("auditClient").value,"");
   const profileDenied=controller.selectClient("revoked");calls.shift().reject(Object.assign(new Error("access denied"),{status:403}));await profileDenied;
   assert.equal($("uploadCompanyTaxId").value,"");assert.ok($("uploadProfileHint").textContent.includes("未读取"));
   // A prior tenant's material-list response cannot leak after a role switch.

@@ -1129,6 +1129,8 @@ from webapp.material_upload import register as register_material_upload
 register_material_upload(app, _user, _allow, _save_audit, RULES_DIR, _audit_or_404)
 
 from webapp.enterprise_materials import register as register_enterprise_materials
+from webapp.core_inputs import register as register_core_inputs
+register_core_inputs(app, lambda: store, _user, _allow, STATIC_DIR)
 register_enterprise_materials(app, lambda: store, _user, _allow, RULES_DIR,
                              lambda dataset: _audit_rules(dataset, store.enabled_rule_ids()),
                              _save_audit, lambda audit_id, user: _result(_audit_or_404(audit_id, user)))

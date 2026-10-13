@@ -222,3 +222,7 @@ def initialize(store) -> None:
         members.migrate(db)
         from webapp import material_batches
         material_batches.migrate(db)
+        from src import core_mapping
+        core_mapping.migrate(db)
+        from webapp import core_inputs
+        core_inputs.migrate(db)

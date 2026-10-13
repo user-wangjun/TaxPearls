@@ -511,6 +511,22 @@
       </div>
     </section>
     <section class="panel" id="uploadPanel">
+    <div class="sheet" id="coreInputs" hidden>
+      <h2>基础审查资料准备</h2>
+      <p class="muted">先指定企业与检查区间，再上传科目余额表、增值税申报表和进销项发票明细。资料整理完成后停在规则核验之前。</p>
+      <fieldset id="coreTaskForm"><legend>创建资料处理任务</legend><div class="material-company">
+        <label>企业名称<input id="coreCompanyName" maxlength="200" required></label>
+        <label>税号<input id="coreTaxNo" maxlength="20" required></label>
+        <label>检查起始日<input id="coreStart" type="date" required></label>
+        <label>检查终止日<input id="coreEnd" type="date" required></label>
+      </div><label><input id="coreMappingAI" type="checkbox">未知表头允许交给已配置模型映射（仅表头与脱敏值形态，不发送整张表）</label>
+      <p class="muted">原件加密留存。扫描 PDF 的识别不足会明确提示核对，不把空白当作零。单份10MB，每任务最多20份。</p>
+      <label><input id="coreOCR" type="checkbox">允许无法本地提取的申报PDF页交给配置模型OCR（发送页图，结果须对照原页核对）</label>
+      <button id="coreCreateTask" class="btn" type="button">创建任务</button></fieldset>
+      <div id="coreTaskResult" aria-live="polite"></div><div id="coreTaskHistory"></div>
+    </div>
+    <details id="coreLegacyToggle" hidden><summary>历史材料检测入口</summary><p class="muted">下方为原有材料与报告流程；本次基础资料任务不从这里执行检测。</p></details>
+    <div id="legacyInputFlow">
     <div class="page-head"><div><p class="eyebrow">DATA IMPORT</p><h2>上传材料</h2><p class="muted">核对企业与所属期间后，生成审计结果并更新工作台。</p></div></div>
 
     <!-- 1. 上传设置：企业范围 + 提取方式 -->
@@ -563,7 +579,7 @@
     <div id="materialReview" class="material-review" hidden></div>
     <div id="batchResults" class="material-review" hidden></div>
     <div id="enterpriseHistory" class="material-review enterprise-review" hidden></div>
-
+    </div>
     </section>
     <section class="panel" id="auditPanel">
     <div class="page-head"><div><p class="eyebrow">AUDIT EVIDENCE</p><h2>审计详情</h2><p class="muted" id="auditEmpty">请从工作台或历史档案打开报告，或上传材料开始审计。</p></div><button class="btn re" id="snapshotBack" type="button" hidden>← 返回本期审计</button></div>
@@ -759,6 +775,7 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
+<script src="/core-inputs.js?v=20261013-core-inputs-1"></script>
 <script src="/enterprise.js?v=enterprise-review-1"></script>
 <script src="/console.js?v=auth-glass-20261005-1"></script>
 <script src="/auth-glass.js?v=20261005-glass-1"></script>

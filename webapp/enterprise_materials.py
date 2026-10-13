@@ -30,6 +30,8 @@ from webapp.uploads import bounded_stream, multipart
 
 
 def _latest(view):
+    if view['versions'] and view['versions'][-1]['payload'].get('core_task'):
+        raise AccessDenied('基础资料处理任务停在规则核验之前，请从基础资料入口继续。', 409)
     records = [v for v in view['versions'] if v['kind'] in {'analysis', 'edit'}]
     if not records:
         raise AccessDenied('材料尚未完成分析。', 409)
@@ -117,6 +119,8 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         return user
 
     def project(view, user):
+        if view['versions'] and view['versions'][-1]['payload'].get('core_task'):
+            raise AccessDenied('请从基础资料准备入口读取本任务。', 409)
         settings = AISettings.from_env()
         ai = {**settings.public_status(), 'max_pages': settings.max_pages,
               'queue_enabled': material_jobs.QueueSettings.from_env().enabled}
@@ -351,7 +355,8 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
 
     @app.get('/api/enterprise/materials')
     def list_batches(session: str | None = Cookie(default=None, alias='taxpearls_session')):
-        return batches.listing(get_store(), actor(session))
+        user = actor(session)
+        return batches.listing(get_store(), user, workflow='legacy')
 
     @app.get('/api/enterprise/client-profile/{client_id}')
     def client_profile(client_id: str, session: str | None = Cookie(default=None, alias='taxpearls_session')):
