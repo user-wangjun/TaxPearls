@@ -1,28 +1,48 @@
-"""FR-U03 第一期测试：教师批量导入（admin-only）+ 班级统计/整建制迁移/归属追溯。
+"""FR-U03 测试：教师批量导入（admin-only）+ 班级统计/整建制迁移/归属追溯。
 
-覆盖：教师账号批量建号（重复/错误行带原因、不静默）、只建 teacher 角色、
+第二期新增 Excel 名册直读：.xlsx 上传导入学生（表头识别、数字学号、
+公式无缓存不补造、错误行带原因、坏文件/超限拒绝、未登录 401）。
+
+第一期覆盖：教师账号批量建号（重复/错误行带原因、不静默）、只建 teacher 角色、
 非管理员 403；班级聚合统计；整建制迁移只动在读学生且逐生写追溯、
 原班级为空 404、同班级拒绝；未登录 401。
 """
 from __future__ import annotations
 
+import io
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
 
+import openpyxl
 from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src import settings  # noqa: F401 - 先加载 .env，Store 需要 FIELD_KEY
 from webapp.storage import Store
-from webapp.training_portal import register
+from webapp.training_portal import parse_student_xlsx, register
 
 _passwords = PasswordHasher()
 COOKIE_NAME = "test_roster_cookie"
 NOW = "2026-10-11T21:00:00"
 COLLEGE = "演示财经职业学院"
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def xlsx_bytes(rows: list[list], header: list | None = ("学号", "姓名", "班级")) -> bytes:
+    """构造 .xlsx 字节流；rows 为每行单元格列表，header=None 表示无表头。"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    if header is not None:
+        ws.append(list(header))
+    for row in rows:
+        ws.append(row)
+    buf = io.BytesIO()
+    wb.save(buf)
+    wb.close()
+    return buf.getvalue()
 
 
 class RosterAdminTests(unittest.TestCase):
@@ -173,6 +193,117 @@ class RosterAdminTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/training/staff/teachers/import", json={
             "college": COLLEGE, "default_password": "x1Pass!!",
             "rows": [{"username": "someone", "display_name": "某人"}]}).status_code, 401)
+
+    # ---- Excel 名册直读（FR-U03 第二期） -------------------------------------
+
+    def _upload_xlsx(self, data: bytes, *, college: str = COLLEGE,
+                     default_password: str = "NewStu2026!",
+                     default_class_name: str = ""):
+        return self.client.post(
+            "/api/training/staff/students/import-xlsx",
+            files={"file": ("roster.xlsx", data, XLSX_MIME)},
+            data={"college": college, "default_password": default_password,
+                  "default_class_name": default_class_name})
+
+    def test_student_import_xlsx_basic(self):
+        """教师上传 .xlsx：数字学号转纯文本、班级逐行生效、库内重复行带原因跳过。"""
+        self._login("teacher01", "TeacherPass1!")
+        data = xlsx_bytes([
+            [2026005, "钱七", "会计2601"],      # int 学号
+            ["2026006", "孙八", None],          # 班级留空 → 默认班级兜底
+            ["2026001", "学号重复", "会计2603"],  # 与库内 seed 冲突
+        ])
+        res = self._upload_xlsx(data, default_class_name="会计2602")
+        self.assertEqual(res.status_code, 200, res.text)
+        result = res.json()["import"]
+        self.assertEqual([c["student_no"] for c in result["created"]], ["2026005", "2026006"])
+        by_no = {c["student_no"]: c for c in result["created"]}
+        self.assertEqual(by_no["2026005"]["class_name"], "会计2601")
+        self.assertEqual(by_no["2026006"]["class_name"], "会计2602")
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("已存在学号 2026001", result["skipped"][0]["reason"])
+        with self.store.connect() as db:
+            n = db.execute("SELECT count(*) n FROM student_info WHERE college=?",
+                           (COLLEGE,)).fetchone()["n"]
+        self.assertEqual(n, 6)  # seed 4 + 新增 2
+
+    def test_student_import_xlsx_header_variants(self):
+        """表头变体（学生学号/学生姓名/行政班级）可识别；整值浮点学号不带小数点。"""
+        self._login("teacher01", "TeacherPass1!")
+        data = xlsx_bytes([[2026007.0, "周九", "会计2601"]],
+                          header=["学生学号", "学生姓名", "行政班级"])
+        res = self._upload_xlsx(data)
+        self.assertEqual(res.status_code, 200, res.text)
+        created = res.json()["import"]["created"]
+        self.assertEqual([c["student_no"] for c in created], ["2026007"])
+
+    def test_student_import_xlsx_rejects_bad_structure(self):
+        """无表头、缺姓名列、空表、无数据行：整体拒绝（不猜列序）。"""
+        self._login("teacher01", "TeacherPass1!")
+        cases = [
+            (xlsx_bytes([["2026005", "钱七", "会计2601"]], header=None), 422),   # 无表头
+            (xlsx_bytes([["2026005", "钱七"]], header=["学号", "班级"]), 422),   # 缺姓名列
+            (xlsx_bytes([], header=None), 422),                                  # 空工作表
+            (xlsx_bytes([[None, None, None]]), 422),                             # 表头外无数据行
+        ]
+        for data, expected in cases:
+            with self.subTest(data_len=len(data)):
+                res = self._upload_xlsx(data)
+                self.assertEqual(res.status_code, expected, res.text)
+
+    def test_student_import_xlsx_blank_rows_and_error_rows(self):
+        """全空行忽略；缺学号/缺姓名的行带原因跳过，不错误行中断整批。"""
+        self._login("teacher01", "TeacherPass1!")
+        data = xlsx_bytes([
+            [None, None, None],               # 空行：忽略
+            ["2026008", "吴十", "会计2601"],  # 有效
+            [None, "缺学号", "会计2601"],     # 行级错误
+            ["2026009", None, "会计2601"],    # 行级错误
+        ])
+        res = self._upload_xlsx(data)
+        self.assertEqual(res.status_code, 200, res.text)
+        result = res.json()["import"]
+        self.assertEqual([c["student_no"] for c in result["created"]], ["2026008"])
+        self.assertEqual(len(result["skipped"]), 2)
+        reasons = " | ".join(s["reason"] for s in result["skipped"])
+        self.assertIn("学号", reasons)
+        self.assertIn("姓名", reasons)
+
+    def test_student_import_xlsx_formula_without_cache(self):
+        """公式单元格只读缓存值：openpyxl 无计算引擎缓存为空 → 该行按缺学号跳过，不补造。"""
+        self._login("teacher01", "TeacherPass1!")
+        data = xlsx_bytes([["=B2", "公式生", "会计2601"]])
+        res = self._upload_xlsx(data)
+        self.assertEqual(res.status_code, 200, res.text)
+        result = res.json()["import"]
+        self.assertEqual(result["created"], [])
+        self.assertEqual(len(result["skipped"]), 1)
+        self.assertIn("学号", result["skipped"][0]["reason"])
+
+    def test_student_import_xlsx_bad_bytes(self):
+        """非 .xlsx 内容：400 拒绝并提示格式要求。"""
+        self._login("teacher01", "TeacherPass1!")
+        res = self._upload_xlsx(b"this is not an excel file")
+        self.assertEqual(res.status_code, 400, res.text)
+        self.assertIn(".xlsx", res.json()["detail"])
+
+    def test_student_import_xlsx_requires_login(self):
+        res = self._upload_xlsx(xlsx_bytes([["2026005", "钱七", "会计2601"]]))
+        self.assertEqual(res.status_code, 401)
+        with self.store.connect() as db:
+            n = db.execute("SELECT count(*) n FROM student_info WHERE college=?",
+                           (COLLEGE,)).fetchone()["n"]
+        self.assertEqual(n, 4)  # 未入库
+
+    def test_parse_student_xlsx_limits(self):
+        """文件大小与数据行数上限整体拒绝（单元级验证，不静默截断）。"""
+        with self.assertRaises(Exception) as ctx:
+            parse_student_xlsx(b"x" * 11, max_bytes=10)
+        self.assertIn("上限", str(ctx.exception))
+        rows = [[f"9{i:04d}", f"生{i}", "会计2601"] for i in range(6)]
+        with self.assertRaises(Exception) as ctx:
+            parse_student_xlsx(xlsx_bytes(rows), max_rows=5)
+        self.assertIn("上限", str(ctx.exception))
 
 
 if __name__ == "__main__":
