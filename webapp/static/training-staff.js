@@ -10,10 +10,11 @@ function esc(value) {
 }
 
 async function api(path, options = {}) {
+  const form = options.form instanceof FormData ? options.form : null;
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
+    headers: form ? {} : { "Content-Type": "application/json" },
     ...options,
-    body: options.body ? JSON.stringify(options.body) : undefined,
+    body: form ? form : (options.body ? JSON.stringify(options.body) : undefined),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || `请求失败（${res.status}）`);
@@ -24,6 +25,14 @@ function flash(message, isError = false) {
   const box = document.getElementById(isError ? "app-error" : "app-error");
   box.textContent = message || "";
   if (message) setTimeout(() => { if (box.textContent === message) box.textContent = ""; }, 5000);
+}
+
+function renderStudentImport(data) {
+  const skippedNote = data.skipped.length
+    ? `；跳过 ${data.skipped.length} 行：` + data.skipped.map((s) => `${s.student_no || `第${s.line}行`}（${s.reason}）`).join("；")
+    : "";
+  document.getElementById("student-import-result").innerHTML =
+    `<p class="ok">导入完成：新增 ${data.created.length} 人${esc(skippedNote)}</p>`;
 }
 
 function current() {
@@ -687,13 +696,24 @@ document.getElementById("app-view").addEventListener("click", (event) => {
         body: { college, default_password: defaultPassword,
                 default_class_name: q("#si-class").value.trim() || null, rows },
       });
-      const data = result.import;
-      const skippedNote = data.skipped.length
-        ? `；跳过 ${data.skipped.length} 行：` + data.skipped.map((s) => `${s.student_no || `第${s.line}行`}（${s.reason}）`).join("；")
-        : "";
-      document.getElementById("student-import-result").innerHTML =
-        `<p class="ok">导入完成：新增 ${data.created.length} 人${esc(skippedNote)}</p>`;
-      await loadStudents();    }),
+      renderStudentImport(result.import);
+      await loadStudents();
+    }),
+    "import-students-xlsx": () => withCert(async () => {
+      const file = q("#si-file").files && q("#si-file").files[0];
+      if (!file) { flash("请选择 .xlsx 名册文件。", true); return; }
+      const college = q("#si-college").value.trim();
+      const defaultPassword = q("#si-pass").value.trim();
+      if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
+      const fd = new FormData();
+      fd.append("college", college);
+      fd.append("default_password", defaultPassword);
+      fd.append("default_class_name", q("#si-class").value.trim());
+      fd.append("file", file);
+      const result = await api("/api/training/staff/students/import-xlsx", { method: "POST", form: fd });
+      renderStudentImport(result.import);
+      await loadStudents();
+    }),
     "reset-student-pass": () => {
       const stu = state.students.find((s) => s.id === id);
       const input = window.prompt(`为 ${stu ? stu.student_no + " " + stu.name : "该学生"} 设置新密码（至少 8 位，重置后其登录立即失效）：`);
