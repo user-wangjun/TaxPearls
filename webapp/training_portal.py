@@ -480,6 +480,52 @@ def list_classes(store, college: str) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+def college_overview(store, college: str) -> dict[str, Any]:
+    """院校教学概况（FR-U05 简化版，管理员只读聚合）。
+
+    口径对账：班级沿用 list_classes（FR-U03 同口径），课程沿用课程管理
+    （FR-U04 同口径），跨层级数字可相互核对。边界如实说明：组织架构多层
+    （院系/专业）属 FR-U01 未建；考证内容层（知识点/标注/关联）为全平台
+    共享数据，不按院校隔离；不含作答明细下钻（个人档案本人隔离）。"""
+    with store.connect() as db:
+        students_total = db.execute(
+            "SELECT count(*) n FROM student_info WHERE college=?", (college,)).fetchone()["n"]
+        students_active = db.execute(
+            "SELECT count(*) n FROM student_info WHERE college=? AND active=1",
+            (college,)).fetchone()["n"]
+        teachers = db.execute(
+            "SELECT count(*) n FROM college_user WHERE college=? AND active=1",
+            (college,)).fetchone()["n"]
+        courses = db.execute(
+            """SELECT c.id, c.name, c.semester, c.active,
+                      u.display_name AS teacher_name,
+                      (SELECT count(*) FROM course_class cc WHERE cc.course_id=c.id) AS class_count,
+                      (SELECT count(*) FROM student_info s WHERE s.active=1 AND s.college=c.college
+                        AND s.class_name IN
+                            (SELECT class_name FROM course_class cc2 WHERE cc2.course_id=c.id))
+                      AS student_count
+               FROM course c LEFT JOIN college_user u ON u.id = c.teacher_id
+               WHERE c.college=? ORDER BY c.created_at DESC""", (college,)).fetchall()
+        content = {
+            "knowledge_points": db.execute(
+                "SELECT count(*) n FROM knowledge_point WHERE active=1").fetchone()["n"],
+            "linked_points": db.execute(
+                "SELECT count(DISTINCT knowledge_point_id) n FROM knowledge_point_link").fetchone()["n"],
+            "high_freq_marks": db.execute(
+                "SELECT count(*) n FROM knowledge_point_mark").fetchone()["n"],
+        }
+    return {
+        "college": college,
+        "students": {"total": students_total, "active": students_active},
+        "teachers": teachers,
+        "classes": list_classes(store, college),
+        "courses": [dict(r) for r in courses],
+        "content": content,
+        "scope_note": "班级/课程按院校聚合；考证内容层为全平台共享数据，不按院校隔离；"
+                      "院系/专业多层组织属 FR-U01 后续排期。",
+    }
+
+
 def migrate_class(store, changed_by: str, college: str, from_class: str, to_class: str) -> dict[str, Any]:
     """学期初整建制迁移：把一个班级的全部在读学生改入新班级，逐生写入归属追溯。
 
@@ -2919,6 +2965,13 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         staff(session)
         return response(course_roster(store_provider(), course_id))
+
+    @app.get("/api/training/staff/overview")
+    @guarded
+    def staff_college_overview(college: str,
+                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"overview": college_overview(store_provider(), college)})
 
     # ---- 班级与教师名册（FR-U03 第一期） ----
 

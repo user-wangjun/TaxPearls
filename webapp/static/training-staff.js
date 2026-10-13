@@ -397,6 +397,10 @@ async function load() {
   try { state.rules = (await api("/api/training/staff/rules")).rules; } catch (err) { state.rules = []; }
   await loadStudents().catch(() => { state.students = []; });
   await loadCourses().catch(() => { state.courses = []; state.teachers = []; });
+  if (state.staff && state.staff.role === "admin") {
+    document.getElementById("overview-card").hidden = false;
+    await loadOverview().catch(() => {});
+  }
   renderAll();
   await loadMarkStats().catch(() => {});
   await loadRoster().catch(() => { state.classes = []; state.classHistory = []; renderRoster(); });
@@ -554,6 +558,38 @@ async function toggleCourseRoster(btn, scope, courseId) {
     box.hidden = true;
     flash(err.message, true);
   }
+}
+
+/* ---------- 院校教学概况（FR-U05 简化版，管理员） ---------- */
+
+async function loadOverview() {
+  const college = state.staff.college;
+  if (!college) { document.getElementById("overview-body").innerHTML = `<p class="muted">账号未绑定院校，无法聚合。</p>`; return; }
+  const o = (await api(`/api/training/staff/overview?college=${encodeURIComponent(college)}`)).overview;
+  const cls = o.classes.length
+    ? o.classes.map((c) => `<tr><td>${esc(c.class_name)}</td><td>${c.students}</td><td>${c.active_students}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="muted">暂无班级</td></tr>`;
+  const courses = o.courses.length
+    ? o.courses.map((c) => `<div class="item"><div class="item-head">
+        <div><strong>${esc(c.name)}</strong>${c.semester ? ` <span class="chip">${esc(c.semester)}</span>` : ""}
+          ${c.active ? "" : `<span class="badge gray">已停用</span>`}</div>
+        <div class="muted">班级 ${c.class_count} · 学生 ${c.student_count}${c.teacher_name ? ` · ${esc(c.teacher_name)}` : ""}</div>
+      </div></div>`).join("")
+    : `<p class="muted">暂无课程。</p>`;
+  document.getElementById("overview-body").innerHTML = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <span class="badge">在读学生 ${o.students.active}/${o.students.total}</span>
+      <span class="badge">在职教师 ${o.teachers}</span>
+      <span class="badge">班级 ${o.classes.length}</span>
+      <span class="badge">课程 ${o.courses.length}</span>
+      <span class="badge gray">考证知识点 ${o.content.knowledge_points}（已挂规则 ${o.content.linked_points} · 高频标注 ${o.content.high_freq_marks}）</span>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:10px;">
+      <thead><tr><th style="text-align:left;">班级</th><th>名册</th><th>在读</th></tr></thead>
+      <tbody>${cls}</tbody>
+    </table>
+    ${courses}
+    <p class="muted">${esc(o.scope_note)}</p>`;
 }
 
 /* ---------- 事件 ---------- */
@@ -820,6 +856,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     },
     "cancel-course-form": () => { q("#course-form").hidden = true; },
     "refresh-courses": () => withCert(loadCourses),
+    "refresh-overview": () => withCert(loadOverview),
     "create-course": () => withCert(async () => {
       await api("/api/training/staff/courses", {
         method: "POST",

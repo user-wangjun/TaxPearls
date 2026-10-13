@@ -173,6 +173,45 @@ class CourseManagementTests(unittest.TestCase):
         self.assertEqual(
             self.client.get("/api/training/staff/courses/no-such/roster").status_code, 404)
 
+    # ---- 院校教学概况（FR-U05 简化版） ----
+
+    def test_overview_admin_only_and_numbers_reconcile(self):
+        self._staff_login()
+        cid = self.client.post("/api/training/staff/courses", json={
+            "name": "概况测试课", "college": COLLEGE,
+            "class_names": ["会计2601"]}).json()["course"]["id"]
+        self.assertTrue(cid)
+        o = self.client.get(
+            f"/api/training/staff/overview?college={COLLEGE}").json()["overview"]
+        self.assertEqual(o["students"]["total"], 3)          # 按院校过滤，不含其他大学 1 人
+        self.assertEqual(o["students"]["active"], 3)
+        cls = {c["class_name"]: c for c in o["classes"]}
+        self.assertEqual(cls["会计2601"]["active_students"], 2)  # 与班级统计口径一致
+        course_row = [c for c in o["courses"] if c["id"] == cid][0]
+        self.assertEqual(course_row["student_count"], 2)     # 与课程花名册口径一致
+        self.assertEqual(o["content"]["knowledge_points"], 0)  # 空测试库
+        self.assertTrue(o["scope_note"])
+
+    def test_overview_teacher_forbidden(self):
+        self._staff_login()
+        imp = self.client.post("/api/training/staff/teachers/import", json={
+            "college": COLLEGE, "default_password": "Teach2026!",
+            "rows": [{"username": "t2", "display_name": "李老师"}]})
+        self.assertEqual(imp.status_code, 200, imp.text)
+        self.assertEqual(len(imp.json()["import"]["created"]), 1, imp.text)
+        self.assertEqual(imp.json()["import"]["skipped"], [], imp.text)
+        self.client.post("/api/training/staff/auth/logout")
+        login = self.client.post("/api/training/staff/auth/login", json={
+            "username": "t2", "password": "Teach2026!"})
+        self.assertEqual(login.status_code, 200, login.text)
+        res = self.client.get(f"/api/training/staff/overview?college={COLLEGE}")
+        self.assertEqual(res.status_code, 403, res.text)
+
+    def test_overview_requires_college(self):
+        self._staff_login()
+        self.assertEqual(
+            self.client.get("/api/training/staff/overview").status_code, 422)
+
 
 if __name__ == "__main__":
     unittest.main()
