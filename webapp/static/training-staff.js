@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [] };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [] };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -396,6 +396,7 @@ async function load() {
   }
   try { state.rules = (await api("/api/training/staff/rules")).rules; } catch (err) { state.rules = []; }
   await loadStudents().catch(() => { state.students = []; });
+  await loadCourses().catch(() => { state.courses = []; state.teachers = []; });
   renderAll();
   await loadMarkStats().catch(() => {});
   await loadRoster().catch(() => { state.classes = []; state.classHistory = []; renderRoster(); });
@@ -478,6 +479,81 @@ function parseStudentRows(text) {
     const parts = line.split(/[，,]/).map((p) => p.trim());
     return { student_no: parts[0] || "", name: parts[1] || "", class_name: parts[2] || null };
   }).filter((r) => r.student_no && r.name);
+}
+
+/* ---------- 课程管理（FR-U04） ---------- */
+
+async function loadCourses() {
+  state.courses = (await api("/api/training/staff/courses")).courses;
+  try { state.teachers = (await api("/api/training/staff/teachers")).teachers; } catch (err) { state.teachers = []; }
+  renderCourses();
+}
+
+function teacherOptions(selectedId) {
+  return state.teachers.map((t) =>
+    `<option value="${esc(t.id)}" ${t.id === selectedId ? "selected" : ""}>${esc(t.display_name)}（${esc(t.username)}）</option>`).join("");
+}
+
+function renderCourses() {
+  const box = document.getElementById("courses");
+  if (!state.courses.length) {
+    box.innerHTML = `<p class="muted">还没有课程。点上方「新建课程」。</p>`;
+    return;
+  }
+  box.innerHTML = state.courses.map((c) => `
+    <div class="item" id="course-${esc(c.id)}">
+      <div class="item-head">
+        <div><strong>${esc(c.name)}</strong>
+          ${c.semester ? `<span class="chip">${esc(c.semester)}</span>` : ""}
+          ${c.teacher_name ? `<span class="chip">授课：${esc(c.teacher_name)}</span>` : `<span class="badge gray">未指派教师</span>`}
+          ${c.active ? `<span class="badge">开设中</span>` : `<span class="badge gray">已停用</span>`}
+        </div>
+        <div class="actions">
+          <button class="small" data-act="course-roster" data-id="${esc(c.id)}">花名册（${c.student_count}）</button>
+          <button class="small" data-act="edit-course" data-id="${esc(c.id)}">编辑</button>
+          <button class="small ${c.active ? "danger" : ""}" data-act="toggle-course" data-id="${esc(c.id)}">${c.active ? "停用" : "启用"}</button>
+        </div>
+      </div>
+      <div class="muted">绑定班级：${c.classes.length ? c.classes.map((n) => `<span class="chip">${esc(n)}</span>`).join("") : "（无）"}</div>
+      ${c.description ? `<div class="muted">${esc(c.description)}</div>` : ""}
+      <div class="inline-form" data-role="course-roster" hidden></div>
+      <div class="inline-form" data-role="course-edit" hidden>
+        <div class="row">
+          <div><label>课程名称</label><input data-role="ce-name" value="${esc(c.name)}"></div>
+          <div><label>学年学期</label><input data-role="ce-semester" value="${esc(c.semester || "")}"></div>
+          <div><label>授课教师</label><select data-role="ce-teacher">${teacherOptions(c.teacher_id)}</select></div>
+        </div>
+        <div class="row">
+          <div><label>绑定班级（逗号分隔）</label><input data-role="ce-classes" value="${esc(c.classes.join(","))}"></div>
+          <div><label>课程说明</label><input data-role="ce-desc" value="${esc(c.description || "")}"></div>
+        </div>
+        <div class="actions"><button class="small primary" data-act="save-course" data-id="${esc(c.id)}">保存</button>
+          <button class="small" data-act="cancel-course-edit" data-id="${esc(c.id)}">取消</button></div>
+      </div>
+    </div>`).join("");
+}
+
+function splitClassNames(text) {
+  return text.split(/[，,]/).map((p) => p.trim()).filter(Boolean);
+}
+
+async function toggleCourseRoster(btn, scope, courseId) {
+  const box = scope.querySelector("[data-role=course-roster]");
+  if (!box.hidden) { box.hidden = true; btn.textContent = btn.dataset.label || "花名册"; return; }
+  btn.dataset.label = btn.textContent;
+  box.innerHTML = `<p class="muted">加载中…</p>`;
+  box.hidden = false;
+  try {
+    const data = await api(`/api/training/staff/courses/${courseId}/roster`);
+    box.innerHTML = data.students.length
+      ? `<div class="muted" style="margin-bottom:4px;">共 ${data.count} 名在读学生：</div>` +
+        data.students.map((s) => `<span class="chip">${esc(s.student_no)} ${esc(s.name)}（${esc(s.class_name)}）</span>`).join(" ")
+      : `<p class="muted">绑定班级暂无在读学生。</p>`;
+    btn.textContent = "收起花名册";
+  } catch (err) {
+    box.hidden = true;
+    flash(err.message, true);
+  }
 }
 
 /* ---------- 事件 ---------- */
@@ -734,6 +810,80 @@ document.getElementById("app-view").addEventListener("click", (event) => {
         flash(stu.active ? "已停用。" : "已启用。");
       });
     },
+    "show-course-form": () => {
+      const f = q("#course-form");
+      f.hidden = !f.hidden;
+      if (!f.hidden) {
+        const sel = q("#cf2-teacher");
+        sel.innerHTML = `<option value="">（未指派）</option>` + teacherOptions(null);
+      }
+    },
+    "cancel-course-form": () => { q("#course-form").hidden = true; },
+    "refresh-courses": () => withCert(loadCourses),
+    "create-course": () => withCert(async () => {
+      await api("/api/training/staff/courses", {
+        method: "POST",
+        body: {
+          name: q("#cf2-name").value.trim(),
+          college: q("#cf2-college").value.trim(),
+          semester: q("#cf2-semester").value.trim() || null,
+          teacher_id: q("#cf2-teacher").value || null,
+          class_names: splitClassNames(q("#cf2-classes").value),
+          description: q("#cf2-desc").value.trim() || null,
+        },
+      });
+      q("#cf2-name").value = ""; q("#cf2-classes").value = ""; q("#cf2-desc").value = "";
+      q("#course-form").hidden = true;
+      await loadCourses();
+      flash("课程已创建。");
+    }),
+    "course-roster": (btn) => {
+      const scope = document.getElementById(`course-${id}`);
+      if (!scope) return;
+      toggleCourseRoster(btn, scope, id);
+    },
+    "edit-course": () => {
+      const scope = document.getElementById(`course-${id}`);
+      if (!scope) return;
+      const form = scope.querySelector("[data-role=course-edit]");
+      form.hidden = !form.hidden;
+      if (!form.hidden) {
+        const sel = form.querySelector("[data-role=ce-teacher]");
+        const current = state.courses.find((c) => c.id === id);
+        sel.innerHTML = `<option value="">（未指派）</option>` + teacherOptions(current ? current.teacher_id : null);
+      }
+    },
+    "cancel-course-edit": () => {
+      const scope = document.getElementById(`course-${id}`);
+      if (scope) scope.querySelector("[data-role=course-edit]").hidden = true;
+    },
+    "save-course": () => withCert(async () => {
+      const scope = document.getElementById(`course-${id}`);
+      if (!scope) return;
+      const form = scope.querySelector("[data-role=course-edit]");
+      await api(`/api/training/staff/courses/${id}`, {
+        method: "PATCH",
+        body: {
+          name: form.querySelector("[data-role=ce-name]").value.trim(),
+          semester: form.querySelector("[data-role=ce-semester]").value.trim() || null,
+          teacher_id: form.querySelector("[data-role=ce-teacher]").value || null,
+          class_names: splitClassNames(form.querySelector("[data-role=ce-classes]").value),
+          description: form.querySelector("[data-role=ce-desc]").value.trim() || null,
+        },
+      });
+      await loadCourses();
+      flash("课程已保存。");
+    }),
+    "toggle-course": () => {
+      const c = state.courses.find((x) => x.id === id);
+      if (!c) return;
+      if (c.active && !window.confirm(`确认停用课程「${c.name}」？停用不删数据，可随时启用。`)) return;
+      withCert(async () => {
+        await api(`/api/training/staff/courses/${id}`, {
+          method: "PATCH", body: { active: !c.active } });
+        flash(c.active ? "课程已停用。" : "课程已启用。");
+      });
+    },
     "cancel-import": () => {
       q("#import-form").hidden = true;
       renderImportResult(null);
@@ -871,7 +1021,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     },
   };
 
-  if (handlers[act]) handlers[act]();
+  if (handlers[act]) handlers[act](btn);
 });
 
 document.getElementById("cert-select").addEventListener("change", async (event) => {

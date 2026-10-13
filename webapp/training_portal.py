@@ -352,6 +352,119 @@ def set_student_active(store, student_id: str, active: bool) -> dict[str, Any]:
     return dict(row)
 
 
+# ---- 课程管理（FR-U04 v1：课程绑定教师与班级，支持同课多班） ----
+
+_COURSE_SELECT = """
+    SELECT c.id, c.college, c.name, c.semester, c.teacher_id, c.description,
+           c.active, c.created_at,
+           u.display_name AS teacher_name, u.username AS teacher_username
+    FROM course c LEFT JOIN college_user u ON u.id = c.teacher_id
+"""
+
+
+def _course_payload(db, row: sqlite3.Row) -> dict[str, Any]:
+    classes = [r["class_name"] for r in db.execute(
+        "SELECT class_name FROM course_class WHERE course_id=? ORDER BY class_name", (row["id"],))]
+    enrolled = db.execute(
+        """SELECT count(*) n FROM student_info s
+           WHERE s.active=1 AND s.college=? AND s.class_name IN
+           (SELECT class_name FROM course_class WHERE course_id=?)""",
+        (row["college"], row["id"])).fetchone()["n"]
+    return {**dict(row), "classes": classes, "student_count": enrolled}
+
+
+def list_courses(store, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        where = "" if include_inactive else "WHERE c.active=1"
+        rows = db.execute(f"{_COURSE_SELECT} {where} ORDER BY c.created_at DESC").fetchall()
+        return [_course_payload(db, r) for r in rows]
+
+
+def create_course(store, operator_id: str, college: str, name: str, *,
+                  semester: str | None = None, teacher_id: str | None = None,
+                  class_names: list[str] | None = None,
+                  description: str | None = None) -> dict[str, Any]:
+    name = (name or "").strip()
+    semester = (semester or "").strip() or None
+    if not name:
+        raise TrainingPortalError("课程名称必填。")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if teacher_id and not db.execute(
+                "SELECT 1 FROM college_user WHERE id=? AND active=1", (teacher_id,)).fetchone():
+            raise TrainingPortalError("授课教师不存在或已停用。", 404)
+        dup = db.execute(
+            """SELECT id FROM course WHERE college=? AND name=? AND IFNULL(semester,'')=? AND active=1""",
+            (college, name, semester or "")).fetchone()
+        if dup:
+            raise TrainingPortalError(f"同院校同学期已存在开设中的课程「{name}」。")
+        cid = str(uuid.uuid4())
+        db.execute(
+            """INSERT INTO course (id, college, name, semester, teacher_id, description,
+                                   active, created_at, created_by)
+               VALUES (?,?,?,?,?,?,1,?,?)""",
+            (cid, college, name, semester, teacher_id,
+             (description or "").strip() or None, _now(), operator_id))
+        for cn in sorted({(c or "").strip() for c in (class_names or []) if (c or "").strip()}):
+            db.execute("INSERT INTO course_class (course_id, class_name) VALUES (?,?)", (cid, cn))
+        row = db.execute(f"{_COURSE_SELECT} WHERE c.id=?", (cid,)).fetchone()
+        return _course_payload(db, row)
+
+
+def update_course(store, course_id: str, fields: dict[str, Any],
+                  class_names: list[str] | None = None) -> dict[str, Any]:
+    allowed = {"name", "semester", "teacher_id", "description", "active"}
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM course WHERE id=?", (course_id,)).fetchone():
+            raise TrainingPortalError("课程不存在。", 404)
+        if "teacher_id" in fields and fields["teacher_id"]:
+            if not db.execute("SELECT 1 FROM college_user WHERE id=? AND active=1",
+                              (fields["teacher_id"],)).fetchone():
+                raise TrainingPortalError("授课教师不存在或已停用。", 404)
+        sets, params = [], []
+        for key in ("name", "semester", "teacher_id", "description", "active"):
+            if key in fields and fields[key] is not None:
+                value = fields[key]
+                if key in ("name", "description"):
+                    value = (value or "").strip() or None
+                elif key == "semester":
+                    value = (value or "").strip() or None
+                sets.append(f"{key}=?")
+                params.append(value)
+        if sets:
+            params.append(course_id)
+            db.execute(f"UPDATE course SET {', '.join(sets)} WHERE id=?", params)
+        if class_names is not None:
+            cleaned = sorted({(c or "").strip() for c in class_names if (c or "").strip()})
+            db.execute("DELETE FROM course_class WHERE course_id=?", (course_id,))
+            for cn in cleaned:
+                db.execute("INSERT INTO course_class (course_id, class_name) VALUES (?,?)",
+                           (course_id, cn))
+        row = db.execute(f"{_COURSE_SELECT} WHERE c.id=?", (course_id,)).fetchone()
+        return _course_payload(db, row)
+
+
+def course_roster(store, course_id: str) -> dict[str, Any]:
+    """课程花名册：按绑定班级聚合在读学生（同院校口径，含同课多班去重）。"""
+    with store.connect() as db:
+        course = db.execute("SELECT id, name, college FROM course WHERE id=?", (course_id,)).fetchone()
+        if not course:
+            raise TrainingPortalError("课程不存在。", 404)
+        students = db.execute(
+            """SELECT DISTINCT s.student_no, s.name, s.class_name
+               FROM course_class cc
+               JOIN student_info s ON s.class_name = cc.class_name
+                    AND s.active=1 AND s.college=?
+               WHERE cc.course_id=? ORDER BY s.student_no""",
+            (course["college"], course_id)).fetchall()
+    return {"course": {"id": course["id"], "name": course["name"]},
+            "students": [dict(r) for r in students],
+            "count": len(students)}
+
+
 # ---- 班级与教师名册（FR-U03 第一期：班级统计 / 整建制迁移 / 教师批量导入） ----
 
 def list_classes(store, college: str) -> list[dict[str, Any]]:
@@ -2063,6 +2176,26 @@ class StaffPasswordChange(BaseModel):
     new_password: str = Field(min_length=1)
 
 
+class CourseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    college: str = Field(min_length=1)
+    semester: str | None = None
+    teacher_id: str | None = None
+    class_names: list[str] = Field(default_factory=list)
+    description: str | None = None
+
+
+class CoursePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    semester: str | None = None
+    teacher_id: str | None = None
+    description: str | None = None
+    active: bool | None = None
+    class_names: list[str] | None = None
+
+
 class StudentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     college: str = Field(min_length=1)
@@ -2741,6 +2874,51 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         staff(session)
         return response({"student": set_student_active(store_provider(), student_id, body.active)})
+
+    @app.get("/api/training/staff/teachers")
+    @guarded
+    def staff_teacher_list(include_inactive: bool = False,
+                           session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        with store_provider().connect() as db:
+            where = "" if include_inactive else "WHERE active=1"
+            rows = db.execute(
+                f"""SELECT id, username, display_name, college, role FROM college_user {where}
+                    ORDER BY college, username""").fetchall()
+        return response({"teachers": [dict(r) for r in rows]})
+
+    @app.get("/api/training/staff/courses")
+    @guarded
+    def staff_course_list(include_inactive: bool = True,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"courses": list_courses(store_provider(), include_inactive=include_inactive)})
+
+    @app.post("/api/training/staff/courses")
+    @guarded
+    def staff_course_create(body: CourseCreate,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"course": create_course(
+            store_provider(), who["id"], body.college, body.name,
+            semester=body.semester, teacher_id=body.teacher_id,
+            class_names=body.class_names, description=body.description)})
+
+    @app.patch("/api/training/staff/courses/{course_id}")
+    @guarded
+    def staff_course_update(course_id: str, body: CoursePatch,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        fields = {k: getattr(body, k) for k in body.model_fields_set}
+        return response({"course": update_course(
+            store_provider(), course_id, fields, class_names=body.class_names)})
+
+    @app.get("/api/training/staff/courses/{course_id}/roster")
+    @guarded
+    def staff_course_roster(course_id: str,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response(course_roster(store_provider(), course_id))
 
     # ---- 班级与教师名册（FR-U03 第一期） ----
 

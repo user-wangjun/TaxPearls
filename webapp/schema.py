@@ -555,5 +555,28 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_roster_class_history_time
                 ON roster_class_history(created_at);
         """)
+        # 课程管理（FR-U04 v1）：课程绑定授课教师与班级，支持同课多班（course_class 多行）。
+        # 停用不删行（课程与归属可追溯）；班级沿用 class_name 聚合键，与 student_info 对齐；
+        # 课程级作业序列（training_task 挂课程）预留到 v2，本版不含作业外键。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS course (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                college TEXT NOT NULL,                    -- 所属院校（实训数据隔离键）
+                name TEXT NOT NULL,                       -- 课程名称
+                semester TEXT,                            -- 学年学期（如 2026-2027-1，可空）
+                teacher_id TEXT REFERENCES college_user(id),  -- 授课教师（外键，可空）
+                description TEXT,                         -- 课程说明（可空）
+                active INTEGER NOT NULL DEFAULT 1,        -- 1=开设 0=停用（停用不删行）
+                created_at TEXT NOT NULL,                 -- 建课时间（ISO 8601 文本）
+                created_by TEXT REFERENCES college_user(id)   -- 建课操作人（外键）
+            );
+            CREATE TABLE IF NOT EXISTS course_class (
+                course_id TEXT NOT NULL REFERENCES course(id),
+                class_name TEXT NOT NULL,                 -- 绑定班级（与 student_info.class_name 同口径）
+                PRIMARY KEY (course_id, class_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_course_college ON course(college, active);
+            CREATE INDEX IF NOT EXISTS idx_course_teacher ON course(teacher_id);
+        """)
         from webapp import ai_keys
         ai_keys.migrate(db)
