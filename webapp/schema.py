@@ -230,6 +230,10 @@ def initialize(store) -> None:
         members.migrate(db)
         from webapp import material_batches
         material_batches.migrate(db)
+        from src import core_mapping
+        core_mapping.migrate(db)
+        from webapp import core_inputs
+        core_inputs.migrate(db)
         # ------------------------------------------------------------------
         # 高校实训（teaching-training）：实训管理员、任务、学生、提交与评分。
         # 仅新增表，不改动既有结构；与 src/models.py 中对应 dataclass 一一对应。
