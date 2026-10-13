@@ -158,6 +158,31 @@ def change_staff_password(store, staff: dict[str, Any], old_password: str, new_p
     return {"password_changed": True}
 
 
+def change_student_password(store, student: dict[str, Any], old_password: str,
+                            new_password: str) -> dict[str, Any]:
+    """学生本人修改密码：验证当前密码，更新后清除本人全部会话（需重新登录）。
+
+    与教师改密同口径；学生初始密码为默认口令（Tp#学号2026），首登改密即
+    消除默认口令风险。教师重置入口保留（不验证旧密码，属管理员动作）。"""
+    new_password = _validate_student_password(new_password)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM student_info WHERE id=? AND active=1",
+                         (student["id"],)).fetchone()
+        if not row:
+            raise TrainingPortalError("学生账号不存在或已停用。", 404)
+        try:
+            _passwords.verify(row["password_hash"], old_password or "")
+        except (VerifyMismatchError, InvalidHashError):
+            raise TrainingPortalError("当前密码不正确。", 401) from None
+        if old_password == new_password:
+            raise TrainingPortalError("新密码不能与当前密码相同。")
+        db.execute("UPDATE student_info SET password_hash=? WHERE id=?",
+                   (_passwords.hash(new_password), row["id"]))
+        db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (row["id"],))
+    return {"password_changed": True}
+
+
 # ---------------------------------------------------------------------------
 # 教师端学生名册管理（小范围真实使用：单个添加 + 批量导入）
 # ---------------------------------------------------------------------------
@@ -2277,6 +2302,17 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def training_me(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         return response({"student": student(session)})
+
+    @app.post("/api/training/auth/change-password")
+    @guarded
+    def training_change_password(body: StaffPasswordChange,
+                                 session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        """学生本人自助修改密码（旧密码验证 + 全部会话失效，需重新登录）。"""
+        who = student(session)
+        result = change_student_password(store_provider(), who, body.old_password, body.new_password)
+        resp = response(result)
+        resp.delete_cookie(cookie_name, path="/")
+        return resp
 
     @app.get("/api/training/certificates")
     @guarded
