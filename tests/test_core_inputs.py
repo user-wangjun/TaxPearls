@@ -650,7 +650,20 @@ class CoreAPITests(unittest.TestCase):
             task = self.upload(task, kind)
         return self.upload(task, "invoice_detail", direction="进项")
 
-    def test_repeated_upload_exclusion_and_restoration_preserve_versions_and_totals(self):
+    @patch("webapp.material_batches.members.now", return_value="2026-01-01T00:00:00+00:00")
+    def test_repeated_upload_exclusion_and_restoration_preserve_versions_and_totals(self, _now):
+        # All uploads share a timestamp; IDs sort opposite to arrival order.
+        # A later duplicate must not replace the earlier source or reorder totals.
+        file_ids = iter([letter * 32 for letter in ("f", "e", "d", "c", "0")])
+        retain_files = material_batches._files
+
+        def retain_with_ids(*args, **kwargs):
+            with patch("webapp.material_batches.secrets.token_hex", side_effect=lambda _: next(file_ids)):
+                return retain_files(*args, **kwargs)
+
+        retain_patch = patch("webapp.material_batches._files", side_effect=retain_with_ids)
+        retain_patch.start()
+        self.addCleanup(retain_patch.stop)
         task = self.ready_task()
         original_summaries = deepcopy(task["processing"]["invoice_summaries"])
         earlier = deepcopy(task)
@@ -671,6 +684,7 @@ class CoreAPITests(unittest.TestCase):
         self.assertEqual(task["processing"]["status"], "ready_for_analysis")
         self.assertEqual(task["processing"]["invoice_summaries"], original_summaries)
         self.assertEqual(len(task["files"]), 5)
+        self.assertEqual([f["id"] for f in task["files"]], [letter * 32 for letter in ("f", "e", "d", "c", "0")])
         self.assertTrue(any(i["code"] == "duplicate_file" for i in task["processing"]["notices"]))
         input_doc = next(
             d

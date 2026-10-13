@@ -305,7 +305,9 @@ def read(store, actor, batch_id):
         result['jobs'] = material_jobs.listing(db,batch_id)
         result['executions'] = [dict(row) for row in db.execute(
             'SELECT * FROM material_executions WHERE batch_id=? ORDER BY analysis_revision', (batch_id,))]
-        for row in db.execute('SELECT * FROM material_originals WHERE batch_id=? ORDER BY uploaded_at,id', (batch_id,)):
+        # Same-second uploads keep arrival order, so later duplicates cannot
+        # replace the original source or reorder invoice summaries on reanalysis.
+        for row in db.execute('SELECT * FROM material_originals WHERE batch_id=? ORDER BY uploaded_at,rowid', (batch_id,)):
             metadata = json.loads(_open(row['metadata_cipher'],
                                        _context(batch['org_id'], batch_id, 'metadata', row['id'])))
             result['files'].append({'id': row['id'], **metadata, 'uploaded_by': row['uploaded_by'],

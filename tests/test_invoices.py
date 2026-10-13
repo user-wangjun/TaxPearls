@@ -4,14 +4,17 @@ from copy import deepcopy
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
+import json
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 from openpyxl import Workbook
 
-from src import engine, materials
+from src import engine, materials, material_provenance
 from webapp import app as app_module
+from webapp import material_batches
 from webapp.storage import Store
 from tests.enterprise_support import confirm, material_key
 
@@ -89,6 +92,146 @@ def invoice_xml(
 
 
 class InvoiceSourceParsing(unittest.TestCase):
+    def test_conflicting_signs_and_ambiguous_states_never_become_net_amounts(self):
+        for amount, tax, total, status, message in (
+            (-100, 13, -113, '红字', '正负号不一致'),
+            (100, -13, 113, '红字', '正负号不一致'),
+            (100, 13, -113, '正常', '正负号不一致'),
+            (-100, -13, -113, '正常', '正常发票金额不能为负数'),
+            (100, 13, 113, '已红冲', '独立红票'),
+            (100, 13, 113, '部分红冲', '独立红票'),
+            (100, 13, 113, '未作废', '无法识别'),
+            (100, 13, 113, '非红字', '无法识别'),
+            (100, 13, 113, '', '缺少明确发票状态'),
+        ):
+            with self.subTest(amount=amount, tax=tax, total=total, status=status):
+                doc = materials.preview([('状态.xlsx', invoice_workbook([
+                    ['STATE-1', '2026-01-02', '销项', amount, tax, total, status]]))], KEYS)[0]
+                self.assertIn(message, doc['error'])
+                self.assertEqual(doc['invoices'], [])
+
+    def test_red_positive_and_negative_exports_subtract_once_with_separate_sources(self):
+        raw = invoice_workbook([
+            ['BLUE', '2026-01-02', '销项', 100, 13, 113, '正常'],
+            ['RED-POS', '2026-01-03', '销项', 20, 2.6, 22.6, '红字'],
+            ['RED-NEG', '2026-01-04', '销项', -10, -1.3, -11.3, '红字'],
+            ['VOID', '2026-01-05', '销项', 50, 6.5, 56.5, '作废'],
+            ['PURCHASE', '2026-01-06', '采购', 60, 7.8, 67.8, '正常', '已确认', '抵扣税款', '2026-01', '否', 0],
+        ])
+        doc = materials.preview([('正负红票.xlsx', raw)], KEYS)[0]
+        self.assertFalse(doc['error'], doc)
+        data = materials.build_dataset([doc], selections([doc]), {}, KEYS)
+        self.assertEqual(data.get('发票.销项净额'), 70)
+        self.assertEqual(data.get('发票.销项税额净额'), Decimal('9.1'))
+        self.assertIn('VOID；作废已剔除', data.source_of('发票.销项净额'))
+        self.assertNotIn('PURCHASE', data.source_of('发票.销项净额'))
+        self.assertNotIn('BLUE', data.source_of('凭证.本期确认抵扣税额'))
+        self.assertIn('原文不含税 -10', doc['invoices'][2]['detail'])
+
+    def test_status_flags_are_checked_in_excel_and_xml(self):
+        headers = ['发票号码', '开票日期', '发票方向', '合计金额', '合计税额', '价税合计', '发票状态', '红字标志', '作废标志']
+        for status, red, void in (('蓝字', '是', '否'), ('红字', '否', '否'), ('作废', '否', '否'), ('正常', '否', '是')):
+            with self.subTest(status=status, red=red, void=void):
+                doc = materials.preview([('标志.xlsx', invoice_workbook([
+                    ['FLAG', '2026-01-02', '销项', 100, 13, 113, status, red, void]], headers))], KEYS)[0]
+                self.assertIn('标志冲突', doc['error'])
+        for status, red, void in (('蓝字', 'true', 'false'), ('红字', 'false', 'false'), ('作废', 'false', 'false')):
+            raw = invoice_xml(red=red).replace(b'</xbrli:xbrl>', (
+                f'<einv:InvoiceStatus>{status}</einv:InvoiceStatus><einv:IsVoid>{void}</einv:IsVoid></xbrli:xbrl>').encode())
+            doc = materials.preview([('标志.xml', raw)], KEYS)[0]
+            self.assertIn('标志冲突', doc['error'])
+
+    def test_validity_and_colour_are_separate_for_red_invoices(self):
+        headers = ['发票号码', '开票日期', '发票方向', '合计金额', '合计税额', '价税合计', '发票状态', '红字标志', '作废标志']
+        for amount, tax, total in ((20, 2.6, 22.6), (-20, -2.6, -22.6)):
+            raw = invoice_workbook([['VALID-RED', '2026-01-02', '销项', amount, tax, total, '正常', '是', '否']], headers)
+            doc = materials.preview([('有效红票.xlsx', raw)], KEYS)[0]
+            self.assertFalse(doc['error'], doc)
+            data = materials.build_dataset([doc], selections([doc]), {}, KEYS)
+            self.assertEqual(data.get('发票.销项净额'), -20)
+        raw = invoice_xml(red='true').replace(b'</xbrli:xbrl>', '<einv:InvoiceStatus>正常</einv:InvoiceStatus></xbrli:xbrl>'.encode())
+        doc = materials.preview([('有效红票.xml', raw)], KEYS)[0]
+        self.assertFalse(doc['error'], doc)
+        self.assertEqual(doc['invoices'][0]['status'], '红字')
+
+    def test_xml_void_and_negative_blue_are_blocked(self):
+        cases = (
+            (invoice_xml().replace(b'</xbrli:xbrl>', b'<einv:IsVoid>true</einv:IsVoid></xbrli:xbrl>'), '作废状态'),
+            (invoice_xml(amount='-100', tax='-13', total='-113'), '正常发票金额不能为负数'),
+            (invoice_xml(amount='-100', tax='13', total='-113', red='true'), '正负号不一致'),
+        )
+        for raw, message in cases:
+            with self.subTest(message=message):
+                doc = materials.preview([('错误.xml', raw)], KEYS)[0]
+                self.assertIn(message, doc['error'])
+                self.assertEqual(doc['invoices'], [])
+
+    def test_deduction_needs_explicit_usage_period_and_transfer_amount(self):
+        for usage, period in (('不抵扣', '2026-01'), ('抵扣税款', ''), ('', '2026-01'), ('出口退税', '2026-01'), ('抵扣税款', '2025-12')):
+            with self.subTest(usage=usage, period=period):
+                for name, raw in (
+                    ('用途.xml', invoice_xml(usage=usage, period=period)),
+                    ('用途.xlsx', invoice_workbook([['USE', '2026-01-02', '采购', 100, 13, 113, '正常', '已确认', usage, period, '否', 0]])),
+                ):
+                    doc = materials.preview([(name, raw)], KEYS)[0]
+                    self.assertFalse(doc['error'], doc)
+                    data = materials.build_dataset([doc], selections([doc]), COMPANY, KEYS)
+                    self.assertEqual(data.get('发票.采购税额净额'), 13)
+                    self.assertIsNone(data.get('凭证.本期确认抵扣税额'))
+        for transferred, amount in (('true', ''), ('false', '2'), ('', '2'), ('true', '-2'), ('true', '14')):
+            with self.subTest(transferred=transferred, amount=amount):
+                doc = materials.preview([('转出.xml', invoice_xml(transferred=transferred, transferred_tax=amount))], KEYS)[0]
+                self.assertIn('转出', doc['error'])
+                doc = materials.preview([('转出.xlsx', invoice_workbook([
+                    ['TRANSFER', '2026-01-02', '采购', 100, 13, 113, '正常', '已确认', '抵扣税款', '2026-01', transferred, amount]]))], KEYS)[0]
+                self.assertIn('转出', doc['error'])
+
+    def test_numeric_long_invoice_number_requires_new_source_text_export(self):
+        for number in (24442000000000000001, 2.4442e19):
+            doc = materials.preview([('长票号.xlsx', invoice_workbook([
+                [number, '2026-01-02', '销项', 100, 13, 113, '正常']]))], KEYS)[0]
+            self.assertIn('可能已丢失精度', doc['error'])
+        doc = materials.preview([('文本票号.xlsx', invoice_workbook([
+            ['24442000000000000001', '2026-01-02', '销项', 100, 13, 113, '正常']]))], KEYS)[0]
+        self.assertFalse(doc['error'], doc)
+        self.assertEqual(doc['invoices'][0]['number'], '24442000000000000001')
+
+    def test_party_ids_cannot_be_overridden_by_direction_or_sheet_title(self):
+        headers = ['发票号码', '开票日期', '发票方向', '合计金额', '合计税额', '价税合计', '发票状态', '销方税号', '购方税号']
+        for direction, seller, buyer in (
+            ('销项', 'OTHER', COMPANY['taxpayer_id']),
+            ('采购', COMPANY['taxpayer_id'], 'OTHER'),
+            ('销项', 'OTHER-A', 'OTHER-B'),
+            ('销项', COMPANY['taxpayer_id'], COMPANY['taxpayer_id']),
+        ):
+            doc = materials.preview([('归属.xlsx', invoice_workbook([
+                ['PARTY', '2026-01-02', direction, 100, 13, 113, '正常', seller, buyer]], headers, sheet='销项查询'))], KEYS)[0]
+            self.assertIn('税号', doc['error'])
+
+    def test_duplicate_feedback_locates_both_rows(self):
+        doc = materials.preview([('重复状态.xlsx', invoice_workbook([
+            ['SAME', '2026-01-02', '销项', 100, 13, 113, '正常'],
+            ['SAME', '2026-01-02', '销项', 100, 13, 113, '作废']]))], KEYS)[0]
+        self.assertIn('第2行', doc['error'])
+        self.assertIn('第3行', doc['error'])
+
+    def test_invoice_parser_version_and_sources_invalidate_old_rows(self):
+        doc = materials.preview([('发票.xml', invoice_xml())], KEYS)[0]
+        self.assertFalse(material_provenance.invoice_reanalysis_required(doc))
+        for key in ('version', 'source', 'status', 'missing_program'):
+            old = deepcopy(doc)
+            if key == 'version':
+                old.pop('invoice_parser_version')
+            elif key == 'source':
+                old['extraction']['local']['program']['sources']['loader.py'] = 'old'
+            elif key == 'status':
+                old['extraction']['local']['status'] = 'failed'
+            else:
+                old['extraction']['local'].pop('program')
+            with self.subTest(key=key):
+                self.assertTrue(material_provenance.invoice_reanalysis_required(old))
+        self.assertFalse(material_provenance.invoice_reanalysis_required({'kind': 'history', 'invoices': doc['invoices']}))
+
     def test_source_excel_maps_red_void_and_tax_basis(self):
         rows = [
             ["S-1", "2026-01-02", "销项", 100, 13, 113, "正常", "", "", "", "", ""],
@@ -169,7 +312,7 @@ class InvoiceWebFlow(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.old_store = app_module.store
         app_module.store = Store(Path(self.temp.name) / "invoice.db")
-        app_module.store.create_user("invoice-admin", "invoice-test-2026", "发票测试", "org_admin", "default")
+        self.admin = app_module.store.create_user("invoice-admin", "invoice-test-2026", "发票测试", "org_admin", "default")
         self.client = TestClient(app_module.app)
         self.client.post("/api/login", json={"username": "invoice-admin", "password": "invoice-test-2026"})
 
@@ -177,6 +320,137 @@ class InvoiceWebFlow(unittest.TestCase):
         self.client.close()
         app_module.store = self.old_store
         self.temp.cleanup()
+
+    def test_duplicate_across_xml_excel_blocks_confirmation_and_exclusion_recovers(self):
+        raw = invoice_workbook([['24442000000000000001', '2026-01-10', '采购', 100, 13, 113, '正常', '已确认', '抵扣税款', '2026-01', '否', 0]])
+        response = self.client.post('/api/enterprise/materials', files=[
+            ('files', ('清单.xlsx', raw)), ('files', ('原票.xml', invoice_xml()))])
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertFalse(item['analysis']['can_confirm'])
+        message = ' '.join(n['message'] for n in item['analysis']['feedback']['blocking'])
+        self.assertIn('清单.xlsx', message)
+        self.assertIn('原票.xml', message)
+        self.assertIn('跨文件重复', message)
+        self.assertEqual(confirm(self.client, item).status_code, 409)
+        url = '/api/enterprise/materials/' + item['id']
+        xml_id = item['documents'][1]['id']
+        response = self.client.post(url + '/analyze', json={
+            'expected_revision': item['revision'], 'selections': {xml_id: {'purpose': 'excluded'}}})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertTrue(item['analysis']['can_confirm'], item['analysis'])
+        first = confirm(self.client, item)
+        self.assertEqual(first.status_code, 200, first.text)
+        saved = app_module.store.get_audit(first.json()['audit_id'])['dataset']
+        self.assertEqual(saved.get('发票.采购税额净额'), 13)
+        self.assertNotIn('原票.xml', saved.source_of('发票.采购税额净额'))
+        for document, original in zip(item['documents'], (raw, invoice_xml())):
+            download = self.client.get(url + '/originals/' + document['original_id'])
+            self.assertEqual(download.status_code, 200, download.text)
+            self.assertEqual(download.content, original)
+        # Reintroducing the conflict cannot overwrite the earlier frozen result.
+        current = self.client.get(url).json()
+        response = self.client.post(url + '/analyze', json={
+            'expected_revision': current['revision'], 'selections': {xml_id: {'purpose': 'current'}}})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertFalse(response.json()['analysis']['can_confirm'])
+        repeated = confirm(self.client, item)
+        self.assertEqual(repeated.status_code, 200, repeated.text)
+        self.assertEqual(repeated.json()['audit_id'], first.json()['audit_id'])
+
+    def test_failed_state_and_transfer_cannot_create_audit(self):
+        for raw in (
+            invoice_xml().replace(b'</xbrli:xbrl>', '<einv:InvoiceStatus>正常</einv:InvoiceStatus><einv:IsRedInvoice>true</einv:IsRedInvoice></xbrli:xbrl>'.encode()),
+            invoice_xml(transferred='true', transferred_tax=''),
+        ):
+            response = self.client.post('/api/enterprise/materials', files={'files': ('异常.xml', raw)})
+            self.assertEqual(response.status_code, 200, response.text)
+            item = response.json()
+            self.assertFalse(item['analysis']['can_confirm'])
+            self.assertEqual(confirm(self.client, item).status_code, 409)
+        self.assertEqual(app_module.store.list_audits(self.admin), [])
+
+    def test_queued_duplicate_is_blocked_after_processing(self):
+        with patch.dict('os.environ', {'TAXPEARLS_MATERIAL_QUEUE_ENABLED': '1'}):
+            response = self.client.post('/api/enterprise/materials', files=[
+                ('files', ('a.xml', invoice_xml())), ('files', ('b.xml', invoice_xml()))],
+                data={'company': json.dumps({'name': COMPANY['name'], 'taxpayer_id': COMPANY['taxpayer_id'],
+                    'period_start': '2026-01-01', 'period_end': '2026-01-31'})})
+            self.assertEqual(response.status_code, 202, response.text)
+            item = response.json()
+            self.assertTrue(app_module.app.state.material_worker.run_once())
+            response = self.client.get('/api/enterprise/materials/' + item['id'])
+            self.assertEqual(response.status_code, 200, response.text)
+            item = response.json()
+            self.assertEqual(item['jobs'][0]['state'], 'done')
+            self.assertFalse(item['analysis']['can_confirm'])
+            self.assertIn('跨文件重复', ' '.join(n['message'] for n in item['analysis']['feedback']['blocking']))
+            self.assertEqual(confirm(self.client, item).status_code, 409)
+
+    def test_old_accepted_red_flush_state_is_rejected_on_source_rescan(self):
+        raw = invoice_workbook([['OLD-RED', '2026-01-02', '销项', 100, 13, 113, '已红冲']])
+        # Simulate the former substring classifier; retain the actual bad source.
+        with patch('src.loader._invoice_status', return_value='红字'):
+            response = self.client.post('/api/enterprise/materials', files={'files': ('旧蓝票.xlsx', raw)})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        view = material_batches.read(app_module.store, self.admin, item['id'])
+        payload = deepcopy(view['versions'][-1]['payload'])
+        payload['documents'][0].pop('invoice_parser_version')
+        payload['analysis']['can_confirm'] = True
+        revision = material_batches.append_revision(app_module.store, self.admin, item['id'], item['revision'], 'edit', payload)
+        url = '/api/enterprise/materials/' + item['id']
+        response = self.client.post(url + '/analyze', json={'expected_revision': revision})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        self.assertIn('独立红票', item['documents'][0]['error'])
+        self.assertFalse(item['analysis']['can_confirm'])
+        self.assertEqual(confirm(self.client, item).status_code, 409)
+
+    def test_old_invoice_cache_requires_original_rescan_preserving_frozen_result(self):
+        raw = invoice_workbook([['CACHE', '2026-01-02', '销项', 100, 13, 113, '正常']])
+        response = self.client.post('/api/enterprise/materials', files={'files': ('留存发票.xlsx', raw)})
+        self.assertEqual(response.status_code, 200, response.text)
+        item = response.json()
+        original_revision = item['revision']
+        first = confirm(self.client, item)
+        self.assertEqual(first.status_code, 200, first.text)
+        url = '/api/enterprise/materials/' + item['id']
+        current = self.client.get(url).json()
+        view = material_batches.read(app_module.store, self.admin, item['id'])
+        payload = deepcopy(next(v['payload'] for v in reversed(view['versions']) if v['kind'] in {'analysis', 'edit'}))
+        doc = payload['documents'][0]
+        fid = doc['id']
+        doc.pop('invoice_parser_version')
+        doc['invoices'][0]['amount'] = '999'
+        payload['analysis']['can_confirm'] = True
+        revision = material_batches.append_revision(app_module.store, self.admin, item['id'], current['revision'], 'edit', payload)
+        old_versions = deepcopy(material_batches.read(app_module.store, self.admin, item['id'])['versions'])
+        projected = self.client.get(url).json()
+        self.assertTrue(projected['documents'][0]['invoice_reanalysis_required'])
+        self.assertFalse(projected['analysis']['can_confirm'])
+        self.assertIn('invoice_reanalysis_required', [n['code'] for n in projected['analysis']['feedback']['blocking']])
+        self.assertEqual(confirm(self.client, projected).status_code, 409)
+        refused = self.client.post(url + '/analyze', json={
+            'expected_revision': revision, 'selections': {fid: {'evidence_reviews': ['old']}}})
+        self.assertEqual(refused.status_code, 422, refused.text)
+        with patch('src.ai_extraction.call_model', side_effect=AssertionError('invoice rescan called model')) as transport:
+            response = self.client.post(url + '/analyze', json={'expected_revision': revision})
+            self.assertEqual(response.status_code, 200, response.text)
+            transport.assert_not_called()
+        fresh = response.json()
+        self.assertFalse(fresh['documents'][0]['invoice_reanalysis_required'])
+        self.assertEqual(fresh['documents'][0]['invoices'][0]['amount'], '100')
+        self.assertTrue(fresh['analysis']['can_confirm'], fresh['analysis'])
+        self.assertEqual(fresh['selections'][fid]['evidence_reviews'], [])
+        versions = material_batches.read(app_module.store, self.admin, item['id'])['versions']
+        self.assertEqual(versions[:len(old_versions)], old_versions)
+        repeated = self.client.post(url + '/confirm', json={'expected_revision': original_revision})
+        self.assertEqual(repeated.status_code, 200, repeated.text)
+        self.assertEqual(repeated.json()['audit_id'], first.json()['audit_id'])
+        original = self.client.get(url + '/originals/' + fresh['documents'][0]['original_id'])
+        self.assertEqual(original.content, raw)
 
     def test_xml_and_source_excel_commit_with_persisted_evidence(self):
         sales = invoice_workbook([
