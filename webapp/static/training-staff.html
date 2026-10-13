@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>考证内容管理 · 税海拾珠</title>
+<style>
+  :root { --line: rgba(0,0,0,.15); --muted: #666; --accent: #0f6e56; --danger: #a32d2d; --warn-bg: #faeeda; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+         background: #f5f6f4; color: #222; line-height: 1.6; }
+  header { background: #fff; border-bottom: 1px solid var(--line); padding: 14px 20px;
+           display: flex; justify-content: space-between; align-items: center; }
+  header h1 { font-size: 16px; font-weight: 500; margin: 0; }
+  main { max-width: 920px; margin: 0 auto; padding: 20px 16px 64px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 12px;
+          padding: 18px 20px; margin-bottom: 18px; }
+  h2 { font-size: 15px; font-weight: 500; margin: 0 0 12px; display: flex; align-items: center; gap: 10px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input, select, textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+                  border-radius: 8px; font-size: 14px; background: #fff; font-family: inherit; }
+  textarea { resize: vertical; min-height: 52px; }
+  button { padding: 8px 16px; border: 1px solid #bac8d4; border-radius: 8px;
+           background: linear-gradient(#fff, #e8eef3); color: #314d65; font-family: inherit;
+           font-size: 14px; cursor: pointer; box-shadow: inset 0 1px 0 #fff, 0 2px 3px #32485b14; }
+  button.primary { background: linear-gradient(#fff, #eef3f7); border-color: #c4d0da; color: #314d65; }
+  button:hover:not(:disabled) { filter: brightness(1.02); }
+  button:active:not(:disabled) { box-shadow: inset 0 1px 2px #32485b26; }
+  button:focus-visible { outline: 2px solid #688aa6; outline-offset: 3px; }
+  button.danger { color: var(--danger); border-color: var(--danger); }
+  button.small { padding: 4px 10px; font-size: 12px; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .row { display: flex; gap: 10px; align-items: end; flex-wrap: wrap; }
+  .row > div { flex: 1; min-width: 130px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 18px; flex-wrap: wrap; }
+  .toolbar select { flex: 1; min-width: 260px; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 999px;
+           font-size: 12px; background: #e1f5ee; color: #0f6e56; }
+  .badge.gray { background: #eee; color: #555; }
+  .badge.warn { background: var(--warn-bg); color: #854f0b; }
+  .badge.bad { background: #fcebeb; color: var(--danger); }
+  .muted { color: var(--muted); font-size: 13px; }
+  .chip { display: inline-block; border: 1px solid var(--line); border-radius: 999px;
+          padding: 1px 10px; font-size: 12px; margin-right: 6px; }
+  .item { border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; margin-bottom: 8px; }
+  .item-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+  .inline-form { border-top: 1px dashed var(--line); margin-top: 10px; padding-top: 10px; }
+  .error { color: var(--danger); font-size: 13px; min-height: 18px; margin-top: 8px; }
+  .ok { color: var(--accent); font-size: 13px; min-height: 18px; margin-top: 8px; }
+  .mark { font-size: 13px; border-left: 3px solid #9fe1cb; padding-left: 8px; margin: 6px 0; }
+  .kp-children { margin-left: 22px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>税海拾珠 · 考证内容管理</h1>
+  <div id="who" class="muted"></div>
+</header>
+<main>
+  <section id="login-view" class="card" style="max-width:420px;margin:40px auto;">
+    <h2>教师 / 管理员登录</h2>
+    <label for="username">用户名</label>
+    <input id="username" autocomplete="username">
+    <label for="password">密码</label>
+    <input id="password" type="password" autocomplete="current-password">
+    <label style="display:flex;align-items:center;gap:6px;margin-top:12px;">
+      <input type="checkbox" id="remember" style="width:auto;"> 保持登录 30 天
+    </label>
+    <div class="row" style="margin-top:14px;">
+      <button class="primary" id="login-btn" style="flex:1;">登录</button>
+    </div>
+    <div class="error" id="login-error"></div>
+  </section>
+
+  <section id="app-view" hidden>
+    <div class="toolbar">
+      <select id="cert-select"></select>
+      <button class="primary" id="new-cert-btn">＋ 新建证书</button>
+    </div>
+
+    <div id="pass-form" class="card" hidden>
+      <h2>修改我的密码</h2>
+      <div class="row">
+        <div><label>当前密码</label><input id="pw-old" type="password" autocomplete="current-password"></div>
+        <div><label>新密码（至少 8 位）</label><input id="pw-new" type="password" autocomplete="new-password"></div>
+        <div><label>再输一遍新密码</label><input id="pw-new2" type="password" autocomplete="new-password"></div>
+      </div>
+      <div class="actions"><button class="primary small" data-act="change-pass">确认修改</button>
+        <button class="small" data-act="hide-pass-form">收起</button></div>
+      <p class="muted">修改成功后所有登录会话失效，需用新密码重新登录（包括本页）。</p>
+    </div>
+
+    <div id="new-cert-form" class="card" hidden>
+      <h2>新建证书</h2>
+      <div class="row">
+        <div><label>证书编码（唯一）</label><input id="nc-code" placeholder="如 cjkj"></div>
+        <div><label>证书名称</label><input id="nc-name" placeholder="如 初级会计职称"></div>
+      </div>
+      <label>科目清单（逗号分隔）</label>
+      <input id="nc-subjects" placeholder="初级会计实务, 经济法基础">
+      <label>说明（报考条件、考试形式等）</label>
+      <textarea id="nc-description"></textarea>
+      <label>内容依据</label>
+      <input id="nc-source" placeholder="如：人社部考试公告">
+      <div class="actions">
+        <button class="primary" data-act="create-cert">创建并上架</button>
+        <button data-act="cancel-new-cert">取消</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>证书信息 <span id="cert-state"></span></h2>
+      <div id="cert-form" hidden>
+        <div class="row">
+          <div><label>证书名称</label><input id="cf-name"></div>
+          <div><label>编码</label><input id="cf-code" disabled></div>
+        </div>
+        <label>科目清单（逗号分隔）</label>
+        <input id="cf-subjects">
+        <label>说明</label>
+        <textarea id="cf-description"></textarea>
+        <label>内容依据</label>
+        <input id="cf-source">
+        <div class="actions">
+          <button class="primary small" data-act="save-cert">保存修改</button>
+          <button class="small" data-act="toggle-active"></button>
+        </div>
+      </div>
+      <p class="muted" id="cert-empty" hidden>请先选择或新建证书。</p>
+    </div>
+
+    <div class="card">
+      <h2>考试日期 <button class="small" data-act="show-date-form">＋ 录入日期</button></h2>
+      <div id="date-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>类型</label>
+            <select id="df-type"><option value="official">官方考试日</option><option value="expected">预计考试日</option></select></div>
+          <div><label>日期</label><input id="df-date" type="date"></div>
+          <div><label>批次标识（选填）</label><input id="df-label" placeholder="如 2027年第一批"></div>
+        </div>
+        <div class="actions"><button class="primary small" data-act="create-date">录入</button></div>
+      </div>
+      <div id="dates"></div>
+    </div>
+
+    <div class="card">
+      <h2>内容版本（题源治理） <button class="small" data-act="show-version-form">＋ 发布新版本</button></h2>
+      <p class="muted" style="margin-top:-6px;">当前题源为规则仿真题；真题/回忆题/模拟题类型已预留，须获授权后才能启用，生成题不冒充真题。同一证书仅一个启用版本，发布新版本会自动退役旧版本，旧作答仍按当时版本回溯。</p>
+      <div id="version-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>版本标签（证书内唯一）</label><input id="vf-label" placeholder="如 2026 考纲仿真题 v1"></div>
+          <div><label>适用年度</label><input id="vf-year" type="number" placeholder="留空=当前年度"></div>
+        </div>
+        <div class="row">
+          <div><label>题源类型</label>
+            <select id="vf-type">
+              <option value="simulated">仿真题（当前唯一开放）</option>
+              <option value="real">真题（暂缓，须授权）</option>
+              <option value="recall">回忆题（暂缓，须授权）</option>
+              <option value="mock">模拟题（暂缓，须授权）</option>
+            </select></div>
+          <div><label>依据/授权说明（必填）</label><input id="vf-source" placeholder="如：依据 2026 版考纲整理的规则仿真题"></div>
+        </div>
+        <div class="actions"><button class="primary small" data-act="create-version">发布并启用</button></div>
+      </div>
+      <div id="versions"></div>
+    </div>
+
+    <div class="card">
+      <h2>考纲知识点
+        <button class="small" data-act="show-kp-form">＋ 新增知识点</button>
+        <button class="small" data-act="show-import-form">⇪ 批量导入</button>
+      </h2>
+      <div id="import-form" class="inline-form" hidden>
+        <p class="muted" style="margin-top:0;">导入人工核对过的考纲清单（工具只导入、不生成内容）。支持两种格式：<b>清单</b>——大纲 PDF 预整理清单的 Markdown（`### 章节点：`编码` 名称` / `#### 节点：…`）；<b>CSV</b>——表头 code,parent_code,name,subject,description,source_ref,outline_version。按编码幂等导入：已存在的行只更新解析值非空的字段，不改动标注/关联/停用状态。</p>
+        <div class="row">
+          <div><label>格式</label>
+            <select id="if-format">
+              <option value="checklist">清单 Markdown</option>
+              <option value="csv">CSV</option>
+            </select></div>
+          <div><label>默认考纲版本（行内未填时使用）</label><input id="if-version" placeholder="如 2026"></div>
+        </div>
+        <label>导入内容</label>
+        <textarea id="if-text" style="min-height:180px;font-family:ui-monospace,monospace;"></textarea>
+        <div class="actions">
+          <button class="primary small" data-act="preview-import">预览解析</button>
+          <button class="small" data-act="cancel-import">收起</button>
+        </div>
+        <div id="import-result" style="margin-top:12px;"></div>
+      </div>
+      <div id="kp-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>编码（证书内唯一）</label><input id="kf-code" placeholder="如 KP-01"></div>
+          <div><label>名称</label><input id="kf-name"></div>
+          <div><label>科目</label><input id="kf-subject"></div>
+          <div><label>上级知识点</label><select id="kf-parent"></select></div>
+        </div>
+        <div class="row">
+          <div><label>考纲依据（章节/条目）</label><input id="kf-source" placeholder="如 考纲第三章第2节"></div>
+          <div><label>考纲版本</label><input id="kf-version" placeholder="如 2027版"></div>
+        </div>
+        <div class="actions"><button class="primary small" data-act="create-kp">创建</button></div>
+      </div>
+      <div id="kps"></div>
+    </div>
+
+    <div class="card">
+      <h2>内容运营统计（按三类标注口径） <button class="small" data-act="refresh-mark-stats">刷新</button></h2>
+      <p class="muted" style="margin-top:-6px;">标注是内容层事实，统计范围=证书×标注依据版本；只统计教师维护的标注与题目关联，不含学生个人作答数据。个人易错情况请在学生作答统计中查看，不反向写入公共标注。</p>
+      <div id="mark-stats"></div>
+    </div>
+    <div class="card">
+      <h2>学生管理（考证线名册）
+        <button class="small" data-act="show-student-form">＋ 添加学生</button>
+        <button class="small" data-act="show-student-import">⇪ 批量导入</button>
+        <button class="small" data-act="refresh-students">刷新</button>
+      </h2>
+      <p class="muted" style="margin-top:-6px;">学生以「学号 + 密码」登录学生页；停用后立即无法登录且会话失效。批量导入每行一条：学号,姓名,班级（班级可省略，用默认班级）。重置密码会立即踢下线。</p>
+      <div id="student-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>院校（必填）</label><input id="sf-college" value="演示财经职业学院"></div>
+          <div><label>学号</label><input id="sf-no"></div>
+          <div><label>姓名</label><input id="sf-name"></div>
+          <div><label>班级（选填）</label><input id="sf-class"></div>
+        </div>
+        <div class="row">
+          <div><label>初始密码（留空 = Tp#学号2026）</label><input id="sf-pass"></div>
+          <div><label>邮箱（选填）</label><input id="sf-email"></div>
+        </div>
+        <div class="actions"><button class="primary small" data-act="create-student">添加学生</button></div>
+      </div>
+      <div id="student-import-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>院校（必填）</label><input id="si-college" value="演示财经职业学院"></div>
+          <div><label>默认班级（选填，行内可覆盖）</label><input id="si-class"></div>
+          <div><label>统一初始密码（至少 8 位）</label><input id="si-pass" placeholder="如 Class2026!"></div>
+        </div>
+        <label>名单（每行：学号,姓名,班级可选；空行自动忽略）</label>
+        <textarea id="si-text" style="min-height:140px;font-family:ui-monospace,monospace;" placeholder="2026001,张三,会计2601&#10;2026002,李四"></textarea>
+        <div class="actions"><button class="primary small" data-act="import-students">开始导入</button></div>
+        <div id="student-import-result"></div>
+      </div>
+      <div id="students" class="muted">加载中…</div>
+    </div>
+    <div class="card">
+      <h2>班级与教师名册
+        <button class="small" data-act="refresh-roster">刷新</button>
+        <button class="small" id="teacher-import-btn" data-act="show-teacher-import" hidden>⇪ 教师批量导入（管理员）</button>
+      </h2>
+      <p class="muted" style="margin-top:-6px;">班级为名册「班级」字段的聚合。学期初整建制迁移：把一个班级的全部在读学生整体改入新班级，逐生写入归属追溯（可审计、不改写历史）；停用学生保持原班级。教师批量导入仅限管理员，只建教师角色账号，每行：登录名,姓名,邮箱可选（空行忽略，重复/错误行带原因反馈）。</p>
+      <div id="class-migrate-form" class="inline-form">
+        <div class="row">
+          <div><label>院校（必填）</label><input id="cm-college" value="演示财经职业学院"></div>
+          <div><label>原班级</label><input id="cm-from" list="class-names" placeholder="如 会计2601"></div>
+          <datalist id="class-names"></datalist>
+          <div><label>新班级</label><input id="cm-to" placeholder="如 会计2602"></div>
+        </div>
+        <div class="actions"><button class="primary small" data-act="migrate-class">整建制迁移</button></div>
+        <div id="class-migrate-result"></div>
+      </div>
+      <div id="teacher-import-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>院校（必填）</label><input id="ti-college" value="演示财经职业学院"></div>
+          <div><label>统一初始密码（至少 8 位）</label><input id="ti-pass" placeholder="如 Staff2026!"></div>
+        </div>
+        <label>教师名单（每行：登录名,姓名,邮箱可选）</label>
+        <textarea id="ti-text" style="min-height:120px;font-family:ui-monospace,monospace;" placeholder="teacher01,王老师&#10;teacher02,李老师,t@demo.edu"></textarea>
+        <div class="actions"><button class="primary small" data-act="import-teachers">开始导入</button></div>
+        <div id="teacher-import-result"></div>
+      </div>
+      <div id="classes" class="muted">加载中…</div>
+      <h3 style="margin-top:16px;">班级归属追溯（最近变更）</h3>
+      <div id="class-history" class="muted"></div>
+    </div>
+    <div class="error" id="app-error"></div>
+  </section>
+</main>
+<script src="/training-staff.js"></script>
+</body>
+</html>

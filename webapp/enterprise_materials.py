@@ -22,6 +22,7 @@ from src.ai_extraction import AIExtractor, ExtractionError
 from src.input_errors import InputError
 from src.models import Rule
 from src.settings import AISettings
+from webapp import ai_keys
 from src.snapshots import deserialize_dataset
 from webapp import enterprise_analysis, enterprise_scope, material_batches as batches, material_operations
 from webapp.access import AccessDenied
@@ -30,6 +31,8 @@ from webapp.uploads import bounded_stream, multipart
 
 
 def _latest(view):
+    if view['versions'] and view['versions'][-1]['payload'].get('core_task'):
+        raise AccessDenied('基础资料处理任务停在规则核验之前，请从基础资料入口继续。', 409)
     records = [v for v in view['versions'] if v['kind'] in {'analysis', 'edit'}]
     if not records:
         raise AccessDenied('材料尚未完成分析。', 409)
@@ -117,7 +120,9 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         return user
 
     def project(view, user):
-        settings = AISettings.from_env()
+        if view['versions'] and view['versions'][-1]['payload'].get('core_task'):
+            raise AccessDenied('请从基础资料准备入口读取本任务。', 409)
+        settings = ai_keys.apply(AISettings.from_env(), get_store(), usage='extraction')
         ai = {**settings.public_status(), 'max_pages': settings.max_pages,
               'queue_enabled': material_jobs.QueueSettings.from_env().enabled}
         jobs = view.get('jobs', [])
@@ -189,7 +194,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
             raise InputError('上传文件名不能包含目录路径。')
         base_rules = base_rules or engine.load_rules(rules_dir)
         keys = {key for rule in base_rules for key in rule.inputs}
-        settings = settings or AISettings.from_env()
+        settings = settings or ai_keys.apply(AISettings.from_env(), get_store(), usage='extraction')
         if mode == 'ai' and settings.problem():
             raise InputError(settings.problem())
         if extractor is None and mode != 'local' and not settings.problem():
@@ -217,10 +222,12 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         return project(batches.read(get_store(), user, item['id']), user)
 
     def process_job(job, snapshot, previous, documents, uploads):
-        configured = AISettings.from_env()
+        configured = ai_keys.apply(AISettings.from_env(), get_store(), usage='extraction')
         frozen = {key: value for key, value in snapshot['settings'].items()
                   if key not in {'api_key', 'backup_api_keys'}}
-        if snapshot['mode'] != 'local' and frozen['enabled'] and (configured.problem() or configured.base_url != frozen['base_url']):
+        frozen_settings = AISettings(**frozen, api_key=configured.api_key)
+        if snapshot['mode'] != 'local' and frozen['enabled'] and (configured.problem() or
+                not ai_keys.same_profile(configured, frozen_settings)):
             raise InputError('模型服务配置已变化，请检查后重试。')
         settings = AISettings(**frozen, api_key=configured.api_key,
                               backup_api_keys=configured.backup_api_keys)
@@ -352,7 +359,8 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
 
     @app.get('/api/enterprise/materials')
     def list_batches(session: str | None = Cookie(default=None, alias='taxpearls_session')):
-        return batches.listing(get_store(), actor(session))
+        user = actor(session)
+        return batches.listing(get_store(), user, workflow='legacy')
 
     @app.get('/api/enterprise/client-profile/{client_id}')
     def client_profile(client_id: str, session: str | None = Cookie(default=None, alias='taxpearls_session')):

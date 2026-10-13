@@ -429,6 +429,7 @@ async function main() {
   const profileA=controller.selectClient("client-a"),responseA=calls.shift();
   assert.equal($("uploadScope").disabled,true);
   const profileB=controller.selectClient("client-b"),responseB=calls.shift();
+  assert.equal($("uploadCompanyMode").value,"client-b");
   responseB.resolve({company:{name:"档案B",taxpayer_id:"TAX-B",region:"广东省",period_start:"2025-01-01"},analysis_count:1,history:{period:"2025"}});
   await profileB;
   responseA.resolve({company:{name:"旧档案A",taxpayer_id:"TAX-A"},analysis_count:0});await profileA;

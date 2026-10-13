@@ -222,7 +222,9 @@ class AIExtractor:
                 'vision': self.settings.vision,
                 'review_scope': {'period': review_period or doc.get('company', {}).get('period') or None},
                 'request_options': {'temperature': 0, 'max_tokens': self.settings.max_tokens,
-                    'json_mode': self.settings.json_mode, 'disable_thinking': self.settings.disable_thinking},
+                    'json_mode': self.settings.json_mode, 'disable_thinking': self.settings.disable_thinking,
+                    'reasoning_effort': self.settings.reasoning_effort,
+                    'reasoning_protocol': self.settings.reasoning_protocol},
                 'started_at': provenance.now(), 'attempts': []}
         if local is not None:
             meta['local'] = local

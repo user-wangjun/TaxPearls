@@ -17,6 +17,7 @@ from src import engine, materials
 from src.ai_extraction import AIExtractor
 from src.settings import AISettings
 from webapp.access import AccessDenied
+from webapp import ai_keys
 
 
 def register(app, get_user, allow, save_audit, rules_dir, audit_for_user):
@@ -44,7 +45,7 @@ def register(app, get_user, allow, save_audit, rules_dir, audit_for_user):
 
     def ai_settings():
         try:
-            return AISettings.from_env()
+            return ai_keys.apply(AISettings.from_env(), usage='extraction')
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
 
@@ -70,6 +71,12 @@ def register(app, get_user, allow, save_audit, rules_dir, audit_for_user):
 
     def run_ai(job_id, uploads, catalog, user, settings):
         try:
+            current = ai_keys.apply(AISettings.from_env(), usage='extraction')
+            if not ai_keys.same_profile(settings, current):
+                raise materials.InputError('模型服务配置已变化，请检查后重新授权提取。')
+            settings = current
+            if settings.problem():
+                raise materials.InputError(settings.problem())
             docs = materials.preview(uploads, set(catalog), AIExtractor(settings, catalog))
             result = save_preview(docs, catalog, user)
             with lock:

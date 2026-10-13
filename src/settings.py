@@ -44,6 +44,8 @@ class AISettings:
     max_pages: int = 12
     max_calls: int = 20
     backup_api_keys: tuple[str, ...] = field(default=(), repr=False)
+    reasoning_effort: str = ''
+    reasoning_protocol: str = ''
 
     @classmethod
     def from_env(cls):
@@ -73,6 +75,11 @@ class AISettings:
         return self.model
 
     def problem(self):
+        from src.ai_reasoning import MODES
+        if self.reasoning_effort and self.reasoning_effort not in MODES:
+            return '思考程度配置无效。'
+        if self.reasoning_effort not in ('', 'default') and self.reasoning_protocol not in ('deepseek', 'openrouter'):
+            return '思考程度缺少已确认的上游协议。'
         if not self.enabled:
             return "AI 提取未启用；当前使用本地解析。"
         if not self.api_key or not self.base_url or not self.model:

@@ -2,13 +2,37 @@
  * compression, Fresnel sky reflections and crest foam share one live surface. */
 import * as THREE from './vendor/three.module.mjs';
 
-export function mountOcean(canvas) {
+export async function mountOcean(canvas,{holdOpening=false}={}) {
+// Yield between CPU preparation and GPU submissions so the HTML form stays
+// interactive. A task boundary also works when requestAnimationFrame is paused.
+const yieldTask=()=>new Promise(resolve=>setTimeout(resolve,0));
+const startupStart=performance.now();
+await yieldTask();
 const reduced=matchMedia('(prefers-reduced-motion: reduce)');
-const state={time:0,frames:0,paused:reduced.matches,wave:1,speed:1,glow:1,ready:false,lost:false,fps:0,active:true};
+const state={time:0,frames:0,paused:reduced.matches,wave:1,speed:1,glow:1,ready:false,lost:false,fps:0,active:true,skyReady:false,openingHeld:holdOpening,startup:{}};
+const skyWaiters=new Set();
+function whenSkyReady(){
+ if(state.lost)return Promise.reject(new Error('Ocean context unavailable'));
+ if(state.skyReady)return Promise.resolve();
+ return new Promise((resolve,reject)=>skyWaiters.add({resolve,reject}));
+}
 let renderer;try{renderer=new THREE.WebGLRenderer({canvas,antialias:true,powerPreference:'high-performance'});}catch(e){throw e;}
-renderer.setPixelRatio(Math.min(devicePixelRatio,1.25,Math.sqrt(1500000/(innerWidth*innerHeight))));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.NoToneMapping;
-const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(44,innerWidth/innerHeight,.1,500);
+await yieldTask();
+// Render the exact reference frame used to capture each opening poster.
+// CSS applies the same center/cover crop to the poster and this canvas; the
+// camera and floating records therefore never re-layout during the handoff.
+const referenceView={width:1920,height:1080};
+function selectReferenceView(){const portrait=innerWidth/innerHeight<=.75;referenceView.width=portrait?390:1920;referenceView.height=portrait?844:1080;}
+selectReferenceView();
+renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.NoToneMapping;
+const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(44,referenceView.width/referenceView.height,.1,500);
 camera.position.set(0,3.4,12.8);camera.lookAt(0,4.65,-6.5);
+// Keep the physical sun fixed at the poster's 16:9 reference view. Anchoring
+// it to screen coordinates at every aspect ratio changes atmospheric color
+// and water illumination when the login panel opens in a narrow viewport.
+const lightReferenceCamera=camera.clone();lightReferenceCamera.aspect=16/9;
+lightReferenceCamera.updateProjectionMatrix();lightReferenceCamera.updateMatrixWorld();
+const fixedSunDirection=new THREE.Vector3(.54,-.04,1.).unproject(lightReferenceCamera).sub(lightReferenceCamera.position).normalize();
 let waveSeed=0x73d29;const waveRandom=()=>{waveSeed=(Math.imul(waveSeed,1664525)+1013904223)>>>0;return waveSeed/4294967296;};
 const swellData=[],swellMotion=[];
 for(let i=0;i<48;i++){
@@ -121,7 +145,9 @@ const noiseVoxels=new Uint8Array(64*64*64*2),features=new Float32Array(8*8*8*3);
 let featureSeed=0x4f1bbcd9;
 for(let i=0;i<features.length;i++){featureSeed^=featureSeed<<13;featureSeed^=featureSeed>>>17;featureSeed^=featureSeed<<5;features[i]=(featureSeed>>>0)/4294967296;}
 let noiseSeed=0x9e3779b9;
-for(let z=0;z<64;z++)for(let y=0;y<64;y++)for(let x=0;x<64;x++){
+const noiseStart=performance.now();
+for(let z=0;z<64;z++){
+ for(let y=0;y<64;y++)for(let x=0;x<64;x++){
  const index=((z*64+y)*64+x)*2;noiseSeed^=noiseSeed<<13;noiseSeed^=noiseSeed>>>17;noiseSeed^=noiseSeed<<5;noiseVoxels[index]=noiseSeed>>>24;
  const cx=x>>3,cy=y>>3,cz=z>>3,fx=x/8-cx,fy=y/8-cy,fz=z/8-cz;let distance=3.;
  for(let dz=-1;dz<=1;dz++)for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
@@ -129,14 +155,20 @@ for(let z=0;z<64;z++)for(let y=0;y<64;y++)for(let x=0;x<64;x++){
   const px=dx+features[point]-fx,py=dy+features[point+1]-fy,pz=dz+features[point+2]-fz;
   distance=Math.min(distance,px*px+py*py+pz*pz);
  }noiseVoxels[index+1]=Math.round(Math.max(0,1.-Math.sqrt(distance))*255);
+ }
+ if(z%4===3)await yieldTask();
 }
+state.startup.noiseMs=performance.now()-noiseStart;
 const cloudNoise=new THREE.Data3DTexture(noiseVoxels,64,64,64);cloudNoise.format=THREE.RGFormat;
 cloudNoise.minFilter=cloudNoise.magFilter=THREE.LinearFilter;cloudNoise.wrapS=cloudNoise.wrapT=cloudNoise.wrapR=THREE.RepeatWrapping;cloudNoise.unpackAlignment=1;cloudNoise.needsUpdate=true;
 // Quadratic elevation mapping allocates more pixels to the visible horizon.
 const skyWidth=4096,skyHeight=1024,skyStrip=16;
 const skyTarget=new THREE.WebGLRenderTarget(skyWidth,skyHeight,{type:THREE.HalfFloatType,depthBuffer:false}),skyPending=skyTarget.clone();
-for(const target of [skyTarget,skyPending]){target.texture.wrapS=THREE.RepeatWrapping;target.texture.minFilter=THREE.LinearMipmapLinearFilter;target.texture.generateMipmaps=true;}
-shared.uSky.value=skyTarget.texture;
+// The first panorama uses the same cloud shader at a smaller resolution.
+// Full-resolution rows are built behind it, then swapped only when complete.
+const skyBootstrap=new THREE.WebGLRenderTarget(512,128,{type:THREE.HalfFloatType,depthBuffer:false});
+for(const target of [skyTarget,skyPending,skyBootstrap]){target.texture.wrapS=THREE.RepeatWrapping;target.texture.minFilter=THREE.LinearMipmapLinearFilter;target.texture.generateMipmaps=true;}
+shared.uSky.value=skyBootstrap.texture;
 // Cloud volume/weather/cirrus port from the user-selected 8025 preview.
 // Atmospheric radiometry and exposure now use the common solar model.
 // Reference sky with a thinner distant bank, continuous wind and natural sun occlusion.
@@ -294,17 +326,24 @@ ${solarLightingCode}
       vec3 c=mix(sky,cloud+sky*transmission,smoothstep(.018,.06,y));
       gl_FragColor=vec4(c,mix(1.,transmission,smoothstep(.018,.06,y))*exp(-wisps*1.8));
     }`});
-let skyCacheTime=NaN,skyCacheSun=new THREE.Vector3(),skyCacheGlow=NaN,skyRows=skyHeight,skyFront=skyTarget,skyBack=skyPending,skyBuildTime=0;
+let skyCacheTime=NaN,skyCacheSun=new THREE.Vector3(),skyCacheGlow=NaN,skyRows=skyHeight,skyFront=skyBootstrap,skyBack=skyPending,skyBuildTime=0;
 function updateSkyCache(){
  const changed=!skyCacheSun.equals(shared.uSunDirection.value)||skyCacheGlow!==state.glow;
- if(!Number.isFinite(skyCacheTime)||changed){updateSkyIrradiance();cacheQuad.material=skyCacheMaterial;renderer.setRenderTarget(skyFront);renderer.render(cacheScene,cacheCamera);shared.uSky.value=skyFront.texture;skyCacheTime=state.time;shared.uSkyStamp.value=state.time;skyCacheSun.copy(shared.uSunDirection.value);skyCacheGlow=state.glow;skyRows=skyHeight;return;}
+ if(!Number.isFinite(skyCacheTime)||changed){
+  // A resize, seek or sun change also starts with a bounded preview pass.
+  // Never submit the entire 4M-pixel volume in one frame.
+  updateSkyIrradiance();skyBootstrap.setSize(512,128);skyFront=skyBootstrap;
+  cacheQuad.material=skyCacheMaterial;renderer.setRenderTarget(skyFront);renderer.render(cacheScene,cacheCamera);
+  shared.uSky.value=skyFront.texture;skyCacheTime=state.time;shared.uSkyStamp.value=state.time;
+  skyCacheSun.copy(shared.uSunDirection.value);skyCacheGlow=state.glow;skyRows=0;skyBuildTime=state.time;state.skyReady=false;skyBack.texture.generateMipmaps=false;return;
+ }
  if(skyRows>=skyHeight){if(Math.abs(state.time-skyCacheTime)<.7)return;skyRows=0;skyBuildTime=state.time;skyBack.texture.generateMipmaps=false;}
  skyBack.texture.generateMipmaps=skyRows+skyStrip>=skyHeight;
  // RenderTarget scissors are framebuffer pixels. renderer.setScissor would
  // multiply by the display pixel ratio, leaving skipped rows at fractional DPR.
  cacheQuad.material=skyCacheMaterial;skyBack.scissor.set(0,skyRows,skyWidth,Math.min(skyStrip,skyHeight-skyRows));skyBack.scissorTest=true;renderer.setRenderTarget(skyBack);
  const current=shared.uTime.value;shared.uTime.value=skyBuildTime;renderer.render(cacheScene,cacheCamera);shared.uTime.value=current;skyBack.scissorTest=false;skyRows+=skyStrip;
- if(skyRows>=skyHeight){[skyFront,skyBack]=[skyBack,skyFront];shared.uSky.value=skyFront.texture;skyCacheTime=skyBuildTime;shared.uSkyStamp.value=skyBuildTime;}
+ if(skyRows>=skyHeight){const oldFront=skyFront;skyFront=skyBack;skyBack=oldFront===skyBootstrap?(skyFront===skyTarget?skyPending:skyTarget):oldFront;shared.uSky.value=skyFront.texture;skyCacheTime=skyBuildTime;shared.uSkyStamp.value=skyBuildTime;state.skyReady=true;if(state.startup.skyReadyMs===undefined)state.startup.skyReadyMs=performance.now()-startupStart;for(const waiter of skyWaiters)waiter.resolve();skyWaiters.clear();}
 }
 const skyCode=`uniform sampler2D uSky;uniform vec3 uSunDirection;uniform float uSkyStamp;
 vec4 skySample(vec3 d){
@@ -337,6 +376,7 @@ fragmentShader:`uniform float uTime,uGlow;uniform mat4 uInvProjection,uCameraWor
 // A projected grid keeps triangle sizes small in the actual view. The former
 // world-space grid stretched across distant glints and produced visible facets.
 const gridX=360,gridY=240;
+await yieldTask();
 const waterGeometry=new THREE.PlaneGeometry(2,2,gridX,gridY),positions=waterGeometry.attributes.position;
 function updateOceanGrid(){
  camera.updateMatrixWorld();const m=camera.matrixWorld.elements,tan=Math.tan(camera.fov*Math.PI/360);
@@ -487,7 +527,8 @@ function makeRecordTexture(kind,serial=kind*17+28){
  }
  const texture=new THREE.CanvasTexture(c);texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=Math.min(16,renderer.capabilities.getMaxAnisotropy());return texture;
 }
-const recordTextures=sourceTypes.map((_,kind)=>makeRecordTexture(kind));
+const recordTextures=[];
+for(let kind=0;kind<sourceTypes.length;kind++){recordTextures.push(makeRecordTexture(kind));await yieldTask();}
 const recordDefinitions=[
  [-3.8,1.0,4.5,0,-.10,.74],[2.7,-.3,4.2,1,.09,.72],[-.2,-7.7,3.6,2,-.06,.58],
  [-7.2,-8,3.4,3,.12,.50],[6.7,-9.5,3.6,0,-.09,.50],[-3.9,-16,3.3,1,.05,.42],
@@ -536,7 +577,7 @@ const materialLanes=[
  {z:-94,ids:[13,14,15,16,17]}
 ];
 function fitRecords(){
- const narrow=innerWidth/innerHeight<1.2,phone=innerWidth<500;
+ const narrow=referenceView.width/referenceView.height<1.2,phone=referenceView.width<500;
  materialLanes.forEach((lane,laneId)=>{
   let maxWidth=0;
   for(const id of lane.ids){const record=recordMeshes[id];record.z=lane.z;record.lane=laneId;
@@ -719,8 +760,8 @@ void main(){vec3 c=sampleColor(vUv)*.227027;c+=sampleColor(vUv+uStep*1.384615)*.
     return clamp(outputMatrix*(a/b),0.,1.);
   }`;
 
-const composite=new THREE.ShaderMaterial({depthTest:false,depthWrite:false,uniforms:{uTexture:{value:target.texture},uBloom:{value:bloomA.texture},uGlow:shared.uGlow,uResolution:shared.uResolution,uGlassRect:{value:new THREE.Vector4()},uGlassRadius:{value:22},uGlassPixelRatio:{value:1}},vertexShader:postVertex,fragmentShader:`
-varying vec2 vUv;uniform sampler2D uTexture,uBloom;uniform float uGlow,uGlassRadius,uGlassPixelRatio;uniform vec2 uResolution;uniform vec4 uGlassRect;
+const composite=new THREE.ShaderMaterial({depthTest:false,depthWrite:false,uniforms:{uTexture:{value:target.texture},uBloom:{value:bloomA.texture},uGlow:shared.uGlow,uResolution:shared.uResolution,uGlassRect:{value:new THREE.Vector4()},uGlassRadius:{value:22},uGlassPixelRatio:{value:1},uGlassStrength:{value:holdOpening?0:1}},vertexShader:postVertex,fragmentShader:`
+varying vec2 vUv;uniform sampler2D uTexture,uBloom;uniform float uGlow,uGlassRadius,uGlassPixelRatio,uGlassStrength;uniform vec2 uResolution;uniform vec4 uGlassRect;
 ${toneCode}
 vec3 sceneRadiance(vec2 uv){uv=clamp(uv,vec2(.001),vec2(.999));return texture2D(uTexture,uv).rgb+texture2D(uBloom,uv).rgb*.003*uGlow;}
 void main(){vec3 color=sceneRadiance(vUv);
@@ -744,7 +785,7 @@ void main(){vec3 color=sceneRadiance(vUv);
    float rim=exp(-depth/(1.7*uGlassPixelRatio));
    float lightFacing=pow(max(dot(normal,normalize(vec2(-.65,.75))),0.),2.);
    vec3 glass=mix(transmitted,reflected,.055+edge*.16)+reflected*rim*lightFacing*.12;
-   color=mix(color,glass,inside);
+   color=mix(color,glass,inside*uGlassStrength);
   }
  }
 
@@ -752,7 +793,45 @@ color*=1.-.06*pow(length((vUv-.5)*vec2(1.1,.8)),1.4);gl_FragColor=vec4(cameraTon
 #include <colorspace_fragment>
 }`});
 const quad=new THREE.Mesh(new THREE.PlaneGeometry(2,2),composite);postScene.add(quad);
-function resize(){renderer.setPixelRatio(Math.min(devicePixelRatio,1.25,Math.sqrt(1500000/(innerWidth*innerHeight))));renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();updateOceanGrid();shared.uSunDirection.value.set(.54,-.04,1.).unproject(camera).sub(camera.position).normalize();shared.uClearDirection.value.copy(shared.uSunDirection.value);fitRecords();const size=renderer.getDrawingBufferSize(new THREE.Vector2());target.setSize(size.x,size.y);shared.uResolution.value.copy(size);composite.uniforms.uGlassPixelRatio.value=size.y/innerHeight;bloomA.setSize(Math.ceil(size.x/4),Math.ceil(size.y/4));bloomB.setSize(Math.ceil(size.x/4),Math.ceil(size.y/4));points.material.uniforms.uPixelRatio.value=renderer.getPixelRatio();for(const item of harvestInstances)item.uniforms.uPixelRatio.value=renderer.getPixelRatio();if(state.ready&&!state.lost&&state.active)draw();}
+async function preparePrograms(){
+ // Compile each actual pass with its own render target and color-space state.
+ // Queue all programs first, then poll KHR_parallel_shader_compile readiness.
+ // Keep polling here so context loss can cancel it without orphaned timers.
+ for(const [material,renderTarget] of [[fieldCacheMaterial,waveTargets[0].target],[sheetPoseMaterial,sheetPoseTarget],[skyCacheMaterial,skyBootstrap]]){
+  cacheQuad.material=material;renderer.setRenderTarget(renderTarget);
+  renderer.compile(cacheScene,cacheCamera);await yieldTask();
+ }
+ renderer.setRenderTarget(target);renderer.compile(scene,camera);await yieldTask();
+ quad.material=blur;renderer.setRenderTarget(bloomA);renderer.compile(postScene,postCamera);await yieldTask();
+ quad.material=composite;renderer.setRenderTarget(null);renderer.compile(postScene,postCamera);await yieldTask();
+ // Three's double-sided transparent materials compile two variants but its
+ // compileAsync checks only the current one. Await both before first use.
+ const programs=renderer.info.programs;
+ while(true){
+  if(renderer.getContext().isContextLost())throw new Error('Ocean context lost during shader preparation');
+  if(programs.every(program=>program.isReady()))break;
+  await new Promise(resolve=>setTimeout(resolve,10));
+ }
+ // Uniform/attribute reflection is also lazy in this bundled Three version.
+ // Spread those driver queries over tasks after compilation has completed.
+ for(const program of programs){program.getUniforms();program.getAttributes();await yieldTask();}
+ // Upload large canvas textures separately instead of during the first draw.
+ for(const texture of [...recordTextures,streamTexture,clueTexture,cloudNoise]){renderer.initTexture(texture);await yieldTask();}
+}
+async function prepareFirstFrame(){
+ updateMaterialFlow();updateWaveCache();await yieldTask();
+ updateSheetPose();await yieldTask();updateSkyCache();await yieldTask();
+ if(state.lost)throw new Error('Ocean context lost during first-frame preparation');
+ draw();
+}
+function coverFrame(){const scale=Math.max(innerWidth/referenceView.width,innerHeight/referenceView.height),width=referenceView.width*scale,height=referenceView.height*scale;return {width,height,x:(innerWidth-width)/2,y:(innerHeight-height)/2};}
+function setGlassPanel(rect,radius=22){
+ const frame=coverFrame(),u=composite.uniforms;
+ if(rect&&rect.width>0&&rect.height>0){u.uGlassRect.value.set((rect.left-frame.x)/frame.width,(innerHeight-rect.bottom-frame.y)/frame.height,rect.width/frame.width,rect.height/frame.height);u.uGlassRadius.value=radius;}
+ else u.uGlassRect.value.set(0,0,0,0);
+ if((state.paused||state.openingHeld)&&state.ready&&!state.lost)draw();
+}
+function resize(){selectReferenceView();renderer.setPixelRatio(Math.min(1,Math.sqrt(1500000/(referenceView.width*referenceView.height))));renderer.setSize(referenceView.width,referenceView.height,false);camera.aspect=referenceView.width/referenceView.height;camera.updateProjectionMatrix();updateOceanGrid();shared.uSunDirection.value.copy(fixedSunDirection);shared.uClearDirection.value.copy(shared.uSunDirection.value);fitRecords();const size=renderer.getDrawingBufferSize(new THREE.Vector2());target.setSize(size.x,size.y);shared.uResolution.value.copy(size);composite.uniforms.uGlassPixelRatio.value=size.y/coverFrame().height;bloomA.setSize(Math.ceil(size.x/4),Math.ceil(size.y/4));bloomB.setSize(Math.ceil(size.x/4),Math.ceil(size.y/4));points.material.uniforms.uPixelRatio.value=renderer.getPixelRatio();for(const item of harvestInstances)item.uniforms.uPixelRatio.value=renderer.getPixelRatio();if(state.ready&&!state.lost&&state.active)draw();}
 addEventListener('resize',resize);resize();
 function draw(){updateMaterialFlow();updateWaveCache();updateSheetPose();updateSkyCache();renderer.setClearColor(0x050f25,1);renderer.setRenderTarget(target);renderer.render(scene,camera);
 quad.material=blur;blur.uniforms.uTexture.value=target.texture;blur.uniforms.uThreshold.value=1;blur.uniforms.uStep.value.set(2/target.width,0);renderer.setRenderTarget(bloomA);renderer.render(postScene,postCamera);
@@ -761,30 +840,45 @@ blur.uniforms.uTexture.value=bloomB.texture;blur.uniforms.uStep.value.set(1/bloo
 
 
 quad.material=composite;renderer.setRenderTarget(null);renderer.render(postScene,postCamera);state.frames++;state.ready=true;}
-let previous=performance.now(),fpsTime=previous,fpsFrames=0,frameId=0;
+let previous=performance.now(),fpsTime=previous,fpsFrames=0,frameId=0,motionRampStart=NaN;
 function animate(now){
- frameId=0;if(!state.active||document.hidden||state.lost||state.paused)return;
+ frameId=0;if(!state.active||document.hidden||state.lost||!state.ready||((state.paused||state.openingHeld)&&state.skyReady))return;
  if(now-previous<1000/60-.5){frameId=requestAnimationFrame(animate);return;}
  const delta=Math.max(0,Math.min((now-previous)/1000,.05));previous=now;
- state.time+=delta*state.speed;shared.uTime.value=state.time;draw();fpsFrames++;
+ // Hold the opening pose while the full sky is prepared. It matches the
+ // static first-frame posters, so revealing WebGL starts from the same scene.
+ const progress=Number.isFinite(motionRampStart)?Math.min(1,Math.max(0,(now-motionRampStart)/1200)):1;
+ const motionGain=progress*progress*(3-2*progress);
+ if(holdOpening&&!state.openingHeld)composite.uniforms.uGlassStrength.value=motionGain;
+ if(!state.paused&&!state.openingHeld&&state.startup.skyReadyMs!==undefined)state.time+=delta*state.speed*motionGain;shared.uTime.value=state.time;draw();fpsFrames++;
  if(now-fpsTime>1000){state.fps=Math.round(fpsFrames*1000/(now-fpsTime));fpsTime=now;fpsFrames=0;}
  frameId=requestAnimationFrame(animate);
 }
-function resume(){if(state.active&&!document.hidden&&!state.lost&&!state.paused&&!frameId){previous=performance.now();frameId=requestAnimationFrame(animate);}}
-function setPaused(value){state.paused=!!value;if(state.paused){cancelAnimationFrame(frameId);frameId=0;}else resume();}
+function resume(){if(state.ready&&state.active&&!document.hidden&&!state.lost&&((!state.paused&&!state.openingHeld)||!state.skyReady)&&!frameId){previous=performance.now();frameId=requestAnimationFrame(animate);}}
+function releaseOpening(){if(!state.openingHeld)return;state.openingHeld=false;motionRampStart=performance.now();resume();}
+function setPaused(value){state.paused=!!value;if(state.paused&&state.skyReady){cancelAnimationFrame(frameId);frameId=0;}else resume();}
 function setActive(value){state.active=!!value;if(!state.active){cancelAnimationFrame(frameId);frameId=0;}else resume();}
 reduced.addEventListener('change',event=>setPaused(event.matches));
-canvas.addEventListener('webglcontextlost',event=>{event.preventDefault();state.lost=true;cancelAnimationFrame(frameId);frameId=0;canvas.dispatchEvent(new Event('ocean-unavailable'));});
-canvas.addEventListener('webglcontextrestored',()=>{state.lost=false;waveCacheTime=NaN;skyCacheTime=NaN;draw();canvas.dispatchEvent(new Event('ocean-restored'));resume();});
-draw();resume();
+canvas.addEventListener('webglcontextlost',event=>{event.preventDefault();state.lost=true;state.ready=false;state.openingHeld=holdOpening;composite.uniforms.uGlassStrength.value=holdOpening?0:1;cancelAnimationFrame(frameId);frameId=0;for(const waiter of skyWaiters)waiter.reject(new Error('Ocean context lost'));skyWaiters.clear();canvas.dispatchEvent(new Event('ocean-unavailable'));});
+canvas.addEventListener('webglcontextrestored',async()=>{
+ if(state.startup.readyMs===undefined)return;
+ try{state.lost=false;waveCacheTime=NaN;skyCacheTime=NaN;await preparePrograms();if(state.lost)return;await prepareFirstFrame();canvas.dispatchEvent(new Event('ocean-restored'));resume();}
+ catch(error){canvas.dispatchEvent(new Event('ocean-unavailable'));console.warn('Ocean restore unavailable:',error);}
+});
+state.startup.prepareMs=performance.now()-startupStart;
+const shaderStart=performance.now();await preparePrograms();state.startup.shaderMs=performance.now()-shaderStart;
+if(state.lost)throw new Error('Ocean context lost during initialization');
+const firstFrameStart=performance.now();await prepareFirstFrame();state.startup.firstFrameMs=performance.now()-firstFrameStart;
+state.startup.readyMs=performance.now()-startupStart;resume();
 function readSunTransmission(){const d=shared.uSunDirection.value,pixel=new Uint16Array(4);
  const x=((Math.atan2(d.x,d.z)/(2*Math.PI)+.5)%1+1)%1;
  const y=Math.sqrt(Math.asin(Math.max(0,Math.min(1,d.y)))/(Math.PI*.5));
  renderer.readRenderTargetPixels(skyFront,Math.min(skyWidth-1,Math.floor(x*skyWidth)),Math.min(skyHeight-1,Math.floor(y*skyHeight)),1,1,pixel);
  return THREE.DataUtils.fromHalfFloat(pixel[3]);}
-const api={setActive,setGlassPanel(rect,radius=22){const u=composite.uniforms;if(rect&&rect.width>0&&rect.height>0){u.uGlassRect.value.set(rect.left/innerWidth,(innerHeight-rect.bottom)/innerHeight,rect.width/innerWidth,rect.height/innerHeight);u.uGlassRadius.value=radius;}else u.uGlassRect.value.set(0,0,0,0);if(state.paused&&!state.lost)draw();},surfaceProbe(){const p=new Uint16Array(24),wave=new Uint16Array(4);renderer.readRenderTargetPixels(sheetPoseTarget,0,0,6,1,p);renderer.readRenderTargetPixels(waveTargets[0].target,256,256,1,1,wave);const values=Array.from(p,THREE.DataUtils.fromHalfFloat);return {waveOrigin:Array.from(wave,THREE.DataUtils.fromHalfFloat),support:Array.from({length:6},(_,i)=>values.slice(i*4,i*4+3)),currentTravel:shared.uCurrentTravel.value.toArray()};},radianceProbe(x,y){const p=new Uint16Array(4);
+function sunScreen(){const point=camera.position.clone().addScaledVector(shared.uSunDirection.value,100).project(camera),frame=coverFrame();return [((.5+point.x*.5)*frame.width+frame.x)/innerWidth,((.5-point.y*.5)*frame.height+frame.y)/innerHeight];}
+const api={setActive,whenSkyReady,releaseOpening,setGlassPanel,surfaceProbe(){const p=new Uint16Array(24),wave=new Uint16Array(4);renderer.readRenderTargetPixels(sheetPoseTarget,0,0,6,1,p);renderer.readRenderTargetPixels(waveTargets[0].target,256,256,1,1,wave);const values=Array.from(p,THREE.DataUtils.fromHalfFloat);return {waveOrigin:Array.from(wave,THREE.DataUtils.fromHalfFloat),support:Array.from({length:6},(_,i)=>values.slice(i*4,i*4+3)),currentTravel:shared.uCurrentTravel.value.toArray()};},radianceProbe(x,y){const p=new Uint16Array(4);
  renderer.readRenderTargetPixels(target,Math.max(0,Math.min(target.width-1,Math.floor(x*target.width))),Math.max(0,Math.min(target.height-1,Math.floor((1-y)*target.height))),1,1,p);
- return Array.from(p,THREE.DataUtils.fromHalfFloat);},pause:()=>setPaused(true),play:()=>setPaused(false),seek(time){state.time=Math.max(0,Number(time)||0);shared.uTime.value=state.time;skyCacheTime=NaN;draw();},setSunDirection(x,y,z){shared.uSunDirection.value.set(x,y,z).normalize();skyCacheTime=NaN;draw();},diagnostics:()=>({...state,width:innerWidth,height:innerHeight,webglError:renderer.getContext().getError(),waterVertices:waterGeometry.attributes.position.count,projectedGrid:[gridX,gridY],continuousFootprint:true,goldFlowPaths:4,dataMarkers:markerDefinitions.length,pearl:true,pearlCount:harvestInstances.length,harvestMode:'per-material',surfaceAttachment:'shared-displaced-water',pageSurfaceOffset:.015,sheetMaxSeparation:.035,sheetContactMode:"flexible-surface-with-continuous-wetting",waterFlattening:false,pearlCentreSurfaceOffset:.07,animatedHarvestLift:false,captionAttachment:'water-surface',recordInkReadabilityFloor:.12,pearls:harvestInstances.map(h=>({sourceId:h.sourceId,x:h.uniforms.uAnchor.value.x+h.uniforms.uHeight.value*.94+.12,progress:h.uniforms.uProgress.value,fade:h.uniforms.uFade.value,cycle:h.source.cycle})),labels:sourceTypes,taxRecords:recordDefinitions.length,dataStreams:7,materialDirection:'left-to-right',materialSpacing:"shared-speed-separated-lanes",records:recordMeshes.map((r,id)=>({id,kind:r.currentKind,lane:r.lane,z:r.z,anchorZ:r.mesh.material.uniforms.uAnchor.value.y,yaw:r.mesh.material.uniforms.uYaw.value,width:r.width*r.scale,x:r.flow.x,cycle:r.cycle,opacity:r.mesh.material.uniforms.uOpacity.value,bound:r.flow.bound})),lighting:"shared-photometric-sun-atmosphere",sunVisible:shared.uSunDirection.value.y>0&&readSunTransmission()>.02,sunTransmission:readSunTransmission(),sunScreen:[.77,.52],sunDirection:shared.uSunDirection.value.toArray(),sky:"procedural-volume-sky",sharedSkyReflections:true,skyModel:"reference-cloud-volume-shared-rgb-atmosphere",sunOcclusion:"integrated-volume-transmittance",cloudLightSamples:3,cloudViewSamples:64,cloudWind:28,cloudCacheSeconds:.7,waveProfile:"8-long-swells-16-crossed-middle-waves-16-wind-waves-8-short-waves",waveAdvection:"shared-current-and-dispersive-orbits",currentVelocityRange:[.28,.40],sheetSupportSamples:5,waveCachePasses:2,waveCacheMRT:true,supportCachePasses:0,supportCacheBaked:false,waveComponents:48,windRippleComponents:8,solarDiscSamples:5,solarIlluminanceLux:solarModel.normalIlluminanceLux,solarAngularRadius:solarModel.angularRadius,solarSolidAngle,preExposure:solarModel.preExposure,cameraExposure:6,skyIrradiance:shared.uSkyIrradiance.value.toArray(),solarTransmission:atmosphereTransmission(shared.uSunDirection.value.y),solarRadiance:atmosphereTransmission(shared.uSunDirection.value.y).map(t=>t*solarModel.normalIlluminanceLux*solarModel.preExposure*state.glow/solarSolidAngle*(shared.uSunDirection.value.y>0?1:0)),solarIrradiance:atmosphereTransmission(shared.uSunDirection.value.y).map(t=>t*solarModel.normalIlluminanceLux*solarModel.preExposure*state.glow*(shared.uSunDirection.value.y>0?1:0)),atmosphereViewSamples:12,specularVarianceFiltering:true,cloudSunlightFloor:0,pearlSkyLighting:true,pearlMaterial:"ivory-nacre-subsurface",boundedBloom:true,artificialDepthBlur:false,filteredSkyReflections:true,portedReferenceFunctions:["solarColor","waterPhase","cloudSolar","cloudPhase","density","cirrus","sky-volume-integration","sun-disc-and-aureole","fresnel","solarSpecular"],reflectionOcclusion:"neighbor-wave-horizon",cloudWeatherCoverage:"reference-weather",sunClearSector:false,dataContrast:"opaque-navy-ivory",skyResolution:[skyWidth,skyHeight],skyUpdateRows:skyStrip,skyScissorSpace:"render-target-pixels",usesSkyBitmap:false,waveCacheResolution:[[512,512],[256,256]],scenePixelBudget:1500000,recordTextureResolution:[2048,1280],recordVisibleRows:2,recordFontVerticalCompensation:true,nearRigidFloatingSheets:0,nearFlexibleFloatingSheets:6,nearSheetSlopeLimit:.08,renderPixelRatio:renderer.getPixelRatio(),worldSpaceScattering:false,waveShadow:true,particles:pointSeeds.length,glassRefraction:'single-pass-screen-space-convex-lens',glassExtraSceneSamples:6,glassExtraBloomSamples:6,renderType:'directional-ocean',ocean:true,backgroundOnly:true,usesOceanBitmap:false})};
+ return Array.from(p,THREE.DataUtils.fromHalfFloat);},pause:()=>setPaused(true),play:()=>setPaused(false),seek(time){state.time=Math.max(0,Number(time)||0);shared.uTime.value=state.time;skyCacheTime=NaN;draw();},setSunDirection(x,y,z){shared.uSunDirection.value.set(x,y,z).normalize();skyCacheTime=NaN;draw();},diagnostics:()=>({...state,width:innerWidth,height:innerHeight,referenceFrame:[referenceView.width,referenceView.height],glassStrength:composite.uniforms.uGlassStrength.value,webglError:renderer.getContext().getError(),waterVertices:waterGeometry.attributes.position.count,projectedGrid:[gridX,gridY],continuousFootprint:true,goldFlowPaths:4,dataMarkers:markerDefinitions.length,pearl:true,pearlCount:harvestInstances.length,harvestMode:'per-material',surfaceAttachment:'shared-displaced-water',pageSurfaceOffset:.015,sheetMaxSeparation:.035,sheetContactMode:"flexible-surface-with-continuous-wetting",waterFlattening:false,pearlCentreSurfaceOffset:.07,animatedHarvestLift:false,captionAttachment:'water-surface',recordInkReadabilityFloor:.12,pearls:harvestInstances.map(h=>({sourceId:h.sourceId,x:h.uniforms.uAnchor.value.x+h.uniforms.uHeight.value*.94+.12,progress:h.uniforms.uProgress.value,fade:h.uniforms.uFade.value,cycle:h.source.cycle})),labels:sourceTypes,taxRecords:recordDefinitions.length,dataStreams:7,materialDirection:'left-to-right',materialSpacing:"shared-speed-separated-lanes",records:recordMeshes.map((r,id)=>({id,kind:r.currentKind,lane:r.lane,z:r.z,anchorZ:r.mesh.material.uniforms.uAnchor.value.y,yaw:r.mesh.material.uniforms.uYaw.value,width:r.width*r.scale,x:r.flow.x,cycle:r.cycle,opacity:r.mesh.material.uniforms.uOpacity.value,bound:r.flow.bound})),lighting:"shared-photometric-sun-atmosphere",sunVisible:shared.uSunDirection.value.y>0&&readSunTransmission()>.02,sunTransmission:readSunTransmission(),sunScreen:sunScreen(),sunDirection:shared.uSunDirection.value.toArray(),sky:"procedural-volume-sky",sharedSkyReflections:true,skyModel:"reference-cloud-volume-shared-rgb-atmosphere",sunOcclusion:"integrated-volume-transmittance",cloudLightSamples:3,cloudViewSamples:64,cloudWind:28,cloudCacheSeconds:.7,waveProfile:"8-long-swells-16-crossed-middle-waves-16-wind-waves-8-short-waves",waveAdvection:"shared-current-and-dispersive-orbits",currentVelocityRange:[.28,.40],sheetSupportSamples:5,waveCachePasses:2,waveCacheMRT:true,supportCachePasses:0,supportCacheBaked:false,waveComponents:48,windRippleComponents:8,solarDiscSamples:5,solarIlluminanceLux:solarModel.normalIlluminanceLux,solarAngularRadius:solarModel.angularRadius,solarSolidAngle,preExposure:solarModel.preExposure,cameraExposure:6,skyIrradiance:shared.uSkyIrradiance.value.toArray(),solarTransmission:atmosphereTransmission(shared.uSunDirection.value.y),solarRadiance:atmosphereTransmission(shared.uSunDirection.value.y).map(t=>t*solarModel.normalIlluminanceLux*solarModel.preExposure*state.glow/solarSolidAngle*(shared.uSunDirection.value.y>0?1:0)),solarIrradiance:atmosphereTransmission(shared.uSunDirection.value.y).map(t=>t*solarModel.normalIlluminanceLux*solarModel.preExposure*state.glow*(shared.uSunDirection.value.y>0?1:0)),atmosphereViewSamples:12,specularVarianceFiltering:true,cloudSunlightFloor:0,pearlSkyLighting:true,pearlMaterial:"ivory-nacre-subsurface",boundedBloom:true,artificialDepthBlur:false,filteredSkyReflections:true,portedReferenceFunctions:["solarColor","waterPhase","cloudSolar","cloudPhase","density","cirrus","sky-volume-integration","sun-disc-and-aureole","fresnel","solarSpecular"],reflectionOcclusion:"neighbor-wave-horizon",cloudWeatherCoverage:"reference-weather",sunClearSector:false,dataContrast:"opaque-navy-ivory",skyResolution:[skyWidth,skyHeight],skyUpdateRows:skyStrip,skyScissorSpace:"render-target-pixels",usesSkyBitmap:false,waveCacheResolution:[[512,512],[256,256]],scenePixelBudget:1500000,recordTextureResolution:[2048,1280],recordVisibleRows:2,recordFontVerticalCompensation:true,nearRigidFloatingSheets:0,nearFlexibleFloatingSheets:6,nearSheetSlopeLimit:.08,renderPixelRatio:renderer.getPixelRatio(),worldSpaceScattering:false,waveShadow:true,particles:pointSeeds.length,glassRefraction:'single-pass-screen-space-convex-lens',glassExtraSceneSamples:6,glassExtraBloomSamples:6,renderType:'directional-ocean',ocean:true,backgroundOnly:true,usesOceanBitmap:false})};
 
 return api;
 }
