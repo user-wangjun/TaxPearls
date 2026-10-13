@@ -93,6 +93,19 @@ async function main() {
   const adapterBody=JSON.parse(adapterWrite.options.body).selections.f;
   assert.deepEqual(adapterBody.standard_edits,{});assert.deepEqual(adapterBody.evidence_reviews,[]);
   adapterWrite.resolve(sample());await adapterSave;settleLists();await Promise.resolve();
+  // Stale invoice amounts cannot confirm or send old edits/reviews on a rescan.
+  const oldInvoice=structuredClone(oldAdapter);
+  oldInvoice.documents[0].financial_reanalysis_required=false;
+  oldInvoice.documents[0].invoice_reanalysis_required=true;
+  oldInvoice.analysis.feedback.blocking=[{code:"invoice_reanalysis_required",file_id:"f",message:"须核对发票原件"}];
+  const invoiceOpen=controller.open("batch");calls.shift().resolve(oldInvoice);await invoiceOpen;
+  assert.ok(all().some(n=>n.textContent.includes("发票适配已更新")));
+  assert.equal(button("确认材料并开始检测").disabled,true);
+  assert.equal(field("导出.xlsx 利润表!C3 用于检测的值"),undefined);
+  const invoiceSave=button("保存修改并重新分析").click(),invoiceWrite=calls.shift();
+  const invoiceBody=JSON.parse(invoiceWrite.options.body).selections.f;
+  assert.deepEqual(invoiceBody.standard_edits,{});assert.deepEqual(invoiceBody.evidence_reviews,[]);
+  invoiceWrite.resolve(sample());await invoiceSave;settleLists();await Promise.resolve();
   // Old PDF caches have the same no-edit/no-acknowledgement boundary, but
   // saving preserves the chosen original pages and clears old amount edits.
   const oldPdf=sample();oldPdf.analysis.can_confirm=false;
@@ -423,7 +436,7 @@ async function main() {
   assert.equal($("uploadCompanyStart").value,"");assert.equal($("uploadScope").disabled,false);
   $("uploadCompanyMode").value="new";await controller.selectClient("");
   assert.equal($("uploadCompanyTaxId").value,"");assert.equal($("uploadCompanyName").value,"手填企业");
-  assert.equal($("auditClient").disabled,true);
+  assert.equal($("uploadCompanyMode").value,"new");
   const profileDenied=controller.selectClient("revoked");calls.shift().reject(Object.assign(new Error("access denied"),{status:403}));await profileDenied;
   assert.equal($("uploadCompanyTaxId").value,"");assert.ok($("uploadProfileHint").textContent.includes("未读取"));
   // A prior tenant's material-list response cannot leak after a role switch.
@@ -431,7 +444,7 @@ async function main() {
   calls.shift().resolve([{id:"private",revision:1,created_at:"today"}]);calls.shift().resolve({retention_ready:true,message:"ready"});await listing;
   await controller.refresh();assert.equal($("enterpriseHistory").hidden,true);assert.equal($("enterpriseHistory").children.length,0);
   assert.equal(controller.enabled(),false);
-  controller.reset();assert.equal($("uploadCompanyName").value,"");assert.equal($("auditClient").value,"");
+  controller.reset();assert.equal($("uploadCompanyName").value,"");assert.equal($("uploadCompanyMode").value,"new");
   console.log("Enterprise frontend: routing, standard-cell review/paging/restore, dirty guard, failed save, retry, idempotent dispatch, stale response, version conflict and revoked access passed.");
 }
 main().catch(error=>{console.error(error);process.exitCode=1;});
