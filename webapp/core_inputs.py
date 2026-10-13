@@ -15,6 +15,8 @@ from starlette.formparsers import MultiPartException
 
 from src import core_materials, core_mapping
 from src.input_errors import InputError
+from src.settings import AISettings
+from webapp import ai_keys
 from webapp import material_batches as batches
 from webapp.access import AccessDenied, current_actor
 from webapp import members
@@ -193,6 +195,7 @@ def register(app, get_store, get_user, allow, static_dir):
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         documents = []
         calls_remaining = 8
+        settings = ai_keys.apply(AISettings.from_env(), store, usage="extraction")
         for meta in view["files"]:
             options = payload["source_options"].get(meta["id"], {})
             if meta["deleted_at"] or options.get("excluded"):
@@ -203,7 +206,7 @@ def register(app, get_store, get_user, allow, static_dir):
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 batches._authorize(db, user, task_id)
-                mapper = core_mapping.Mapper(db, user["org_id"], task_id, meta["sha256"], ai=ai)
+                mapper = core_mapping.Mapper(db, user["org_id"], task_id, meta["sha256"], ai=ai, settings=settings)
                 mapper.call_limit = calls_remaining
                 try:
                     previous = next(

@@ -6,6 +6,7 @@ import hashlib
 import logging
 from threading import Lock
 import time
+from src.ai_reasoning import parameters as reasoning_parameters
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
@@ -46,8 +47,7 @@ def chat_content(settings, messages, timeout, *, temperature=0, max_tokens=None)
                "max_tokens": max_tokens or settings.max_tokens, "temperature": temperature}
     if settings.json_mode:
         payload["response_format"] = {"type": "json_object"}
-    if settings.disable_thinking:
-        payload["thinking"] = {"type": "disabled"}
+    payload.update(reasoning_parameters(settings))
     data = json.dumps(payload, ensure_ascii=False).encode()
     deadline = time.monotonic() + timeout
     opener = build_opener(NoRedirect())

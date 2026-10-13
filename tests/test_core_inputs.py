@@ -532,6 +532,44 @@ class CoreAPITests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
 
+    def test_mapping_and_ocr_use_admin_extraction_keys_instead_of_other_purposes(self):
+        root = self.store.create_user("core-root", "Core-test-2026!", "平台", "platform_admin", "platform")
+        self.login(root)
+        for usage in ["extraction", "knowledge"]:
+            response = self.client.post("/api/admin/ai-keys", json={
+                "name": usage, "api_key": "synthetic-" + usage,
+                "base_url": "https://" + usage + ".example/v1", "model": usage + "-model",
+                "usage": usage, "disable_thinking": False, "vision": True,
+            })
+            self.assertEqual(response.status_code, 200, response.text)
+        self.login(self.admin)
+        task = self.create()
+        url = "/api/enterprise/input-tasks/" + task["id"] + "/files"
+        with patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED": "1", "TAXPEARLS_AI_API_KEY": "synthetic-environment"}):
+            answer = json.dumps({"mappings": [{"source_column": 2, "target_field": "declared_value",
+                                               "status": "mapped", "explanation": "source heading"}]})
+            with patch("src.core_mapping.chat_content", return_value=answer) as mapping:
+                response = self.client.post(url, data={"expected_revision": str(task["revision"]),
+                    "material_type": "vat_declaration", "mapping_mode": "ai"},
+                    files={"files": ("非标准.xlsx", book("vat_declaration", alias="本期申报数额"))})
+                self.assertEqual(response.status_code, 200, response.text)
+                task = response.json()
+                self.assertEqual(task["documents"][0]["records"][0]["declared_value"], "100.0123")
+                self.assertEqual(mapping.call_args.args[0].api_keys, ("synthetic-extraction",))
+                self.assertEqual(mapping.call_args.args[0].model, "extraction-model")
+            answer = json.dumps({"form_name": "增值税纳税申报表主表", "form_type": "main", "tax_no": TAX,
+                "period_start": "2026-01-01", "period_end": "2026-01-31", "unit": "元", "quote": "申报主表",
+                "rows": [{"item_label": "销售额", "item_key": "1", "declared_value": "100.0123",
+                          "column_scope": "本期数", "quote": "销售额 100.0123"}]})
+            with patch("src.core_materials.chat_content", return_value=answer) as ocr:
+                response = self.client.post(url, data={"expected_revision": str(task["revision"]),
+                    "material_type": "vat_declaration", "ocr": "1"}, files={"files": ("扫描.pdf",
+                    (Path(__file__).parent / "fixtures" / "materials-scanned.pdf").read_bytes())})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertTrue(any(d.get("ocr_candidate") for d in response.json()["documents"]))
+                self.assertEqual(ocr.call_args.args[0].api_keys, ("synthetic-extraction",))
+                self.assertEqual(ocr.call_args.args[0].base_url, "https://extraction.example/v1")
+
     def test_task_upload_reopen_supplement_and_retained_original_no_risk(self):
         task = self.create()
         self.assertEqual(task["processing"]["status"], "needs_completion")

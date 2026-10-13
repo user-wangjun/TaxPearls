@@ -56,6 +56,8 @@ class EmailAuthApiTests(unittest.TestCase):
                             ('/auth-glass.js', 'text/javascript'),
                             ('/auth-ocean.mjs', 'text/javascript'),
                             ('/auth-wordmark.png', 'image/png'),
+                            ('/auth-ocean-poster-desktop.webp', 'image/webp'),
+                            ('/auth-ocean-poster-mobile.webp', 'image/webp'),
                             ('/vendor/three.module.mjs', 'text/javascript')]:
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200, path)

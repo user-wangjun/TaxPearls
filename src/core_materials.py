@@ -461,7 +461,7 @@ def parse(raw, name, kind, file_id, mapper, *, ocr=False):
 
 def ocr_page(raw, page_number, file_id, mapper):
     """Authorized image OCR candidates always need source review before readiness."""
-    settings = AISettings.from_env()
+    settings = mapper.settings if mapper.settings is not None else AISettings.from_env()
     result = {
         "records": [],
         "issues": [],

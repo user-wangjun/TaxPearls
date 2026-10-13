@@ -5,6 +5,63 @@
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>税海拾珠 · 税务风险审计</title>
+<script id="workspaceAppearance">
+"use strict";
+/* Apply the saved appearance before styles load; no account/server data is stored. */
+(() => {
+  const key = "taxpearls.theme", choices = ["light", "dark", "system"];
+  const system = window.matchMedia?.("(prefers-color-scheme: dark)");
+  let preference = "light";
+  try { const saved = localStorage.getItem(key); if (choices.includes(saved)) preference = saved; } catch (_) {}
+  function apply() {
+    document.documentElement.dataset.theme = preference === "system" ? (system?.matches ? "dark" : "light") : preference;
+    document.documentElement.dataset.themePreference = preference;
+    const labels = {light:"亮色", dark:"暗色", system:"跟随系统"};
+    const button = document.getElementById("themeCycle");
+    const next = choices[(choices.indexOf(preference) + 1) % choices.length];
+    if (button) {
+      const hint = "当前：" + labels[preference] + "；点击切换为" + labels[next];
+      button.setAttribute("aria-label", hint);
+      button.title = hint;
+      button.dataset.themeChoice = preference;
+    }
+    document.querySelectorAll("#themeOptions [data-theme-select]").forEach(option => {
+      option.setAttribute("aria-pressed", String(option.dataset.themeSelect === preference));
+    });
+    const label = document.getElementById("themeLabel");
+    if (label) label.textContent = labels[preference];
+    document.querySelectorAll("#themeCycle [data-theme-icon]").forEach(icon => {
+      icon.toggleAttribute("hidden", icon.dataset.themeIcon !== preference);
+    });
+  }
+  function select(value) {
+    if (!choices.includes(value)) return;
+    preference = value;
+    try { localStorage.setItem(key, value); } catch (_) {}
+    apply();
+  }
+  function mount() {
+    document.querySelectorAll("#themeOptions [data-theme-select]").forEach(option => {
+      option.addEventListener("click", () => select(option.dataset.themeSelect));
+    });
+    document.getElementById("themeCycle")?.addEventListener("click", () => {
+      select(choices[(choices.indexOf(preference) + 1) % choices.length]);
+    });
+    apply();
+  }
+  apply();
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mount, {once:true});
+  else mount();
+  const systemChanged = () => { if (preference === "system") apply(); };
+  if (system?.addEventListener) system.addEventListener("change", systemChanged);
+  else system?.addListener?.(systemChanged);
+  window.addEventListener("storage", event => {
+    if (event.key !== key && event.key !== null) return;
+    preference = choices.includes(event.newValue) ? event.newValue : "light";
+    apply();
+  });
+})();
+</script>
 <link rel="icon" type="image/svg+xml" href="/logo">
 <style>
   :root {
@@ -36,9 +93,6 @@
   .hdr-txt p { font-size: 12.5px; color: #b8c3dc; margin-top: 4px; }
   /* 左上角品牌标识：矢量 SVG，任意尺寸不失真 */
   .hdr-logo { flex: none; display: block; height: 76px; width: auto; }
-  /* 标题中的“税海拾珠”使用登录页同款字标 PNG */
-  .hdr-wordmark { height: 40px; width: auto; vertical-align: -11px; user-select: none; }
-  .hdr-sub { white-space: nowrap; }
 
   main { padding: 28px 0 60px; }
 
@@ -268,7 +322,6 @@
     .hdr-txt h1 { font-size: 17px; letter-spacing: 1px; }
     .hdr-txt p { display: none; }
     .hdr-logo { height: 48px; }
-    .hdr-wordmark { height: 28px; vertical-align: -7px; }
   }
   @media (max-width: 520px) {
     .hdr { flex-wrap: wrap; row-gap: 10px; }
@@ -380,8 +433,10 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=reports-training">
-<link rel="stylesheet" href="/auth-glass.css?v=20261005-glass-1">
+<link rel="stylesheet" href="/workspace.css?v=20261012-ai-key-pr-43-core-inputs-1">
+<link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
+<link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
+<link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
 </head>
 <body>
 <section class="auth-screen" id="authScreen">
@@ -393,11 +448,11 @@
       <div class="auth-brand"><img class="auth-logo" src="/logo" alt="税海拾珠" draggable="false"><div class="auth-brand-txt"><img class="brand-wordmark" src="/auth-wordmark.png" alt="税海拾珠" draggable="false"><span>TAXPEARLS</span></div></div>
       <div class="auth-intro"><h2 id="authTitle">欢迎回来</h2><p id="authDescription">连接每一份证据，拾取每一条线索。</p><p class="auth-step" id="authStep"></p></div>
       <div id="viewLogin">
-        <div class="field"><label for="loginUser" id="loginUserLabel">邮箱或用户名</label><input id="loginUser" autocomplete="username" inputmode="email" placeholder="name@example.com" required></div>
-        <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" type="password" autocomplete="current-password" placeholder="请输入密码" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+        <div class="field"><label for="loginUser" id="loginUserLabel">邮箱或用户名</label><input id="loginUser" name="username" autocomplete="username" inputmode="email" placeholder="name@example.com" required></div>
+        <div class="field"><label for="loginPass">密码</label><div class="pw-wrap"><input id="loginPass" name="password" type="password" autocomplete="current-password" placeholder="请输入密码" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
       </div>
       <div class="auth-remember" id="loginRememberField">
-        <div class="auth-remember-row"><label><input id="loginRemember" type="checkbox" aria-describedby="loginRememberHint">保持登录 30 天</label></div>
+        <div class="auth-remember-row"><label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">保持登录 30 天</label><button type="button" class="auth-link" id="forgotLink">忘记密码？</button></div>
         <p id="loginRememberHint">公共电脑请勿勾选</p>
       </div>
       <div id="viewForgot" style="display:none">
@@ -442,9 +497,8 @@
       <button class="btn" type="submit" id="authSubmit">登录</button>
       <div class="auth-secondary">
         <div class="auth-secondary-row">
-          <button type="button" class="auth-link" id="forgotLink">忘记密码？</button>
           <button type="button" class="auth-link" id="emailLoginEntryLink">使用邮箱验证码 / 邮件链接登录</button>
-          <button type="button" class="auth-link" id="passwordLoginEntryLink">密码登录</button>
+          <button type="button" class="auth-link" id="passwordLoginEntryLink" style="display:none">密码登录</button>
         </div>
         <button type="button" class="auth-signup-card" id="signupEntryLink">
           <img class="auth-signup-icon" src="/auth-signup-ticket-v1.png" alt="" draggable="false">
@@ -462,23 +516,14 @@
 
 
 
-<header id="appHeader" style="display:none">
-  <div class="wrap hdr">
-    <div class="hdr-brand">
-      <img class="hdr-logo" src="/logo" alt="税海拾珠">
-      <div class="hdr-txt">
-        <h1 class="hdr-title"><img class="hdr-wordmark" src="/auth-wordmark.png" alt="税海拾珠" draggable="false"><span class="hdr-sub">· 税务风险审计</span></h1>
-      </div>
-    </div>
-    <div class="top-tools"><span id="currentUser"></span><button id="btnLogout">退出</button></div>
-  </div>
-</header>
+
 
 <main id="appMain" style="display:none">
-  <div class="wrap">
+  <div class="wrap nav-collapsed">
 
     <div class="nav" id="nav" role="navigation" aria-label="企业工作空间">
-      <div class="nav-heading"><div class="nav-caption">企业工作空间</div><button type="button" id="navToggle" aria-controls="nav" aria-expanded="true" aria-label="收起侧边栏" title="收起侧边栏"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></button></div>
+      <div class="nav-brand"><img class="nav-brand-logo" src="/logo" alt="税海拾珠" draggable="false"><img class="nav-brand-wordmark" src="/auth-wordmark.png" alt="" draggable="false"></div>
+      <div class="nav-heading"><div class="nav-caption">企业工作空间</div><button type="button" id="navToggle" aria-controls="nav" aria-expanded="false" aria-label="展开侧边栏" title="展开侧边栏"><span class="nav-toggle-direction" aria-hidden="true"><span class="nav-toggle-track"><span class="nav-toggle-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></span><span class="nav-toggle-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></span></span></span></button></div>
       <button data-panel="notificationPanel" aria-label="通知订阅" title="通知订阅"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a6 6 0 0 0-6 6v5l-2 4h16l-2-4V8a6 6 0 0 0-6-6Zm-3 17h6a3 3 0 0 1-6 0Z"/></svg><span class="nav-label">通知订阅</span></button>
       <button data-panel="dashboardPanel" class="business-nav" aria-label="工作台" title="工作台"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="8" height="10" rx="2"/><rect x="13" y="3" width="8" height="6" rx="2"/><rect x="3" y="15" width="8" height="6" rx="2"/><rect x="13" y="11" width="8" height="10" rx="2"/></svg><span class="nav-label">工作台</span></button>
       <button data-panel="uploadPanel" class="business-nav" aria-label="上传材料" title="上传材料"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 15V7.4L8.7 9.7 7.3 8.3 12 3.6l4.7 4.7-1.4 1.4L13 7.4V15zM4 13h4v4h8v-4h4v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span class="nav-label">上传材料</span></button>
@@ -487,6 +532,24 @@
       <button data-panel="knowledgePanel" aria-label="知识图谱" title="知识图谱"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m11 6 2-1 6 12-2 1zM5 17 11 5l2 1-6 12zM6 17h12v2H6z"/><circle cx="12" cy="5" r="3.5"/><circle cx="5" cy="18" r="3.5"/><circle cx="19" cy="18" r="3.5"/></svg><span class="nav-label">知识图谱</span></button>
       <button data-panel="trainingPanel" class="training-nav" aria-label="实训中心" title="实训中心"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 11 5-11 5L1 8zm-7 9 7 3.2 7-3.2v5c-3.7 3.5-10.3 3.5-14 0zM21 11h2v8h-2z"/></svg><span class="nav-label">实训中心</span></button>
       <button data-panel="adminPanel" class="admin-nav" aria-label="管理" title="管理"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10" cy="7" r="4"/><path d="M2 21v-3a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v3zm16-18a4 4 0 0 1 0 8h-1a6 6 0 0 0 0-8zm.5 10a5 5 0 0 1 4.5 5v3h-3v-3a8 8 0 0 0-1.5-5z"/></svg><span class="nav-label">管理</span></button>
+      <button data-panel="aiKeysPanel" style="display:none" aria-label="AI 密钥检测" title="AI 密钥检测"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h18v18H3z"/><path fill="var(--bg,#fff)" d="M5 11h4l2-5 3 11 2-6h3v2h-2l-3 8-3-10-1 2H5z"/></svg><span class="nav-label">AI 密钥检测</span></button>
+      <div id="appHeader" class="nav-account" style="display:none">
+        <div id="themePicker" class="theme-picker">
+          <div id="themeOptions" role="group" aria-label="外观模式">
+            <button type="button" data-theme-select="light" aria-pressed="true" aria-label="亮色" title="亮色"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><span>亮色</span></button>
+            <button type="button" data-theme-select="dark" aria-pressed="false" aria-label="暗色" title="暗色"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/></svg><span>暗色</span></button>
+            <button type="button" data-theme-select="system" aria-pressed="false" aria-label="跟随系统" title="跟随系统"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8m-4-5v5"/></svg><span>跟随系统</span></button>
+          </div>
+          <button id="themeCycle" class="account-control" type="button" aria-label="当前：亮色；点击切换为暗色" title="当前：亮色；点击切换为暗色">
+            <span class="account-icon" aria-hidden="true"><svg data-theme-icon="light" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></svg><svg data-theme-icon="dark" hidden viewBox="0 0 24 24" aria-hidden="true"><path d="M20.5 14A9 9 0 0 1 10 3.5 9 9 0 1 0 20.5 14Z"/></svg><svg data-theme-icon="system" hidden viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 21h8m-4-5v5"/></svg></span><span id="themeLabel" hidden>亮色</span>
+          </button>
+        </div>
+        <div class="top-tools">
+        <button class="account-control" type="button" data-panel="userSettingsPanel" aria-label="用户设置" title="用户设置">
+          <span class="account-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg></span><span class="account-label">用户设置</span>
+        </button>
+        <button id="btnLogout" class="account-control" type="button" aria-label="退出登录" title="退出登录"><span class="account-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 3H4v18h5M9 12h12m-5-5 5 5-5 5"/></svg></span><span class="account-label">退出</span></button>
+      </div></div>
     </div>
 
     <section class="panel" id="dashboardPanel">
@@ -500,6 +563,47 @@
         <p class="muted" id="orgReportStatus" role="status"></p><p class="muted" id="orgReportWarnings"></p><div id="orgReportSummary"></div><div class="data-list" id="orgReportClients"></div>
       </div>
       <div class="sheet"><h2>已生成机构报告（最近 100 份）</h2><p class="muted">报告冻结生成时的客户、审计、品牌与规则口径；后续修改或补传材料不会覆盖。PDF 首次导出后冻结原文件，校验和不等于防伪签名。</p><div id="orgReportSaved" class="data-list"></div><div id="orgReportDetail" hidden></div></div>
+    </section>
+    <section class="panel" id="aiKeysPanel">
+      <div class="probe-page-header">
+        <div class="probe-heading"><div><h2>AI 密钥检测</h2><p class="muted">分配用途，检查活性与余额。</p></div><div class="probe-header-actions"><button id="btnRefreshAIKeys" type="button" class="btn pdf">刷新</button><button id="btnAddAIKey" type="button" class="btn">＋ 加入密钥</button></div></div>
+        <div class="probe-page-meta"><p id="aiKeyStatus" role="status" aria-live="polite"></p><details class="probe-help"><summary>检测说明</summary><p>仅平台管理员可操作。测活使用合成样本，检查文字与 JSON 调用，可能产生费用；开启思考时耗时与费用可能增加。图片能力尚未检测。结果为检测时点状态。金额按原币种显示，共享账户余额请勿相加。</p></details></div>
+      </div>
+      <div id="aiKeyCards" class="probe-grid"></div>
+      <dialog id="aiKeyAddDialog" class="probe-add-dialog" aria-labelledby="aiKeyAddTitle">
+        <form id="aiKeyAddForm">
+          <div class="probe-editor-heading"><h2 id="aiKeyAddTitle">加入密钥</h2><p class="muted">配置模型服务与用途，key 加密保存。</p></div>
+          <div class="probe-editor-body">
+            <div class="probe-editor-grid">
+              <label class="field">名称<input id="aiKeyAddName" maxlength="80" required placeholder="例如：材料提取备用"></label>
+            </div>
+            <div id="aiKeyAddUsage" class="probe-editor-usages"></div>
+            <div class="probe-endpoint-fields">
+              <label class="field">地址预设<select id="aiKeyAddProvider"><option value="configured">当前配置</option><option value="deepseek">DeepSeek 官方</option><option value="openrouter">OpenRouter 官方</option></select></label>
+              <label class="field">接口 URL<input id="aiKeyAddURL" type="url" maxlength="500" required placeholder="https://服务地址/v1"></label>
+            </div>
+            <div class="field"><label for="aiKeyAddSecret">API key</label><div class="probe-secret-row"><input id="aiKeyAddSecret" type="password" maxlength="4096" required autocomplete="off" spellcheck="false" placeholder="填写 API key"><button id="btnRevealAIKey" type="button" class="btn pdf" hidden>查看 key</button></div></div>
+            <div class="field probe-model-field"><div class="probe-field-heading"><label for="aiKeyAddModel">模型名称</label><button id="btnFetchAIModels" type="button" class="btn pdf">从上游获取</button></div><div class="probe-model-combobox"><input id="aiKeyAddModel" maxlength="200" required placeholder="手动填写或从上游获取" role="combobox" aria-autocomplete="none" aria-controls="aiKeyModelChoices" aria-expanded="false" autocomplete="off"><button id="btnChooseAIModel" class="probe-model-toggle" type="button" aria-label="选择上游模型" aria-controls="aiKeyModelChoices" aria-expanded="false" hidden><span aria-hidden="true"></span></button><div id="aiKeyModelChoices" class="probe-model-choices" role="listbox" aria-label="上游模型列表" hidden></div></div><span id="aiKeyModelStatus" class="muted" role="status" aria-live="polite"></span></div>
+            <details class="probe-edit-options"><summary>更多设置<span class="muted">余额查询与模型参数</span></summary>
+              <label class="field">余额查询设置<select id="aiKeyEditProtocol"><option value="auto">自动识别</option><option value="deepseek">DeepSeek 账户余额</option><option value="openrouter">OpenRouter 密钥额度</option><option value="credit_grants">兼容额度接口（USD）</option></select></label>
+              <div class="field probe-reasoning-field"><label for="aiKeyReasoning">思考程度</label><select id="aiKeyReasoning"><option value="default">上游默认</option></select><span id="aiKeyReasoningStatus" class="muted" role="status" aria-live="polite"></span></div>
+              <div class="probe-model-options"><label><input id="aiKeyEditJSON" type="checkbox"> 要求 JSON 输出</label><label><input id="aiKeyEditVision" type="checkbox"> 允许图片输入（须模型支持）</label></div>
+            </details>
+          </div>
+          <div class="probe-editor-footer"><p id="aiKeyAddStatus" class="muted" role="status" aria-live="polite"></p><div class="probe-header-actions"><button id="btnCancelAIKey" type="button" class="btn pdf">取消</button><button id="btnSaveAIKey" type="submit" class="btn">加入密钥</button></div></div>
+        </form>
+      </dialog>
+      <details class="sheet probe-temporary">
+        <summary>临时密钥检测<span class="muted">不保存 key，仅检测一次</span></summary><p class="muted">提交后清空输入，不更改业务配置。“当前配置地址”使用服务端配置的接口。</p>
+        <div class="probe-form">
+          <label class="field">服务地址<select id="aiTemporaryProvider"><option value="configured">当前配置地址</option><option value="deepseek">DeepSeek 官方</option><option value="openrouter">OpenRouter 官方</option></select></label>
+          <label class="field">模型名称<input id="aiTemporaryModel" maxlength="200" placeholder="当前配置地址可留空；OpenRouter 测活须填写模型"></label>
+          <label class="field">临时 API key<input id="aiTemporaryKey" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="仅用于本次检测"></label>
+          <label class="field">余额查询协议<select id="aiTemporaryProtocol"><option value="auto">自动识别</option><option value="deepseek">DeepSeek 账户余额</option><option value="openrouter">OpenRouter 密钥额度</option><option value="credit_grants">兼容额度接口（USD）</option></select></label>
+        </div>
+        <div class="probe-actions"><button id="btnTemporaryHealth" type="button" class="btn">测活临时密钥</button><button id="btnTemporaryBalance" type="button" class="btn pdf">查询临时密钥金额</button></div>
+        <div id="aiTemporaryResult" role="status" aria-live="polite"></div>
+      </details>
     </section>
     <section class="panel" id="knowledgePanel">
       <div class="page-head graph-page-head"><div><p class="eyebrow">税务洞察 / KNOWLEDGE EXPLORER</p><h2>让每一条关联，都有据可循<span class="graph-title-tag">知识图谱</span></h2><p class="muted">从一个指标出发，探索业务、风险与法规之间的证据网络。</p></div><div id="graphSummary" class="graph-summary"></div></div>
@@ -579,6 +683,7 @@
     <div id="materialReview" class="material-review" hidden></div>
     <div id="batchResults" class="material-review" hidden></div>
     <div id="enterpriseHistory" class="material-review enterprise-review" hidden></div>
+
     </div>
     </section>
     <section class="panel" id="auditPanel">
@@ -676,6 +781,35 @@
       </div>
     </section>
 
+    <section class="panel" id="userSettingsPanel" aria-labelledby="userSettingsTitle">
+      <div class="settings-heading"><div><p class="muted">ACCOUNT SETTINGS</p><h1 id="userSettingsTitle">用户设置</h1><p class="muted">查看账号信息，管理通知偏好和报告导出。</p></div></div>
+      <div class="settings-grid">
+        <div class="sheet settings-profile"><h2>账号信息</h2><p id="currentUser" class="muted"></p>
+          <dl class="settings-account-fields">
+            <div><dt>登录账号</dt><dd id="settingsUsername">—</dd></div>
+            <div><dt>显示名称</dt><dd id="settingsDisplayName">—</dd></div>
+            <div><dt>账号角色</dt><dd id="settingsRole">—</dd></div>
+            <div><dt>注册时间</dt><dd id="settingsCreatedAt">—</dd></div>
+          </dl><p class="muted settings-note">账号信息由当前登录账号提供；如需变更，请联系管理员。</p>
+        </div>
+        <div class="sheet settings-notifications"><h2>通知偏好</h2><p class="muted">选择接收的事件和邮件渠道，保存后生效。</p>
+          <fieldset id="settingsPreferences" disabled><legend class="visually-hidden">个人通知偏好</legend>
+            <label class="settings-choice" for="settingsCompleted"><span><strong>审计完成提醒</strong><small>接收之后的审计完成通知</small></span><input type="checkbox" id="settingsCompleted"></label>
+            <label class="settings-choice" for="settingsHigh"><span><strong>高风险提醒</strong><small>单独接收高风险命中摘要</small></span><input type="checkbox" id="settingsHigh"></label>
+            <label class="settings-choice" for="settingsEmail"><span><strong>摘要邮件</strong><small>仅发送风险摘要，不含企业名称或原始财务数据</small></span><input type="checkbox" id="settingsEmail"></label>
+          </fieldset>
+          <div class="settings-actions"><button class="btn pdf" id="settingsSave" type="button" disabled>保存通知偏好</button><button class="btn re" id="settingsRefresh" type="button">重新读取</button><button class="btn re" id="settingsNoticeOpen" type="button" hidden>查看通知</button></div>
+          <p class="muted settings-note" id="settingsStatus" role="status" aria-live="polite"></p>
+        </div>
+      </div>
+      <div class="sheet settings-exports"><h2>数据与报告导出</h2><p class="muted">从现有报告入口选择企业、期间和报告版本，再下载所需文件。</p>
+        <div class="settings-export-grid">
+          <div id="settingsHistoryExport" class="settings-export-entry" hidden><div><h3>审计报告档案</h3><p class="muted">检索历史审计，下载已归档的 HTML / PDF 报告。</p></div><button class="btn re" id="settingsHistoryOpen" type="button">前往历史档案 →</button></div>
+          <div id="settingsOrgExport" class="settings-export-entry" hidden><div><h3>机构汇总报告</h3><p class="muted">选择客户与业务期间，查看汇总报告并导出 PDF。</p></div><button class="btn re" id="settingsOrgOpen" type="button">前往机构总览 →</button></div>
+        </div><p class="muted settings-note" id="settingsExportStatus"></p>
+      </div>
+    </section>
+
     <section class="panel" id="notificationPanel">
       <div class="sheet"><h2>通知与订阅</h2><p class="muted">只发送风险摘要，不包含企业名称、税号或原始财务数据。关闭邮件通知可退订，已经受理的邮件无法撤回。</p>
         <label><input type="checkbox" id="noticeCompleted"> 审计完成提醒</label>
@@ -743,7 +877,7 @@
     </section>
 
     <section class="panel" id="adminPanel">
-      <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
+      <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button class="btn re" id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
       <div class="sheet" id="inviteAdmin" style="display:none"><h2>签发机构创始码</h2><p class="muted">为企业和高校的管理员签发一次性注册码：码只与机构名称捆绑，一码一位、私聊交付，不绑定邮箱；注册时仍须通过邮箱验证码核验。明文只在签发时显示一次，系统中仅存哈希。</p><div class="row"><div class="field"><label for="inviteOrgName">企业 / 高校名称</label><input id="inviteOrgName" maxlength="120" placeholder="例如：东莞市某某税务师事务所"></div><div class="field"><label for="inviteSeats">机构总席位（含管理员）</label><select id="inviteSeats"><option value="5" selected>小型 · 5 席</option><option value="20">中型 · 20 席</option><option value="50">大型 · 50 席</option></select></div><button class="btn pdf" id="btnCreateInvite" type="button">签发邀请码</button></div><div class="data-item" id="inviteReveal" hidden><div><div id="inviteRevealCode" class="invite-code"></div><p class="muted" id="inviteRevealSeats"></p><p class="muted">仅显示这一次，关闭后无法找回，请立即复制并私聊交付给机构负责人。</p></div><div class="row"><button id="btnCopyInvite" type="button">复制</button><button id="btnHideInvite" type="button">我已保存</button></div></div><h3>邀请码台账</h3><div class="data-list" id="inviteList"></div></div>
       <div class="sheet" id="userAdmin"><h2>账号与成员管理</h2><p class="muted" id="userAdminHint">机构管理员可创建本机构会计；平台只能签发创始码，不手动开户。席位按当前在岗成员计算（含机构管理员，不含平台管理员）；停用释放席位并撤销会话，恢复后须重新登录，不删除历史业务。</p>
         <div class="row"><div class="field"><label for="memberOrg">管理机构</label><select id="memberOrg"></select></div><button class="btn" id="btnRefreshMembers">刷新成员</button></div>
@@ -758,7 +892,7 @@
           <h3>注册邮箱域名白名单</h3><div class="field"><label for="memberDomainEnabled"><input type="checkbox" id="memberDomainEnabled"> 启用限制（默认关闭）</label><label for="memberDomains">允许的完整域名，每行一个，最多 20 个</label><textarea id="memberDomains" maxlength="5100" placeholder="example.com"></textarea><p class="muted">只匹配完整域名，不自动允许子域名；支持国际化域名。仅限制新成员通过邀请注册，不影响现有账号。</p><button class="btn" id="btnSaveInvitationPolicy" type="button">保存邮箱限制</button></div>
         </section>
       </div>
-      <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称<span class="req" aria-hidden="true">*</span></label><input id="clientName" required maxlength="200"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号<span class="req" aria-hidden="true">*</span></label><input id="clientTaxpayerId" required maxlength="64"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
+      <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称</label><input id="clientName"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号</label><input id="clientTaxpayerId"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
       <div class="sheet" id="ruleAdmin"><h2>规则参数与试跑</h2><p class="muted">选择规则后以表单调整参数，并在指定历史材料快照上试跑。试跑不修改历史审计；只有平台管理员可正式保存。带日期的新版本只适用于完整落在其生效区间内的审计期。</p><div class="data-list" id="ruleList"></div><div class="rule-editor" id="ruleEditor" hidden><div class="rule-editor-head"><div><h3 id="ruleEditorTitle"></h3><p class="muted" id="ruleEditorMeta"></p></div><span class="role-chip" id="ruleEditorState"></span></div><div class="row"><div class="field"><label for="ruleCurrentVersion">最新保存版本</label><input id="ruleCurrentVersion" readonly></div><div class="field"><label for="ruleNewVersion">新版本</label><input id="ruleNewVersion" maxlength="32" inputmode="decimal"></div></div><div class="row"><div class="field"><label for="ruleEffectiveFrom">生效起始日</label><input id="ruleEffectiveFrom" type="date"></div><div class="field"><label for="ruleEffectiveTo">生效终止日（可留空）</label><input id="ruleEffectiveTo" type="date"></div></div><p class="muted">首次配置可留空日期沿用全期间兼容模式；启用定期版本后，后续版本须填写起始日。新起始日会自动截止前一条开放式版本；有限区间不得重叠。跨版本的审计期需拆期审计。</p><div class="field"><label for="ruleThresholdBasis">阈值依据</label><textarea id="ruleThresholdBasis" maxlength="500"></textarea></div><div><h3>可调参数</h3><p class="muted" id="ruleMetricHint"></p><div class="rule-param-grid" id="ruleParamFields"></div></div><div class="field"><label for="ruleTrialAudit">试跑材料</label><select id="ruleTrialAudit"></select></div><div class="row"><button class="btn pdf" id="btnRuleTrial" type="button">试跑当前草稿</button><button id="btnRuleSave" type="button">保存为新版本</button><p class="muted" id="ruleEditorStatus" role="status"></p></div><div class="rule-trial-result" id="ruleTrialResult" hidden></div><div id="ruleVersionHistory" class="data-list"></div></div></div>
       <div class="sheet" id="logAdmin"><h2>操作日志</h2><div class="data-list" id="logList"></div></div>
     </section>
@@ -776,10 +910,11 @@
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/core-inputs.js?v=20261013-core-inputs-1"></script>
-<script src="/enterprise.js?v=enterprise-review-1"></script>
-<script src="/console.js?v=auth-glass-20261005-1"></script>
-<script src="/auth-glass.js?v=20261005-glass-1"></script>
-<script src="/workspace.js?v=platform-access-1"></script>
+<script src="/enterprise.js?v=20261007-company-selector-2"></script>
+<script src="/ai-keys.js?v=20261012-model-combobox-11"></script>
+<script src="/console.js?v=20261012-ai-probes-1-core-inputs-1"></script>
+<script src="/auth-glass.js?v=20261006-login-layout-1"></script>
+<script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>

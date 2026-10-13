@@ -81,9 +81,10 @@ def migrate(db):
 
 
 class Mapper:
-    def __init__(self, db, org_id, task_id, source_hash, *, ai=False):
+    def __init__(self, db, org_id, task_id, source_hash, *, ai=False, settings=None):
         self.db, self.org, self.task, self.sha = db, org_id, task_id, source_hash
         self.ai = ai
+        self.settings = settings
         self.calls = 0
         self.call_limit = 8
         self.promotions = []
@@ -119,7 +120,7 @@ class Mapper:
             elif not targets:
                 unknown.append(index)
         if unknown and self.ai and self.calls < self.call_limit:
-            settings = AISettings.from_env()
+            settings = self.settings if self.settings is not None else AISettings.from_env()
             if not settings.problem():
                 self.calls += 1
                 # Only column shape is sent; no taxpayer identity, invoice IDs or full rows.

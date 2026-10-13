@@ -45,18 +45,44 @@ async function api(url, options = {}) {
   return body;
 }
 
+const aiKeyProbes = createAIKeyProbes({api, el, $, user:()=>currentUser});
+function defaultWorkspacePanel() {
+  return currentUser?.role === "student" ? "trainingPanel" : currentUser?.role === "platform_admin" ? "adminPanel" : "dashboardPanel";
+}
+function canOpenWorkspacePanel(id) {
+  if (!currentUser || !$(id)?.classList.contains("panel")) return false;
+  return Array.from(document.querySelectorAll("#nav [data-panel]")).some(button =>
+    button.dataset.panel === id && !button.hidden && button.style.display !== "none");
+}
+function initialWorkspacePanel() {
+  const requested = new URLSearchParams(location.hash.slice(1)).get("panel");
+  return canOpenWorkspacePanel(requested) ? requested : defaultWorkspacePanel();
+}
+function rememberWorkspacePanel(id) {
+  const hash = "#panel=" + encodeURIComponent(id);
+  if (location.hash === hash) return;
+  try { history.replaceState(history.state, "", location.pathname + location.search + hash); } catch (_) {}
+}
+
 function switchPanel(id) {
-  if(currentUser?.role==="platform_admin" && !["adminPanel","knowledgePanel"].includes(id)) id="adminPanel";
+  if (!currentUser) return;
+  if (!canOpenWorkspacePanel(id)) id = defaultWorkspacePanel();
+  if(currentUser?.role==="platform_admin" && !["adminPanel","aiKeysPanel","knowledgePanel","userSettingsPanel"].includes(id)) id="adminPanel";
   if (id !== "notificationPanel") noticeRequest++;
+  if (id !== "userSettingsPanel") settingsRequest++;
   if (id !== "knowledgePanel" && typeof invalidateGraph === "function") invalidateGraph();
   if (id !== "adminPanel") { ruleEditorRequest++; adminRequest++; }
   if (id === "uploadPanel") { refreshAIStatus(); refreshAuditClients(); enterpriseMaterials.refresh(); coreInputs.refresh().catch(err=>showError(err.message)); }
   document.querySelectorAll(".panel").forEach((n) => n.classList.toggle("active", n.id === id));
   document.querySelectorAll("#nav [data-panel]").forEach((n) => n.classList.toggle("active", n.dataset.panel === id));
+  rememberWorkspacePanel(id);
   if (id === "historyPanel") loadHistory();
   if (id === "notificationPanel") loadNotifications();
+  if (id === "userSettingsPanel") loadUserSettings();
   if (id === "trainingPanel") loadAssignments();
   if (id === "adminPanel") loadAdmin();
+  if (id === "aiKeysPanel") aiKeyProbes.load();
+  else aiKeyProbes.reset();
   if (id === "dashboardPanel") loadDashboard();
   if (id === "orgReportPanel") loadOrgOverview();
   if (id === "knowledgePanel") loadKnowledge();
@@ -616,7 +642,9 @@ let pendingEmailToken="",emailRegistrationProof=null,authResetProof="",authViewV
 // Opening a mail link in the existing tab can change only the fragment.
 // Reload to show explicit confirmation; GET still never redeems the token.
 window.addEventListener("hashchange", () => {
-  if (new URLSearchParams(location.hash.slice(1)).get("email")) location.reload();
+  const params = new URLSearchParams(location.hash.slice(1));
+  if (params.get("email")) { location.reload(); return; }
+  if (currentUser && params.get("panel")) switchPanel(params.get("panel"));
 });
 async function bootstrap() {
   const params = new URLSearchParams(location.search);
@@ -681,7 +709,7 @@ function showAuthView(view) {
   $("authTitle").textContent = setup ? "初始化平台管理员" : title;
   $("authDescription").textContent = setup ? "创建首位管理员，开启税海旅程。" : ({login:"连接每一份证据，拾取每一条线索。", signup:"从一份邀请，开启你的税海旅程。", emailLogin:"使用验证码或邮件链接，安全回到税海。", forgot:"验证绑定邮箱，找回你的账号。", reset:"设置新密码，保护账号与证据。", emailMagic:"确认本人发起的邮件验证。"}[view] || "");
   const linkRow = view === "login" ? document.querySelector(".auth-remember-row") : document.querySelector(".auth-secondary-row");
-  linkRow.append($("forgotLink"));
+  if ($("forgotLink").parentElement !== linkRow) linkRow.append($("forgotLink"));
   $("authSubmit").textContent = setup ? "创建管理员" : submitText;
   $("authSubmit").disabled=authSubmitBusy;
   form.dataset.view = view;
@@ -849,15 +877,19 @@ function enterApp(user) {
   clearTimeout(exerciseDeadlineTimer); classroomUI.reset(); $("exerciseBox").style.display="none";
   $("exerciseGenerationResult").textContent=""; $("exerciseGenerationResult").hidden=true;
   currentUser = user;
+  settingsRequest++; settingsReady = false;
   memberRequest++; memberSnapshot=null; $("memberOrg").textContent=""; $("userList").textContent="";
   clearMemberInvitations(); $("signupCode").value=""; delete $("authForm").dataset.inviteCode;
   $("memberQuotaStatus").textContent="尚未加载成员信息。"; $("memberQuotaEditor").hidden=true;
   $("authScreen").style.display = "none";
+  document.body.classList.add("workspace-ready");
   $("appHeader").style.display = "block"; $("appMain").style.display = "block"; $("appFooter").style.display = "block";
   $("nav").style.display = "flex";
   $("currentUser").textContent = user.display_name + " · " + ({teacher:"教师",student:"学生",org_admin:"机构管理员",accountant:"会计",platform_admin:"平台管理员"}[user.role] || user.role);
-  document.querySelectorAll(".training-nav").forEach((n) => n.style.display = ["teacher","student"].includes(user.role) ? "block" : "none");
-  document.querySelectorAll(".admin-nav").forEach((n) => n.style.display = ["platform_admin","org_admin","teacher","accountant"].includes(user.role) ? "block" : "none");
+  aiKeyProbes.reset();
+  document.querySelector('[data-panel="aiKeysPanel"]').style.display = user.role === "platform_admin" ? "" : "none";
+  document.querySelectorAll(".training-nav").forEach((n) => n.style.display = ["teacher","student"].includes(user.role) ? "" : "none");
+  document.querySelectorAll(".admin-nav").forEach((n) => n.style.display = ["platform_admin","org_admin","teacher","accountant"].includes(user.role) ? "" : "none");
   $("teacherBox").style.display = user.role === "teacher" ? "block" : "none";
   $("orgSettingsAdmin").style.display = user.role === "org_admin" ? "block" : "none";
   $("inviteAdmin").style.display = user.role === "platform_admin" ? "block" : "none";
@@ -870,14 +902,106 @@ function enterApp(user) {
   $("logAdmin").style.display = ["platform_admin","org_admin","teacher"].includes(user.role) ? "block" : "none";
   $("auditClientField").style.display = ["org_admin","accountant"].includes(user.role) ? "block" : "none";
   const businessUser = !["student","platform_admin"].includes(user.role);
-  document.querySelector('[data-panel="auditPanel"]').style.display = businessUser ? "block" : "none";
-  document.querySelectorAll(".business-nav, [data-panel='historyPanel'], [data-panel='notificationPanel']").forEach(n => n.style.display = businessUser ? "block" : "none");
-  document.querySelector('[data-panel="orgReportPanel"]').style.display = user.role === "org_admin" ? "block" : "none";
-  if (user.role === "student") switchPanel("trainingPanel"); else if(user.role === "platform_admin") switchPanel("adminPanel"); else switchPanel("dashboardPanel");
+  document.querySelector('[data-panel="auditPanel"]').style.display = businessUser ? "" : "none";
+  document.querySelectorAll(".business-nav, [data-panel='historyPanel'], [data-panel='notificationPanel']").forEach(n => n.style.display = businessUser ? "" : "none");
+  document.querySelector('[data-panel="orgReportPanel"]').style.display = user.role === "org_admin" ? "" : "none";
+  switchPanel(initialWorkspacePanel());
 }
 
 $("btnLogout").addEventListener("click", async () => { await api("/api/logout", {method:"POST"}); location.reload(); });
 document.querySelectorAll("#nav [data-panel]").forEach((b) => b.addEventListener("click", () => switchPanel(b.dataset.panel)));
+
+/* ---------- 用户设置：复用本人通知偏好与现有报告入口 ---------- */
+let settingsRequest = 0, settingsReady = false, settingsHasEmail = false, settingsWrite = null;
+function settingsCurrent(request, owner) {
+  return request === settingsRequest && currentUser?.id === owner && $("userSettingsPanel").classList.contains("active");
+}
+function settingsNotificationAccess() {
+  return ["org_admin", "accountant", "teacher"].includes(currentUser?.role);
+}
+function settingsControls() {
+  const busy = !!settingsWrite;
+  $("settingsPreferences").disabled = !settingsReady || busy || !settingsNotificationAccess();
+  $("settingsEmail").disabled = !settingsReady || busy || !settingsHasEmail;
+  $("settingsSave").disabled = !settingsReady || busy || !settingsNotificationAccess();
+  $("settingsRefresh").disabled = !!busy;
+  $("settingsSave").textContent = busy ? "正在保存……" : "保存通知偏好";
+}
+function renderSettingsAccount() {
+  const user = currentUser;
+  const role = {teacher:"教师",student:"学生",org_admin:"机构管理员",accountant:"会计",platform_admin:"平台管理员"}[user.role] || user.role;
+  $("currentUser").textContent = (user.display_name || user.username) + " · " + role;
+  $("settingsUsername").textContent = user.username || "—";
+  $("settingsDisplayName").textContent = user.display_name || "—";
+  $("settingsRole").textContent = role;
+  const created = user.created_at ? new Date(user.created_at) : null;
+  $("settingsCreatedAt").textContent = created && !Number.isNaN(created.getTime()) ? created.toLocaleString("zh-CN", {hour12:false}) : "—";
+  const history = canOpenWorkspacePanel("historyPanel"), org = canOpenWorkspacePanel("orgReportPanel");
+  $("settingsHistoryExport").hidden = !history;
+  $("settingsOrgExport").hidden = !org;
+  $("settingsExportStatus").textContent = history || org ? "导出范围沿用当前账号的访问权限。" : "当前角色暂无审计报告导出入口。";
+  $("settingsNoticeOpen").hidden = !canOpenWorkspacePanel("notificationPanel");
+}
+async function loadUserSettings(message = "") {
+  if (!currentUser || !$("userSettingsPanel").classList.contains("active")) return false;
+  const request = ++settingsRequest, owner = currentUser.id;
+  renderSettingsAccount();
+  settingsReady = false; settingsHasEmail = false;
+  for (const id of ["settingsCompleted", "settingsHigh", "settingsEmail"]) $(id).checked = false;
+  settingsControls();
+  if (!settingsNotificationAccess()) {
+    $("settingsRefresh").disabled = true;
+    $("settingsStatus").textContent = "当前角色尚未开放审计通知订阅。";
+    return false;
+  }
+  $("settingsStatus").textContent = "正在读取通知偏好……";
+  try {
+    // Re-entering while a save is pending must wait for that write before reading.
+    if (settingsWrite) {
+      const writeOwner = settingsWrite.owner;
+      const result = await settingsWrite.promise;
+      if (!settingsCurrent(request, owner)) return false;
+      if (!result.ok && writeOwner === owner) message = "上次保存结果未确认，请核对当前偏好。";
+    }
+    if (!settingsCurrent(request, owner)) return false;
+    const prefs = await api("/api/notifications/preferences");
+    if (!settingsCurrent(request, owner)) return false;
+    settingsHasEmail = !!prefs.has_email;
+    $("settingsCompleted").checked = !!prefs.audit_completed;
+    $("settingsHigh").checked = !!prefs.high_risk;
+    $("settingsEmail").checked = !!prefs.email_enabled;
+    const delivery = !prefs.has_email ? "账号未绑定邮箱，仅可接收站内通知。" :
+      prefs.delivery_enabled ? "邮件发送服务已启用。" : "邮件发送服务未启用，邮件将留在队列中。";
+    $("settingsStatus").textContent = (message ? message + " " : "") + delivery + " 关闭邮件通知不撤回已受理的邮件。";
+    settingsReady = true;
+    return true;
+  } catch (error) {
+    if (settingsCurrent(request, owner)) $("settingsStatus").textContent = "读取失败，请重新读取后再保存：" + error.message;
+    return false;
+  } finally { if (settingsCurrent(request, owner)) settingsControls(); }
+}
+async function saveUserSettings() {
+  if (!currentUser || !settingsReady || !settingsNotificationAccess() || settingsWrite || !$("userSettingsPanel").classList.contains("active")) return false;
+  const request = ++settingsRequest, owner = currentUser.id;
+  const body = {audit_completed:$("settingsCompleted").checked, high_risk:$("settingsHigh").checked,
+    email_enabled:settingsHasEmail && $("settingsEmail").checked};
+  const operation = {owner, promise:api("/api/notifications/preferences", {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)})
+    .then(() => ({ok:true}), error => ({ok:false, error}))};
+  settingsWrite = operation; settingsControls();
+  $("settingsStatus").textContent = "正在保存通知偏好……";
+  const result = await operation.promise;
+  if (settingsWrite === operation) settingsWrite = null;
+  if (!settingsCurrent(request, owner)) return false;
+  if (result.ok) return loadUserSettings("通知偏好已保存。");
+  settingsReady = false; settingsControls();
+  $("settingsStatus").textContent = "保存结果未确认，请重新读取后核对：" + result.error.message;
+  return false;
+}
+$("settingsSave").onclick = saveUserSettings;
+$("settingsRefresh").onclick = () => loadUserSettings();
+$("settingsNoticeOpen").onclick = () => switchPanel("notificationPanel");
+$("settingsHistoryOpen").onclick = () => switchPanel("historyPanel");
+$("settingsOrgOpen").onclick = () => switchPanel("orgReportPanel");
 
 function noticeCurrent(request, owner) {
   return request === noticeRequest && currentUser?.id === owner && $("notificationPanel").classList.contains("active");
@@ -1023,7 +1147,16 @@ let orgOverview = null, orgOverviewRequest = 0, orgSelectedClients = new Set();
 // Use a dedicated entry, leaving the existing single-client workspace intact.
 const orgReportNav = el("button","org-report-nav"); orgReportNav.dataset.panel = "orgReportPanel";
 orgReportNav.setAttribute("aria-label","机构总览"); orgReportNav.title = "机构总览";
-orgReportNav.append(document.querySelector('[data-panel="historyPanel"] svg').cloneNode(true),el("span","nav-label","机构总览"));
+const orgReportIcon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+orgReportIcon.setAttribute("class", "nav-icon");
+orgReportIcon.setAttribute("viewBox", "0 0 24 24");
+orgReportIcon.setAttribute("aria-hidden", "true");
+orgReportIcon.setAttribute("focusable", "false");
+const orgReportIconPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+orgReportIconPath.setAttribute("fill-rule", "evenodd");
+orgReportIconPath.setAttribute("d", "M6 2h12a1 1 0 0 1 1 1v19h-5v-5h-4v5H5V3a1 1 0 0 1 1-1Zm1 3v3h3V5Zm7 0v3h3V5ZM7 11v3h3v-3Zm7 0v3h3v-3Z");
+orgReportIcon.append(orgReportIconPath);
+orgReportNav.append(orgReportIcon,el("span","nav-label","机构总览"));
 orgReportNav.style.display = "none";
 document.querySelector('[data-panel="historyPanel"]').after(orgReportNav);
 orgReportNav.onclick = () => switchPanel("orgReportPanel");
@@ -1130,16 +1263,16 @@ function appendProtectionAction(box,protection) {
   };box.append(label,open);
 }
 function invalidateVerification() {
-  verificationRequest++;const status=$("verificationStatus");status.textContent="";status.className="muted";$("verificationDetails").textContent="";
+  verificationRequest++;$("verificationStatus").textContent="";$("verificationDetails").textContent="";
   $("verificationLookup").disabled=$("verificationCheck").disabled=false;
 }
 function verificationDetails(data) {
   $("verificationDetails").textContent=`${data.report_no} · ${data.kind==="audit"?"审计 v"+data.version:"机构报告"}\n${data.customer_name} · 报告日期 ${data.report_date} · 归档 ${data.archived_at}\n标识 ${data.id}\nHTML SHA-256 ${data.html_sha256}\nPDF SHA-256 ${data.pdf_sha256 || "未导出存档；不能核验 PDF"}\n${data.notice}`;
 }
 async function performVerification(checkFile) {
-  const request=++verificationRequest,id=$("verificationId").value.trim(),format=$("verificationFormat").value,file=$("verificationFile").files[0],status=$("verificationStatus");
+  const request=++verificationRequest,id=$("verificationId").value.trim(),format=$("verificationFormat").value,file=$("verificationFile").files[0];
   $("verificationLookup").disabled=$("verificationCheck").disabled=true;
-  $("verificationDetails").textContent="";status.className="muted";status.textContent=checkFile?"正在本机计算文件指纹……":"正在读取登记……";
+  $("verificationDetails").textContent="";$("verificationStatus").textContent=checkFile?"正在本机计算文件指纹……":"正在读取登记……";
   try {
     if(!/^TPV-[0-9a-f]{40}$/.test(id))throw new Error("请输入完整的 TPV 追溯标识；TPL 本地标识没有服务器登记。");
     let options;
@@ -1155,10 +1288,9 @@ async function performVerification(checkFile) {
     const data=await api("/api/report-verification/"+encodeURIComponent(id),options);
     if(request!==verificationRequest)return;
     verificationDetails(data);
-    status.className=checkFile?(data.sha256_matches?"verify-ok":"verify-bad"):"muted";
-    status.textContent=checkFile?(data.sha256_matches?"核验通过：所选文件与归档原件逐字节一致。":"核验不通过：所选文件与归档原件不一致，可能改动或选错版本。"):
+    $("verificationStatus").textContent=checkFile?(data.sha256_matches?"核验通过：所选文件与归档原件逐字节一致。":"核验不通过：所选文件与归档原件不一致，可能改动或选错版本。"):
       "此标识已登记；尚未核验任何文件，请选择文件后核验。";
-  } catch(e) {if(request===verificationRequest){status.className="verify-bad";status.textContent="核验失败："+e.message;}}
+  } catch(e) {if(request===verificationRequest)$("verificationStatus").textContent="核验失败："+e.message;}
   finally {if(request===verificationRequest)$("verificationLookup").disabled=$("verificationCheck").disabled=false;}
 }
 function lookupVerification(){return performVerification(false);}
@@ -1694,7 +1826,7 @@ $("btnCreateUser").addEventListener("click",async()=>{const uid=currentUser?.id;
 $("btnCreateInvite").addEventListener("click",async()=>{try{const org=$("inviteOrgName").value.trim(),seats=Number($("inviteSeats").value);if(!org)throw new Error("请填写企业/高校名称。");const inv=await api("/api/invites",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({org_name:org,seats})});$("inviteOrgName").value="";$("inviteSeats").value="5";$("inviteRevealCode").textContent=inv.code;$("inviteRevealSeats").textContent="机构总席位："+inv.seats+" 席（含管理员）";$("inviteReveal").hidden=false;await loadAdmin();}catch(err){showError(err.message);}});
 $("btnCopyInvite").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("inviteRevealCode").textContent);showToast("邀请码已复制");}catch(err){showError("复制失败，请手动选中复制。");}});
 $("btnHideInvite").addEventListener("click",()=>{$("inviteReveal").hidden=true;$("inviteRevealCode").textContent="";});
-$("btnCreateClient").addEventListener("click",async()=>{const name=$("clientName").value.trim(),taxpayerId=$("clientTaxpayerId").value.trim();if(!name||!taxpayerId)return showError("企业名称和纳税人识别号为必填项。");try{const client=await api("/api/clients",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,taxpayer_id:taxpayerId,accountant_id:$("clientAccountant").value||null})});selectedClientId=client.id;$("clientName").value="";$("clientTaxpayerId").value="";await loadAdmin();}catch(err){showError(err.message);}});
+$("btnCreateClient").addEventListener("click",async()=>{try{const client=await api("/api/clients",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:$("clientName").value,taxpayer_id:$("clientTaxpayerId").value,accountant_id:$("clientAccountant").value||null})});selectedClientId=client.id;$("clientName").value="";$("clientTaxpayerId").value="";await loadAdmin();}catch(err){showError(err.message);}});
 $("btnSaveOrgSettings").addEventListener("click",async()=>{try{const saved=await api("/api/org/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({display_name:$("orgDisplayName").value,report_title:$("orgReportTitle").value,footer_text:$("orgFooterText").value})});showOrgSettings(saved,"报告抬头与页脚已保存。");}catch(err){showError(err.message);}});
 $("btnUploadOrgLogo").addEventListener("click",async()=>{const file=$("orgLogoFile").files[0];if(!file)return showError("请选择 PNG 或 JPEG Logo。");try{const form=new FormData();form.append("file",file);const saved=await api("/api/org/logo",{method:"POST",body:form});$("orgLogoFile").value="";showOrgSettings(saved,"Logo 已上传并同步到报告模板。");}catch(err){showError(err.message);}});
 $("btnRemoveOrgLogo").addEventListener("click",async()=>{if(!window.confirm("确认移除本机构报告 Logo？机构名称、标题和页脚不会改变。"))return;try{showOrgSettings(await api("/api/org/logo",{method:"DELETE"}),"Logo 已移除。");}catch(err){showError(err.message);}});
