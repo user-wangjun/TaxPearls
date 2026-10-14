@@ -162,6 +162,11 @@ def review_requirements(doc, selection, scope=None):
 def blockers(doc, selection, scope=None, *, require_review=True):
     if selection.get('purpose') == 'excluded':
         return []
+    if provenance.invoice_reanalysis_required(doc):
+        return [{'code': 'invoice_reanalysis_required', 'file_id': doc['id'],
+                 'message': '发票适配已更新或旧解析状态不明，须重新读取留存原件。',
+                 'impact': '旧发票状态、金额和可确认缓存不能绕过新版异常校验。',
+                 'required': '保存并重新分析，清除旧金额修正与复核并重新核对；或明确排除此文件。不会发送模型。'}]
     if provenance.pdf_reanalysis_required(doc):
         return [{'code': 'pdf_reanalysis_required', 'file_id': doc['id'],
                  'message': 'PDF 适配已更新或旧解析状态不明，须重新核对留存原件。',

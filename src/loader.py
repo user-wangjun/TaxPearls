@@ -325,6 +325,8 @@ _INVOICE_HEADERS = {
     "tax": {"税额", "合计税额", "税额合计", "totaltaxam"},
     "total": {"价税合计", "价税合计小写", "含税金额", "totaltaxincludedamount"},
     "status": {"状态", "发票状态", "开票状态", "invoicestatus"},
+    "red": {"红字标志", "红字发票标志", "是否红字发票", "是否红票", "whethereinvoiceisredeinvoice"},
+    "void": {"作废标志", "是否作废", "whethereinvoiceisvoided"},
     "seller_id": {"销方纳税人识别号", "销售方纳税人识别号", "销方税号", "selleridnum"},
     "buyer_id": {"购方纳税人识别号", "购买方纳税人识别号", "购方税号", "buyeridnum", "purchaseridnum"},
     "usage": {"用途确认", "抵扣用途", "用途", "usageconfirmation"},
@@ -361,7 +363,11 @@ def _invoice_columns(ws) -> dict[str, int]:
 def _invoice_number(value: object, location: str) -> str:
     if isinstance(value, bool):
         raise InputError(f"{location}：发票号码格式无效")
-    if isinstance(value, float) and value.is_integer():
+    if isinstance(value, (int, float)):
+        if value < 0 or isinstance(value, float) and not value.is_integer():
+            raise InputError(f"{location}：发票号码格式无效")
+        if value >= 10 ** 15:
+            raise InputError(f"{location}：长发票号码以数值保存，可能已丢失精度；请从原始来源按文本重新导出，不要直接改显示格式")
         value = format(value, ".0f")
     number = str(value or "").strip()
     if not number or len(number) > 64 or not re.fullmatch(r"[0-9A-Za-z._/-]+", number):
@@ -386,43 +392,96 @@ def _invoice_date(value: object, location: str) -> str:
 
 def _invoice_kind(value: object, sheet_name: str, seller_id: object, buyer_id: object, company: Company) -> str:
     text = str(value or "").strip().lower()
+    explicit = ""
     if text in {"销项", "销项发票", "销售", "开出", "开具", "sale", "sales"}:
-        return "销项"
-    if text in {"采购", "进项", "进项发票", "购进", "受票", "purchase", "input"}:
-        return "采购"
-    if text:
+        explicit = "销项"
+    elif text in {"采购", "进项", "进项发票", "购进", "受票", "purchase", "input"}:
+        explicit = "采购"
+    elif text:
         raise InputError(f"{sheet_name}：无法识别发票方向「{value}」；仅支持销项/采购")
+    taxpayer_id = re.sub(r"\s+", "", company.taxpayer_id or "").upper()
+    seller = re.sub(r"\s+", "", str(seller_id or "")).upper()
+    buyer = re.sub(r"\s+", "", str(buyer_id or "")).upper()
+    inferred = ""
+    if taxpayer_id and (seller or buyer):
+        if seller == taxpayer_id and buyer == taxpayer_id:
+            raise InputError(f"{sheet_name}：购销双方税号同时属于被检测企业，无法判定发票方向")
+        if seller == taxpayer_id:
+            inferred = "销项"
+        elif buyer == taxpayer_id:
+            inferred = "采购"
+        elif seller and buyer or explicit == "销项" and seller or explicit == "采购" and buyer:
+            raise InputError(f"{sheet_name}：购销双方税号与被检测企业或填写的发票方向不符")
+    if inferred and explicit and inferred != explicit:
+        raise InputError(f"{sheet_name}：填写的发票方向与购销双方税号不一致")
+    if inferred or explicit:
+        return inferred or explicit
     title = sheet_name.lower()
     if "销项" in title:
         return "销项"
     if any(word in title for word in ("进项", "采购", "受票")):
         return "采购"
-    taxpayer_id = re.sub(r"\s+", "", company.taxpayer_id or "").upper()
-    seller = re.sub(r"\s+", "", str(seller_id or "")).upper()
-    buyer = re.sub(r"\s+", "", str(buyer_id or "")).upper()
-    if taxpayer_id and seller == taxpayer_id and buyer != taxpayer_id:
-        return "销项"
-    if taxpayer_id and buyer == taxpayer_id and seller != taxpayer_id:
-        return "采购"
     return ""
 
 
-def _invoice_status(value: object, amount: Decimal, tax: Decimal, location: str) -> str:
+def _invoice_status(value: object, amount: Decimal, tax: Decimal, location: str,
+                    *, total=None, red=None, void=None) -> str:
+    """Exact source states; a red-flushed blue invoice is not a red invoice."""
     text = str(value or "").strip().lower()
-    if any(word in text for word in ("作废", "撤销", "void", "cancel")):
+    if text in {"已红冲", "已全额红冲", "全额红冲", "已部分红冲", "部分红冲", "红冲", "冲红"}:
+        raise InputError(f"{location}：状态「{value}」不能证明本行是红字发票；请提供原蓝票与独立红票明细，不将蓝票金额自动反向扣减")
+    if text in {"作废", "已作废", "撤销", "已撤销", "void", "voided", "cancel", "cancelled", "canceled"}:
         status = "作废"
-    elif any(word in text for word in ("红字", "红票", "红冲", "冲红", "负数", "red")):
+    elif text in {"红字", "红字发票", "红票", "红冲发票", "冲红发票", "负数", "负数发票", "red"}:
         status = "红字"
-    elif text in {"", "正常", "有效", "蓝字", "已开具", "normal", "valid", "blue"}:
+    elif text in {"正常", "有效", "蓝字", "蓝字发票", "已开具", "normal", "valid", "blue"}:
         status = "正常"
+    elif not text and (red is not None or void is True):
+        status = "作废" if void is True else "红字" if red is True else "正常"
+    elif not text:
+        raise InputError(f"{location}：缺少明确发票状态或红字标志，不能按正常发票计入")
     else:
         raise InputError(f"{location}：无法识别发票状态「{value}」")
-    if amount < 0 or tax < 0:
-        if status == "正常" and text:
+    if void is True:
+        if text and status != "作废" and text not in {"红字", "红字发票", "红票", "蓝字", "蓝字发票", "blue", "red"}:
+            raise InputError(f"{location}：发票状态与作废标志冲突")
+        status = "作废"
+    elif void is False and status == "作废":
+        raise InputError(f"{location}：发票状态与作废标志冲突")
+    if red is True and status != "作废":
+        # Generic validity (normal/valid) is separate from red/blue colour.
+        if text and status != "红字" and text not in {"正常", "有效", "已开具", "normal", "valid"}:
+            raise InputError(f"{location}：发票状态与红字标志冲突")
+        status = "红字"
+    elif red is False and status == "红字":
+        raise InputError(f"{location}：发票状态与红字标志冲突")
+    signed = [number for number in (amount, tax, total) if number is not None and number != 0]
+    if any(number < 0 for number in signed):
+        if any(number > 0 for number in signed):
+            raise InputError(f"{location}：不含税金额、税额及价税合计的正负号不一致")
+        if status == "正常" and (text or red is False):
             raise InputError(f"{location}：正常发票金额不能为负数")
-        if status == "正常":
-            status = "红字"
     return status
+
+
+def _invoice_deduction(kind, status, tax, confirmed, usage, period, transferred,
+                       transferred_tax, location, *, template_mode=False):
+    """Missing transfer facts never silently restore the full deductible tax."""
+    if transferred_tax is not None and (transferred_tax < 0 or transferred_tax > abs(tax)):
+        raise InputError(f"{location}：进项转出税额须在 0 与发票税额之间")
+    if transferred is True and transferred_tax is None:
+        raise InputError(f"{location}：已转出但缺少进项转出税额，不能按零处理")
+    if transferred is not True and transferred_tax not in {None, Decimal(0)}:
+        raise InputError(f"{location}：进项转出标志未确认或未转出时，进项转出税额必须为空或 0")
+    if period:
+        _parse_period(period, f"{location}抵扣所属期")
+    deductible = confirmed is True and usage in {"抵扣税款", "抵扣", "进项抵扣", "用于抵扣"}
+    legacy = template_mode and confirmed is None and not usage
+    if kind not in {"", "采购"} or status == "作废" or not (deductible or legacy):
+        return None
+    if not legacy and not period:
+        return None
+    return abs(tax) - (transferred_tax if transferred is True else Decimal(0))
 
 
 def _invoice_bool(value: object, location: str) -> bool | None:
@@ -462,31 +521,25 @@ def _invoice_row(ws, row: tuple, idx: int, columns: dict[str, int], company: Com
     kind = _invoice_kind(value("kind"), ws.title, value("seller_id"), value("buyer_id"), company)
     if not kind:
         raise InputError(f"{location}：无法根据类型、工作表名或购销双方税号判定销项/采购")
-    status = _invoice_status(value("status"), amount, tax, location)
+    status = _invoice_status(value("status"), amount, tax, location, total=total,
+                             red=_invoice_bool(value("red"), f"{location}红字标志"),
+                             void=_invoice_bool(value("void"), f"{location}作废标志"))
     confirmed = _invoice_bool(value("confirmed"), f"{location}用途确认状态")
     usage = str(value("usage") or "").strip()
     transferred = _invoice_bool(value("transferred"), f"{location}进项转出状态")
     transferred_tax = _number(value("transferred_tax"), f"{location}进项转出税额")
-    if transferred is False and transferred_tax not in {None, Decimal(0)}:
-        raise InputError(f"{location}：未转出时进项转出税额必须为空或 0")
-    deductible_tax = None
-    if kind == "采购" and status != "作废":
-        explicitly_deductible = confirmed is True and (not usage or "抵扣" in usage)
-        if template_mode and confirmed is None and not usage:
-            explicitly_deductible = True
-        if explicitly_deductible:
-            deductible_tax = abs(tax)
-            if transferred:
-                transferred_tax = abs(transferred_tax or Decimal(0))
-                if transferred_tax > deductible_tax:
-                    raise InputError(f"{location}：进项转出税额不能大于发票税额")
-                deductible_tax -= transferred_tax
+    deductible_period = str(value("deductible_period") or "").strip()
+    deductible_tax = _invoice_deduction(kind, status, tax, confirmed, usage, deductible_period,
+        transferred, transferred_tax, location, template_mode=template_mode)
     detail = f"{kind}{status}；不含税 {abs(amount):,.2f}；税额 {abs(tax):,.2f}"
     if total is not None:
         detail += f"；价税合计 {abs(total):,.2f}"
+    detail += f"；原文状态 {str(value('status') or '未提供')}；红字标志 {value('red')}；作废标志 {value('void')}；原文不含税 {amount}；原文税额 {tax}"
+    if kind == "采购" and status != "作废" and deductible_tax is None:
+        detail += "；抵扣用途、确认或所属期依据不足，本票税额不计入本期确认抵扣"
     return _Invoice(
         number, issued_on, kind, abs(amount), abs(tax), status, deductible_tax,
-        str(value("deductible_period") or "").strip(),
+        deductible_period,
         str(value("seller_id") or "").strip(), str(value("buyer_id") or "").strip(),
         f"{ws.title}!第{idx}行", detail,
     )
@@ -511,7 +564,7 @@ def _read_invoices(wb, company: Company) -> list[_Invoice]:
             raise InputError(f"「{config.SHEET_INVOICES}」表头不符；必须包含发票号码、开票日期、不含税金额或价税合计、税额")
         if looks_like_invoice:
             candidates.append((ws, columns))
-    seen, invoices = set(), []
+    seen, invoices = {}, []
     for ws, columns in candidates:
         template_mode = [cell.value for cell in ws[1]][:len(config.COL_INVOICES)] == config.COL_INVOICES
         for idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
@@ -519,8 +572,8 @@ def _read_invoices(wb, company: Company) -> list[_Invoice]:
                 continue
             invoice = _invoice_row(ws, row, idx, columns, company, template_mode)
             if invoice.number in seen:
-                raise InputError(f"发票号码重复「{invoice.number}」；请先去重，禁止重复计入")
-            seen.add(invoice.number)
+                raise InputError(f"发票号码重复「{invoice.number}」：{seen[invoice.number]} 与 {invoice.source}；请核对重复或状态冲突后重新导出，禁止重复计入")
+            seen[invoice.number] = invoice.source
             invoices.append(invoice)
     return invoices
 
@@ -529,26 +582,27 @@ def _invoice_metrics(company: Company, invoices: list[_Invoice]) -> dict[str, Me
     if not invoices:
         return {}
     audit_period = _parse_period(company.period, "企业信息核对所属期")
-    totals = {kind: {"amount": Decimal(0), "tax": Decimal(0), "count": 0, "red": 0, "void": 0}
+    totals = {kind: {"amount": Decimal(0), "tax": Decimal(0), "count": 0, "red": 0, "void": 0, "sources": []}
               for kind in ("销项", "采购")}
     deductible_total, deductible_count = Decimal(0), 0
-    seen, sources = set(), []
+    seen, deductible_sources = {}, []
     for invoice in invoices:
         if invoice.number in seen:
-            raise InputError(f"发票号码重复「{invoice.number}」；请先去重，禁止重复计入")
-        seen.add(invoice.number)
+            raise InputError(f"发票号码重复「{invoice.number}」：{seen[invoice.number]} 与 {invoice.source}；请先核对，禁止重复计入")
+        seen[invoice.number] = invoice.source
         issued_on = date.fromisoformat(invoice.issued_on)
         if not audit_period.start <= issued_on <= audit_period.end:
             raise InputError(
                 f"发票「{invoice.number}」开票日期 {invoice.issued_on} 不在核对期间 {company.period} 内；"
                 "请拆分期间或更正核对所属期"
             )
-        kind = invoice.kind or _invoice_kind("", "XML 发票", invoice.seller_id, invoice.buyer_id, company)
+        kind = _invoice_kind(invoice.kind, f"发票「{invoice.number}」", invoice.seller_id, invoice.buyer_id, company)
         if not kind:
             raise InputError(
                 f"发票「{invoice.number}」无法根据购销双方税号与企业纳税人识别号判定销项/采购"
             )
         bucket = totals[kind]
+        bucket['sources'].append(invoice.source + f"（票号 {invoice.number}；{invoice.status}{'已剔除' if invoice.status == '作废' else ''}）")
         if invoice.status == "作废":
             bucket["void"] += 1
             continue
@@ -557,7 +611,6 @@ def _invoice_metrics(company: Company, invoices: list[_Invoice]) -> dict[str, Me
         bucket["tax"] += sign * invoice.tax
         bucket["count"] += 1
         bucket["red"] += invoice.status == "红字"
-        sources.append(invoice.source)
         if kind == "采购" and invoice.deductible_tax is not None:
             in_period = True
             if invoice.deductible_period:
@@ -566,13 +619,14 @@ def _invoice_metrics(company: Company, invoices: list[_Invoice]) -> dict[str, Me
             if in_period:
                 deductible_total += sign * invoice.deductible_tax
                 deductible_count += 1
-    source = "；".join(dict.fromkeys(sources)) or "发票明细"
+                deductible_sources.append(invoice.source + f"（票号 {invoice.number}；{invoice.status}）")
     metrics = {}
     for kind, amount_key, tax_key in (
         ("销项", "发票.销项净额", "发票.销项税额净额"),
         ("采购", "发票.采购不含税净额", "发票.采购税额净额"),
     ):
         bucket = totals[kind]
+        source = "；".join(dict.fromkeys(bucket['sources']))
         if bucket["count"]:
             detail = (
                 f"{bucket['count']} 张有效票（红字 {bucket['red']} 张、另剔除作废 {bucket['void']} 张）；"
@@ -583,7 +637,7 @@ def _invoice_metrics(company: Company, invoices: list[_Invoice]) -> dict[str, Me
     if deductible_count:
         metrics["凭证.本期确认抵扣税额"] = Metric(
             "凭证.本期确认抵扣税额", deductible_total,
-            source + " / 已明确确认抵扣且抵扣所属期落在本期的采购发票",
+            "；".join(dict.fromkeys(deductible_sources)) + " / 已明确确认抵扣且抵扣所属期落在本期的采购发票",
             f"{deductible_count} 张确认抵扣发票税额净计 {deductible_total:,.2f}；未确认用途的采购税额不计入",
         )
     return metrics

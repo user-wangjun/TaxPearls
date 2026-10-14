@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [] };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [] };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -404,6 +404,7 @@ async function load() {
   renderAll();
   await loadMarkStats().catch(() => {});
   await loadRoster().catch(() => { state.classes = []; state.classHistory = []; renderRoster(); });
+  await loadOrg().catch(() => { state.departments = []; state.terms = []; state.orgClasses = []; renderOrg(); });
 }
 
 /* ---------- 班级与教师名册（FR-U03） ---------- */
@@ -447,6 +448,64 @@ function parseTeacherRows(text) {
     return { username: parts[0] || "", display_name: parts[1] || "",
              email: parts[2] || null, phone: null };
   }).filter((r) => r.username);
+}
+
+/* ---------- 组织架构（FR-U01）：院系 / 学期 / 班级实体 ---------- */
+
+async function loadOrg() {
+  const college = state.staff ? state.staff.college : "";
+  if (!college) { renderOrg(); return; }
+  const q = encodeURIComponent(college);
+  state.departments = (await api(`/api/training/staff/org/departments?college=${q}`)).departments;
+  state.terms = (await api(`/api/training/staff/org/terms?college=${q}`)).terms;
+  state.orgClasses = (await api(`/api/training/staff/org/classes?college=${q}`)).classes;
+  renderOrg();
+}
+
+function orgBadge(archived) {
+  return archived ? ` <span class="badge warn">已归档</span>` : "";
+}
+
+function renderOrg() {
+  const deps = state.departments || [];
+  const terms = state.terms || [];
+  const classes = state.orgClasses || [];
+  const isAdmin = state.staff && state.staff.role === "admin";
+  document.getElementById("org-dep-form").hidden = !isAdmin;
+  document.getElementById("org-term-form").hidden = !isAdmin;
+  document.getElementById("org-class-form").hidden = !isAdmin;
+  document.getElementById("org-departments").innerHTML = deps.length
+    ? `<table style="width:100%;border-collapse:collapse;">
+      <tr><th style="text-align:left;">院系</th><th style="text-align:left;">班级数</th><th style="text-align:left;"></th></tr>
+      ${deps.map((d) => `<tr><td>${esc(d.name)}${orgBadge(d.archived)}</td><td>${d.classes}</td>
+        <td>${isAdmin ? `<button class="small" data-act="org-dep-toggle" data-id="${esc(d.id)}" data-v="${d.archived ? 0 : 1}">${d.archived ? "恢复" : "归档"}</button>
+        <button class="small" data-act="org-dep-delete" data-id="${esc(d.id)}">删除</button>` : ""}</td></tr>`).join("")}
+    </table>`
+    : `<p class="muted">暂无院系${isAdmin ? "，可在上方创建" : ""}。</p>`;
+  document.getElementById("org-terms").innerHTML = terms.length
+    ? `<table style="width:100%;border-collapse:collapse;">
+      <tr><th style="text-align:left;">学期</th><th style="text-align:left;">起止</th><th style="text-align:left;">班级数</th><th style="text-align:left;"></th></tr>
+      ${terms.map((t) => `<tr><td>${esc(t.name)}${t.is_current ? ` <span class="badge">当前</span>` : ""}${orgBadge(t.archived)}</td>
+        <td class="muted">${esc(t.start_date || "—")} ~ ${esc(t.end_date || "—")}</td><td>${t.classes}</td>
+        <td>${isAdmin ? `<button class="small" data-act="org-term-current" data-id="${esc(t.id)}" ${t.is_current ? "disabled" : ""}>设为当前</button>
+        <button class="small" data-act="org-term-toggle" data-id="${esc(t.id)}" data-v="${t.archived ? 0 : 1}">${t.archived ? "恢复" : "归档"}</button>
+        <button class="small" data-act="org-term-delete" data-id="${esc(t.id)}">删除</button>` : ""}</td></tr>`).join("")}
+    </table>`
+    : `<p class="muted">暂无学期${isAdmin ? "，可在上方创建" : ""}。</p>`;
+  document.getElementById("org-classes").innerHTML = classes.length
+    ? `<table style="width:100%;border-collapse:collapse;">
+      <tr><th style="text-align:left;">班级</th><th style="text-align:left;">院系</th><th style="text-align:left;">学期</th><th style="text-align:left;">在读</th><th style="text-align:left;"></th></tr>
+      ${classes.map((c) => `<tr><td>${esc(c.name)}${orgBadge(c.archived)}</td>
+        <td>${esc(c.department_name || "—")}</td><td>${esc(c.term_name || "—")}</td><td>${c.active_students}</td>
+        <td>${isAdmin ? `<button class="small" data-act="org-class-clone" data-id="${esc(c.id)}">按学期重建</button>
+        <button class="small" data-act="org-class-toggle" data-id="${esc(c.id)}" data-v="${c.archived ? 0 : 1}">${c.archived ? "恢复" : "归档"}</button>
+        <button class="small" data-act="org-class-delete" data-id="${esc(c.id)}">删除</button>` : ""}</td></tr>`).join("")}
+    </table>`
+    : `<p class="muted">暂无班级实体。学生名册「班级」字段照常聚合展示于上方「班级与教师名册」，不受影响。</p>`;
+  document.getElementById("oc-department").innerHTML = `<option value="">（未绑定院系）</option>` +
+    deps.filter((d) => !d.archived).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
+  document.getElementById("oc-term").innerHTML = `<option value="">（未绑定学期）</option>` +
+    terms.filter((t) => !t.archived).map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");
 }
 
 /* ---------- 学生管理 ---------- */
@@ -826,6 +885,93 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       renderStudentImport(result.import);
       await loadStudents();
     }),
+    "org-dep-create": async () => {
+      const name = q("#od-name").value.trim();
+      if (!name) { flash("院系名称必填。", true); return; }
+      await api("/api/training/staff/org/departments", {
+        method: "POST", body: { college: state.staff.college, name } });
+      q("#od-name").value = "";
+      flash("院系已创建。");
+      await loadOrg();
+    },
+    "org-dep-toggle": async () => {
+      await api(`/api/training/staff/org/departments/${id}`, {
+        method: "PATCH", body: { archived: id && q(`button[data-act="org-dep-toggle"][data-id="${id}"]`).dataset.v === "1" } });
+      await loadOrg();
+    },
+    "org-dep-delete": async () => {
+      try {
+        await api(`/api/training/staff/org/departments/${id}`, { method: "DELETE" });
+        flash("院系已删除。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-term-create": async () => {
+      const name = q("#ot-name").value.trim();
+      if (!name) { flash("学期名称必填（如 2026-2027-1）。", true); return; }
+      await api("/api/training/staff/org/terms", {
+        method: "POST",
+        body: { college: state.staff.college, name,
+                start_date: q("#ot-start").value.trim() || null,
+                end_date: q("#ot-end").value.trim() || null,
+                is_current: q("#ot-current").checked } });
+      q("#ot-name").value = ""; q("#ot-start").value = ""; q("#ot-end").value = ""; q("#ot-current").checked = false;
+      flash("学期已创建。");
+      await loadOrg();
+    },
+    "org-term-current": async () => {
+      await api(`/api/training/staff/org/terms/${id}`, { method: "PATCH", body: { is_current: true } });
+      flash("已设为当前学期。");
+      await loadOrg();
+    },
+    "org-term-toggle": async () => {
+      await api(`/api/training/staff/org/terms/${id}`, {
+        method: "PATCH", body: { archived: q(`button[data-act="org-term-toggle"][data-id="${id}"]`).dataset.v === "1" } });
+      await loadOrg();
+    },
+    "org-term-delete": async () => {
+      try {
+        await api(`/api/training/staff/org/terms/${id}`, { method: "DELETE" });
+        flash("学期已删除。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-class-create": async () => {
+      const name = q("#oc-name").value.trim();
+      if (!name) { flash("班级名称必填。", true); return; }
+      await api("/api/training/staff/org/classes", {
+        method: "POST",
+        body: { college: state.staff.college, name,
+                department_id: q("#oc-department").value || null,
+                term_id: q("#oc-term").value || null } });
+      q("#oc-name").value = "";
+      flash("班级实体已创建（在读人数按学生名册「班级」字段对齐）。");
+      await loadOrg();
+    },
+    "org-class-toggle": async () => {
+      await api(`/api/training/staff/org/classes/${id}`, {
+        method: "PATCH", body: { archived: q(`button[data-act="org-class-toggle"][data-id="${id}"]`).dataset.v === "1" } });
+      await loadOrg();
+    },
+    "org-class-delete": async () => {
+      try {
+        await api(`/api/training/staff/org/classes/${id}`, { method: "DELETE" });
+        flash("班级实体已删除（学生名册不受影响）。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-class-clone": async () => {
+      const termName = window.prompt("按学期重建班级：输入目标学期名称（须已存在，如 2026-2027-2）。学生名册不移动，归属调整仍用「班级整建制迁移」。");
+      if (!termName) return;
+      const term = (state.terms || []).find((t) => t.name === termName.trim());
+      if (!term) { flash("未找到该学期，请先在学期区创建。", true); return; }
+      try {
+        await api(`/api/training/staff/org/classes/${id}/clone`, {
+          method: "POST", body: { term_id: term.id } });
+        flash("已按学期重建班级实体。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
     "reset-student-pass": () => {
       const stu = state.students.find((s) => s.id === id);
       const input = window.prompt(`为 ${stu ? stu.student_no + " " + stu.name : "该学生"} 设置新密码（至少 8 位，重置后其登录立即失效）：`);
