@@ -253,8 +253,8 @@ def import_students(store, college: str, rows: list[dict[str, Any]], *,
     return {"created": created, "skipped": skipped}
 
 
-_XLSX_MAX_BYTES = 2_000_000   # 名册文件大小上限（约 2MB，远超正常班级名册）
 _XLSX_MAX_ROWS = 1000         # 单次导入数据行上限；超出整体拒绝，请分批
+_XLSX_MAX_BYTES = 2 * 1024 * 1024  # 单文件大小上限（2MB）；超出整体拒绝
 
 
 def _xlsx_cell_text(cells: tuple, index: int | None) -> str:
@@ -2061,10 +2061,13 @@ def _scored_view(row: sqlite3.Row, db=None) -> dict[str, Any]:
 
 
 def list_attempts(store, student_id: str, *, cert_id: str | None = None,
-                  status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+                  status: str | None = None, kp_id: str | None = None,
+                  limit: int = 50) -> list[dict[str, Any]]:
     clauses, params = ["WHERE student_id=?"], [student_id]
     if cert_id:
         clauses.append("AND certificate_id=?"); params.append(cert_id)
+    if kp_id:
+        clauses.append("AND knowledge_point_id=?"); params.append(kp_id)
     if status in ("open", "scored"):
         clauses.append("AND status=?"); params.append(status)
     if status == "open":
@@ -2969,10 +2972,11 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.get("/api/training/my/practice")
     @guarded
     def practice_list(certificate_id: str | None = None, status: str | None = None,
+                      kp_id: str | None = None,
                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student(session)
         return response({"attempts": list_attempts(
-            store_provider(), who["id"], cert_id=certificate_id, status=status)})
+            store_provider(), who["id"], cert_id=certificate_id, status=status, kp_id=kp_id)})
 
     @app.post("/api/training/my/practice/{attempt_id}/submit")
     @guarded
