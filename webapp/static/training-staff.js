@@ -489,8 +489,10 @@ function renderOrg() {
       ${terms.map((t) => `<tr><td>${esc(t.name)}${t.is_current ? ` <span class="badge">当前</span>` : ""}${orgBadge(t.archived)}</td>
         <td class="muted">${esc(t.start_date || "—")} ~ ${esc(t.end_date || "—")}</td><td>${t.classes}</td>
         <td>${isAdmin ? `<button class="small" data-act="org-term-current" data-id="${esc(t.id)}" ${t.is_current ? "disabled" : ""}>设为当前</button>
+        <button class="small" data-act="org-term-snapshot" data-id="${esc(t.id)}">生成快照</button>
+        <button class="small" data-act="org-term-snapshot-view" data-id="${esc(t.id)}">查看快照</button>
         <button class="small" data-act="org-term-toggle" data-id="${esc(t.id)}" data-v="${t.archived ? 0 : 1}">${t.archived ? "恢复" : "归档"}</button>
-        <button class="small" data-act="org-term-delete" data-id="${esc(t.id)}">删除</button>` : ""}</td></tr>`).join("")}
+        <button class="small" data-act="org-term-delete" data-id="${esc(t.id)}">删除</button>` : `<button class="small" data-act="org-term-snapshot-view" data-id="${esc(t.id)}">查看快照</button>`}</td></tr>`).join("")}
     </table>`
     : `<p class="muted">暂无学期${isAdmin ? "，可在上方创建" : ""}。</p>`;
   document.getElementById("org-classes").innerHTML = classes.length
@@ -946,6 +948,25 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       await api(`/api/training/staff/org/terms/${id}`, { method: "PATCH", body: { is_current: true } });
       flash("已设为当前学期。");
       await loadOrg();
+    },
+    "org-term-snapshot": async () => {
+      try {
+        const data = (await api(`/api/training/staff/org/terms/${id}/roster-snapshot`, { method: "POST" })).snapshot;
+        flash(`名册快照已生成：在读 ${data.snapshotted} 人（新增 ${data.inserted} · 更新 ${data.updated} · 移出 ${data.removed}）。`);
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-term-snapshot-view": async () => {
+      try {
+        const data = (await api(`/api/training/staff/org/terms/${id}/roster-snapshot`)).snapshot;
+        const box = document.getElementById("org-snapshot-view");
+        if (!data.total) {
+          box.innerHTML = `<p class="muted">学期「${esc(data.term_name)}」暂无名册快照，请先点「生成快照」。</p>`;
+          return;
+        }
+        box.innerHTML = `<h3 style="margin-top:12px;">名册快照 · ${esc(data.term_name)}（${data.total} 人，快照时间 ${esc((data.taken_at || "").slice(0, 16).replace("T", " "))}）</h3>` +
+          data.classes.map((c) => `<p style="margin:6px 0 2px;"><strong>${esc(c.class_name)}</strong>（${c.students.length} 人）：${c.students.map((s) => esc(s.student_no + " " + s.name)).join("、")}</p>`).join("");
+      } catch (err) { flash(err.message, true); }
     },
     "org-term-toggle": async () => {
       await api(`/api/training/staff/org/terms/${id}`, {
