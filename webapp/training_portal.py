@@ -840,7 +840,7 @@ def college_quota_overview(store, college: str, *, history_limit: int = 10) -> d
             """SELECT h.old_teacher_quota, h.old_student_quota, h.new_teacher_quota,
                       h.new_student_quota, h.created_at, u.display_name AS changed_by_name
                FROM college_quota_history h LEFT JOIN college_user u ON u.id=h.changed_by
-               WHERE h.college=? ORDER BY h.created_at DESC, h.id LIMIT ?""",
+               WHERE h.college=? ORDER BY h.created_at DESC, h.rowid DESC LIMIT ?""",
             (college, max(1, min(int(history_limit), 50)))).fetchall()]
     state["history"] = hist
     return state
