@@ -646,6 +646,40 @@ def initialize(store) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_code_problem_college
                 ON code_problem(college, active);
+            -- 编程提交与判题（FR-J02 v1 + J04 教学级引擎）：代码正文按敏感存储
+            -- 保护（REGISTRY: code_submission.code_text）；一次提交一次判题，
+            -- 重判=重新提交新行（历史不被覆盖）。判题器为教学演示级受限子进程
+            -- （超时/独立目录/输出截断），非容器级安全边界，生产判题须专项。
+            CREATE TABLE IF NOT EXISTS code_submission (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                problem_id TEXT NOT NULL REFERENCES code_problem(id),
+                student_id TEXT NOT NULL REFERENCES student_info(id),
+                language TEXT NOT NULL DEFAULT 'python',  -- 与题目 language 一致（v1 仅 python）
+                code_text TEXT NOT NULL,                  -- 代码正文（敏感存储保护列）
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','judged','judgement_failed')),
+                submitted_at TEXT NOT NULL,
+                content_version_id TEXT,                  -- 预留：题库版本追溯（J02 边界）
+                UNIQUE(problem_id, student_id, submitted_at)
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_submission_problem
+                ON code_submission(problem_id, submitted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_code_submission_student
+                ON code_submission(student_id, submitted_at DESC);
+            CREATE TABLE IF NOT EXISTS code_judge_result (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                submission_id TEXT NOT NULL UNIQUE REFERENCES code_submission(id),  -- 1:1
+                status TEXT NOT NULL
+                    CHECK (status IN ('accepted','partial','wrong_answer',
+                                      'runtime_error','timeout','judgement_failed')),
+                total_score REAL NOT NULL DEFAULT 0,      -- 加权得分（0~100）
+                passed_count INTEGER NOT NULL DEFAULT 0,
+                case_count INTEGER NOT NULL DEFAULT 0,
+                detail_json TEXT NOT NULL,                -- 逐用例：seq/passed/score/runtime_ms/输出摘要（截断）
+                judged_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_judge_submission
+                ON code_judge_result(submission_id);
         """)
         # 院校席位与配额（FR-U06）：教师/学生分席，院校按师生配额核销。
         # 无记录院校按默认档放行（不阻塞既有部署）；调整走 revision 乐观锁

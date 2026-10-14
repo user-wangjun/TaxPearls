@@ -149,6 +149,7 @@ async function refresh() {
     api("/api/training/certificates"),
     api("/api/training/my/goals?include_archived=1"),
   ]);
+  loadCodePractice().catch(() => {});
   state.certificates = certs.certificates;
   state.goals = goals.goals;
   renderGoals();
@@ -803,5 +804,86 @@ async function toggleKpHistory(btn, scope, kpId) {
     flash(err.message, true);
   }
 }
+
+/* ---------- 编程练习（判题线 v1） ---------- */
+
+const CODE_STATUS = { accepted: "全部通过", partial: "部分通过", wrong_answer: "答案不符",
+                      runtime_error: "运行出错", timeout: "超出时限",
+                      judgement_failed: "判题失败" };
+
+async function loadCodePractice() {
+  try {
+    const problems = (await api("/api/training/my/code/problems")).problems;
+    const sel = document.getElementById("cc-problem");
+    sel.innerHTML = problems.length
+      ? problems.map((p) => `<option value="${esc(p.id)}">${esc(p.title)}（${p.case_count} 组用例）</option>`).join("")
+      : `<option value="">（暂无开放中的编程题）</option>`;
+    sel.dataset.problems = JSON.stringify(problems);
+    sel.dispatchEvent(new Event("change"));
+    const history = (await api("/api/training/my/code/submissions")).submissions;
+    document.getElementById("cc-history").innerHTML = history.length
+      ? `最近提交：${history.slice(0, 5).map((s) =>
+          `${esc((s.submitted_at || "").slice(0, 16).replace("T", " "))} · ${s.judge ? `${esc(CODE_STATUS[s.judge.status] || s.judge.status)} ${s.judge.total_score} 分` : "未判题"}`).join(" ｜ ")}`
+      : "还没有提交过编程题。";
+  } catch (err) {
+    document.getElementById("cc-problem-info").innerHTML = `<span class="muted">编程题加载失败：${esc(err.message)}</span>`;
+  }
+}
+
+function showCodeProblemInfo(pid) {
+  const info = document.getElementById("cc-problem-info");
+  const problems = JSON.parse(document.getElementById("cc-problem").dataset.problems || "[]");
+  const p = problems.find((x) => x.id === pid);
+  if (!p) { info.innerHTML = ""; return; }
+  info.innerHTML = `限时 ${p.time_limit_ms}ms · ${p.case_count} 组用例（含 ${p.sample_input !== undefined ? "公开样例" : "隐藏用例"}）`
+    + (p.statement ? ` · ${esc(p.statement)}` : "")
+    + (p.sample_input !== undefined ? `<div class="detail" style="margin-top:4px;"><span class="muted">样例输入（可直接运行）：</span><code>${esc(p.sample_input.replace(/\n/g, "⏎"))}</code></div>` : "");
+}
+
+document.getElementById("cc-problem").addEventListener("change", (e) =>
+  showCodeProblemInfo(e.target.value));
+
+document.getElementById("cc-submit").addEventListener("click", async () => {
+  const sel = document.getElementById("cc-problem");
+  const pid = sel.value;
+  const code = document.getElementById("cc-code").value;
+  const box = document.getElementById("cc-result");
+  if (!pid) { flash("没有可提交的编程题。", true); return; }
+  if (!code.trim()) { flash("代码不能为空。", true); return; }
+  box.innerHTML = `<p class="muted">判题运行中（每用例最多数秒）…</p>`;
+  try {
+    const data = await api(`/api/training/my/code/${pid}/submit`,
+                           { method: "POST", body: { code_text: code } });
+    const r = data.result;
+    const badge = r.status === "accepted" ? "badge" : "badge warn";
+    box.innerHTML = `
+      <div class="item-head">
+        <div><span class="${badge}">${esc(CODE_STATUS[r.status] || r.status)}</span>
+          <strong>${r.total_score} 分</strong>
+          <span class="muted">通过 ${r.passed_count}/${r.case_count} 组用例</span></div>
+      </div>
+      ${r.detail.map((d) => d.error ? `<div class="detail warn">${esc(d.error)}</div>`
+        : `<div class="detail ${d.passed ? "ok" : "warn"}" style="margin-top:4px;">
+            用例 ${d.seq}：${d.passed ? "✅ 通过" : `❌ ${esc(CODE_STATUS[d.run_status] || d.run_status)}`} · ${d.runtime_ms}ms
+            ${d.output_excerpt ? `<div class="muted" style="margin-top:2px;">输出摘要：${esc(d.output_excerpt.slice(0, 120))}</div>` : ""}
+          </div>`).join("")}
+      <div class="muted" style="margin-top:4px;">${esc(data.sandbox_notice)}</div>`;
+    flash(`判题完成：${r.total_score} 分。`);
+    await loadCodePractice._historyOnly();
+  } catch (err) {
+    box.innerHTML = "";
+    flash(err.message, true);
+  }
+});
+
+loadCodePractice._historyOnly = async function () {
+  try {
+    const history = (await api("/api/training/my/code/submissions")).submissions;
+    document.getElementById("cc-history").innerHTML = history.length
+      ? `最近提交：${history.slice(0, 5).map((s) =>
+          `${esc((s.submitted_at || "").slice(0, 16).replace("T", " "))} · ${s.judge ? `${esc(CODE_STATUS[s.judge.status] || s.judge.status)} ${s.judge.total_score} 分` : "未判题"}`).join(" ｜ ")}`
+      : "还没有提交过编程题。";
+  } catch { /* 历史刷新失败不打断主流程 */ }
+};
 
 boot();

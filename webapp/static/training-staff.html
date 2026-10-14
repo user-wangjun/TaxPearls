@@ -282,6 +282,28 @@
       <div id="overview-body" class="muted">加载中…</div>
     </div>
     <div class="card">
+      <h2>编程题库（判题线）
+        <button class="small" data-act="show-code-form">＋ 新建编程题</button>
+        <button class="small" data-act="refresh-code-problems">刷新</button>
+      </h2>
+      <p class="muted" style="margin-top:-6px;">编程题与测试用例管理（v1 仅 python）。判题为教学演示级沙箱（python -I 隔离 + 超时 + 输出截断），非容器级安全边界；生产判题须容器沙箱专项。</p>
+      <div id="code-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>题目标题（必填）</label><input id="cp-title" placeholder="如 两数之和"></div>
+          <div><label>时间限制（毫秒，500~60000）</label><input id="cp-time" value="5000"></div>
+        </div>
+        <label>题面描述</label>
+        <input id="cp-statement" placeholder="读入两个整数，输出它们的和">
+        <label>测试用例（每行一组：输入||期望输出；勾选样例=学生可见）</label>
+        <textarea id="cp-cases" style="min-height:90px;font-family:ui-monospace,monospace;" placeholder="1 2||3 [样例]&#10;5 7||12"></textarea>
+        <div class="actions">
+          <button class="primary small" data-act="create-code-problem">创建题目</button>
+          <button class="small" data-act="cancel-code-form">收起</button>
+        </div>
+      </div>
+      <div id="code-problems" class="muted">加载中…</div>
+    </div>
+    <div class="card">
       <h2>班级与教师名册
         <button class="small" data-act="refresh-roster">刷新</button>
         <button class="small" id="teacher-import-btn" data-act="show-teacher-import" hidden>⇪ 教师批量导入（管理员）</button>

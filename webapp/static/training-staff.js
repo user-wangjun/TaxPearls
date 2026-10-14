@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [], quota: null };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [], quota: null, codeProblems: [] };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -397,6 +397,7 @@ async function load() {
   try { state.rules = (await api("/api/training/staff/rules")).rules; } catch (err) { state.rules = []; }
   await loadStudents().catch(() => { state.students = []; });
   await loadCourses().catch(() => { state.courses = []; state.teachers = []; });
+  await loadCodeProblems().catch(() => { state.codeProblems = []; });
   if (state.staff && state.staff.role === "admin") {
     document.getElementById("overview-card").hidden = false;
     await loadOverview().catch(() => {});
@@ -674,6 +675,71 @@ async function loadOverview() {
     </table>
     ${courses}
     <p class="muted">${esc(o.scope_note)}</p>`;
+}
+
+/* ---------- 编程题库（FR-J01/J04 v1） ---------- */
+
+async function loadCodeProblems() {
+  state.codeProblems = (await api("/api/training/staff/code-problems")).problems;
+  renderCodeProblems();
+}
+
+function renderCodeProblems() {
+  const box = document.getElementById("code-problems");
+  if (!state.codeProblems.length) {
+    box.innerHTML = `<p class="muted">还没有编程题。点上方「新建编程题」。</p>`;
+    return;
+  }
+  box.innerHTML = state.codeProblems.map((p) => `
+    <div class="item" id="codep-${esc(p.id)}">
+      <div class="item-head">
+        <div><strong>${esc(p.title)}</strong>
+          <span class="chip">${esc(p.language)}</span>
+          <span class="badge gray">用例 ${p.case_count} · 限时 ${p.time_limit_ms}ms</span>
+          ${p.active ? `<span class="badge">开放中</span>` : `<span class="badge gray">已停用</span>`}
+          ${p.knowledge_point_name ? `<span class="chip">${esc(p.knowledge_point_name)}</span>` : ""}
+        </div>
+        <div class="actions">
+          <button class="small" data-act="view-code-submissions" data-id="${esc(p.id)}">提交记录</button>
+          <button class="small ${p.active ? "danger" : ""}" data-act="toggle-code-problem" data-id="${esc(p.id)}">${p.active ? "停用" : "启用"}</button>
+        </div>
+      </div>
+      ${p.statement ? `<div class="muted">${esc(p.statement)}</div>` : ""}
+      <div class="inline-form" data-role="code-submissions" hidden></div>
+    </div>`).join("");
+}
+
+function parseCodeCases(text) {
+  return text.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+    const sep = line.lastIndexOf("||");
+    if (sep < 0) return { input_text: line, expected_output: "", sample: false };
+    let io = line.slice(0, sep), eo = line.slice(sep + 2), sample = false;
+    if (eo.endsWith("[样例]")) { sample = true; eo = eo.slice(0, -4).replace(/\s+$/, ""); }
+    if (io.endsWith("\\n")) io = io.slice(0, -2) + "\n";
+    if (eo.endsWith("\\n")) eo = eo.slice(0, -2) + "\n";
+    return { input_text: io, expected_output: eo, sample };
+  });
+}
+
+async function loadCodeSubmissionList(btn, scope, problemId) {
+  const box = scope.querySelector("[data-role=code-submissions]");
+  if (!box.hidden) { box.hidden = true; btn.dataset.label = btn.dataset.label || btn.textContent; btn.textContent = btn.dataset.label; return; }
+  btn.dataset.label = btn.textContent;
+  box.innerHTML = `<p class="muted">加载中…</p>`;
+  box.hidden = false;
+  try {
+    const rows = (await api(`/api/training/staff/code-problems/${problemId}/submissions`)).submissions;
+    box.innerHTML = rows.length
+      ? rows.map((s) => `<div class="detail" style="margin-top:6px;">
+          <div class="item-head">
+            <div class="muted">${esc((s.submitted_at || "").slice(0, 16).replace("T", " "))} · 学生 ${esc(s.student_id.slice(0, 8))}…</div>
+            <div><strong>${s.judge ? `${esc(s.judge.status)} · ${s.judge.total_score} 分（${s.judge.passed_count}/${s.judge.case_count}）` : "未判题"}</strong></div>
+          </div>
+          <pre style="white-space:pre-wrap;font-size:12px;margin:4px 0;background:var(--bg,#f6f6f6);padding:6px;border-radius:4px;max-height:180px;overflow:auto;">${esc(s.code_text || "")}</pre>
+        </div>`).join("")
+      : `<p class="muted">暂无提交。</p>`;
+    btn.textContent = "收起提交";
+  } catch (err) { box.hidden = true; flash(err.message, true); }
 }
 
 /* ---------- 事件 ---------- */
@@ -1060,6 +1126,40 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     "cancel-course-form": () => { q("#course-form").hidden = true; },
     "refresh-courses": () => withCert(loadCourses),
     "refresh-overview": () => withCert(loadOverview),
+    "show-code-form": () => { const f = q("#code-form"); f.hidden = !f.hidden; },
+    "cancel-code-form": () => { q("#code-form").hidden = true; },
+    "refresh-code-problems": () => withCert(loadCodeProblems),
+    "create-code-problem": () => withCert(async () => {
+      await api("/api/training/staff/code-problems", {
+        method: "POST",
+        body: {
+          college: state.staff.college,
+          title: q("#cp-title").value.trim(),
+          statement: q("#cp-statement").value.trim(),
+          time_limit_ms: Number(q("#cp-time").value) || 5000,
+          cases: parseCodeCases(q("#cp-cases").value),
+        },
+      });
+      q("#cp-title").value = ""; q("#cp-statement").value = ""; q("#cp-cases").value = "";
+      q("#code-form").hidden = true;
+      await loadCodeProblems();
+      flash("编程题已创建（判题为教学演示级沙箱）。");
+    }),
+    "view-code-submissions": (btn) => {
+      const scope = document.getElementById(`codep-${id}`);
+      if (!scope) return;
+      loadCodeSubmissionList(btn, scope, id);
+    },
+    "toggle-code-problem": () => {
+      const p = state.codeProblems.find((x) => x.id === id);
+      if (!p) return;
+      withCert(async () => {
+        await api(`/api/training/staff/code-problems/${id}`, {
+          method: "PATCH", body: { active: !p.active } });
+        await loadCodeProblems();
+        flash(p.active ? "题目已停用。" : "题目已启用。");
+      });
+    },
     "create-course": () => withCert(async () => {
       await api("/api/training/staff/courses", {
         method: "POST",

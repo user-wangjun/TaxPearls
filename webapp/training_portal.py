@@ -496,6 +496,151 @@ def list_courses(store, *, include_inactive: bool = True) -> list[dict[str, Any]
         return [_course_payload(db, r) for r in rows]
 
 
+# ---- 编程提交与判题（FR-J02 v1 提交加密存储 + J04 教学级引擎） ----
+
+_CODE_SUBMISSION_RATE_SECONDS = 30  # 同学生同题两次提交最小间隔（防刷沙箱）
+
+
+def submit_code(store, problem_id: str, student_id: str, code_text: str) -> dict[str, Any]:
+    code_text = (code_text or "").replace("\r\n", "\n")
+    if not (1 <= len(code_text) <= 65536):
+        raise TrainingPortalError("代码长度须在 1~65536 字符。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        problem = db.execute(
+            "SELECT id, language, time_limit_ms, active FROM code_problem WHERE id=?",
+            (problem_id,)).fetchone()
+        if not problem or not problem["active"]:
+            raise TrainingPortalError("题目不存在或已停用。", 404)
+        if problem["language"] != "python":
+            raise TrainingPortalError("v1 仅支持 python 判题。")
+        recent = db.execute(
+            """SELECT submitted_at FROM code_submission
+               WHERE problem_id=? AND student_id=? ORDER BY submitted_at DESC LIMIT 1""",
+            (problem_id, student_id)).fetchone()
+        if recent:
+            elapsed = (datetime.fromisoformat(_now())
+                       - datetime.fromisoformat(recent["submitted_at"])).total_seconds()
+            if elapsed < _CODE_SUBMISSION_RATE_SECONDS:
+                raise TrainingPortalError(
+                    f"提交过于频繁，同题每 {_CODE_SUBMISSION_RATE_SECONDS} 秒限一次，请稍候。")
+        sid = str(uuid.uuid4())
+        db.execute(
+            """INSERT INTO code_submission (id, problem_id, student_id, language,
+                                            code_text, status, submitted_at)
+               VALUES (?,?,?,?,?, 'pending', ?)""",
+            (sid, problem_id, student_id, problem["language"],
+             db.field_codec.seal(code_text, "code_submission", "code_text", sid),
+             _now()))
+    return judge_submission(store, sid)
+
+
+def judge_submission(store, submission_id: str) -> dict[str, Any]:
+    """教学级判题（J04 v1）：逐用例受限运行并加权计分。
+
+    边界：单进程同步执行（J05 异步队列待专项）；逐字节级比对归一化后
+    进行，浮点容差/多解判定未实现；判题器边界见 code_sandbox.SANDBOX_NOTICE。"""
+    from webapp import code_sandbox
+    with store.connect() as db:
+        submission = db.execute(
+            "SELECT * FROM code_submission WHERE id=?", (submission_id,)).fetchone()
+        if not submission:
+            raise TrainingPortalError("提交不存在。", 404)
+        problem = db.execute(
+            "SELECT time_limit_ms FROM code_problem WHERE id=?",
+            (submission["problem_id"],)).fetchone()
+        code = submission["code_text"]  # 行工厂（attach row handler）已按身份校验并解密
+        cases = [dict(r) for r in db.execute(
+            "SELECT seq, input_text, expected_output, weight FROM code_test_case"
+            " WHERE problem_id=? ORDER BY seq", (submission["problem_id"],)).fetchall()]
+        detail: list[dict[str, Any]] = []
+        passed_weight = 0.0
+        total_weight = 0.0
+        passed_count = 0
+        worst = "accepted"
+        severity = {"accepted": 0, "wrong_answer": 1, "runtime_error": 2, "timeout": 3}
+        for case in cases:
+            run = code_sandbox.run_case(code, case["input_text"],
+                                        time_limit_ms=problem["time_limit_ms"])
+            ok = run["status"] == "ok" and code_sandbox.judge_output(
+                run["output"], case["expected_output"])
+            total_weight += float(case["weight"])
+            if ok:
+                passed_weight += float(case["weight"])
+                passed_count += 1
+            else:
+                status = run["status"] if run["status"] in (
+                    code_sandbox.STATUS_RUNTIME_ERROR, code_sandbox.STATUS_TIMEOUT) \
+                    else code_sandbox.STATUS_WRONG
+                if severity[status] > severity[worst]:
+                    worst = status
+            detail.append({
+                "seq": case["seq"], "passed": ok,
+                "runtime_ms": run["runtime_ms"],
+                "run_status": run["status"],
+                "output_excerpt": run["output"][:512],
+            })
+        total_score = round(passed_weight / total_weight * 100, 2) if total_weight else 0.0
+        final_status = worst if passed_count < len(cases) else "accepted"
+        if not cases:
+            final_status = "judgement_failed"
+            detail = [{"error": "题目没有配置测试用例，无法判题。"}]
+        rid = str(uuid.uuid4())
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            """INSERT INTO code_judge_result (id, submission_id, status, total_score,
+                                              passed_count, case_count, detail_json, judged_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (rid, submission_id, final_status, total_score, passed_count,
+             len(cases), json.dumps(detail, ensure_ascii=False), _now()))
+        db.execute("UPDATE code_submission SET status='judged' WHERE id=?", (submission_id,))
+        row = db.execute("SELECT * FROM code_judge_result WHERE id=?", (rid,)).fetchone()
+    return {**dict(row), "detail": json.loads(row["detail_json"]),
+            "sandbox_notice": code_sandbox.SANDBOX_NOTICE}
+
+
+def _submission_view(row: sqlite3.Row, include_code: bool = False) -> dict[str, Any]:
+    payload = {key: row[key] for key in
+               ("id", "problem_id", "student_id", "language", "status", "submitted_at")}
+    if include_code:
+        payload["code_text"] = row["code_text"]  # 行工厂已解密（codec row handler）
+    return payload
+
+
+def list_code_submissions(store, *, problem_id: str | None = None,
+                          student_id: str | None = None,
+                          include_code: bool = False,
+                          limit: int = 50) -> list[dict[str, Any]]:
+    clauses, params = [], []
+    if problem_id:
+        clauses.append("s.problem_id=?"); params.append(problem_id)
+    if student_id:
+        clauses.append("s.student_id=?"); params.append(student_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, min(int(limit), 200)))
+    out = []
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT s.*, r.status AS judge_status, r.total_score,
+                       r.passed_count, r.case_count, r.judged_at
+                FROM code_submission s
+                LEFT JOIN code_judge_result r ON r.submission_id = s.id
+                {where} ORDER BY s.submitted_at DESC LIMIT ?""", params).fetchall()
+        for row in rows:
+            view = {key: row[key] for key in
+                    ("id", "problem_id", "student_id", "language", "status", "submitted_at")}
+            view["judge"] = None if row["judge_status"] is None else {
+                "status": row["judge_status"], "total_score": row["total_score"],
+                "passed_count": row["passed_count"], "case_count": row["case_count"],
+                "judged_at": row["judged_at"]}
+            if include_code:
+                view["code_text"] = row["code_text"]  # 行工厂（attach row handler）已解密
+            out.append(view)
+    return out
+
+
+
+
 # ---- 课程管理（FR-U04 v1：课程绑定教师与班级，支持同课多班） ----
 
 def create_course(store, operator_id: str, college: str, name: str, *,
@@ -2950,6 +3095,11 @@ class CodeTestCaseIn(BaseModel):
     sample: bool = False
 
 
+class CodeSubmitBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code_text: str = Field(min_length=1)
+
+
 class CodeProblemCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     college: str = Field(min_length=1)
@@ -3346,8 +3496,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
 
     @app.post("/api/training/my/practice/{attempt_id}/submit")
     @guarded
-    def practice_submit(attempt_id: str, body: PracticeSubmit,
-                        session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+    def practice_submit(attempt_id: str, body: PracticeSubmit,                        session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student(session)
         return response({"attempt": submit_practice(
             store_provider(), who["id"], attempt_id, body.selected_rule_ids)})
@@ -3739,6 +3888,51 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         cases = [c.model_dump() for c in body.cases] if body.cases is not None else None
         return response({"problem": update_code_problem(
             store_provider(), problem_id, fields, cases=cases)})
+
+    @app.get("/api/training/staff/code-problems/{problem_id}/submissions")
+    @guarded
+    def staff_code_submission_list(problem_id: str, include_code: bool = False,
+                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"submissions": list_code_submissions(
+            store_provider(), problem_id=problem_id, include_code=include_code)})
+
+    @app.get("/api/training/my/code/problems")
+    @guarded
+    def my_code_problem_list(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        student(session)  # 学生仅见开设中的题目，含公开样例输入
+        with store_provider().connect() as db:
+            rows = db.execute(
+                """SELECT p.id, p.title, p.statement, p.language, p.time_limit_ms,
+                          p.memory_limit_kb, kp.name AS knowledge_point_name,
+                          (SELECT count(*) FROM code_test_case t WHERE t.problem_id=p.id) AS case_count
+                   FROM code_problem p LEFT JOIN knowledge_point kp ON kp.id=p.knowledge_point_id
+                   WHERE p.active=1 ORDER BY p.created_at DESC""").fetchall()
+            samples = {r["problem_id"]: r["input_text"] for r in db.execute(
+                "SELECT problem_id, input_text FROM code_test_case WHERE sample=1 ORDER BY seq").fetchall()}
+        problems = []
+        for r in rows:
+            item = dict(r)
+            item["sample_input"] = samples.get(r["id"])
+            problems.append(item)
+        return response({"problems": problems})
+
+    @app.post("/api/training/my/code/{problem_id}/submit")
+    @guarded
+    def my_code_submit(problem_id: str, body: CodeSubmitBody,
+                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        result = submit_code(store_provider(), problem_id, who["id"], body.code_text)
+        return response({"result": result,
+                         "sandbox_notice": result.get("sandbox_notice")})
+
+    @app.get("/api/training/my/code/submissions")
+    @guarded
+    def my_code_submissions(problem_id: str | None = None,
+                            session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"submissions": list_code_submissions(
+            store_provider(), problem_id=problem_id, student_id=who["id"])})
 
     # ---- 班级与教师名册（FR-U03 第一期） ----
 
