@@ -158,6 +158,31 @@ def change_staff_password(store, staff: dict[str, Any], old_password: str, new_p
     return {"password_changed": True}
 
 
+def change_student_password(store, student: dict[str, Any], old_password: str,
+                            new_password: str) -> dict[str, Any]:
+    """学生本人修改密码：验证当前密码，更新后清除本人全部会话（需重新登录）。
+
+    与教师改密同口径；学生初始密码为默认口令（Tp#学号2026），首登改密即
+    消除默认口令风险。教师重置入口保留（不验证旧密码，属管理员动作）。"""
+    new_password = _validate_student_password(new_password)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM student_info WHERE id=? AND active=1",
+                         (student["id"],)).fetchone()
+        if not row:
+            raise TrainingPortalError("学生账号不存在或已停用。", 404)
+        try:
+            _passwords.verify(row["password_hash"], old_password or "")
+        except (VerifyMismatchError, InvalidHashError):
+            raise TrainingPortalError("当前密码不正确。", 401) from None
+        if old_password == new_password:
+            raise TrainingPortalError("新密码不能与当前密码相同。")
+        db.execute("UPDATE student_info SET password_hash=? WHERE id=?",
+                   (_passwords.hash(new_password), row["id"]))
+        db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (row["id"],))
+    return {"password_changed": True}
+
+
 # ---------------------------------------------------------------------------
 # 教师端学生名册管理（小范围真实使用：单个添加 + 批量导入）
 # ---------------------------------------------------------------------------
@@ -384,6 +409,371 @@ def list_class_history(store, college: str, *, limit: int = 50) -> list[dict[str
                WHERE s.college=?
                ORDER BY h.created_at DESC, h.id LIMIT ?""", (college, limit)).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---- 高校组织架构（FR-U01 第一期：院系 / 学年学期 / 班级实体） ----
+#
+# 与现有两层模型并存：student_info.class_name 文本名册与既有作业数据归属
+# 一律不改写；班级实体作为注册表经 (college, name) 对齐在读人数。写操作
+# 仅限实训管理员（与教师批量导入同权限语义），教师只读。
+
+class OrgDepartmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    name: str
+
+
+class OrgNamePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    archived: bool | None = None
+
+
+class OrgTermCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    name: str
+    start_date: str | None = None
+    end_date: str | None = None
+    is_current: bool = False
+
+
+class OrgTermPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    is_current: bool | None = None
+    archived: bool | None = None
+
+
+class OrgClassCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    name: str
+    department_id: str | None = None
+    term_id: str | None = None
+
+
+class OrgClassPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    department_id: str | None = None
+    term_id: str | None = None
+    archived: bool | None = None
+
+
+class OrgClassClone(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    term_id: str
+    name: str | None = None
+
+
+def _iso_date_or_none(value: str | None, field: str) -> str | None:
+    value = (value or "").strip() or None
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise TrainingPortalError(f"{field}须为 YYYY-MM-DD 格式。") from None
+
+
+def _org_name(value: str, what: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        raise TrainingPortalError(f"{what}名称必填。")
+    return value
+
+
+def list_departments(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
+    """院系列表，附引用班级数（删除保护提示用）。"""
+    where = "" if include_archived else "AND d.archived=0"
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT d.id, d.college, d.name, d.archived, d.created_at,
+                      count(c.id) AS classes
+               FROM college_department d
+               LEFT JOIN college_class c ON c.department_id = d.id
+               WHERE d.college=? {where}
+               GROUP BY d.id
+               ORDER BY d.archived, d.name""", (college,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_department(store, college: str, name: str) -> dict[str, Any]:
+    college = (college or "").strip()
+    name = _org_name(name, "院系")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        dup = db.execute("SELECT id FROM college_department WHERE college=? AND name=?",
+                         (college, name)).fetchone()
+        if dup:
+            raise TrainingPortalError(f"该院系下已存在「{name}」。", 409)
+        did = str(uuid.uuid4())
+        db.execute("INSERT INTO college_department (id, college, name, archived, created_at)"
+                   " VALUES (?,?,?,0,?)", (did, college, name, _now()))
+        row = db.execute("SELECT * FROM college_department WHERE id=?", (did,)).fetchone()
+    return dict(row)
+
+
+def _update_archived(db, table: str, row_id: str, archived: bool | None) -> None:
+    if archived is not None:
+        db.execute(f"UPDATE {table} SET archived=? WHERE id=?", (1 if archived else 0, row_id))
+
+
+def update_department(store, department_id: str, *, name: str | None = None,
+                      archived: bool | None = None) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_department WHERE id=?", (department_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("院系不存在。", 404)
+        if name is not None:
+            name = _org_name(name, "院系")
+            dup = db.execute(
+                "SELECT id FROM college_department WHERE college=? AND name=? AND id!=?",
+                (row["college"], name, department_id)).fetchone()
+            if dup:
+                raise TrainingPortalError(f"该院系下已存在「{name}」。", 409)
+            db.execute("UPDATE college_department SET name=? WHERE id=?", (name, department_id))
+        _update_archived(db, "college_department", department_id, archived)
+        row = db.execute("SELECT * FROM college_department WHERE id=?", (department_id,)).fetchone()
+    return dict(row)
+
+
+def delete_department(store, department_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_department WHERE id=?", (department_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("院系不存在。", 404)
+        used = db.execute("SELECT count(*) n FROM college_class WHERE department_id=?",
+                          (department_id,)).fetchone()["n"]
+        if used:
+            raise TrainingPortalError(f"该院系仍被 {used} 个班级引用，请先调整班级归属或归档院系。", 409)
+        db.execute("DELETE FROM college_department WHERE id=?", (department_id,))
+    return {"deleted": True, "id": department_id}
+
+
+def list_terms(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
+    where = "" if include_archived else "AND t.archived=0"
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT t.id, t.college, t.name, t.start_date, t.end_date, t.is_current,
+                       t.archived, t.created_at, count(c.id) AS classes
+                FROM college_term t
+                LEFT JOIN college_class c ON c.term_id = t.id
+                WHERE t.college=? {where}
+                GROUP BY t.id
+                ORDER BY t.archived, t.name""", (college,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_term(store, college: str, name: str, *, start_date: str | None = None,
+                end_date: str | None = None, is_current: bool = False) -> dict[str, Any]:
+    college = (college or "").strip()
+    name = _org_name(name, "学期")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    start_date = _iso_date_or_none(start_date, "开始日期")
+    end_date = _iso_date_or_none(end_date, "结束日期")
+    if start_date and end_date and end_date < start_date:
+        raise TrainingPortalError("结束日期不能早于开始日期。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        dup = db.execute("SELECT id FROM college_term WHERE college=? AND name=?",
+                         (college, name)).fetchone()
+        if dup:
+            raise TrainingPortalError(f"已存在学期「{name}」。", 409)
+        if is_current:
+            db.execute("UPDATE college_term SET is_current=0 WHERE college=?", (college,))
+        tid = str(uuid.uuid4())
+        db.execute("INSERT INTO college_term (id, college, name, start_date, end_date,"
+                   " is_current, archived, created_at) VALUES (?,?,?,?,?,?,0,?)",
+                   (tid, college, name, start_date, end_date, 1 if is_current else 0, _now()))
+        row = db.execute("SELECT * FROM college_term WHERE id=?", (tid,)).fetchone()
+    return dict(row)
+
+
+def update_term(store, term_id: str, *, name: str | None = None, start_date: str | None = None,
+                end_date: str | None = None, is_current: bool | None = None,
+                archived: bool | None = None) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("学期不存在。", 404)
+        if name is not None:
+            name = _org_name(name, "学期")
+            dup = db.execute("SELECT id FROM college_term WHERE college=? AND name=? AND id!=?",
+                             (row["college"], name, term_id)).fetchone()
+            if dup:
+                raise TrainingPortalError(f"已存在学期「{name}」。", 409)
+            db.execute("UPDATE college_term SET name=? WHERE id=?", (name, term_id))
+        if start_date is not None or end_date is not None:
+            new_start = _iso_date_or_none(start_date, "开始日期") if start_date is not None else row["start_date"]
+            new_end = _iso_date_or_none(end_date, "结束日期") if end_date is not None else row["end_date"]
+            if new_start and new_end and new_end < new_start:
+                raise TrainingPortalError("结束日期不能早于开始日期。")
+            db.execute("UPDATE college_term SET start_date=?, end_date=? WHERE id=?",
+                       (new_start, new_end, term_id))
+        if is_current:
+            db.execute("UPDATE college_term SET is_current=0 WHERE college=?", (row["college"],))
+        if is_current is not None:
+            db.execute("UPDATE college_term SET is_current=? WHERE id=?",
+                       (1 if is_current else 0, term_id))
+        _update_archived(db, "college_term", term_id, archived)
+        row = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+    return dict(row)
+
+
+def delete_term(store, term_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("学期不存在。", 404)
+        used = db.execute("SELECT count(*) n FROM college_class WHERE term_id=?",
+                          (term_id,)).fetchone()["n"]
+        if used:
+            raise TrainingPortalError(f"该学期仍被 {used} 个班级引用，请先调整班级归属或归档学期。", 409)
+        db.execute("DELETE FROM college_term WHERE id=?", (term_id,))
+    return {"deleted": True, "id": term_id}
+
+
+def _class_unique_check(db, college: str, name: str, term_id: str | None,
+                        exclude_id: str | None = None) -> None:
+    """同院校 + 同班级名 + 同学期唯一（term_id 为空时同样查重，补 SQLite NULL 语义）。"""
+    params: list[Any] = [college, name]
+    where = "college=? AND name=?"
+    if term_id:
+        where += " AND term_id=?"
+        params.append(term_id)
+    else:
+        where += " AND term_id IS NULL"
+    if exclude_id:
+        where += " AND id!=?"
+        params.append(exclude_id)
+    dup = db.execute(f"SELECT id FROM college_class WHERE {where}", params).fetchone()
+    if dup:
+        raise TrainingPortalError(f"同学期下已存在班级「{name}」。", 409)
+
+
+def _org_ref_check(db, college: str, department_id: str | None,
+                   term_id: str | None) -> tuple[str | None, str | None]:
+    """引用的院系/学期必须存在且属于同院校（跨院校引用拒绝）。"""
+    if department_id:
+        row = db.execute("SELECT id FROM college_department WHERE id=?", (department_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("院系不存在。", 404)
+        own = db.execute("SELECT college FROM college_department WHERE id=?", (department_id,)).fetchone()
+        if own["college"] != college:
+            raise TrainingPortalError("院系属于其他院校。", 422)
+    if term_id:
+        own = db.execute("SELECT college FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not own:
+            raise TrainingPortalError("学期不存在。", 404)
+        if own["college"] != college:
+            raise TrainingPortalError("学期属于其他院校。", 422)
+    return department_id, term_id
+
+
+def list_org_classes(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
+    """班级实体列表：对齐文本名册统计在读人数，不改写学生归属。"""
+    where = "" if include_archived else "AND c.archived=0"
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT c.id, c.college, c.name, c.department_id, c.term_id, c.archived,
+                       c.created_at, d.name AS department_name, t.name AS term_name,
+                       (SELECT count(*) FROM student_info s
+                        WHERE s.college=c.college AND s.class_name=c.name AND s.active=1)
+                       AS active_students
+                FROM college_class c
+                LEFT JOIN college_department d ON d.id=c.department_id
+                LEFT JOIN college_term t ON t.id=c.term_id
+                WHERE c.college=? {where}
+                ORDER BY c.archived, c.name""", (college,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_org_class(store, college: str, name: str, *, department_id: str | None = None,
+                 term_id: str | None = None) -> dict[str, Any]:
+    college = (college or "").strip()
+    name = _org_name(name, "班级")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        department_id, term_id = _org_ref_check(db, college, (department_id or "").strip() or None,
+                                                (term_id or "").strip() or None)
+        _class_unique_check(db, college, name, term_id)
+        cid = str(uuid.uuid4())
+        db.execute("INSERT INTO college_class (id, college, name, department_id, term_id,"
+                   " archived, created_at) VALUES (?,?,?,?,?,0,?)",
+                   (cid, college, name, department_id, term_id, _now()))
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (cid,)).fetchone()
+    return dict(row)
+
+
+def update_org_class(store, class_id: str, *, name: str | None = None,
+                 department_id: str | None = None, term_id: str | None = None,
+                 archived: bool | None = None) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("班级不存在。", 404)
+        new_name = _org_name(name, "班级") if name is not None else row["name"]
+        new_department = row["department_id"]
+        new_term = row["term_id"]
+        if department_id is not None or term_id is not None:
+            if department_id is not None:
+                new_department = department_id.strip() or None
+            if term_id is not None:
+                new_term = term_id.strip() or None
+            new_department, new_term = _org_ref_check(db, row["college"], new_department, new_term)
+        _class_unique_check(db, row["college"], new_name, new_term, exclude_id=class_id)
+        db.execute("UPDATE college_class SET name=?, department_id=?, term_id=? WHERE id=?",
+                   (new_name, new_department, new_term, class_id))
+        _update_archived(db, "college_class", class_id, archived)
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
+    return dict(row)
+
+
+def delete_org_class(store, class_id: str) -> dict[str, Any]:
+    """班级实体只是注册表，学生名册不受影响；直接删除并返回。"""
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("班级不存在。", 404)
+        db.execute("DELETE FROM college_class WHERE id=?", (class_id,))
+    return {"deleted": True, "id": class_id}
+
+
+def clone_org_class(store, class_id: str, *, term_id: str, name: str | None = None) -> dict[str, Any]:
+    """班级按学期重建：复制实体元数据到新学期（学生名册不动，归属调整走 U03 迁移）。"""
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("班级不存在。", 404)
+        term_id = (term_id or "").strip()
+        _org_ref_check(db, row["college"], None, term_id)
+        term = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if term_id == row["term_id"]:
+            raise TrainingPortalError("目标学期与班级当前学期相同。", 422)
+        new_name = _org_name(name, "班级") if name is not None else row["name"]
+        _class_unique_check(db, row["college"], new_name, term_id)
+        cid = str(uuid.uuid4())
+        db.execute("INSERT INTO college_class (id, college, name, department_id, term_id,"
+                   " archived, created_at) VALUES (?,?,?,?,?,0,?)",
+                   (cid, row["college"], new_name, row["department_id"], term_id, _now()))
+        new_row = db.execute("SELECT * FROM college_class WHERE id=?", (cid,)).fetchone()
+    return {"class": dict(new_row), "cloned_from": class_id, "term_name": term["name"]}
 
 
 def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
@@ -2281,6 +2671,17 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def training_me(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         return response({"student": student(session)})
 
+    @app.post("/api/training/auth/change-password")
+    @guarded
+    def training_change_password(body: StaffPasswordChange,
+                                 session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        """学生本人自助修改密码（旧密码验证 + 全部会话失效，需重新登录）。"""
+        who = student(session)
+        result = change_student_password(store_provider(), who, body.old_password, body.new_password)
+        resp = response(result)
+        resp.delete_cookie(cookie_name, path="/")
+        return resp
+
     @app.get("/api/training/certificates")
     @guarded
     def training_certificates(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
@@ -2733,6 +3134,112 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         staff(session)
         return response({"history": list_class_history(store_provider(), college, limit=limit)})
+
+    # ---- 高校组织架构（FR-U01 第一期：写仅限管理员，教师只读） ----
+
+    @app.get("/api/training/staff/org/departments")
+    @guarded
+    def org_department_list(college: str, include_archived: bool = True,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"departments": list_departments(
+            store_provider(), college, include_archived=include_archived)})
+
+    @app.post("/api/training/staff/org/departments")
+    @guarded
+    def org_department_create(body: OrgDepartmentCreate,
+                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"department": create_department(store_provider(), body.college, body.name)})
+
+    @app.patch("/api/training/staff/org/departments/{department_id}")
+    @guarded
+    def org_department_update(department_id: str, body: OrgNamePatch,
+                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"department": update_department(
+            store_provider(), department_id, name=body.name, archived=body.archived)})
+
+    @app.delete("/api/training/staff/org/departments/{department_id}")
+    @guarded
+    def org_department_delete(department_id: str,
+                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response(delete_department(store_provider(), department_id))
+
+    @app.get("/api/training/staff/org/terms")
+    @guarded
+    def org_term_list(college: str, include_archived: bool = True,
+                      session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"terms": list_terms(
+            store_provider(), college, include_archived=include_archived)})
+
+    @app.post("/api/training/staff/org/terms")
+    @guarded
+    def org_term_create(body: OrgTermCreate,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"term": create_term(
+            store_provider(), body.college, body.name, start_date=body.start_date,
+            end_date=body.end_date, is_current=body.is_current)})
+
+    @app.patch("/api/training/staff/org/terms/{term_id}")
+    @guarded
+    def org_term_update(term_id: str, body: OrgTermPatch,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"term": update_term(
+            store_provider(), term_id, name=body.name, start_date=body.start_date,
+            end_date=body.end_date, is_current=body.is_current, archived=body.archived)})
+
+    @app.delete("/api/training/staff/org/terms/{term_id}")
+    @guarded
+    def org_term_delete(term_id: str,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response(delete_term(store_provider(), term_id))
+
+    @app.get("/api/training/staff/org/classes")
+    @guarded
+    def org_class_list(college: str, include_archived: bool = True,
+                       session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"classes": list_org_classes(
+            store_provider(), college, include_archived=include_archived)})
+
+    @app.post("/api/training/staff/org/classes")
+    @guarded
+    def org_class_create(body: OrgClassCreate,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"class": create_org_class(
+            store_provider(), body.college, body.name,
+            department_id=body.department_id, term_id=body.term_id)})
+
+    @app.patch("/api/training/staff/org/classes/{class_id}")
+    @guarded
+    def org_class_update(class_id: str, body: OrgClassPatch,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"class": update_org_class(
+            store_provider(), class_id, name=body.name, department_id=body.department_id,
+            term_id=body.term_id, archived=body.archived)})
+
+    @app.delete("/api/training/staff/org/classes/{class_id}")
+    @guarded
+    def org_class_delete(class_id: str,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response(delete_org_class(store_provider(), class_id))
+
+    @app.post("/api/training/staff/org/classes/{class_id}/clone")
+    @guarded
+    def org_class_clone(class_id: str, body: OrgClassClone,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"clone": clone_org_class(
+            store_provider(), class_id, term_id=body.term_id, name=body.name)})
 
     @app.post("/api/training/staff/teachers/import")
     @guarded

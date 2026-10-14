@@ -195,8 +195,11 @@ def _files(db, batch, actor, uploads, payload=None, *, format_checks=None):
                     _seal(raw, _context(batch['org_id'], batch['id'], 'original', file_id))))
         files.append({'id': file_id, **metadata})
         if payload is not None:
+            incoming = payload.get('_incoming_source_options', {}).get(name)
+            if payload.get('core_task') and incoming:
+                payload['source_options'][file_id] = incoming
             for doc in payload['documents']:
-                if not doc.get('original_id') and doc['original_upload_name'] == name:
+                if not doc.get('original_id') and doc.get('original_upload_name') == name:
                     doc['original_id'] = file_id
     return files
 
@@ -232,6 +235,7 @@ def supplement(store, actor, batch_id, expected_revision, uploads, payload):
         if type(expected_revision) is not int or batch['revision'] != expected_revision:
             raise AccessDenied('材料已变化，请重新读取后补传。', 409)
         files = _files(db, batch, actor, uploads, payload, format_checks=format_checks)
+        payload.pop('_incoming_source_options', None)
         _event(db, batch, actor, 'supplement', {'files': files, 'previous_revision': expected_revision})
         return _append(db, batch, actor, 'analysis', payload)
 
@@ -249,11 +253,13 @@ def authorize_client(store, actor, client_id):
         operations.bind_client(db, actor, client_id)
 
 
-def listing(store, actor):
+def listing(store, actor, *, workflow='all'):
     with store.connect() as db:
         db.execute('BEGIN')
         current_actor(db, actor, ROLES)
         where = 'b.org_id=? AND (b.client_id IS NULL OR c.org_id=b.org_id)'
+        if workflow in {'core', 'legacy'}:
+            where += (' AND EXISTS' if workflow == 'core' else ' AND NOT EXISTS') + ' (SELECT 1 FROM core_input_tasks ci WHERE ci.id=b.id)'
         args = [actor['org_id']]
         if actor['role'] == 'accountant':
             where += ' AND ((b.client_id IS NULL AND b.owner_id=?) OR c.accountant_id=?)'
@@ -299,7 +305,9 @@ def read(store, actor, batch_id):
         result['jobs'] = material_jobs.listing(db,batch_id)
         result['executions'] = [dict(row) for row in db.execute(
             'SELECT * FROM material_executions WHERE batch_id=? ORDER BY analysis_revision', (batch_id,))]
-        for row in db.execute('SELECT * FROM material_originals WHERE batch_id=? ORDER BY uploaded_at,id', (batch_id,)):
+        # Same-second uploads keep arrival order, so later duplicates cannot
+        # replace the original source or reorder invoice summaries on reanalysis.
+        for row in db.execute('SELECT * FROM material_originals WHERE batch_id=? ORDER BY uploaded_at,rowid', (batch_id,)):
             metadata = json.loads(_open(row['metadata_cipher'],
                                        _context(batch['org_id'], batch_id, 'metadata', row['id'])))
             result['files'].append({'id': row['id'], **metadata, 'uploaded_by': row['uploaded_by'],

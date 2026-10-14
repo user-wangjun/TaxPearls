@@ -156,6 +156,8 @@ def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False,
                    fulfillments=_serial([asdict(item) for item in fulfillments]),
                    contract_links=_serial([asdict(item) for item in contract_links]),
                    related_graph=_serial(asdict(graph)) if graph else None)
+        if invoices:
+            doc['invoice_parser_version'] = provenance.INVOICE_VERSION
         if config.SHEET_COMPANY in wb.sheetnames:
             for row in wb[config.SHEET_COMPANY].iter_rows(min_row=2, values_only=True):
                 if len(row) >= 2 and _text(row[0]) in SCOPE_FIELDS and _text(row[1]):
@@ -271,11 +273,10 @@ def _xml(data, doc):
         f"XML 发票「{number}」作废标志",
     )
     raw_status = _xml_value(values, "InvoiceStatus", "Status", "发票状态", label="发票状态")
-    if void:
-        raw_status = "作废"
-    elif red:
-        raw_status = "红字"
-    status = loader._invoice_status(raw_status, amount, tax, f"XML 发票「{number}」")
+    status = loader._invoice_status(raw_status, amount, tax, f"XML 发票「{number}」",
+                                    total=total, red=red, void=void)
+    if status == '作废':
+        raise InputError(f"XML 数电发票「{number}」出现作废状态，不能自动剔除；请核对票种和原始状态，提供实际红字发票明细")
     seller_id = _xml_value(values, "SellerIdNum", "SellerTaxpayerId", "XsfNsrsbh", "销售方纳税人识别号", label="销售方税号")
     buyer_id = _xml_value(values, "BuyerIdNum", "PurchaserIdNum", "GmfNsrsbh", "购买方纳税人识别号", label="购买方税号")
     accounting_id = _xml_value(
@@ -304,23 +305,22 @@ def _xml(data, doc):
         _xml_value(values, "AmountOfTransferredOutInputVat", "TransferredOutInputVat", "进项转出税额", label="进项转出税额"),
         f"XML 发票「{number}」进项转出税额",
     )
-    deductible_tax = None
-    if kind in {"", "采购"} and status != "作废" and confirmed is True and (not usage or "抵扣" in usage):
-        deductible_tax = abs(tax)
-        if transferred:
-            transferred_tax = abs(transferred_tax or Decimal(0))
-            if transferred_tax > deductible_tax:
-                raise InputError(f"XML 发票「{number}」进项转出税额不能大于发票税额。")
-            deductible_tax -= transferred_tax
+    deductible_period = _xml_value(values, "PeriodOfUsageConfirmation", "DeductionPeriod", "抵扣所属期", label="抵扣所属期")
+    deductible_tax = loader._invoice_deduction(kind, status, tax, confirmed, usage, deductible_period,
+        transferred, transferred_tax, f"XML 发票「{number}」")
     detail = f"XML 数电发票；{kind or '待按企业税号判定方向'}{status}；不含税 {abs(amount):,.2f}；税额 {abs(tax):,.2f}"
     if total is not None:
         detail += f"；价税合计 {abs(total):,.2f}"
+    detail += f"；原文状态 {raw_status or '未提供'}；红字标志 {red}；作废标志 {void}；原文不含税 {amount}；原文税额 {tax}"
+    if kind in {'', '采购'} and deductible_tax is None:
+        detail += "；抵扣用途、确认或所属期依据不足，本票税额不计入本期确认抵扣"
     invoice = loader._Invoice(
         number, issued_on, kind, abs(amount), abs(tax), status, deductible_tax,
-        _xml_value(values, "PeriodOfUsageConfirmation", "DeductionPeriod", "抵扣所属期", label="抵扣所属期"),
+        deductible_period,
         seller_id, buyer_id, "XML 数电发票结构化元素", detail,
     )
     doc["invoices"] = [_serial(asdict(invoice))]
+    doc['invoice_parser_version'] = provenance.INVOICE_VERSION
     doc["warnings"].append("XML 已按结构化字段解析；当前不代替电子税务局验真或数字签名验证。")
     doc["summary"] = f"1 张 XML 数电发票：{number}，{kind or '购销方向提交时按企业税号判定'}，{status}"
 
@@ -734,7 +734,7 @@ def build_dataset(documents, selections, company_override, keys):
             if deductible_tax is not None and (deductible_tax < 0 or deductible_tax > tax):
                 raise InputError(f"{source}：发票「{number}」抵扣税额须在 0 与发票税额之间")
             if number in invoices:
-                raise InputError(f"发票号码重复「{number}」；请先去重，禁止跨文件重复计入")
+                raise InputError(f"发票号码重复「{number}」：{invoices[number].source} 与 {source} / {_text(raw.get('source'))}；请核对重复或状态冲突，禁止跨文件重复计入")
             invoices[number] = loader._Invoice(
                 number, issued_on, kind, amount, tax, status, deductible_tax,
                 _text(raw.get("deductible_period")), _text(raw.get("seller_id")), _text(raw.get("buyer_id")),

@@ -260,7 +260,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
   }
   function render() {
     const root = $("materialReview"); root.hidden = false; root.classList.add("enterprise-review"); root.replaceChildren();
-    const staleAnalysis=batch.analysis.feedback.blocking.some(note=>["financial_reanalysis_required","pdf_reanalysis_required"].includes(note.code));
+    const staleAnalysis=batch.analysis.feedback.blocking.some(note=>["financial_reanalysis_required","pdf_reanalysis_required","invoice_reanalysis_required"].includes(note.code));
     $("dropzone").style.display = "none";
     root.append(el("h2", "", "企业材料核对"), el("p", "muted", `批次 ${batch.id.slice(0,8)} · 当前版本 ${batch.revision} · 分析版本 ${batch.analysis_revision??"尚未完成"}。一次检测一家企业、一个主期间，历史材料不并入本期金额。`));
     status = el("p", "material-note"); status.setAttribute("role","status"); root.append(status);
@@ -297,7 +297,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     for (const doc of batch.documents) {
       const selection = batch.selections[doc.id] || {}, card = el("section", "material-card");
       const staleFinancial=doc.financial_reanalysis_required===true;
-      const stalePdf=doc.pdf_reanalysis_required===true,staleParser=staleFinancial||stalePdf;
+      const stalePdf=doc.pdf_reanalysis_required===true,staleInvoice=doc.invoice_reanalysis_required===true,staleParser=staleFinancial||stalePdf||staleInvoice;
       card.append(el("h3", "", doc.name), el("p",doc.error?"material-note":"muted",doc.error||doc.summary)); editor.append(card);
       const label = el("label", "", "材料用途"), purpose = el("select"); purpose.setAttribute("aria-label",doc.name+" 材料用途");
       for (const [value,title] of [["current","本期检测"],["history","历史参考（不计入本期金额）"],["excluded","移出本次检测（保留原件与历史）"]]) { const option=el("option","",title);option.value=value;purpose.append(option); }
@@ -316,6 +316,8 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
         "财务适配已更新：以下旧候选不能用于确认。请先保存并重新分析，系统只读取留存原件，不发送模型；旧数值修正与复核将清除，历史版本及已生成结果保留。"));
       if(stalePdf) card.append(el("p","material-note",
         "PDF 适配已更新或旧解析状态不明：以下旧候选不能用于确认。保存并重新分析会从完整原件重读已选片段，不发送模型；旧金额编辑及复核将清除，原件、历史版本和已生成结果保留。"));
+      if(staleInvoice) card.append(el("p","material-note",
+        "发票适配已更新或旧解析状态不明：以下旧发票候选不能用于确认。请保存并重新分析，从留存原件核对重复、红字、作废及金额口径；旧金额修正与复核将清除，不发送模型，原件及历史结果保留。"));
       const editable = !staleParser && !doc.error && (doc.kind === "pdf" || doc.review_required);
       let rangeChanged=false,readRange=null;
       const rangeSource=doc.pdf_selection || (doc.kind==="pdf"&&!doc.error&&Number.isInteger(doc.page_count)&&doc.page_count>0 ?

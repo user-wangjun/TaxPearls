@@ -72,7 +72,7 @@ function switchPanel(id) {
   if (id !== "userSettingsPanel") settingsRequest++;
   if (id !== "knowledgePanel" && typeof invalidateGraph === "function") invalidateGraph();
   if (id !== "adminPanel") { ruleEditorRequest++; adminRequest++; }
-  if (id === "uploadPanel") { refreshAIStatus(); refreshAuditClients(); enterpriseMaterials.refresh(); }
+  if (id === "uploadPanel") { refreshAIStatus(); refreshAuditClients(); enterpriseMaterials.refresh(); coreInputs.refresh().catch(err=>showError(err.message)); }
   document.querySelectorAll(".panel").forEach((n) => n.classList.toggle("active", n.id === id));
   document.querySelectorAll("#nav [data-panel]").forEach((n) => n.classList.toggle("active", n.dataset.panel === id));
   rememberWorkspacePanel(id);
@@ -92,6 +92,7 @@ function switchPanel(id) {
 const dz = $("dropzone"), fi = $("fileInput");
 let materialDraft = null, materialCards = [], originalUrls = [];
 let materialRequest = 0;
+const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError});
 const enterpriseMaterials = createEnterpriseMaterials({api, el, $, user:()=>currentUser,
   clear:clearMaterials, showError, showResult:result=>{renderResult(result);switchPanel("auditPanel");},
   showReview:()=>switchPanel("uploadPanel")});
@@ -120,6 +121,7 @@ $("uploadCompanyMode").addEventListener("change",()=>{selectedClientId=$("upload
 function clearMaterials() {
   materialRequest++;
   enterpriseMaterials.reset();
+  coreInputs.reset();
   $("busy").style.display="none";$("busy").textContent="正在处理材料，请稍候……";
   originalUrls.forEach(URL.revokeObjectURL); originalUrls = [];
   materialDraft = null; materialCards = [];

@@ -282,6 +282,33 @@
       <h3 style="margin-top:16px;">班级归属追溯（最近变更）</h3>
       <div id="class-history" class="muted"></div>
     </div>
+    <div class="card">
+      <h2>组织架构（院系 / 学期 / 班级实体）</h2>
+      <p class="muted" style="margin-top:-6px;">与现有学生名册并存：学生「班级」字段照常聚合，班级实体作为注册表经名称对齐在读人数，层级变更不改写既有数据归属。写操作仅限实训管理员；班级按学期重建只复制实体元数据，学生归属调整仍用上方「整建制迁移」。</p>
+      <h3 style="margin-top:12px;">院系</h3>
+      <div id="org-dep-form" class="row" hidden>
+        <div><label>院系名称</label><input id="od-name" placeholder="如 会计学院"></div>
+        <div class="actions"><button class="primary small" data-act="org-dep-create">创建院系</button></div>
+      </div>
+      <div id="org-departments" class="muted">加载中…</div>
+      <h3 style="margin-top:16px;">学年学期</h3>
+      <div id="org-term-form" class="row" hidden>
+        <div><label>学期名称</label><input id="ot-name" placeholder="如 2026-2027-1"></div>
+        <div><label>开始日期（选填）</label><input id="ot-start" type="date"></div>
+        <div><label>结束日期（选填）</label><input id="ot-end" type="date"></div>
+        <div><label style="display:flex;align-items:center;gap:6px;margin-top:24px;"><input type="checkbox" id="ot-current" style="width:auto;"> 设为当前</label></div>
+        <div class="actions"><button class="primary small" data-act="org-term-create">创建学期</button></div>
+      </div>
+      <div id="org-terms" class="muted">加载中…</div>
+      <h3 style="margin-top:16px;">班级实体</h3>
+      <div id="org-class-form" class="row" hidden>
+        <div><label>班级名称</label><input id="oc-name" placeholder="如 会计2601"></div>
+        <div><label>院系</label><select id="oc-department"></select></div>
+        <div><label>学期</label><select id="oc-term"></select></div>
+        <div class="actions"><button class="primary small" data-act="org-class-create">创建班级</button></div>
+      </div>
+      <div id="org-classes" class="muted">加载中…</div>
+    </div>
     <div class="error" id="app-error"></div>
   </section>
 </main>

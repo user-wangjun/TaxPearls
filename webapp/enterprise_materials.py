@@ -31,6 +31,8 @@ from webapp.uploads import bounded_stream, multipart
 
 
 def _latest(view):
+    if view['versions'] and view['versions'][-1]['payload'].get('core_task'):
+        raise AccessDenied('基础资料处理任务停在规则核验之前，请从基础资料入口继续。', 409)
     records = [v for v in view['versions'] if v['kind'] in {'analysis', 'edit'}]
     if not records:
         raise AccessDenied('材料尚未完成分析。', 409)
@@ -118,6 +120,8 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         return user
 
     def project(view, user):
+        if view['versions'] and view['versions'][-1]['payload'].get('core_task'):
+            raise AccessDenied('请从基础资料准备入口读取本任务。', 409)
         settings = ai_keys.apply(AISettings.from_env(), get_store(), usage='extraction')
         ai = {**settings.public_status(), 'max_pages': settings.max_pages,
               'queue_enabled': material_jobs.QueueSettings.from_env().enabled}
@@ -135,6 +139,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                          'accounts', 'declarations', 'standard_tables', 'import_model', 'account_cell_sources', 'declaration_cell_sources'}},
                       'standard_fields': material_review.fields(doc) if 'standard_tables' in doc or 'import_model' in doc else None,
                       'financial_reanalysis_required': financial_import.reanalysis_required(doc),
+                      'invoice_reanalysis_required': material_provenance.invoice_reanalysis_required(doc),
                       'pdf_reanalysis_required': material_provenance.pdf_reanalysis_required(doc)}
                      for doc in latest['payload']['documents']]
         dataset = latest['payload']['analysis'].get('dataset') or {}
@@ -354,7 +359,8 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
 
     @app.get('/api/enterprise/materials')
     def list_batches(session: str | None = Cookie(default=None, alias='taxpearls_session')):
-        return batches.listing(get_store(), actor(session))
+        user = actor(session)
+        return batches.listing(get_store(), user, workflow='legacy')
 
     @app.get('/api/enterprise/client-profile/{client_id}')
     def client_profile(client_id: str, session: str | None = Cookie(default=None, alias='taxpearls_session')):
@@ -494,6 +500,38 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
             selections[file_id] = {**selections.get(file_id, {}), **change}
         original_previous = deepcopy(previous)
         mapped_originals = {}
+        for index, document in enumerate(previous['documents']):
+            selection = selections.get(document['id'], {})
+            if selection.get('purpose') == 'excluded' or not material_provenance.invoice_reanalysis_required(document):
+                continue
+            supplied = value.get('selections', {}).get(document['id'], {})
+            if any(supplied.get(key) for key in ('rows', 'standard_edits', 'evidence_reviews')):
+                raise InputError('更新发票适配时不能同时沿用旧金额或复核，请先重新读取原件。')
+            fid = document.get('original_id')
+            if fid not in mapped_originals:
+                meta, raw = batches.original(get_store(), user, batch_id, fid, purpose='read_for_reanalysis')
+                mapped_originals[fid] = dict(materials.expand_uploads([(meta['name'], raw)]))
+            raw = mapped_originals[fid].get(document['name'])
+            if raw is None or hashlib.sha256(raw).hexdigest() != document['sha256']:
+                raise InputError('发票材料的原件指纹不匹配。')
+            keys = set(previous['fields']) | set(config.PERIOD_SERIES)
+            candidate = materials.preview([(document['name'], raw)], keys,
+                allow_incomplete_company=True, capture_standard=True)[0]
+            candidate.update(id=document['id'], original_id=fid,
+                original_upload_name=document.get('original_upload_name', document['name']))
+            # Preview uses source bytes and local parsing only; preserve explicit
+            # financial mapping when a workbook also contains statement sheets.
+            if candidate.get('import_mapping') and selection.get('import_options'):
+                excel = materials._table_workbook(candidate['name'], raw, candidate['kind']) if candidate['kind'] in {'csv', 'tsv'} else raw
+                materials._excel(excel, candidate, allow_incomplete_company=True,
+                    capture_standard=True, keys=keys, import_options=selection['import_options'])
+            candidate['extraction']['invoice_reanalysis'] = {
+                **candidate['extraction']['local'], 'model_calls': 0, 'source_sha256': candidate['sha256']}
+            previous['documents'][index] = candidate
+            selection.pop('rows', None)
+            selection['standard_edits'] = {}
+            selection['evidence_reviews'] = []
+            selections[document['id']] = selection
         for index, document in enumerate(previous['documents']):
             selection = selections.get(document['id'], {})
             current_options = selection.get('import_options', {})

@@ -132,7 +132,7 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
       document:{querySelectorAll:selector=>selector===".panel"?views:buttons},
       noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0,
       aiKeyProbes:{load(){calls.push("loadAIKeys");},reset(){}},
-      refreshAIStatus(){calls.push("ai");},refreshAuditClients(){calls.push("clients");},enterpriseMaterials:{refresh(){calls.push("materials");}}};
+      refreshAIStatus(){calls.push("ai");},refreshAuditClients(){calls.push("clients");},enterpriseMaterials:{refresh(){calls.push("materials");}},coreInputs:{refresh(){return Promise.resolve();}}};
     for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge"])ctx[name]=()=>calls.push(name);
     vm.createContext(ctx);vm.runInContext(code,ctx);
     return {ctx,calls,location,views,buttons};
@@ -428,3 +428,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   assert.ok(!mistakeNodes.get("mistakeStatus").textContent.includes("private failure"));
   console.log("Frontend syntax, role, evidence and notification/rule/material/mistake race and trend area contracts passed.");
 })().catch(error => {console.error(error); process.exitCode = 1;});
+
+// Core inputs must be loaded before the shared console creates its controller.
+assert.ok(indexMarkup.indexOf('/core-inputs.js') < indexMarkup.indexOf('/console.js'));
+assert.ok(indexMarkup.includes('id="coreInputs"'));

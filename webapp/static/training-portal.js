@@ -375,6 +375,13 @@ function showApp(loggedIn) {
   document.getElementById("app-view").hidden = !loggedIn;
   document.getElementById("who").textContent = loggedIn
     ? `${state.student.name}（${state.student.student_no}${state.student.college ? " · " + state.student.college : ""}）` : "";
+  document.getElementById("header-actions").hidden = !loggedIn;
+}
+
+function closePassModal() {
+  document.getElementById("pass-modal").hidden = true;
+  for (const id of ["old-pass", "new-pass", "new-pass2"]) document.getElementById(id).value = "";
+  document.getElementById("pass-error").textContent = "";
 }
 
 async function boot() {
@@ -387,6 +394,42 @@ async function boot() {
     showApp(false);
   }
 }
+
+document.getElementById("change-pass-btn").addEventListener("click", () => {
+  document.getElementById("pass-modal").hidden = false;
+  document.getElementById("pass-error").textContent = "";
+  document.getElementById("old-pass").focus();
+});
+
+document.getElementById("cancel-pass").addEventListener("click", closePassModal);
+
+document.getElementById("save-pass").addEventListener("click", async () => {
+  const box = document.getElementById("pass-error");
+  box.textContent = "";
+  const oldPassword = document.getElementById("old-pass").value;
+  const newPassword = document.getElementById("new-pass").value;
+  const confirm2 = document.getElementById("new-pass2").value;
+  if (!oldPassword || !newPassword) { box.textContent = "当前密码与新密码均必填。"; return; }
+  if (newPassword !== confirm2) { box.textContent = "两次输入的新密码不一致。"; return; }
+  try {
+    await api("/api/training/auth/change-password", {
+      method: "POST",
+      body: { old_password: oldPassword, new_password: newPassword },
+    });
+    closePassModal();
+    state.student = null;
+    showApp(false);
+    document.getElementById("login-error").textContent = "密码已修改，请用新密码重新登录。";
+  } catch (err) {
+    box.textContent = err.message;
+  }
+});
+
+document.getElementById("logout-btn").addEventListener("click", async () => {
+  try { await api("/api/training/auth/logout", { method: "POST" }); } catch { /* 会话已失效即可 */ }
+  state.student = null;
+  showApp(false);
+});
 
 document.getElementById("login-btn").addEventListener("click", async () => {
   const box = document.getElementById("login-error");
