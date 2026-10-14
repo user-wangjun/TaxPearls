@@ -22,7 +22,7 @@ from webapp.login_guard import LoginGuard
 from src import settings  # noqa: F401 - 先加载 .env，Store 需要 FIELD_KEY
 from webapp.storage import Store
 from webapp.training_portal import (
-    TrainingPortalError, create_student, register, set_college_quota,
+    TrainingPortalError, create_student, register,
 )
 
 _passwords = PasswordHasher()
