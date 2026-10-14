@@ -615,5 +615,30 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_college_class_lookup
                 ON college_class(college, name);
         """)
+        # 院校席位与配额（FR-U06）：教师/学生分席，院校按师生配额核销。
+        # 无记录院校按默认档放行（不阻塞既有部署）；调整走 revision 乐观锁
+        # 并逐次留痕（与 platform org_quota/members.set_quota 同模式）。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS college_quota (
+                college TEXT PRIMARY KEY,
+                teacher_quota INTEGER NOT NULL,
+                student_quota INTEGER NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0,
+                updated_by TEXT REFERENCES college_user(id),
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS college_quota_history (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                old_teacher_quota INTEGER,
+                old_student_quota INTEGER,
+                new_teacher_quota INTEGER NOT NULL,
+                new_student_quota INTEGER NOT NULL,
+                changed_by TEXT REFERENCES college_user(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_college_quota_history_time
+                ON college_quota_history(college, created_at);
+        """)
         from webapp import ai_keys
         ai_keys.migrate(db)

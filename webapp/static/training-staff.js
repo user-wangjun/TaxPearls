@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [] };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [], quota: null };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -459,6 +459,7 @@ async function loadOrg() {
   state.departments = (await api(`/api/training/staff/org/departments?college=${q}`)).departments;
   state.terms = (await api(`/api/training/staff/org/terms?college=${q}`)).terms;
   state.orgClasses = (await api(`/api/training/staff/org/classes?college=${q}`)).classes;
+  state.quota = (await api(`/api/training/staff/org/quota?college=${q}`)).quota;
   renderOrg();
 }
 
@@ -506,6 +507,23 @@ function renderOrg() {
     deps.filter((d) => !d.archived).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
   document.getElementById("oc-term").innerHTML = `<option value="">（未绑定学期）</option>` +
     terms.filter((t) => !t.archived).map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");
+  const quota = state.quota;
+  if (quota) {
+    document.getElementById("org-quota").innerHTML =
+      `<p>教师 <strong>${quota.teachers_used}</strong>/${quota.teacher_quota} · 学生 <strong>${quota.students_used}</strong>/${quota.student_quota}${quota.configured ? "" : "（默认档，未单独配置）"}</p>`;
+    const isAdminNow = isAdmin;
+    document.getElementById("org-quota-form").hidden = !isAdminNow;
+    if (isAdminNow) {
+      document.getElementById("oq-teacher").value = quota.teacher_quota;
+      document.getElementById("oq-student").value = quota.student_quota;
+    }
+    const hist = quota.history || [];
+    document.getElementById("org-quota-history").innerHTML = hist.length
+      ? `<h3 style="margin-top:12px;">调整留痕（最近 ${hist.length} 条）</h3>` + hist.map((h) =>
+        `<div class="item"><div class="item-head"><div>教师 ${esc(h.old_teacher_quota ?? "—")}→${h.new_teacher_quota} · 学生 ${esc(h.old_student_quota ?? "—")}→${h.new_student_quota}</div>
+        <span class="muted">${esc((h.created_at || "").slice(0, 16).replace("T", " "))}${h.changed_by_name ? ` · ${esc(h.changed_by_name)}` : ""}</span></div></div>`).join("")
+      : "";
+  }
 }
 
 /* ---------- 学生管理 ---------- */
@@ -969,6 +987,19 @@ document.getElementById("app-view").addEventListener("click", (event) => {
         await api(`/api/training/staff/org/classes/${id}/clone`, {
           method: "POST", body: { term_id: term.id } });
         flash("已按学期重建班级实体。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-quota-save": async () => {
+      const teacher = parseInt(q("#oq-teacher").value, 10);
+      const student = parseInt(q("#oq-student").value, 10);
+      if (!Number.isInteger(teacher) || !Number.isInteger(student)) { flash("配额须为整数。", true); return; }
+      try {
+        await api("/api/training/staff/org/quota", {
+          method: "PATCH",
+          body: { college: state.staff.college, teacher_quota: teacher,
+                  student_quota: student, revision: (state.quota || {}).revision || 0 } });
+        flash("配额已保存并留痕。");
       } catch (err) { flash(err.message, true); }
       await loadOrg();
     },

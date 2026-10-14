@@ -218,6 +218,7 @@ def create_student(store, college: str, student_no: str, name: str, *,
     password = _validate_student_password(initial_password or f"Tp#{student_no}2026")
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
+        require_student_slot(db, college)  # FR-U06：事务内核销，并发不绕过
         dup = db.execute(
             "SELECT id FROM student_info WHERE college=? AND student_no=?", (college, student_no)
         ).fetchone()
@@ -934,6 +935,121 @@ def clone_org_class(store, class_id: str, *, term_id: str, name: str | None = No
     return {"class": dict(new_row), "cloned_from": class_id, "term_name": term["name"]}
 
 
+# ---- 院校席位与配额（FR-U06）：师生分席、事务内核销、调整留痕 ----
+#
+# 无配额记录的院校按默认档放行（不阻塞既有部署）；一旦配置即按记录执行。
+# 核销必须在 BEGIN IMMEDIATE 写事务内 count-check-insert（SQLite 单写者
+# 串行化，并发不绕过——与 platform members.require_slot 同模式）。
+
+_DEFAULT_TEACHER_QUOTA = 10
+_DEFAULT_STUDENT_QUOTA = 200
+_QUOTA_UPPER = 10000
+
+
+class OrgQuotaPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    teacher_quota: int
+    student_quota: int
+    revision: int
+
+
+def college_quota_state(db, college: str) -> dict[str, Any]:
+    """用量与配额快照（可在已持有的写事务内调用，供核销判定）。"""
+    row = db.execute("SELECT teacher_quota, student_quota, revision FROM college_quota"
+                     " WHERE college=?", (college,)).fetchone()
+    teachers = db.execute("SELECT count(*) FROM college_user"
+                          " WHERE college=? AND active=1 AND role='teacher'",
+                          (college,)).fetchone()[0]
+    students = db.execute("SELECT count(*) FROM student_info WHERE college=? AND active=1",
+                          (college,)).fetchone()[0]
+    tq = row["teacher_quota"] if row else _DEFAULT_TEACHER_QUOTA
+    sq = row["student_quota"] if row else _DEFAULT_STUDENT_QUOTA
+    return {"college": college, "configured": bool(row),
+            "teacher_quota": tq, "student_quota": sq,
+            "teachers_used": teachers, "students_used": students,
+            "teacher_remaining": max(0, tq - teachers), "student_remaining": max(0, sq - students),
+            "revision": row["revision"] if row else 0}
+
+
+def require_teacher_slot(db, college: str) -> None:
+    state = college_quota_state(db, college)
+    if state["teacher_remaining"] < 1:
+        raise TrainingPortalError(
+            f"教师席位已满（{state['teachers_used']}/{state['teacher_quota']}），"
+            "请先停用不用的教师账号或调整院校配额。", 409)
+
+
+def require_student_slot(db, college: str) -> None:
+    state = college_quota_state(db, college)
+    if state["student_remaining"] < 1:
+        raise TrainingPortalError(
+            f"学生席位已满（{state['students_used']}/{state['student_quota']}），"
+            "请先停用不用的学生或调整院校配额。", 409)
+
+
+def college_quota_overview(store, college: str, *, history_limit: int = 10) -> dict[str, Any]:
+    college = (college or "").strip()
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        state = college_quota_state(db, college)
+        hist = [dict(r) for r in db.execute(
+            """SELECT h.old_teacher_quota, h.old_student_quota, h.new_teacher_quota,
+                      h.new_student_quota, h.created_at, u.display_name AS changed_by_name
+               FROM college_quota_history h LEFT JOIN college_user u ON u.id=h.changed_by
+               WHERE h.college=? ORDER BY h.created_at DESC, h.rowid DESC LIMIT ?""",
+            (college, max(1, min(int(history_limit), 50)))).fetchall()]
+    state["history"] = hist
+    return state
+
+
+def set_college_quota(store, actor_id: str, college: str, teacher_quota: int,
+                      student_quota: int, revision: int) -> dict[str, Any]:
+    """调整院校配额：revision 乐观锁、不得低于当前用量、逐次留痕。"""
+    college = (college or "").strip()
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    for value, label in ((teacher_quota, "教师"), (student_quota, "学生")):
+        if not isinstance(value, int) or not 1 <= value <= _QUOTA_UPPER:
+            raise TrainingPortalError(f"{label}配额须为 1–{_QUOTA_UPPER} 的整数。", 422)
+    if not isinstance(revision, int) or revision < 0:
+        raise TrainingPortalError("版本信息无效，请刷新后重试。", 422)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT teacher_quota, student_quota, revision FROM college_quota"
+                         " WHERE college=?", (college,)).fetchone()
+        current_rev = row["revision"] if row else 0
+        if current_rev != revision:
+            raise TrainingPortalError("配额配置已变化，请刷新后重试。", 409)
+        state = college_quota_state(db, college)
+        if teacher_quota < state["teachers_used"]:
+            raise TrainingPortalError(
+                f"教师配额不能低于当前在读教师数（{state['teachers_used']}）。", 422)
+        if student_quota < state["students_used"]:
+            raise TrainingPortalError(
+                f"学生配额不能低于当前在读学生数（{state['students_used']}）。", 422)
+        now = _now()
+        db.execute("""INSERT INTO college_quota
+                      (college, teacher_quota, student_quota, revision, updated_by, updated_at)
+                      VALUES (?,?,?,?,?,?)
+                      ON CONFLICT(college) DO UPDATE SET
+                      teacher_quota=excluded.teacher_quota, student_quota=excluded.student_quota,
+                      revision=college_quota.revision+1, updated_by=excluded.updated_by,
+                      updated_at=excluded.updated_at""",
+                   (college, teacher_quota, student_quota, current_rev + 1, actor_id, now))
+        db.execute("""INSERT INTO college_quota_history
+                      (id, college, old_teacher_quota, old_student_quota,
+                       new_teacher_quota, new_student_quota, changed_by, created_at)
+                      VALUES (?,?,?,?,?,?,?,?)""",
+                   (str(uuid.uuid4()), college,
+                    row["teacher_quota"] if row else None,
+                    row["student_quota"] if row else None,
+                    teacher_quota, student_quota, actor_id, now))
+        state = college_quota_state(db, college)
+    return state
+
+
 def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
                        default_password: str, created_by: str) -> dict[str, Any]:
     """批量建教师账号（FR-U03）；仅管理员可调用（路由层强制）。
@@ -957,22 +1073,28 @@ def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
         if not display_name:
             skipped.append({"line": index, "username": line_no, "reason": "姓名必填。"})
             continue
-        with store.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            dup = db.execute("SELECT id FROM college_user WHERE username=?", (username,)).fetchone()
-            if dup:
-                skipped.append({"line": index, "username": line_no,
-                                "reason": "登录名已存在（全局唯一）。"})
-                continue
-            uid = str(uuid.uuid4())
-            db.execute(
-                """INSERT INTO college_user
-                   (id, username, password_hash, display_name, college, department, email, phone,
-                    role, active, created_at)
-                   VALUES (?,?,?,?,?,NULL,?,?, 'teacher', 1, ?)""",
-                (uid, username, _passwords.hash(default_password), display_name, college,
-                 (str(row.get("email") or "").strip() or None),
-                 (str(row.get("phone") or "").strip() or None), _now()))
+        try:
+            with store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                require_teacher_slot(db, college)  # FR-U06：事务内核销，并发不绕过
+                dup = db.execute("SELECT id FROM college_user WHERE username=?", (username,)).fetchone()
+                if dup:
+                    skipped.append({"line": index, "username": line_no,
+                                    "reason": "登录名已存在（全局唯一）。"})
+                    continue
+                uid = str(uuid.uuid4())
+                db.execute(
+                    """INSERT INTO college_user
+                       (id, username, password_hash, display_name, college, department, email, phone,
+                        role, active, created_at)
+                       VALUES (?,?,?,?,?,NULL,?,?, 'teacher', 1, ?)""",
+                    (uid, username, _passwords.hash(default_password), display_name, college,
+                     (str(row.get("email") or "").strip() or None),
+                     (str(row.get("phone") or "").strip() or None), _now()))
+        except TrainingPortalError as exc:
+            # 席位已满等可预见原因按行跳过，不中断整批（不部分静默成功）。
+            skipped.append({"line": index, "username": line_no, "reason": str(exc)})
+            continue
         created.append({"id": uid, "username": username, "display_name": display_name})
     return {"created": created, "skipped": skipped}
 
@@ -3470,6 +3592,22 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         admin(session)
         return response({"clone": clone_org_class(
             store_provider(), class_id, term_id=body.term_id, name=body.name)})
+
+    @app.get("/api/training/staff/org/quota")
+    @guarded
+    def org_quota_overview_route(college: str,
+                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"quota": college_quota_overview(store_provider(), college)})
+
+    @app.patch("/api/training/staff/org/quota")
+    @guarded
+    def org_quota_update(body: OrgQuotaPatch,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = admin(session)
+        return response({"quota": set_college_quota(
+            store_provider(), who["id"], body.college,
+            body.teacher_quota, body.student_quota, body.revision)})
 
     @app.post("/api/training/staff/teachers/import")
     @guarded
