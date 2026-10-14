@@ -640,5 +640,22 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_college_quota_history_time
                 ON college_quota_history(college, created_at);
         """)
+        # 学期名册快照（FR-U01 第二期）：把"当前在读学生 → 班级"归属按学期
+        # 冻结，供新学期重建班级后按旧学期回溯名册。重拍（同学期再快照）
+        # 覆盖更新（快照是当时事实的重读；归属变更审计链另有 roster_class_history）。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS college_roster_snapshot (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                term_id TEXT NOT NULL REFERENCES college_term(id),
+                student_id TEXT NOT NULL REFERENCES student_info(id),
+                class_name TEXT NOT NULL,
+                taken_by TEXT REFERENCES college_user(id),
+                taken_at TEXT NOT NULL,
+                UNIQUE(term_id, student_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_college_roster_snapshot_term
+                ON college_roster_snapshot(term_id, class_name);
+        """)
         from webapp import ai_keys
         ai_keys.migrate(db)

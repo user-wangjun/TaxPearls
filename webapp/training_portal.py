@@ -1050,6 +1050,71 @@ def set_college_quota(store, actor_id: str, college: str, teacher_quota: int,
     return state
 
 
+# ---- 学期名册快照（FR-U01 第二期）：按学期冻结在读归属，供历史回溯 ----
+#
+# 快照语义 = 重拍时刻该院校全部在读学生的班级归属；重拍覆盖更新（同一
+# 学期每人一条，UNIQUE(term_id, student_id)）；已停用或未分班学生不入
+# 快照。归属变更审计链另有 roster_class_history，两者互不替代。
+
+def take_roster_snapshot(store, actor_id: str, term_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        term = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not term:
+            raise TrainingPortalError("学期不存在。", 404)
+        students = db.execute(
+            """SELECT id, class_name FROM student_info
+               WHERE college=? AND active=1 AND class_name IS NOT NULL AND TRIM(class_name)!=''""",
+            (term["college"],)).fetchall()
+        now = _now()
+        existing = {r["student_id"]: r["id"] for r in db.execute(
+            "SELECT id, student_id FROM college_roster_snapshot WHERE term_id=?",
+            (term_id,)).fetchall()}
+        inserted = updated = 0
+        keep = set()
+        for s in students:
+            keep.add(s["id"])
+            if s["id"] in existing:
+                db.execute(
+                    "UPDATE college_roster_snapshot SET class_name=?, taken_by=?, taken_at=? WHERE id=?",
+                    (s["class_name"], actor_id, now, existing[s["id"]]))
+                updated += 1
+            else:
+                db.execute(
+                    """INSERT INTO college_roster_snapshot
+                       (id, college, term_id, student_id, class_name, taken_by, taken_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()), term["college"], term_id, s["id"],
+                     s["class_name"], actor_id, now))
+                inserted += 1
+        removed = 0
+        for sid, row_id in existing.items():
+            if sid not in keep:  # 重拍时已停用/未分班的学生移出快照
+                db.execute("DELETE FROM college_roster_snapshot WHERE id=?", (row_id,))
+                removed += 1
+    return {"term_id": term_id, "term_name": term["name"], "snapshotted": len(students),
+            "inserted": inserted, "updated": updated, "removed": removed}
+
+
+def view_roster_snapshot(store, term_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        term = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not term:
+            raise TrainingPortalError("学期不存在。", 404)
+        rows = db.execute(
+            """SELECT r.class_name, s.student_no, s.name, r.taken_at
+               FROM college_roster_snapshot r JOIN student_info s ON s.id=r.student_id
+               WHERE r.term_id=? ORDER BY r.class_name, s.student_no""", (term_id,)).fetchall()
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        groups.setdefault(r["class_name"], []).append(
+            {"student_no": r["student_no"], "name": r["name"]})
+    return {"term_id": term_id, "term_name": term["name"],
+            "taken_at": max((r["taken_at"] for r in rows), default=None),
+            "total": len(rows),
+            "classes": [{"class_name": k, "students": v} for k, v in sorted(groups.items())]}
+
+
 def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
                        default_password: str, created_by: str) -> dict[str, Any]:
     """批量建教师账号（FR-U03）；仅管理员可调用（路由层强制）。
@@ -3608,6 +3673,20 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return response({"quota": set_college_quota(
             store_provider(), who["id"], body.college,
             body.teacher_quota, body.student_quota, body.revision)})
+
+    @app.post("/api/training/staff/org/terms/{term_id}/roster-snapshot")
+    @guarded
+    def org_roster_snapshot_take(term_id: str,
+                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = admin(session)
+        return response({"snapshot": take_roster_snapshot(store_provider(), who["id"], term_id)})
+
+    @app.get("/api/training/staff/org/terms/{term_id}/roster-snapshot")
+    @guarded
+    def org_roster_snapshot_view(term_id: str,
+                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"snapshot": view_roster_snapshot(store_provider(), term_id)})
 
     @app.post("/api/training/staff/teachers/import")
     @guarded
