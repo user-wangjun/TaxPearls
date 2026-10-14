@@ -308,6 +308,15 @@
         <div class="actions"><button class="primary small" data-act="org-class-create">创建班级</button></div>
       </div>
       <div id="org-classes" class="muted">加载中…</div>
+      <h3 style="margin-top:16px;">席位与配额</h3>
+      <p class="muted" style="margin-top:-6px;">教师/学生分席核销：创建即占用、停用即腾出；未配置院校按默认档（教师 10 / 学生 200）放行。批量导入遇席位满逐行说明原因，不中断整批。调整仅限管理员，逐次留痕。</p>
+      <div id="org-quota" class="muted">加载中…</div>
+      <div id="org-quota-form" class="row" hidden>
+        <div><label>教师配额</label><input id="oq-teacher" type="number" min="1" max="10000"></div>
+        <div><label>学生配额</label><input id="oq-student" type="number" min="1" max="10000"></div>
+        <div class="actions"><button class="primary small" data-act="org-quota-save">保存配额</button></div>
+      </div>
+      <div id="org-quota-history" class="muted" style="margin-top:10px;"></div>
     </div>
     <div class="error" id="app-error"></div>
   </section>
