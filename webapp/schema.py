@@ -615,6 +615,38 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_college_class_lookup
                 ON college_class(college, name);
         """)
+        # 编程题库（FR-J01 v1，仅数据模型与管理）：题目 + 测试用例。
+        # 边界如实标注：判题沙箱（J03）、判题引擎（J04）、提交与版本存储（J02，
+        # 代码正文按 05 号文档加密留存）待判题专项接入；本版不含提交数据，
+        # 用例改动对历史判题记录复现的影响待 J02 落地时以版本机制实现。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS code_problem (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                college TEXT NOT NULL,                    -- 所属院校（实训数据隔离键）
+                title TEXT NOT NULL,                      -- 题目标题
+                statement TEXT NOT NULL DEFAULT '',       -- 题面描述（纯文本）
+                language TEXT NOT NULL DEFAULT 'python',  -- 判题语言（v1 仅 python）
+                time_limit_ms INTEGER NOT NULL DEFAULT 5000,
+                memory_limit_kb INTEGER NOT NULL DEFAULT 65536,
+                knowledge_point_id TEXT REFERENCES knowledge_point(id),  -- 关联知识点（可空）
+                active INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT REFERENCES college_user(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS code_test_case (
+                id TEXT PRIMARY KEY,
+                problem_id TEXT NOT NULL REFERENCES code_problem(id),
+                seq INTEGER NOT NULL,                     -- 用例序号（题内从 1 递增）
+                input_text TEXT NOT NULL DEFAULT '',      -- 标准输入
+                expected_output TEXT NOT NULL DEFAULT '', -- 期望输出（逐字节比对，浮点容差属判题引擎）
+                weight REAL NOT NULL DEFAULT 1.0,         -- 计分权重
+                sample INTEGER NOT NULL DEFAULT 0,        -- 1=公开样例（学生可见）
+                created_at TEXT NOT NULL,
+                UNIQUE(problem_id, seq)
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_problem_college
+                ON code_problem(college, active);
+        """)
         # 院校席位与配额（FR-U06）：教师/学生分席，院校按师生配额核销。
         # 无记录院校按默认档放行（不阻塞既有部署）；调整走 revision 乐观锁
         # 并逐次留痕（与 platform org_quota/members.set_quota 同模式）。

@@ -353,7 +353,122 @@ def set_student_active(store, student_id: str, active: bool) -> dict[str, Any]:
     return dict(row)
 
 
-# ---- 课程管理（FR-U04 v1：课程绑定教师与班级，支持同课多班） ----
+# ---- 编程题库（FR-J01 v1：数据模型与管理；判题引擎/沙箱待专项） ----
+
+def list_code_problems(store, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        where = "" if include_inactive else "WHERE p.active=1"
+        rows = db.execute(
+            f"""SELECT p.id, p.college, p.title, p.language, p.time_limit_ms,
+                       p.memory_limit_kb, p.knowledge_point_id, p.active, p.created_at,
+                       (SELECT count(*) FROM code_test_case t WHERE t.problem_id=p.id) AS case_count,
+                       kp.name AS knowledge_point_name
+                FROM code_problem p LEFT JOIN knowledge_point kp ON kp.id=p.knowledge_point_id
+                {where} ORDER BY p.created_at DESC""").fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_code_problem(store, operator_id: str, college: str, title: str, *,
+                        statement: str = "", language: str = "python",
+                        time_limit_ms: int = 5000, memory_limit_kb: int = 65536,
+                        knowledge_point_id: str | None = None,
+                        cases: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    title = (title or "").strip()
+    language = (language or "python").strip().lower()
+    if not title:
+        raise TrainingPortalError("题目标题必填。")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    if language != "python":
+        raise TrainingPortalError("v1 仅支持 python 语言判题环境。")
+    if time_limit_ms not in range(500, 60001):
+        raise TrainingPortalError("时间限制须在 500~60000 毫秒。")
+    if memory_limit_kb not in range(1024, 1048577):
+        raise TrainingPortalError("内存限制须在 1024~1048576 KB。")
+    cleaned_cases = _clean_test_cases(cases)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if knowledge_point_id and not db.execute(
+                "SELECT 1 FROM knowledge_point WHERE id=?", (knowledge_point_id,)).fetchone():
+            raise TrainingPortalError("关联知识点不存在。", 404)
+        pid = str(uuid.uuid4())
+        db.execute(
+            """INSERT INTO code_problem (id, college, title, statement, language,
+                                         time_limit_ms, memory_limit_kb, knowledge_point_id,
+                                         active, created_by, created_at)
+               VALUES (?,?,?,?,?,?,?, ?,1,?,?)""",
+            (pid, college, title, statement or "", language,
+             time_limit_ms, memory_limit_kb, knowledge_point_id, operator_id, _now()))
+        _insert_test_cases(db, pid, cleaned_cases)
+        row = db.execute("SELECT * FROM code_problem WHERE id=?", (pid,)).fetchone()
+        payload = dict(row)
+        payload["case_count"] = len(cleaned_cases)
+        payload["cases"] = cleaned_cases
+    return payload
+
+
+def update_code_problem(store, problem_id: str, fields: dict[str, Any],
+                        cases: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    allowed = {"title", "statement", "language", "time_limit_ms", "memory_limit_kb",
+               "knowledge_point_id", "active"}
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM code_problem WHERE id=?", (problem_id,)).fetchone():
+            raise TrainingPortalError("题目不存在。", 404)
+        if fields.get("language") and fields["language"] != "python":
+            raise TrainingPortalError("v1 仅支持 python 语言判题环境。")
+        sets, params = [], []
+        for key in sorted(allowed & set(fields)):
+            value = fields[key]
+            if key == "title":
+                value = (value or "").strip()
+                if not value:
+                    raise TrainingPortalError("题目标题必填。")
+            sets.append(f"{key}=?")
+            params.append(value)
+        if sets:
+            params.append(problem_id)
+            db.execute(f"UPDATE code_problem SET {', '.join(sets)} WHERE id=?", params)
+        if cases is not None:
+            cleaned = _clean_test_cases(cases)
+            db.execute("DELETE FROM code_test_case WHERE problem_id=?", (problem_id,))
+            _insert_test_cases(db, problem_id, cleaned)
+        row = db.execute("SELECT * FROM code_problem WHERE id=?", (problem_id,)).fetchone()
+        payload = dict(row)
+        payload["case_count"] = db.execute(
+            "SELECT count(*) n FROM code_test_case WHERE problem_id=?",
+            (problem_id,)).fetchone()["n"]
+        payload["cases"] = [dict(r) for r in db.execute(
+            "SELECT seq, input_text, expected_output, weight, sample FROM code_test_case"
+            " WHERE problem_id=? ORDER BY seq", (problem_id,)).fetchall()]
+    return payload
+
+
+def _clean_test_cases(cases: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    cleaned = []
+    for i, c in enumerate(cases or [], start=1):
+        input_text = str(c.get("input_text") or "")
+        expected = str(c.get("expected_output") or "")
+        raw_weight = c.get("weight")
+        weight = 1.0 if raw_weight is None else float(raw_weight)
+        if weight <= 0:
+            raise TrainingPortalError(f"第 {i} 个用例权重必须为正数。")
+        cleaned.append({"seq": i, "input_text": input_text, "expected_output": expected,
+                        "weight": weight, "sample": 1 if c.get("sample") else 0})
+    return cleaned
+
+
+def _insert_test_cases(db, problem_id: str, cases: list[dict[str, Any]]) -> None:
+    for c in cases:
+        db.execute(
+            """INSERT INTO code_test_case (id, problem_id, seq, input_text,
+                                           expected_output, weight, sample, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (str(uuid.uuid4()), problem_id, c["seq"], c["input_text"],
+             c["expected_output"], c["weight"], c["sample"], _now()))
+
+
+
 
 _COURSE_SELECT = """
     SELECT c.id, c.college, c.name, c.semester, c.teacher_id, c.description,
@@ -380,6 +495,8 @@ def list_courses(store, *, include_inactive: bool = True) -> list[dict[str, Any]
         rows = db.execute(f"{_COURSE_SELECT} {where} ORDER BY c.created_at DESC").fetchall()
         return [_course_payload(db, r) for r in rows]
 
+
+# ---- 课程管理（FR-U04 v1：课程绑定教师与班级，支持同课多班） ----
 
 def create_course(store, operator_id: str, college: str, name: str, *,
                   semester: str | None = None, teacher_id: str | None = None,
@@ -514,15 +631,42 @@ def college_overview(store, college: str) -> dict[str, Any]:
             "high_freq_marks": db.execute(
                 "SELECT count(*) n FROM knowledge_point_mark").fetchone()["n"],
         }
+        departments = []
+        for d in db.execute(
+                """SELECT id, name FROM college_department
+                   WHERE college=? AND archived=0 ORDER BY name""", (college,)).fetchall():
+            dclasses = [r["name"] for r in db.execute(
+                """SELECT name FROM college_class
+                   WHERE college=? AND department_id=? AND archived=0 ORDER BY name""",
+                (college, d["id"])).fetchall()]
+            roster = 0
+            courses_covered = 0
+            if dclasses:
+                marks = ",".join("?" * len(dclasses))
+                roster = db.execute(
+                    f"""SELECT count(*) n FROM student_info
+                        WHERE college=? AND active=1 AND class_name IN ({marks})""",
+                    (college, *dclasses)).fetchone()["n"]
+                courses_covered = db.execute(
+                    f"""SELECT count(DISTINCT cc.course_id) n FROM course_class cc
+                        JOIN course c ON c.id=cc.course_id AND c.college=? AND c.active=1
+                        WHERE cc.class_name IN ({marks})""",
+                    (college, *dclasses)).fetchone()["n"]
+            departments.append({
+                "id": d["id"], "name": d["name"], "classes": len(dclasses),
+                "students": roster, "courses_covered": courses_covered,
+            })
     return {
         "college": college,
         "students": {"total": students_total, "active": students_active},
         "teachers": teachers,
         "classes": list_classes(store, college),
         "courses": [dict(r) for r in courses],
+        "departments": departments,
         "content": content,
         "scope_note": "班级/课程按院校聚合；考证内容层为全平台共享数据，不按院校隔离；"
-                      "院系/专业多层组织属 FR-U01 后续排期。",
+                      "院系聚合基于组织架构实体（FR-U01），实体班级与名册文本班级的对齐"
+                      "情况以班级名匹配为准；校级管理员（FR-U02）为只读视图。",
     }
 
 
@@ -1051,12 +1195,15 @@ def set_college_quota(store, actor_id: str, college: str, teacher_quota: int,
 
 
 def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
-                       default_password: str, created_by: str) -> dict[str, Any]:
-    """批量建教师账号（FR-U03）；仅管理员可调用（路由层强制）。
+                       default_password: str, created_by: str,
+                       role: str = "teacher") -> dict[str, Any]:
+    """批量建教师/校级管理员账号（FR-U03/FR-U02）；仅管理员可调用（路由层强制）。
 
     逐行导入，单行失败不中断整批；重复/错误行带原因返回，不部分静默成功。
-    批量导入只建 teacher 角色；admin 账号仍走人工建立，避免批量提权。"""
+    role 限 teacher / school_admin；admin 账号仍走人工建立，避免批量提权。"""
     _validate_student_password(default_password)
+    if role not in ("teacher", "school_admin"):
+        raise TrainingPortalError("role 仅支持 teacher 或 school_admin（admin 走人工建立）。")
     college = (college or "").strip()
     if not college:
         raise TrainingPortalError("院校必填。")
@@ -1076,7 +1223,7 @@ def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
         try:
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
-                require_teacher_slot(db, college)  # FR-U06：事务内核销，并发不绕过
+                require_teacher_slot(db, college)  # FR-U06：事务内核销，并发不绕过（教师/校级管理员同槽）
                 dup = db.execute("SELECT id FROM college_user WHERE username=?", (username,)).fetchone()
                 if dup:
                     skipped.append({"line": index, "username": line_no,
@@ -1087,10 +1234,10 @@ def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
                     """INSERT INTO college_user
                        (id, username, password_hash, display_name, college, department, email, phone,
                         role, active, created_at)
-                       VALUES (?,?,?,?,?,NULL,?,?, 'teacher', 1, ?)""",
+                       VALUES (?,?,?,?,?,NULL,?,?, ?, 1, ?)""",
                     (uid, username, _passwords.hash(default_password), display_name, college,
                      (str(row.get("email") or "").strip() or None),
-                     (str(row.get("phone") or "").strip() or None), _now()))
+                     (str(row.get("phone") or "").strip() or None), role, _now()))
         except TrainingPortalError as exc:
             # 席位已满等可预见原因按行跳过，不中断整批（不部分静默成功）。
             skipped.append({"line": index, "username": line_no, "reason": str(exc)})
@@ -1283,7 +1430,7 @@ def staff_for_token(store, token: str | None) -> dict[str, Any] | None:
                WHERE t.token_hash=? AND t.expires_at>=?""",
             (_hash_token(token), _now()),
         ).fetchone()
-    if not row or not row["active"] or row["role"] not in ("teacher", "admin"):
+    if not row or not row["active"] or row["role"] not in ("teacher", "admin", "school_admin"):
         return None
     return _staff_public(row)
 
@@ -2731,6 +2878,37 @@ class CoursePatch(BaseModel):
     class_names: list[str] | None = None
 
 
+class CodeTestCaseIn(BaseModel):
+    input_text: str = ""
+    expected_output: str = ""
+    weight: float = 1.0
+    sample: bool = False
+
+
+class CodeProblemCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    statement: str = ""
+    language: str = "python"
+    time_limit_ms: int = 5000
+    memory_limit_kb: int = 65536
+    knowledge_point_id: str | None = None
+    cases: list[CodeTestCaseIn] = Field(default_factory=list)
+
+
+class CodeProblemPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = None
+    statement: str | None = None
+    language: str | None = None
+    time_limit_ms: int | None = None
+    memory_limit_kb: int | None = None
+    knowledge_point_id: str | None = None
+    active: bool | None = None
+    cases: list[CodeTestCaseIn] | None = None
+
+
 class StudentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     college: str = Field(min_length=1)
@@ -2768,6 +2946,7 @@ class StaffImportBody(BaseModel):
     college: str = Field(min_length=1)
     default_password: str = Field(min_length=1)
     rows: list[StaffImportRow] = Field(min_length=1)
+    role: str = "teacher"  # teacher=教师 / school_admin=校级管理员（FR-U02）；admin 走人工建立
 
 
 class ClassMigrateBody(BaseModel):
@@ -3460,8 +3639,41 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_college_overview(college: str,
                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        who = staff(session)
+        if who.get("role") not in ("admin", "school_admin"):
+            raise HTTPException(status_code=403,
+                                detail="教学概况仅限实训管理员或校级管理员查看。")
         return response({"overview": college_overview(store_provider(), college)})
+
+    @app.get("/api/training/staff/code-problems")
+    @guarded
+    def staff_code_problem_list(include_inactive: bool = True,
+                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"problems": list_code_problems(
+            store_provider(), include_inactive=include_inactive)})
+
+    @app.post("/api/training/staff/code-problems")
+    @guarded
+    def staff_code_problem_create(body: CodeProblemCreate,
+                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"problem": create_code_problem(
+            store_provider(), who["id"], body.college, body.title,
+            statement=body.statement, language=body.language,
+            time_limit_ms=body.time_limit_ms, memory_limit_kb=body.memory_limit_kb,
+            knowledge_point_id=body.knowledge_point_id,
+            cases=[c.model_dump() for c in body.cases])})
+
+    @app.patch("/api/training/staff/code-problems/{problem_id}")
+    @guarded
+    def staff_code_problem_update(problem_id: str, body: CodeProblemPatch,
+                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        fields = {k: getattr(body, k) for k in body.model_fields_set}
+        cases = [c.model_dump() for c in body.cases] if body.cases is not None else None
+        return response({"problem": update_code_problem(
+            store_provider(), problem_id, fields, cases=cases)})
 
     # ---- 班级与教师名册（FR-U03 第一期） ----
 
@@ -3617,7 +3829,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return response({"import": import_staff_users(
             store_provider(), body.college,
             [r.model_dump() for r in body.rows],
-            default_password=body.default_password, created_by=who["id"])})
+            default_password=body.default_password, created_by=who["id"],
+            role=body.role)})
 
     @app.get("/training-certificates")
     def training_portal_page() -> FileResponse:
