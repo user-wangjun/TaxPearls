@@ -212,6 +212,54 @@ class CourseManagementTests(unittest.TestCase):
         self.assertEqual(
             self.client.get("/api/training/staff/overview").status_code, 422)
 
+    # ---- 校级管理员（FR-U02 v1） ----
+
+    def test_school_admin_import_and_overview_access(self):
+        self._staff_login()
+        imp = self.client.post("/api/training/staff/teachers/import", json={
+            "college": COLLEGE, "default_password": "Teach2026!", "role": "school_admin",
+            "rows": [{"username": "sa2", "display_name": "校级管理员"}]})
+        self.assertEqual(imp.status_code, 200, imp.text)
+        self.assertEqual(imp.json()["import"]["skipped"], [], imp.text)
+        self.client.post("/api/training/staff/auth/logout")
+        login = self.client.post("/api/training/staff/auth/login", json={
+            "username": "sa2", "password": "Teach2026!"})
+        self.assertEqual(login.status_code, 200, login.text)
+        self.assertEqual(login.json()["staff"]["role"], "school_admin")
+        # 校级管理员可读教学概况与教师名单
+        self.assertEqual(
+            self.client.get(f"/api/training/staff/overview?college={COLLEGE}").status_code, 200)
+        self.assertEqual(self.client.get("/api/training/staff/teachers").status_code, 200)
+        # 但不可导入账号（导入仅 admin）
+        res = self.client.post("/api/training/staff/teachers/import", json={
+            "college": COLLEGE, "default_password": "Teach2026!",
+            "rows": [{"username": "t9", "display_name": "新教师"}]})
+        self.assertEqual(res.status_code, 403, res.text)
+
+    def test_import_rejects_admin_role(self):
+        self._staff_login()
+        res = self.client.post("/api/training/staff/teachers/import", json={
+            "college": COLLEGE, "default_password": "Teach2026!", "role": "admin",
+            "rows": [{"username": "bad1", "display_name": "越权"}]})
+        self.assertEqual(res.status_code, 422, res.text)
+
+    # ---- 院系维度聚合（FR-U05 深化，依赖 FR-U01 实体） ----
+
+    def test_overview_department_aggregation(self):
+        self._staff_login()
+        dep = self.client.post("/api/training/staff/org/departments", json={
+            "college": COLLEGE, "name": "会计学院"}).json()["department"]
+        self.client.post("/api/training/staff/org/classes", json={
+            "college": COLLEGE, "name": "会计2601", "department_id": dep["id"]})
+        self.client.post("/api/training/staff/courses", json={
+            "name": "概况院系课", "college": COLLEGE, "class_names": ["会计2601"]})
+        o = self.client.get(
+            f"/api/training/staff/overview?college={COLLEGE}").json()["overview"]
+        dept = [d for d in o["departments"] if d["name"] == "会计学院"][0]
+        self.assertEqual(dept["classes"], 1)
+        self.assertEqual(dept["students"], 2)       # 会计2601 在读 2 人
+        self.assertEqual(dept["courses_covered"], 1)  # 绑定该班的开设中课程
+
 
 if __name__ == "__main__":
     unittest.main()

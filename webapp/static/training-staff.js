@@ -635,6 +635,10 @@ async function loadOverview() {
         <div class="muted">班级 ${c.class_count} · 学生 ${c.student_count}${c.teacher_name ? ` · ${esc(c.teacher_name)}` : ""}</div>
       </div></div>`).join("")
     : `<p class="muted">暂无课程。</p>`;
+  const depts = (o.departments || []).length
+    ? `<div class="muted" style="margin:8px 0 4px;">按院系（FR-U01 实体聚合）：</div>` +
+      o.departments.map((d) => `<span class="chip">${esc(d.name)}：班级 ${d.classes} · 在读 ${d.students} · 覆盖课程 ${d.courses_covered}</span>`).join(" ")
+    : "";
   document.getElementById("overview-body").innerHTML = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
       <span class="badge">在读学生 ${o.students.active}/${o.students.total}</span>
@@ -643,7 +647,8 @@ async function loadOverview() {
       <span class="badge">课程 ${o.courses.length}</span>
       <span class="badge gray">考证知识点 ${o.content.knowledge_points}（已挂规则 ${o.content.linked_points} · 高频标注 ${o.content.high_freq_marks}）</span>
     </div>
-    <table style="width:100%;border-collapse:collapse;font-size:13px;margin-bottom:10px;">
+    ${depts}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin:10px 0;">
       <thead><tr><th style="text-align:left;">班级</th><th>名册</th><th>在读</th></tr></thead>
       <tbody>${cls}</tbody>
     </table>
