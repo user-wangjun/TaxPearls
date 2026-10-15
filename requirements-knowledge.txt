@@ -1,0 +1,5 @@
+# Optional local semantic retrieval runtime. No external embedding service is used.
+numpy==2.5.4
+faiss-cpu==1.15.1
+onnxruntime==1.31.0
+tokenizers==0.23.3

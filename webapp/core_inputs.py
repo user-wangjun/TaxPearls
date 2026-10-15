@@ -27,6 +27,8 @@ PROCESS_SLOTS = BoundedSemaphore(2)
 
 def migrate(db):
     db.execute("CREATE TABLE IF NOT EXISTS core_input_tasks (id TEXT PRIMARY KEY REFERENCES material_batches(id))")
+    from webapp import core_reports
+    core_reports.migrate(db)
 
 
 def latest(view):
