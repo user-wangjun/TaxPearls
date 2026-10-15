@@ -1275,3 +1275,5 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 #coreInputs details { margin:12px 0; }
 @media(max-width:900px) { #coreInputs .core-slots { grid-template-columns:1fr; } }
 @media(max-width:600px) { #coreInputs .material-company { grid-template-columns:1fr; } }
+/* Business evidence preview; source text stays intact and wraps within the panel. */
+.kg-evidence{margin:18px 0}.kg-evidence summary{cursor:pointer;font-weight:600}.kg-evidence-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.kg-evidence fieldset{border:0;padding:0;margin:0}.kg-evidence-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}.kg-evidence-section{border-top:1px solid var(--line,#dce4ee);padding:12px 0}.kg-clause{padding:10px 0}.kg-original{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}.kg-json{white-space:pre-wrap;overflow-wrap:anywhere;max-height:480px;overflow:auto;font-size:12px}.kg-evidence-result{min-width:0}@media(max-width:760px){.kg-evidence-grid{grid-template-columns:1fr}}

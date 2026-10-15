@@ -269,6 +269,9 @@ def listing(store, actor, *, workflow='all'):
 
 
 def _append(db, batch, actor, kind, payload, *, job_id=None):
+    if payload.get('core_task') and payload.get('tax_checks'):
+        from src.kg_retrieval.metrics import mark_stale
+        mark_stale(payload)
     revision = batch['revision'] + 1
     cipher = _seal(_json(payload), _context(batch['org_id'], batch['id'], 'revision:' + kind, revision))
     db.execute('INSERT INTO material_revisions VALUES (?,?,?,?,?,?)',

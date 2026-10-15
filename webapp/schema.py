@@ -594,3 +594,5 @@ def initialize(store) -> None:
         """)
         from webapp import ai_keys
         ai_keys.migrate(db)
+        from webapp import policy_graph
+        policy_graph.migrate(db)
