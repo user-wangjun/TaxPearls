@@ -182,6 +182,19 @@ main>.wrap>.panel{width:100%;max-width:2300px;margin-left:auto;margin-right:auto
 table.ev{font-size:15px}
 table.ev th{font-size:13.5px}
 table.ev td.src{font-size:14px}
+.finding-evidence-scroll{max-width:100%;overflow-x:auto;container-type:inline-size}
+.finding-evidence-scroll:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+table.finding-evidence{table-layout:fixed;min-width:640px}
+table.finding-evidence col.evidence-item{width:max(10rem,calc(26cqw - 70px))}
+table.finding-evidence col.evidence-value{width:12rem}
+table.finding-evidence col.evidence-source{width:auto}
+table.finding-evidence th.v,table.finding-evidence td.v{text-align:center}
+table.finding-evidence td:first-child,table.finding-evidence td.src{overflow-wrap:anywhere;line-height:1.65}
+table.finding-evidence td.v{line-height:1.65;white-space:normal;overflow-wrap:anywhere}
+.finding-evidence-note{padding:12px 10px;border-bottom:1px solid var(--line);line-height:1.75;overflow-wrap:anywhere}
+.finding-evidence-note p{margin:4px 0 0}
+.finding-evidence-note .muted{font-size:14px}
+.card-body .calc-box.num{overflow-wrap:anywhere}
 .calc-box{font-size:15px}
 .plain-list{font-size:15px}
 .kv{font-size:15px}
