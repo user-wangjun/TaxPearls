@@ -253,6 +253,57 @@
       <div id="students" class="muted">加载中…</div>
     </div>
     <div class="card">
+      <h2>课程管理（FR-U04）
+        <button class="small" data-act="show-course-form">＋ 新建课程</button>
+        <button class="small" data-act="refresh-courses">刷新</button>
+      </h2>
+      <p class="muted" style="margin-top:-6px;">课程绑定授课教师与班级（同课可绑多班）；花名册按绑定班级聚合在读学生。停用课程不删数据；课程级作业序列在后续版本接入。</p>
+      <div id="course-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>课程名称（必填）</label><input id="cf2-name" placeholder="如 税务风险审计实训"></div>
+          <div><label>学年学期（选填）</label><input id="cf2-semester" placeholder="如 2026-2027-1"></div>
+          <div><label>授课教师</label><select id="cf2-teacher"></select></div>
+        </div>
+        <div class="row">
+          <div><label>绑定班级（逗号分隔，可多个）</label><input id="cf2-classes" placeholder="会计2601,会计2602"></div>
+          <div><label>院校（必填）</label><input id="cf2-college" value="演示财经职业学院"></div>
+        </div>
+        <label>课程说明（选填）</label>
+        <input id="cf2-desc">
+        <div class="actions">
+          <button class="primary small" data-act="create-course">创建课程</button>
+          <button class="small" data-act="cancel-course-form">收起</button>
+        </div>
+      </div>
+      <div id="courses" class="muted">加载中…</div>
+    </div>
+    <div class="card" id="overview-card" hidden>
+      <h2>院校教学概况（管理员） <button class="small" data-act="refresh-overview">刷新</button></h2>
+      <div id="overview-body" class="muted">加载中…</div>
+    </div>
+    <div class="card">
+      <h2>编程题库（判题线）
+        <button class="small" data-act="show-code-form">＋ 新建编程题</button>
+        <button class="small" data-act="refresh-code-problems">刷新</button>
+      </h2>
+      <p class="muted" style="margin-top:-6px;">编程题与测试用例管理（v1 仅 python）。判题为教学演示级沙箱（python -I 隔离 + 超时 + 输出截断），非容器级安全边界；生产判题须容器沙箱专项。</p>
+      <div id="code-form" class="inline-form" hidden>
+        <div class="row">
+          <div><label>题目标题（必填）</label><input id="cp-title" placeholder="如 两数之和"></div>
+          <div><label>时间限制（毫秒，500~60000）</label><input id="cp-time" value="5000"></div>
+        </div>
+        <label>题面描述</label>
+        <input id="cp-statement" placeholder="读入两个整数，输出它们的和">
+        <label>测试用例（每行一组：输入||期望输出；勾选样例=学生可见）</label>
+        <textarea id="cp-cases" style="min-height:90px;font-family:ui-monospace,monospace;" placeholder="1 2||3 [样例]&#10;5 7||12"></textarea>
+        <div class="actions">
+          <button class="primary small" data-act="create-code-problem">创建题目</button>
+          <button class="small" data-act="cancel-code-form">收起</button>
+        </div>
+      </div>
+      <div id="code-problems" class="muted">加载中…</div>
+    </div>
+    <div class="card">
       <h2>班级与教师名册
         <button class="small" data-act="refresh-roster">刷新</button>
         <button class="small" id="teacher-import-btn" data-act="show-teacher-import" hidden>⇪ 教师批量导入（管理员）</button>
@@ -300,6 +351,7 @@
         <div class="actions"><button class="primary small" data-act="org-term-create">创建学期</button></div>
       </div>
       <div id="org-terms" class="muted">加载中…</div>
+      <div id="org-snapshot-view" class="muted" style="margin-top:8px;"></div>
       <h3 style="margin-top:16px;">班级实体</h3>
       <div id="org-class-form" class="row" hidden>
         <div><label>班级名称</label><input id="oc-name" placeholder="如 会计2601"></div>
@@ -308,6 +360,15 @@
         <div class="actions"><button class="primary small" data-act="org-class-create">创建班级</button></div>
       </div>
       <div id="org-classes" class="muted">加载中…</div>
+      <h3 style="margin-top:16px;">席位与配额</h3>
+      <p class="muted" style="margin-top:-6px;">教师/学生分席核销：创建即占用、停用即腾出；未配置院校按默认档（教师 10 / 学生 200）放行。批量导入遇席位满逐行说明原因，不中断整批。调整仅限管理员，逐次留痕。</p>
+      <div id="org-quota" class="muted">加载中…</div>
+      <div id="org-quota-form" class="row" hidden>
+        <div><label>教师配额</label><input id="oq-teacher" type="number" min="1" max="10000"></div>
+        <div><label>学生配额</label><input id="oq-student" type="number" min="1" max="10000"></div>
+        <div class="actions"><button class="primary small" data-act="org-quota-save">保存配额</button></div>
+      </div>
+      <div id="org-quota-history" class="muted" style="margin-top:10px;"></div>
     </div>
     <div class="error" id="app-error"></div>
   </section>

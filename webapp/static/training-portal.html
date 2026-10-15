@@ -97,7 +97,7 @@
       <div id="goals"></div>
       <div class="ok" id="goal-msg"></div>
     </div>
-    <div class="card">
+    <div class="card" id="pr-card">
       <h2>自主练习</h2>
       <div class="row">
         <div><label>证书范围</label><select id="pr-cert"></select></div>
@@ -146,6 +146,18 @@
     </div>
     <div class="error" id="pass-error"></div>
   </div>
+    <div class="card" id="code-card">
+      <h2>编程练习</h2>
+      <p class="muted" style="margin-top:-6px;">提交 Python 代码，教学演示级沙箱逐用例运行并加权计分（python -I 隔离 + 超时硬杀 + 输出截断；非容器级边界）。同题每 30 秒限一次提交，结果在判题后即时返回。</p>
+      <div class="row">
+        <div><label>编程题</label><select id="cc-problem"></select></div>
+        <div style="flex:0 0 auto;"><button class="primary" id="cc-submit">提交判题</button></div>
+      </div>
+      <div class="muted" id="cc-problem-info" style="margin-top:6px;"></div>
+      <textarea id="cc-code" style="min-height:160px;font-family:ui-monospace,monospace;margin-top:8px;" placeholder="# 在此粘贴或编写 Python 代码&#10;a, b = map(int, input().split())&#10;print(a + b)"></textarea>
+      <div id="cc-result" style="margin-top:8px;"></div>
+      <div class="muted" id="cc-history" style="margin-top:8px;"></div>
+    </div>
 </div>
 <script src="/training-portal.js"></script>
 </body>

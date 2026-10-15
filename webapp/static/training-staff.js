@@ -1,7 +1,7 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], departments: [], terms: [], orgClasses: [] };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [], quota: null, codeProblems: [] };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -396,6 +396,12 @@ async function load() {
   }
   try { state.rules = (await api("/api/training/staff/rules")).rules; } catch (err) { state.rules = []; }
   await loadStudents().catch(() => { state.students = []; });
+  await loadCourses().catch(() => { state.courses = []; state.teachers = []; });
+  await loadCodeProblems().catch(() => { state.codeProblems = []; });
+  if (state.staff && state.staff.role === "admin") {
+    document.getElementById("overview-card").hidden = false;
+    await loadOverview().catch(() => {});
+  }
   renderAll();
   await loadMarkStats().catch(() => {});
   await loadRoster().catch(() => { state.classes = []; state.classHistory = []; renderRoster(); });
@@ -454,6 +460,7 @@ async function loadOrg() {
   state.departments = (await api(`/api/training/staff/org/departments?college=${q}`)).departments;
   state.terms = (await api(`/api/training/staff/org/terms?college=${q}`)).terms;
   state.orgClasses = (await api(`/api/training/staff/org/classes?college=${q}`)).classes;
+  state.quota = (await api(`/api/training/staff/org/quota?college=${q}`)).quota;
   renderOrg();
 }
 
@@ -483,8 +490,10 @@ function renderOrg() {
       ${terms.map((t) => `<tr><td>${esc(t.name)}${t.is_current ? ` <span class="badge">当前</span>` : ""}${orgBadge(t.archived)}</td>
         <td class="muted">${esc(t.start_date || "—")} ~ ${esc(t.end_date || "—")}</td><td>${t.classes}</td>
         <td>${isAdmin ? `<button class="small" data-act="org-term-current" data-id="${esc(t.id)}" ${t.is_current ? "disabled" : ""}>设为当前</button>
+        <button class="small" data-act="org-term-snapshot" data-id="${esc(t.id)}">生成快照</button>
+        <button class="small" data-act="org-term-snapshot-view" data-id="${esc(t.id)}">查看快照</button>
         <button class="small" data-act="org-term-toggle" data-id="${esc(t.id)}" data-v="${t.archived ? 0 : 1}">${t.archived ? "恢复" : "归档"}</button>
-        <button class="small" data-act="org-term-delete" data-id="${esc(t.id)}">删除</button>` : ""}</td></tr>`).join("")}
+        <button class="small" data-act="org-term-delete" data-id="${esc(t.id)}">删除</button>` : `<button class="small" data-act="org-term-snapshot-view" data-id="${esc(t.id)}">查看快照</button>`}</td></tr>`).join("")}
     </table>`
     : `<p class="muted">暂无学期${isAdmin ? "，可在上方创建" : ""}。</p>`;
   document.getElementById("org-classes").innerHTML = classes.length
@@ -501,6 +510,23 @@ function renderOrg() {
     deps.filter((d) => !d.archived).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
   document.getElementById("oc-term").innerHTML = `<option value="">（未绑定学期）</option>` +
     terms.filter((t) => !t.archived).map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");
+  const quota = state.quota;
+  if (quota) {
+    document.getElementById("org-quota").innerHTML =
+      `<p>教师 <strong>${quota.teachers_used}</strong>/${quota.teacher_quota} · 学生 <strong>${quota.students_used}</strong>/${quota.student_quota}${quota.configured ? "" : "（默认档，未单独配置）"}</p>`;
+    const isAdminNow = isAdmin;
+    document.getElementById("org-quota-form").hidden = !isAdminNow;
+    if (isAdminNow) {
+      document.getElementById("oq-teacher").value = quota.teacher_quota;
+      document.getElementById("oq-student").value = quota.student_quota;
+    }
+    const hist = quota.history || [];
+    document.getElementById("org-quota-history").innerHTML = hist.length
+      ? `<h3 style="margin-top:12px;">调整留痕（最近 ${hist.length} 条）</h3>` + hist.map((h) =>
+        `<div class="item"><div class="item-head"><div>教师 ${esc(h.old_teacher_quota ?? "—")}→${h.new_teacher_quota} · 学生 ${esc(h.old_student_quota ?? "—")}→${h.new_student_quota}</div>
+        <span class="muted">${esc((h.created_at || "").slice(0, 16).replace("T", " "))}${h.changed_by_name ? ` · ${esc(h.changed_by_name)}` : ""}</span></div></div>`).join("")
+      : "";
+  }
 }
 
 /* ---------- 学生管理 ---------- */
@@ -537,6 +563,183 @@ function parseStudentRows(text) {
     const parts = line.split(/[，,]/).map((p) => p.trim());
     return { student_no: parts[0] || "", name: parts[1] || "", class_name: parts[2] || null };
   }).filter((r) => r.student_no && r.name);
+}
+
+/* ---------- 课程管理（FR-U04） ---------- */
+
+async function loadCourses() {
+  state.courses = (await api("/api/training/staff/courses")).courses;
+  try { state.teachers = (await api("/api/training/staff/teachers")).teachers; } catch (err) { state.teachers = []; }
+  renderCourses();
+}
+
+function teacherOptions(selectedId) {
+  return state.teachers.map((t) =>
+    `<option value="${esc(t.id)}" ${t.id === selectedId ? "selected" : ""}>${esc(t.display_name)}（${esc(t.username)}）</option>`).join("");
+}
+
+function renderCourses() {
+  const box = document.getElementById("courses");
+  if (!state.courses.length) {
+    box.innerHTML = `<p class="muted">还没有课程。点上方「新建课程」。</p>`;
+    return;
+  }
+  box.innerHTML = state.courses.map((c) => `
+    <div class="item" id="course-${esc(c.id)}">
+      <div class="item-head">
+        <div><strong>${esc(c.name)}</strong>
+          ${c.semester ? `<span class="chip">${esc(c.semester)}</span>` : ""}
+          ${c.teacher_name ? `<span class="chip">授课：${esc(c.teacher_name)}</span>` : `<span class="badge gray">未指派教师</span>`}
+          ${c.active ? `<span class="badge">开设中</span>` : `<span class="badge gray">已停用</span>`}
+        </div>
+        <div class="actions">
+          <button class="small" data-act="course-roster" data-id="${esc(c.id)}">花名册（${c.student_count}）</button>
+          <button class="small" data-act="edit-course" data-id="${esc(c.id)}">编辑</button>
+          <button class="small ${c.active ? "danger" : ""}" data-act="toggle-course" data-id="${esc(c.id)}">${c.active ? "停用" : "启用"}</button>
+        </div>
+      </div>
+      <div class="muted">绑定班级：${c.classes.length ? c.classes.map((n) => `<span class="chip">${esc(n)}</span>`).join("") : "（无）"}</div>
+      ${c.description ? `<div class="muted">${esc(c.description)}</div>` : ""}
+      <div class="inline-form" data-role="course-roster" hidden></div>
+      <div class="inline-form" data-role="course-edit" hidden>
+        <div class="row">
+          <div><label>课程名称</label><input data-role="ce-name" value="${esc(c.name)}"></div>
+          <div><label>学年学期</label><input data-role="ce-semester" value="${esc(c.semester || "")}"></div>
+          <div><label>授课教师</label><select data-role="ce-teacher">${teacherOptions(c.teacher_id)}</select></div>
+        </div>
+        <div class="row">
+          <div><label>绑定班级（逗号分隔）</label><input data-role="ce-classes" value="${esc(c.classes.join(","))}"></div>
+          <div><label>课程说明</label><input data-role="ce-desc" value="${esc(c.description || "")}"></div>
+        </div>
+        <div class="actions"><button class="small primary" data-act="save-course" data-id="${esc(c.id)}">保存</button>
+          <button class="small" data-act="cancel-course-edit" data-id="${esc(c.id)}">取消</button></div>
+      </div>
+    </div>`).join("");
+}
+
+function splitClassNames(text) {
+  return text.split(/[，,]/).map((p) => p.trim()).filter(Boolean);
+}
+
+async function toggleCourseRoster(btn, scope, courseId) {
+  const box = scope.querySelector("[data-role=course-roster]");
+  if (!box.hidden) { box.hidden = true; btn.textContent = btn.dataset.label || "花名册"; return; }
+  btn.dataset.label = btn.textContent;
+  box.innerHTML = `<p class="muted">加载中…</p>`;
+  box.hidden = false;
+  try {
+    const data = await api(`/api/training/staff/courses/${courseId}/roster`);
+    box.innerHTML = data.students.length
+      ? `<div class="muted" style="margin-bottom:4px;">共 ${data.count} 名在读学生：</div>` +
+        data.students.map((s) => `<span class="chip">${esc(s.student_no)} ${esc(s.name)}（${esc(s.class_name)}）</span>`).join(" ")
+      : `<p class="muted">绑定班级暂无在读学生。</p>`;
+    btn.textContent = "收起花名册";
+  } catch (err) {
+    box.hidden = true;
+    flash(err.message, true);
+  }
+}
+
+/* ---------- 院校教学概况（FR-U05 简化版，管理员） ---------- */
+
+async function loadOverview() {
+  const college = state.staff.college;
+  if (!college) { document.getElementById("overview-body").innerHTML = `<p class="muted">账号未绑定院校，无法聚合。</p>`; return; }
+  const o = (await api(`/api/training/staff/overview?college=${encodeURIComponent(college)}`)).overview;
+  const cls = o.classes.length
+    ? o.classes.map((c) => `<tr><td>${esc(c.class_name)}</td><td>${c.students}</td><td>${c.active_students}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="muted">暂无班级</td></tr>`;
+  const courses = o.courses.length
+    ? o.courses.map((c) => `<div class="item"><div class="item-head">
+        <div><strong>${esc(c.name)}</strong>${c.semester ? ` <span class="chip">${esc(c.semester)}</span>` : ""}
+          ${c.active ? "" : `<span class="badge gray">已停用</span>`}</div>
+        <div class="muted">班级 ${c.class_count} · 学生 ${c.student_count}${c.teacher_name ? ` · ${esc(c.teacher_name)}` : ""}</div>
+      </div></div>`).join("")
+    : `<p class="muted">暂无课程。</p>`;
+  const depts = (o.departments || []).length
+    ? `<div class="muted" style="margin:8px 0 4px;">按院系（FR-U01 实体聚合）：</div>` +
+      o.departments.map((d) => `<span class="chip">${esc(d.name)}：班级 ${d.classes} · 在读 ${d.students} · 覆盖课程 ${d.courses_covered}</span>`).join(" ")
+    : "";
+  document.getElementById("overview-body").innerHTML = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+      <span class="badge">在读学生 ${o.students.active}/${o.students.total}</span>
+      <span class="badge">在职教师 ${o.teachers}</span>
+      <span class="badge">班级 ${o.classes.length}</span>
+      <span class="badge">课程 ${o.courses.length}</span>
+      <span class="badge gray">考证知识点 ${o.content.knowledge_points}（已挂规则 ${o.content.linked_points} · 高频标注 ${o.content.high_freq_marks}）</span>
+    </div>
+    ${depts}
+    <table style="width:100%;border-collapse:collapse;font-size:13px;margin:10px 0;">
+      <thead><tr><th style="text-align:left;">班级</th><th>名册</th><th>在读</th></tr></thead>
+      <tbody>${cls}</tbody>
+    </table>
+    ${courses}
+    <p class="muted">${esc(o.scope_note)}</p>`;
+}
+
+/* ---------- 编程题库（FR-J01/J04 v1） ---------- */
+
+async function loadCodeProblems() {
+  state.codeProblems = (await api("/api/training/staff/code-problems")).problems;
+  renderCodeProblems();
+}
+
+function renderCodeProblems() {
+  const box = document.getElementById("code-problems");
+  if (!state.codeProblems.length) {
+    box.innerHTML = `<p class="muted">还没有编程题。点上方「新建编程题」。</p>`;
+    return;
+  }
+  box.innerHTML = state.codeProblems.map((p) => `
+    <div class="item" id="codep-${esc(p.id)}">
+      <div class="item-head">
+        <div><strong>${esc(p.title)}</strong>
+          <span class="chip">${esc(p.language)}</span>
+          <span class="badge gray">用例 ${p.case_count} · 限时 ${p.time_limit_ms}ms</span>
+          ${p.active ? `<span class="badge">开放中</span>` : `<span class="badge gray">已停用</span>`}
+          ${p.knowledge_point_name ? `<span class="chip">${esc(p.knowledge_point_name)}</span>` : ""}
+        </div>
+        <div class="actions">
+          <button class="small" data-act="view-code-submissions" data-id="${esc(p.id)}">提交记录</button>
+          <button class="small ${p.active ? "danger" : ""}" data-act="toggle-code-problem" data-id="${esc(p.id)}">${p.active ? "停用" : "启用"}</button>
+        </div>
+      </div>
+      ${p.statement ? `<div class="muted">${esc(p.statement)}</div>` : ""}
+      <div class="inline-form" data-role="code-submissions" hidden></div>
+    </div>`).join("");
+}
+
+function parseCodeCases(text) {
+  return text.split("\n").map((line) => line.trim()).filter(Boolean).map((line) => {
+    const sep = line.lastIndexOf("||");
+    if (sep < 0) return { input_text: line, expected_output: "", sample: false };
+    let io = line.slice(0, sep), eo = line.slice(sep + 2), sample = false;
+    if (eo.endsWith("[样例]")) { sample = true; eo = eo.slice(0, -4).replace(/\s+$/, ""); }
+    if (io.endsWith("\\n")) io = io.slice(0, -2) + "\n";
+    if (eo.endsWith("\\n")) eo = eo.slice(0, -2) + "\n";
+    return { input_text: io, expected_output: eo, sample };
+  });
+}
+
+async function loadCodeSubmissionList(btn, scope, problemId) {
+  const box = scope.querySelector("[data-role=code-submissions]");
+  if (!box.hidden) { box.hidden = true; btn.dataset.label = btn.dataset.label || btn.textContent; btn.textContent = btn.dataset.label; return; }
+  btn.dataset.label = btn.textContent;
+  box.innerHTML = `<p class="muted">加载中…</p>`;
+  box.hidden = false;
+  try {
+    const rows = (await api(`/api/training/staff/code-problems/${problemId}/submissions`)).submissions;
+    box.innerHTML = rows.length
+      ? rows.map((s) => `<div class="detail" style="margin-top:6px;">
+          <div class="item-head">
+            <div class="muted">${esc((s.submitted_at || "").slice(0, 16).replace("T", " "))} · 学生 ${esc(s.student_id.slice(0, 8))}…</div>
+            <div><strong>${s.judge ? `${esc(s.judge.status)} · ${s.judge.total_score} 分（${s.judge.passed_count}/${s.judge.case_count}）` : "未判题"}</strong></div>
+          </div>
+          <pre style="white-space:pre-wrap;font-size:12px;margin:4px 0;background:var(--bg,#f6f6f6);padding:6px;border-radius:4px;max-height:180px;overflow:auto;">${esc(s.code_text || "")}</pre>
+        </div>`).join("")
+      : `<p class="muted">暂无提交。</p>`;
+    btn.textContent = "收起提交";
+  } catch (err) { box.hidden = true; flash(err.message, true); }
 }
 
 /* ---------- 事件 ---------- */
@@ -812,6 +1015,25 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       flash("已设为当前学期。");
       await loadOrg();
     },
+    "org-term-snapshot": async () => {
+      try {
+        const data = (await api(`/api/training/staff/org/terms/${id}/roster-snapshot`, { method: "POST" })).snapshot;
+        flash(`名册快照已生成：在读 ${data.snapshotted} 人（新增 ${data.inserted} · 更新 ${data.updated} · 移出 ${data.removed}）。`);
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-term-snapshot-view": async () => {
+      try {
+        const data = (await api(`/api/training/staff/org/terms/${id}/roster-snapshot`)).snapshot;
+        const box = document.getElementById("org-snapshot-view");
+        if (!data.total) {
+          box.innerHTML = `<p class="muted">学期「${esc(data.term_name)}」暂无名册快照，请先点「生成快照」。</p>`;
+          return;
+        }
+        box.innerHTML = `<h3 style="margin-top:12px;">名册快照 · ${esc(data.term_name)}（${data.total} 人，快照时间 ${esc((data.taken_at || "").slice(0, 16).replace("T", " "))}）</h3>` +
+          data.classes.map((c) => `<p style="margin:6px 0 2px;"><strong>${esc(c.class_name)}</strong>（${c.students.length} 人）：${c.students.map((s) => esc(s.student_no + " " + s.name)).join("、")}</p>`).join("");
+      } catch (err) { flash(err.message, true); }
+    },
     "org-term-toggle": async () => {
       await api(`/api/training/staff/org/terms/${id}`, {
         method: "PATCH", body: { archived: q(`button[data-act="org-term-toggle"][data-id="${id}"]`).dataset.v === "1" } });
@@ -860,6 +1082,19 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       } catch (err) { flash(err.message, true); }
       await loadOrg();
     },
+    "org-quota-save": async () => {
+      const teacher = parseInt(q("#oq-teacher").value, 10);
+      const student = parseInt(q("#oq-student").value, 10);
+      if (!Number.isInteger(teacher) || !Number.isInteger(student)) { flash("配额须为整数。", true); return; }
+      try {
+        await api("/api/training/staff/org/quota", {
+          method: "PATCH",
+          body: { college: state.staff.college, teacher_quota: teacher,
+                  student_quota: student, revision: (state.quota || {}).revision || 0 } });
+        flash("配额已保存并留痕。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
     "reset-student-pass": () => {
       const stu = state.students.find((s) => s.id === id);
       const input = window.prompt(`为 ${stu ? stu.student_no + " " + stu.name : "该学生"} 设置新密码（至少 8 位，重置后其登录立即失效）：`);
@@ -878,6 +1113,115 @@ document.getElementById("app-view").addEventListener("click", (event) => {
         await api(`/api/training/staff/students/${id}/toggle`, {
           method: "POST", body: { active: !stu.active } });
         flash(stu.active ? "已停用。" : "已启用。");
+      });
+    },
+    "show-course-form": () => {
+      const f = q("#course-form");
+      f.hidden = !f.hidden;
+      if (!f.hidden) {
+        const sel = q("#cf2-teacher");
+        sel.innerHTML = `<option value="">（未指派）</option>` + teacherOptions(null);
+      }
+    },
+    "cancel-course-form": () => { q("#course-form").hidden = true; },
+    "refresh-courses": () => withCert(loadCourses),
+    "refresh-overview": () => withCert(loadOverview),
+    "show-code-form": () => { const f = q("#code-form"); f.hidden = !f.hidden; },
+    "cancel-code-form": () => { q("#code-form").hidden = true; },
+    "refresh-code-problems": () => withCert(loadCodeProblems),
+    "create-code-problem": () => withCert(async () => {
+      await api("/api/training/staff/code-problems", {
+        method: "POST",
+        body: {
+          college: state.staff.college,
+          title: q("#cp-title").value.trim(),
+          statement: q("#cp-statement").value.trim(),
+          time_limit_ms: Number(q("#cp-time").value) || 5000,
+          cases: parseCodeCases(q("#cp-cases").value),
+        },
+      });
+      q("#cp-title").value = ""; q("#cp-statement").value = ""; q("#cp-cases").value = "";
+      q("#code-form").hidden = true;
+      await loadCodeProblems();
+      flash("编程题已创建（判题为教学演示级沙箱）。");
+    }),
+    "view-code-submissions": (btn) => {
+      const scope = document.getElementById(`codep-${id}`);
+      if (!scope) return;
+      loadCodeSubmissionList(btn, scope, id);
+    },
+    "toggle-code-problem": () => {
+      const p = state.codeProblems.find((x) => x.id === id);
+      if (!p) return;
+      withCert(async () => {
+        await api(`/api/training/staff/code-problems/${id}`, {
+          method: "PATCH", body: { active: !p.active } });
+        await loadCodeProblems();
+        flash(p.active ? "题目已停用。" : "题目已启用。");
+      });
+    },
+    "create-course": () => withCert(async () => {
+      await api("/api/training/staff/courses", {
+        method: "POST",
+        body: {
+          name: q("#cf2-name").value.trim(),
+          college: q("#cf2-college").value.trim(),
+          semester: q("#cf2-semester").value.trim() || null,
+          teacher_id: q("#cf2-teacher").value || null,
+          class_names: splitClassNames(q("#cf2-classes").value),
+          description: q("#cf2-desc").value.trim() || null,
+        },
+      });
+      q("#cf2-name").value = ""; q("#cf2-classes").value = ""; q("#cf2-desc").value = "";
+      q("#course-form").hidden = true;
+      await loadCourses();
+      flash("课程已创建。");
+    }),
+    "course-roster": (btn) => {
+      const scope = document.getElementById(`course-${id}`);
+      if (!scope) return;
+      toggleCourseRoster(btn, scope, id);
+    },
+    "edit-course": () => {
+      const scope = document.getElementById(`course-${id}`);
+      if (!scope) return;
+      const form = scope.querySelector("[data-role=course-edit]");
+      form.hidden = !form.hidden;
+      if (!form.hidden) {
+        const sel = form.querySelector("[data-role=ce-teacher]");
+        const current = state.courses.find((c) => c.id === id);
+        sel.innerHTML = `<option value="">（未指派）</option>` + teacherOptions(current ? current.teacher_id : null);
+      }
+    },
+    "cancel-course-edit": () => {
+      const scope = document.getElementById(`course-${id}`);
+      if (scope) scope.querySelector("[data-role=course-edit]").hidden = true;
+    },
+    "save-course": () => withCert(async () => {
+      const scope = document.getElementById(`course-${id}`);
+      if (!scope) return;
+      const form = scope.querySelector("[data-role=course-edit]");
+      await api(`/api/training/staff/courses/${id}`, {
+        method: "PATCH",
+        body: {
+          name: form.querySelector("[data-role=ce-name]").value.trim(),
+          semester: form.querySelector("[data-role=ce-semester]").value.trim() || null,
+          teacher_id: form.querySelector("[data-role=ce-teacher]").value || null,
+          class_names: splitClassNames(form.querySelector("[data-role=ce-classes]").value),
+          description: form.querySelector("[data-role=ce-desc]").value.trim() || null,
+        },
+      });
+      await loadCourses();
+      flash("课程已保存。");
+    }),
+    "toggle-course": () => {
+      const c = state.courses.find((x) => x.id === id);
+      if (!c) return;
+      if (c.active && !window.confirm(`确认停用课程「${c.name}」？停用不删数据，可随时启用。`)) return;
+      withCert(async () => {
+        await api(`/api/training/staff/courses/${id}`, {
+          method: "PATCH", body: { active: !c.active } });
+        flash(c.active ? "课程已停用。" : "课程已启用。");
       });
     },
     "cancel-import": () => {
@@ -1017,7 +1361,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     },
   };
 
-  if (handlers[act]) handlers[act]();
+  if (handlers[act]) handlers[act](btn);
 });
 
 document.getElementById("cert-select").addEventListener("change", async (event) => {
