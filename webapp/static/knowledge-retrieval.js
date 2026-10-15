@@ -1,17 +1,25 @@
 "use strict";
 (() => {
   const $kg=id=>document.getElementById(id);
-  let generation=0,owner=null,tasks=[],config=null,busy=false,last=null;
+  let generation=0,owner=null,tasks=[],config=null,busy=false,last=null,requested=null,detail=null,reports=[];
   const regions={"11":"北京市","12":"天津市","13":"河北省","14":"山西省","15":"内蒙古自治区","21":"辽宁省","22":"吉林省","23":"黑龙江省","31":"上海市","32":"江苏省","33":"浙江省","34":"安徽省","35":"福建省","36":"江西省","37":"山东省","41":"河南省","42":"湖北省","43":"湖南省","44":"广东省","45":"广西壮族自治区","46":"海南省","50":"重庆市","51":"四川省","52":"贵州省","53":"云南省","54":"西藏自治区","61":"陕西省","62":"甘肃省","63":"青海省","64":"宁夏回族自治区","65":"新疆维吾尔自治区"};
   for(const [code,name]of Object.entries(regions))option($kg("kgRegion"),"CN-"+code,name);
-  function current(ticket,identity){return generation===ticket&&currentUser?.id===identity;}
+  function current(ticket,identity){return generation===ticket&&currentUser?.id===identity&&$kg("knowledgePanel").classList.contains("active");}
   function message(text){$kg("kgRetrievalStatus").textContent=text;}
-  function reset(){generation++;owner=null;tasks=[];config=null;last=null;busy=false;$kg("kgEvidenceFields").disabled=false;$kg("kgEvidenceResult").replaceChildren();$kg("kgTask").replaceChildren();option($kg("kgTask"),"","仅检索政策，不读取企业资料");$kg("kgRule").replaceChildren();$kg("kgStart").value="";$kg("kgEnd").value="";$kg("kgTopic").value="";$kg("kgRegion").value="";message("");}
-  function buttons(){const task=$kg("kgTask").value;$kg("kgAnalyze").disabled=busy||!task||!config?.acceptance?.passed||!config?.ai_configured;}
+  function reset(){generation++;owner=null;tasks=[];config=null;last=null;requested=null;detail=null;reports=[];busy=false;$kg("kgEvidenceFields").disabled=false;for(const id of ["kgEvidenceResult","kgTaskChecks","kgReportVersions"])$kg(id).replaceChildren();$kg("kgReportStatus").textContent="";$kg("kgTask").replaceChildren();option($kg("kgTask"),"","仅检索政策，不读取企业资料");$kg("kgRule").replaceChildren();$kg("kgStart").value="";$kg("kgEnd").value="";$kg("kgTopic").value="";$kg("kgRegion").value="";message("");buttons();}
+  function buttons(){const task=$kg("kgTask").value;$kg("kgAnalyze").disabled=busy||!task||!detail||!config?.acceptance?.passed||!config?.ai_configured;for(const id of ["kgArchiveReport","kgRecheck"])$kg(id).disabled=busy||!detail||!Object.keys(detail.tax_checks||{}).length;$kg("kgBackToInputs").hidden=!task;$kg("kgBackToInputs").disabled=busy;}
+  function reportList(){const root=$kg("kgReportVersions");root.replaceChildren();for(const row of reports){const line=el("p","kv",`报告 V${row.version} · 输入任务版本 ${row.input_revision} · ${row.created_at} `);for(const [format,label]of [["html","查看报告"],["pdf","下载 PDF"],["json","下载报告数据"]]){const a=el("a","kv",label);a.href=`/api/enterprise/input-tasks/${encodeURIComponent(detail.id)}/reports/${row.version}?format=${format}`;a.target="_blank";a.rel="noopener";line.append(a,document.createTextNode("　"));}root.append(line);}}
+  function savedChecks(){const root=$kg("kgTaskChecks");root.replaceChildren();for(const [rid,slot]of Object.entries(detail?.tax_checks||{})){const b=el("button",null,slot.bundle.check.topic+(slot.stale?" · 资料更新待重检":" · 已保存"));b.type="button";b.onclick=()=>{if(busy)return;$kg("kgRule").value=rid;restore();};root.append(b);}buttons();}
+  function restore(){last=null;$kg("kgEvidenceResult").replaceChildren();const slot=detail?.tax_checks?.[$kg("kgRule").value];if(slot){$kg("kgRegion").value=slot.bundle.task.region_code||"";$kg("kgTopic").value=slot.bundle.check.topic;show({...slot,revision:detail.revision,saved:true,cached:true});if(slot.stale)message("资料已更新：以下为历史核查结果，请重新核查后生成新报告。");}else{$kg("kgTopic").value="";message(detail?"已带入企业任务，请选择项目与地区后核查。":"请选择政策检查项目。");}}
+  async function selectTask(ticket=++generation,identity=currentUser?.id){
+    const id=$kg("kgTask").value;detail=null;reports=[];last=null;$kg("kgEvidenceResult").replaceChildren();$kg("kgTaskChecks").replaceChildren();$kg("kgReportVersions").replaceChildren();$kg("kgReportStatus").textContent="";dates();buttons();if(!id)return;
+    try{const [task,versions]=await Promise.all([api("/api/enterprise/input-tasks/"+encodeURIComponent(id)),api("/api/enterprise/input-tasks/"+encodeURIComponent(id)+"/reports")]);if(!current(ticket,identity)||$kg("kgTask").value!==id)return;detail=task;reports=versions;const listed=tasks.find(t=>t.id===id);if(listed)listed.revision=task.revision;savedChecks();reportList();if(!task.tax_checks?.[$kg("kgRule").value]){const first=Object.keys(task.tax_checks||{})[0];if(first)$kg("kgRule").value=first;}restore();}catch(error){if(current(ticket,identity))message(error.message);}finally{if(current(ticket,identity))buttons();}
+  }
+  function openTask(id){requested={id,owner:currentUser?.id};$kg("kgEvidencePanel").open=true;if($kg("knowledgePanel").classList.contains("active"))activate();else switchPanel("knowledgePanel");}
   async function activate(){
     const identity=currentUser?.id;if(!identity)return;
     const ticket=++generation;owner=identity;message("正在载入本地检索状态…");
-    const selected=$kg("kgRule").value,taskId=$kg("kgTask").value;
+    const selected=$kg("kgRule").value,taskId=requested?.owner===identity?requested.id:$kg("kgTask").value;requested=null;
     try{
       const values=await Promise.all([api("/api/knowledge/checks"),api("/api/knowledge/retrieval/status"),["org_admin","accountant"].includes(currentUser.role)?api("/api/enterprise/input-tasks"):Promise.resolve([])]);
       if(!current(ticket,identity))return;
@@ -22,7 +30,8 @@
       $kg("kgTask").replaceChildren();option($kg("kgTask"),"","仅检索政策，不读取企业资料");for(const item of tasks)option($kg("kgTask"),item.id,item.task.company_name+" · "+item.task.start_date+" 至 "+item.task.end_date);
       if(tasks.some(t=>t.id===taskId))$kg("kgTask").value=taskId;
       message((status.semantic_status==="ready"?"本地语义检索已就绪":"本地语义检索未就绪，结果会明确标记")+"；"+(status.acceptance.passed?"离线检索验收已通过":"离线验收尚未通过，暂不开放 AI 联调"));
-      dates();buttons();
+      dates();buttons();await selectTask(ticket,identity);
+      if(taskId&&!tasks.some(t=>t.id===taskId))message("该任务不存在或当前账号已无权访问，请重新选择。");
     }catch(error){if(current(ticket,identity))message(error.message);}
   }
   function dates(){const task=tasks.find(t=>t.id===$kg("kgTask").value);for(const [id,key]of [["kgStart","start_date"],["kgEnd","end_date"]]){$kg(id).readOnly=!!task;if(task)$kg(id).value=task.task[key];}buttons();}
@@ -30,7 +39,7 @@
   function show(result){
     last=result;const data=result.bundle,root=$kg("kgEvidenceResult");root.replaceChildren();
     const states={ready:"材料完整，可辅助核查",needs_review:"存在待复核事项",insufficient:"证据不足"};
-    root.append(el("h3",null,data.check.topic),el("p","material-note",states[data.bundle_status]||data.bundle_status),el("p","muted",data.task.data_scope==="synthetic"?"纯合成工程样本，不是真实政策或企业结论。":"结果保留数据和政策缺口，AI 分析作为待复核线索。"));
+    root.append(el("h3",null,data.check.topic),el("p","material-note",result.stale?"资料已更新，以下为历史结果，须重新核查":states[data.bundle_status]||data.bundle_status),el("p","muted",data.task.data_scope==="synthetic"?"纯合成工程样本，不是真实政策或企业结论。":"结果保留数据和政策缺口，AI 分析作为待复核线索。"));
     const route=data.retrieval_trace;root.append(el("p","kv",`关系命中 ${route.relation_hits.length} 条 · 关键词命中 ${route.keyword_hits.length} 条 · 语义命中 ${route.semantic_hits.length} 条（${route.semantic_status==="ready"?"本地就绪":"未就绪"}）`));
     const evaluation={TRUE:"满足本规则条件",FALSE:"不满足本规则条件",UNKNOWN:"条件尚不能确定"};root.append(el("p","kv","程序核对："+(evaluation[data.check.evaluation]||"待核对")+(data.check.disposition==="excluded"?"；触发排除例外":"")));
     const facts=section("企业事实与取数来源（"+data.facts.length+"）");for(const fact of data.facts){facts.append(el("p","kv",fact.name+"："+(fact.state==="known"?fact.value+" "+(fact.unit||""):"未取得或待核实")),el("p","muted",fact.period_start+" 至 "+fact.period_end+" · 来源 "+(fact.source_ids.join("、")||"缺失")));}
@@ -48,8 +57,19 @@
     if(busy||!currentUser?.id)return;if(!$kg("kgEvidenceForm").reportValidity())return;
     const ticket=++generation,identity=currentUser.id,task=tasks.find(t=>t.id===$kg("kgTask").value);
     busy=true;$kg("kgEvidenceFields").disabled=true;message(useAI?"正在基于本次材料包辅助分析…":"正在本地检索并核对材料…");
-    try{const result=await api("/api/knowledge/retrieve",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rule_id:$kg("kgRule").value,topic:$kg("kgTopic").value.trim(),task_id:task?.id||null,expected_revision:task?.revision??null,region_code:$kg("kgRegion").value,period_start:$kg("kgStart").value||null,period_end:$kg("kgEnd").value||null,use_ai:useAI})});if(!current(ticket,identity))return;if(task)task.revision=result.revision;show(result);}catch(error){if(current(ticket,identity))message(error.message);}finally{if(current(ticket,identity)){busy=false;$kg("kgEvidenceFields").disabled=false;buttons();}}
+    try{const result=await api("/api/knowledge/retrieve",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rule_id:$kg("kgRule").value,topic:$kg("kgTopic").value.trim(),task_id:task?.id||null,expected_revision:task?.revision??null,region_code:$kg("kgRegion").value,period_start:$kg("kgStart").value||null,period_end:$kg("kgEnd").value||null,use_ai:useAI})});if(!current(ticket,identity))return;if(task){task.revision=result.revision;if(detail){detail.revision=result.revision;(detail.tax_checks??={})[result.bundle.check.rule_id]=result;savedChecks();}}show(result);if(task)await archiveReport(ticket,identity);}catch(error){if(current(ticket,identity))message(error.message);}finally{if(current(ticket,identity)){busy=false;$kg("kgEvidenceFields").disabled=false;buttons();}}
   }
-  $kg("kgTask").addEventListener("change",dates);$kg("kgReload").addEventListener("click",activate);$kg("kgAnalyze").addEventListener("click",()=>run(true));$kg("kgEvidenceForm").addEventListener("submit",event=>{event.preventDefault();run(false);});
-  window.KnowledgeRetrieval={activate,reset};
+  async function archiveReport(ticket=++generation,identity=currentUser?.id){
+    if(!detail)return;const id=detail.id,manual=!busy;busy=true;buttons();$kg("kgReportStatus").textContent="正在冻结本次检查报告…";
+    try{const row=await api(`/api/enterprise/input-tasks/${encodeURIComponent(id)}/reports`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_revision:detail.revision})});if(!current(ticket,identity))return;reports=[row,...reports.filter(r=>r.version!==row.version)];reportList();$kg("kgReportStatus").textContent=`已${row.cached?"复用":"生成"}报告 V${row.version}；包含本任务已保存的核查项目，未运行项目不作结论。`;}catch(error){if(current(ticket,identity))$kg("kgReportStatus").textContent="核查结果已保留，报告尚未更新："+error.message;}finally{if(manual&&current(ticket,identity)){busy=false;buttons();}}
+  }
+  async function recheck(){
+    if(busy||!detail)return;const ticket=++generation,identity=currentUser.id,id=detail.id;busy=true;$kg("kgEvidenceFields").disabled=true;buttons();message("正在核对变化，只更新受影响项目，不调用 AI…");
+    try{const result=await api(`/api/enterprise/input-tasks/${encodeURIComponent(id)}/recheck`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_revision:detail.revision})});if(!current(ticket,identity))return;detail.revision=result.revision;detail.tax_checks=result.tax_checks;const task=tasks.find(t=>t.id===id);if(task)task.revision=result.revision;savedChecks();restore();message(`已更新 ${result.changed_rule_ids.length} 项，复用 ${result.reused_rule_ids.length} 项；本次未调用 AI。`);await archiveReport(ticket,identity);}catch(error){if(current(ticket,identity))message(error.message);}finally{if(current(ticket,identity)){busy=false;$kg("kgEvidenceFields").disabled=false;buttons();}}
+  }
+  $kg("kgTask").addEventListener("change",()=>{if(busy)return;$kg("kgRegion").value="";selectTask();});$kg("kgRule").addEventListener("change",()=>{if(!busy)restore();});$kg("kgReload").addEventListener("click",()=>{if(!busy)activate();});$kg("kgAnalyze").addEventListener("click",()=>run(true));$kg("kgEvidenceForm").addEventListener("submit",event=>{event.preventDefault();run(false);});
+  $kg("kgArchiveReport").addEventListener("click",()=>{if(!busy)archiveReport();});
+  $kg("kgRecheck").addEventListener("click",recheck);
+  $kg("kgBackToInputs").addEventListener("click",()=>{if(busy||!detail)return;const id=detail.id;switchPanel("uploadPanel");coreInputs.openTask(id).catch(error=>showError(error.message));});
+  window.KnowledgeRetrieval={activate,reset,openTask};
 })();

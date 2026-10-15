@@ -225,6 +225,14 @@ class AnswerValidationTests(unittest.TestCase):
         insufficient["bundle_status"] = "needs_review"
         with self.assertRaises(ValueError):
             service.validate_answer(good, insufficient)
+        negative = deepcopy(good)
+        negative["assessments"][0].update(type="condition_not_met", text="条件未满足，仅形成待核查线索。")
+        false_package = deepcopy(package)
+        false_package["check"].update(evaluation="FALSE", disposition="condition_not_met")
+        with self.assertRaises(ValueError):
+            service.validate_answer(negative, false_package)
+        negative["assessments"][0]["text"] = "条件未满足，本条件不形成风险线索。"
+        service.validate_answer(negative, false_package)
 
 
 @material_key
@@ -376,6 +384,147 @@ class RetrievalHTTPTests(unittest.TestCase):
                     files={"files": ("更新申报.xlsx", content.getvalue())})
         self.assertEqual(changed.status_code, 200, changed.text)
         self.assertTrue(changed.json()["tax_checks"]["R01"]["stale"])
+
+
+@material_key
+class CoreReportTests(unittest.TestCase):
+    setUp = RetrievalHTTPTests.setUp
+    login = RetrievalHTTPTests.login
+    task = RetrievalHTTPTests.task
+
+    def checked(self):
+        task = self.task()
+        response = self.client.post("/api/knowledge/retrieve", json={"rule_id": "R01", "task_id": task["id"],
+                                    "expected_revision": task["revision"], "region_code": "CN-33"})
+        self.assertEqual(response.status_code, 200, response.text)
+        return task["id"], response.json()
+
+    def test_frozen_report_html_json_pdf_cache_encryption_and_tenant_permissions(self):
+        tid, result = self.checked()
+        base = "/api/enterprise/input-tasks/" + tid + "/reports"
+        with patch("webapp.knowledge_evidence.analyze") as ai:
+            created = self.client.post(base, json={"expected_revision": result["revision"]})
+            self.assertEqual(created.status_code, 200, created.text)
+            repeated = self.client.post(base, json={"expected_revision": result["revision"]})
+            self.assertTrue(repeated.json()["cached"])
+            ai.assert_not_called()
+        self.assertEqual(len(self.client.get(base).json()), 1)
+        html = self.client.get(base + "/1")
+        self.assertEqual(html.status_code, 200, html.text)
+        self.assertIn("100.0123", html.text)
+        self.assertIn("不满足本规则条件", html.text)
+        self.assertIn("仍有资料待补充", html.text)
+        self.assertIn("纯合成工程验收样本", html.text)
+        data = self.client.get(base + "/1?format=json").json()
+        self.assertEqual(data["summary"]["not_met"], 1)
+        self.assertFalse(data["formal_finding"])
+        self.assertEqual(data["checks"]["R01"]["bundle"]["facts"][0]["value"], "100.0123")
+        def pdf(html, path, **kwargs):
+            Path(path).write_bytes(b"%PDF-1.7\nsynthetic-cache-test")
+        with patch("webapp.core_reports.render.export_pdf", side_effect=pdf) as export:
+            first = self.client.get(base + "/1?format=pdf")
+            second = self.client.get(base + "/1?format=pdf")
+            self.assertEqual(first.content, second.content)
+            self.assertEqual(export.call_count, 1)
+        self.assertIn("no-store", html.headers["cache-control"])
+        self.assertNotIn(b"100.0123", self.path.read_bytes())
+        self.login("kg-other")
+        for url in (base, base + "/1", base + "/1?format=pdf", base + "/1?format=json"):
+            self.assertEqual(self.client.get(url).status_code, 404, url)
+        self.assertEqual(self.client.post(base, json={"expected_revision": result["revision"]}).status_code, 404)
+
+    def test_supplement_recheck_updates_report_version_without_rewriting_history(self):
+        from tests.test_core_inputs import book
+        tid, result = self.checked()
+        base = "/api/enterprise/input-tasks/" + tid
+        self.assertEqual(self.client.post(base + "/reports", json={"expected_revision": result["revision"]}).status_code, 200)
+        before = self.client.get(base + "/reports/1").content
+        wb = load_workbook(BytesIO(book("vat_declaration")))
+        wb.active["C6"] = "200000.00"
+        output = BytesIO()
+        wb.save(output)
+        wb.close()
+        updated = self.client.post(base + "/files", data={"expected_revision": result["revision"], "material_type": "vat_declaration"},
+                                   files={"files": ("更新.xlsx", output.getvalue())}).json()
+        self.assertTrue(updated["tax_checks"]["R01"]["stale"])
+        self.assertEqual(updated["tax_check_summary"]["needs_review"], 1)
+        stale = self.client.post(base + "/reports", json={"expected_revision": updated["revision"]})
+        self.assertEqual(stale.status_code, 409, stale.text)
+        again = self.client.post("/api/knowledge/retrieve", json={"rule_id": "R01", "task_id": tid,
+                                 "expected_revision": updated["revision"], "region_code": "CN-33"})
+        self.assertEqual(again.status_code, 200, again.text)
+        version = self.client.post(base + "/reports", json={"expected_revision": again.json()["revision"]})
+        self.assertEqual(version.status_code, 200, version.text)
+        self.assertEqual(version.json()["version"], 2)
+        self.assertEqual(before, self.client.get(base + "/reports/1").content)
+        self.assertEqual(self.client.get(base + "/reports/2?format=json").json()["summary"]["needs_review"], 1)
+
+    def test_report_rejects_unchecked_stale_revision_and_changed_policy(self):
+        task = self.task()
+        base = "/api/enterprise/input-tasks/" + task["id"] + "/reports"
+        self.assertEqual(self.client.post(base, json={"expected_revision": task["revision"]}).status_code, 409)
+        result = self.client.post("/api/knowledge/retrieve", json={"rule_id": "R01", "task_id": task["id"],
+                                  "expected_revision": task["revision"], "region_code": "CN-33"}).json()
+        self.assertEqual(self.client.post(base, json={"expected_revision": task["revision"]}).status_code, 409)
+        with self.store.connect() as db:
+            db.execute("UPDATE Policy SET validity_status='unverified' WHERE policy_id='P01'")
+        changed = self.client.post(base, json={"expected_revision": result["revision"]})
+        self.assertEqual(changed.status_code, 409, changed.text)
+        self.assertEqual(self.client.get(base).json(), [])
+
+    def test_report_escapes_user_text_and_pdf_reauthorizes_after_render(self):
+        tid, result = self.checked()
+        base = "/api/enterprise/input-tasks/" + tid
+        from webapp import material_batches, core_inputs
+        actor = self.store.authenticate("kg-admin", "Knowledge-test-2026!")[0]
+        view = material_batches.read(self.store, actor, tid)
+        payload = deepcopy(core_inputs.latest(view))
+        payload["task"]["company_name"] = '<script>alert("unsafe")</script>'
+        revision = material_batches.append_revision(self.store, actor, tid, result["revision"], "edit", payload)
+        archived = self.client.post(base + "/reports", json={"expected_revision": revision})
+        self.assertEqual(archived.status_code, 200, archived.text)
+        html = self.client.get(base + "/reports/1").text
+        self.assertNotIn('<script>alert("unsafe")</script>', html)
+        self.assertIn("&lt;script&gt;", html)
+        def revoke(html, path, **kwargs):
+            Path(path).write_bytes(b"%PDF-1.7")
+            with self.store.connect() as db:
+                db.execute("UPDATE users SET active=0 WHERE username='kg-admin'")
+        with patch("webapp.core_reports.render.export_pdf", side_effect=revoke):
+            denied = self.client.get(base + "/reports/1?format=pdf")
+            self.assertIn(denied.status_code, (401, 403))
+
+    def test_bulk_recheck_preserves_unaffected_checks_and_makes_no_ai_calls(self):
+        from tests.test_core_inputs import book
+        with self.store.connect() as db:
+            db.execute("UPDATE Metric SET source_schema='AccountBalanceRow',source_field='current_debit',period_basis='accounting_period',source_filter_json=? WHERE metric_id='M03'", ('{"account_code":"1001"}',))
+        tid, first = self.checked()
+        base = "/api/enterprise/input-tasks/" + tid
+        task = self.client.post(base + "/files", data={"expected_revision": first["revision"], "material_type": "account_balance"},
+                                files={"files": ("余额.xlsx", book("account_balance"))}).json()
+        second = self.client.post("/api/knowledge/retrieve", json={"rule_id": "R03", "task_id": tid,
+                                  "expected_revision": task["revision"], "region_code": "CN-33"}).json()
+        wb = load_workbook(BytesIO(book("vat_declaration")))
+        wb.active["C6"] = "200000.00"
+        output = BytesIO()
+        wb.save(output)
+        wb.close()
+        updated = self.client.post(base + "/files", data={"expected_revision": second["revision"], "material_type": "vat_declaration"},
+                                   files={"files": ("更新.xlsx", output.getvalue())}).json()
+        with patch("webapp.knowledge_evidence.analyze") as ai:
+            checked = self.client.post(base + "/recheck", json={"expected_revision": updated["revision"]})
+            self.assertEqual(checked.status_code, 200, checked.text)
+            self.assertEqual(checked.json()["changed_rule_ids"], ["R01"])
+            self.assertEqual(checked.json()["reused_rule_ids"], ["R03"])
+            self.assertEqual(checked.json()["tax_checks"]["R03"]["bundle"], second["bundle"])
+            self.assertEqual(checked.json()["external_api_calls"], 0)
+            again = self.client.post(base + "/recheck", json={"expected_revision": checked.json()["revision"]})
+            self.assertEqual(again.json()["changed_rule_ids"], [])
+            self.assertEqual(again.json()["revision"], checked.json()["revision"])
+            ai.assert_not_called()
+        self.assertEqual(self.client.post(base + "/recheck", json={"expected_revision": updated["revision"]}).status_code, 409)
+        self.login("kg-other")
+        self.assertEqual(self.client.post(base + "/recheck", json={"expected_revision": checked.json()["revision"]}).status_code, 404)
 
 
 if __name__ == "__main__":

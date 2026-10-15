@@ -1520,6 +1520,8 @@ from webapp.core_inputs import register as register_core_inputs
 register_core_inputs(app, lambda: store, _user, _allow, STATIC_DIR)
 from webapp.knowledge_evidence import register as register_knowledge_evidence
 register_knowledge_evidence(app, lambda: store, _user, _allow)
+from webapp.core_reports import register as register_core_reports
+register_core_reports(app, lambda: store, _user, _allow)
 register_enterprise_materials(app, lambda: store, _user, _allow, RULES_DIR,
                              lambda dataset: _audit_rules(dataset, store.enabled_rule_ids()),
                              _save_audit, lambda audit_id, user: _result(_audit_or_404(audit_id, user)))

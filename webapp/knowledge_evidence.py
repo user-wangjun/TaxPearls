@@ -17,6 +17,7 @@ from webapp.access import AccessDenied, current_actor
 
 ROOT = Path(__file__).resolve().parents[1]
 _LOCK, _ACTIVE = Lock(), set()
+AI_VALIDATION_VERSION = 2
 
 
 def acceptance_gate(path=None):
@@ -73,6 +74,8 @@ def validate_answer(answer, package):
             raise ValueError("AI 忽略了已触发的排除例外。")
         if package["check"]["evaluation"] == "FALSE" and claim["type"] == "risk_clue":
             raise ValueError("AI 分析与程序已核对的条件结果冲突。")
+        if claim["type"] == "condition_not_met" and re.search(r"(?<![不未])(?:形成|触发|构成)(?:待核查|风险|税务风险)线索", claim["text"]):
+            raise ValueError("AI 文字与条件未满足的结果冲突。")
         expected = {"condition_met": "risk_clue", "condition_not_met": "condition_not_met", "excluded": "excluded"}.get(package["check"].get("disposition"))
         if package["bundle_status"] == "ready" and expected and claim["type"] not in {expected, "insufficient_evidence"}:
             raise ValueError("AI 分析类型与程序条件或例外结果冲突。")
@@ -115,7 +118,9 @@ def analyze(package):
             "合成数据只能作为工程演示。存在缺口或分批上下文不完整时只输出insufficient_evidence。"
             "返回JSON且只含assessments数组，每项字段严格为type,text,rule_id,clause_ids,source_ids,amounts,dates,required_materials。"
             "type仅risk_clue/condition_not_met/insufficient_evidence/excluded。"
+            "程序FALSE必须为condition_not_met，明确本条件不形成风险线索；程序UNKNOWN只能insufficient_evidence。"
             "金额只在amounts里按{metric_id:指标ID,value:十进制字符串}引用，正文不重复金额；dates只使用包内ISO日期。"
+            "规则阈值也属于金额，禁止在text中写数字金额或数字阈值，统一用‘内部筛查阈值’代称；具体比较值保留在程序条件中。"
             "所有引用必须来自本包，缺少企业事实时source_ids和amounts可为空。每项分析须引用clause_ids并列出需补材料。",
             payload, "AI 分析未返回有效的材料引用，请重试。")
         calls += 1
@@ -133,7 +138,7 @@ def analyze(package):
     unique = {digest(item): item for item in all_claims}
     return {"status": "reviewed_clues" if package["bundle_status"] == "ready" else "needs_review",
             "validated": True, "assessments": list(unique.values()), "models": sorted(set(models)),
-            "external_api_calls": calls, "formal_finding": False}
+            "external_api_calls": calls, "formal_finding": False, "validation_version": AI_VALIDATION_VERSION}
 
 
 class RetrievalBody(BaseModel):
@@ -149,7 +154,47 @@ class RetrievalBody(BaseModel):
     use_ai: bool = False
 
 
+class RecheckBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_revision: int = Field(ge=0)
+
+
 def register(app, get_store, get_user, allow):
+    @app.post("/api/enterprise/input-tasks/{task_id}/recheck")
+    def recheck(task_id: str, body: RecheckBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, store = get_user(session), get_store()
+        allow(user, "org_admin", "accountant")
+        view = batches.read(store, user, task_id)
+        if view["revision"] != body.expected_revision:
+            raise AccessDenied("任务版本已变化，请重新读取。", 409)
+        payload = deepcopy(core_inputs.latest(view))
+        if not payload.get("tax_checks"):
+            raise HTTPException(409, "尚无已保存项目，请先选择一项进行核查。")
+        changed, reused = [], []
+        try:
+            with store.connect() as db:
+                current_actor(db, user)
+                catalog = [row["id"] for row in payload["processing"].get("records", [])]
+                for rid, old in payload["tax_checks"].items():
+                    package = old["bundle"]
+                    definitions = relation_search.rule_context(db, rid)["metrics"]
+                    facts = metrics.collect(definitions, payload["processing"], payload["task"])
+                    fresh = bundle.build(db, package["task"], rid, facts, topic=package["check"]["topic"], source_catalog=catalog,
+                                         token_budget=package["batching"]["soft_token_budget"])
+                    if fresh["content_hash"] == package["content_hash"] and not old.get("stale"):
+                        reused.append(rid)
+                    else:
+                        changed.append(rid)
+                        payload["tax_checks"][rid] = {"bundle": fresh, "ai": None, "stale": False,
+                                                      "analyzed_at": members.now(), "input_revision": view["revision"], "cached": False}
+            from webapp.core_reports import summary
+            payload["tax_check_summary"] = summary(payload["tax_checks"])
+            revision = batches.append_revision(store, user, task_id, view["revision"], "analysis", payload) if changed else view["revision"]
+            return {"revision": revision, "changed_rule_ids": changed, "reused_rule_ids": reused,
+                    "tax_checks": payload["tax_checks"], "summary": payload["tax_check_summary"], "external_api_calls": 0}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
     @app.get("/api/knowledge/retrieval/status")
     def status(session: str | None = Cookie(default=None, alias="taxpearls_session")):
         get_user(session)
@@ -204,7 +249,7 @@ def register(app, get_store, get_user, allow):
             if not payload:
                 return {"bundle": package, "saved": False, "ai": None}
             old = payload.get("tax_checks", {}).get(body.rule_id)
-            if old and old["bundle"]["content_hash"] == package["content_hash"] and (not body.use_ai or old.get("ai")):
+            if old and old["bundle"]["content_hash"] == package["content_hash"] and (not body.use_ai or (old.get("ai") or {}).get("validation_version") == AI_VALIDATION_VERSION):
                 return {**old, "revision": view["revision"], "cached": True, "saved": True}
             key = (user["org_id"], body.task_id, package["content_hash"])
             with _LOCK:
@@ -221,8 +266,8 @@ def register(app, get_store, get_user, allow):
                 slot = {"bundle": package, "ai": result, "stale": False, "analyzed_at": members.now(),
                         "input_revision": view["revision"], "cached": False}
                 payload.setdefault("tax_checks", {})[body.rule_id] = slot
-                payload["tax_check_summary"] = {"total": len(payload["tax_checks"]),
-                                                "needs_review": sum(s["bundle"]["bundle_status"] != "ready" for s in payload["tax_checks"].values())}
+                from webapp.core_reports import summary
+                payload["tax_check_summary"] = summary(payload["tax_checks"])
                 revision = batches.append_revision(store, user, body.task_id, view["revision"], "analysis", payload)
                 return {**slot, "revision": revision, "saved": True}
             finally:

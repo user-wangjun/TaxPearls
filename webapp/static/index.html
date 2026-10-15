@@ -620,7 +620,9 @@
           <div class="field"><label for="kgEnd">检查终止日期</label><input id="kgEnd" type="date" required></div>
           <div class="field"><label for="kgTopic">本次核查主题</label><input id="kgTopic" maxlength="2000" placeholder="留空使用检查项目名称"></div>
         </div><div class="kg-evidence-actions"><button class="btn primary" type="submit">本地检索与核对</button><button type="button" id="kgAnalyze">AI 辅助分析</button><button type="button" id="kgReload">刷新任务与项目</button></div></fieldset></form>
-        <p id="kgRetrievalStatus" class="muted" role="status"></p><div id="kgEvidenceResult" aria-live="polite"></div>
+        <p id="kgRetrievalStatus" class="muted" role="status"></p><div id="kgTaskChecks"></div><div id="kgEvidenceResult" aria-live="polite"></div>
+        <div class="kg-evidence-actions"><button id="kgBackToInputs" type="button" hidden>返回资料补充</button><button id="kgRecheck" type="button" disabled>重检受影响项目（本地）</button><button id="kgArchiveReport" type="button" disabled>生成检查报告</button></div>
+        <p id="kgReportStatus" class="muted" role="status"></p><div id="kgReportVersions"></div>
       </details>
       <div class="graph-workspace">
         <div class="graph-stage"><div class="graph-stage-heading"><div><span class="graph-live-dot"></span><strong>证据关系网络</strong><p id="graphCount"></p></div><span class="graph-mode" id="graphMode">关联视图</span></div><div class="graph-toolbar"><button id="graphOverview">全景</button><button id="graphFocus">聚焦关联</button><button id="graphExpand">展开一层</button><button id="graphZoomIn" aria-label="放大图谱">＋</button><button id="graphZoomOut" aria-label="缩小图谱">−</button><button id="graphReset">居中</button></div><svg id="graphCanvas" viewBox="0 0 960 680" aria-label="交互式知识图谱"></svg><div id="graphLegend" class="graph-legend"></div><p class="graph-hint">滚轮缩放 · 拖动画布或节点 · 点击节点查看证据</p></div>
@@ -630,7 +632,7 @@
     <section class="panel" id="uploadPanel">
     <div class="sheet" id="coreInputs" hidden>
       <h2>基础审查资料准备</h2>
-      <p class="muted">先指定企业与检查区间，再上传科目余额表、增值税申报表和进销项发票明细。资料整理完成后停在规则核验之前。</p>
+      <p class="muted">先指定企业与检查区间，再上传科目余额表、增值税申报表和进销项发票明细，核对保存后点击“继续核查”，查看检查结果与报告。</p>
       <fieldset id="coreTaskForm"><legend>创建资料处理任务</legend><div class="material-company">
         <label>企业名称<input id="coreCompanyName" maxlength="200" required></label>
         <label>税号<input id="coreTaxNo" maxlength="20" required></label>
@@ -922,14 +924,14 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
-<script src="/core-inputs.js?v=20261013-core-inputs-1"></script>
+<script src="/core-inputs.js?v=20261015-check-report-2"></script>
 <script src="/enterprise.js?v=enterprise-invoice-20261013-1"></script>
 <script src="/ai-keys.js?v=20261012-model-combobox-11"></script>
-<script src="/console.js?v=20261012-ai-probes-1-core-inputs-1"></script>
+<script src="/console.js?v=20261015-check-report-2"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>
-<script src="/knowledge-retrieval.js?v=1"></script>
+<script src="/knowledge-retrieval.js?v=20261015-check-report-2"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>
 </body>
