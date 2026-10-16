@@ -6,10 +6,12 @@
 from __future__ import annotations
 
 import tempfile
+import subprocess
 import unittest
 import uuid
 from datetime import timedelta
 from pathlib import Path
+from html.parser import HTMLParser
 
 from argon2 import PasswordHasher
 from fastapi import FastAPI
@@ -96,6 +98,81 @@ class TrainingStaffTests(unittest.TestCase):
         script = self.client.get("/training-staff.js")
         self.assertEqual(script.status_code, 200)
         self.assertIn("text/javascript", script.headers["content-type"])
+
+    def test_training_entry_controls_and_tax_practice_container(self):
+        class Containers(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.stack = []
+                self.nodes = {}
+
+            def handle_starttag(self, tag, attrs):
+                attrs = dict(attrs)
+                if attrs.get("id"):
+                    self.nodes[attrs["id"]] = (attrs, tuple(self.stack))
+                if tag in ("main", "section", "div"):
+                    self.stack.append((tag, attrs.get("id")))
+
+            def handle_endtag(self, tag):
+                if tag in ("main", "section", "div"):
+                    self.stack.pop()
+
+        staff_page = Containers()
+        staff_page.feed(self.client.get("/training-staff").text)
+        self.assertEqual(staff_page.nodes["new-cert-btn"][0].get("data-act"), "new-cert-btn")
+        for field in ("sf-college", "si-college", "cf2-college", "cm-college", "ti-college"):
+            attrs = staff_page.nodes[field][0]
+            self.assertIn("readonly", attrs)
+            self.assertNotIn("value", attrs)  # 登录身份填充，不预设演示院校
+        student_page = Containers()
+        student_page.feed(self.client.get("/training-certificates").text)
+        parents = student_page.nodes["pr-card"][1]
+        self.assertIn(("section", "app-view"), parents)
+        self.assertNotIn(("div", "pass-modal"), parents)
+        self.assertNotIn("code-card", student_page.nodes)
+        self.assertNotIn("code-problems", staff_page.nodes)
+        self.assertIn("税务案例训练", self.client.get("/training-certificates").text)
+
+    def test_tax_practice_retake_and_resume_buttons_reach_handlers(self):
+        script = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const nodes = new Map(), starts = [], requests = [];
+function node(id) {
+  if (!nodes.has(id)) nodes.set(id, {id, listeners: {}, value: '', innerHTML: '', textContent: '',
+    addEventListener(kind, fn) { this.listeners[kind] = fn; }});
+  return nodes.get(id);
+}
+const ctx = {document: {getElementById: node}, setTimeout() {}};
+vm.createContext(ctx);
+const source = fs.readFileSync('webapp/static/training-portal.js', 'utf8');
+vm.runInContext(source.slice(0, source.lastIndexOf('boot();')), ctx);
+ctx.startPractice = async body => starts.push(body);
+ctx.api = async path => { requests.push(path); return {attempt: {id: 'unfinished'}}; };
+ctx.renderAttempt = () => {};
+vm.runInContext("state.prCert='cert';", ctx);
+async function click(container, dataset) {
+  const btn = {dataset, closest() { return this; }};
+  for (const id of [container, 'pr-card', 'app-view']) {
+    const handler = node(id).listeners.click;
+    if (handler) await handler({target: btn});
+  }
+}
+(async () => {
+  for (const container of ['pr-wrong', 'pr-attempt']) {
+    await click(container, {act: 'redo-same', rule: 'R-001', seed: '42', kp: 'kp'});
+    await click(container, {act: 'redo-new', rule: 'R-001', kp: 'kp'});
+  }
+  assert.equal(starts.length, 4, 'Wrong-list and result buttons must each start one practice');
+  assert.equal(starts.filter(x => x.mode === 'redo_same' && x.seed === 42).length, 2);
+  assert.equal(starts.filter(x => x.mode === 'new').length, 2);
+  await click('pr-open', {act: 'practice-resume', id: 'unfinished'});
+  assert.equal(requests.length, 1, 'Continue button must load the unfinished practice');
+  assert.equal(requests[0], '/api/training/my/practice/unfinished');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", script], cwd=Path(__file__).resolve().parents[1],
+                                capture_output=True, text=True, encoding="utf-8", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     # ---- 证书上架（FR-K01）---------------------------------------------
 

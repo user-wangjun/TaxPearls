@@ -198,11 +198,11 @@ def _validate_student_password(password: str) -> str:
     return password
 
 
-def list_students(store, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+def list_students(store, college: str, *, include_inactive: bool = True) -> list[dict[str, Any]]:
     with store.connect() as db:
-        where = "" if include_inactive else "WHERE active=1"
+        where = "" if include_inactive else " AND active=1"
         rows = db.execute(
-            f"SELECT {_STUDENT_COLS} FROM student_info {where} ORDER BY college, student_no"
+            f"SELECT {_STUDENT_COLS} FROM student_info WHERE college=?{where} ORDER BY student_no", (college,)
         ).fetchall()
     return [dict(r) for r in rows]
 
@@ -327,25 +327,25 @@ def parse_student_xlsx(data: bytes, *,
         workbook.close()
 
 
-def reset_student_password(store, student_id: str, new_password: str) -> dict[str, Any]:
+def reset_student_password(store, student_id: str, new_password: str, *, college: str) -> dict[str, Any]:
     password = _validate_student_password(new_password)
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT id FROM student_info WHERE id=?", (student_id,)).fetchone()
+        row = db.execute("SELECT id FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
         if not row:
-            raise TrainingPortalError("学生不存在。")
+            raise TrainingPortalError("学生不存在。", 404)
         db.execute("UPDATE student_info SET password_hash=? WHERE id=?",
                    (_passwords.hash(password), student_id))
         db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (student_id,))
     return {"id": student_id, "password_reset": True}
 
 
-def set_student_active(store, student_id: str, active: bool) -> dict[str, Any]:
+def set_student_active(store, student_id: str, active: bool, *, college: str) -> dict[str, Any]:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT id FROM student_info WHERE id=?", (student_id,)).fetchone()
+        row = db.execute("SELECT id FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
         if not row:
-            raise TrainingPortalError("学生不存在。")
+            raise TrainingPortalError("学生不存在。", 404)
         db.execute("UPDATE student_info SET active=? WHERE id=?", (1 if active else 0, student_id))
         if not active:
             db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (student_id,))
@@ -355,16 +355,16 @@ def set_student_active(store, student_id: str, active: bool) -> dict[str, Any]:
 
 # ---- 编程题库（FR-J01 v1：数据模型与管理；判题引擎/沙箱待专项） ----
 
-def list_code_problems(store, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+def list_code_problems(store, college: str, *, include_inactive: bool = True) -> list[dict[str, Any]]:
     with store.connect() as db:
-        where = "" if include_inactive else "WHERE p.active=1"
+        where = "" if include_inactive else " AND p.active=1"
         rows = db.execute(
             f"""SELECT p.id, p.college, p.title, p.language, p.time_limit_ms,
                        p.memory_limit_kb, p.knowledge_point_id, p.active, p.created_at,
                        (SELECT count(*) FROM code_test_case t WHERE t.problem_id=p.id) AS case_count,
                        kp.name AS knowledge_point_name
                 FROM code_problem p LEFT JOIN knowledge_point kp ON kp.id=p.knowledge_point_id
-                {where} ORDER BY p.created_at DESC""").fetchall()
+                WHERE p.college=?{where} ORDER BY p.created_at DESC""", (college,)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -489,10 +489,10 @@ def _course_payload(db, row: sqlite3.Row) -> dict[str, Any]:
     return {**dict(row), "classes": classes, "student_count": enrolled}
 
 
-def list_courses(store, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+def list_courses(store, college: str, *, include_inactive: bool = True) -> list[dict[str, Any]]:
     with store.connect() as db:
-        where = "" if include_inactive else "WHERE c.active=1"
-        rows = db.execute(f"{_COURSE_SELECT} {where} ORDER BY c.created_at DESC").fetchall()
+        where = "" if include_inactive else " AND c.active=1"
+        rows = db.execute(f"{_COURSE_SELECT} WHERE c.college=?{where} ORDER BY c.created_at DESC", (college,)).fetchall()
         return [_course_payload(db, r) for r in rows]
 
 
@@ -508,8 +508,9 @@ def submit_code(store, problem_id: str, student_id: str, code_text: str) -> dict
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         problem = db.execute(
-            "SELECT id, language, time_limit_ms, active FROM code_problem WHERE id=?",
-            (problem_id,)).fetchone()
+            """SELECT id, language, time_limit_ms, active FROM code_problem WHERE id=?
+               AND college=(SELECT college FROM student_info WHERE id=? AND active=1)""",
+            (problem_id, student_id)).fetchone()
         if not problem or not problem["active"]:
             raise TrainingPortalError("题目不存在或已停用。", 404)
         if problem["language"] != "python":
@@ -656,7 +657,7 @@ def create_course(store, operator_id: str, college: str, name: str, *,
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         if teacher_id and not db.execute(
-                "SELECT 1 FROM college_user WHERE id=? AND active=1", (teacher_id,)).fetchone():
+                "SELECT 1 FROM college_user WHERE id=? AND college=? AND active=1", (teacher_id, college)).fetchone():
             raise TrainingPortalError("授课教师不存在或已停用。", 404)
         dup = db.execute(
             """SELECT id FROM course WHERE college=? AND name=? AND IFNULL(semester,'')=? AND active=1""",
@@ -680,11 +681,12 @@ def update_course(store, course_id: str, fields: dict[str, Any],
                   class_names: list[str] | None = None) -> dict[str, Any]:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        if not db.execute("SELECT 1 FROM course WHERE id=?", (course_id,)).fetchone():
+        course = db.execute("SELECT college FROM course WHERE id=?", (course_id,)).fetchone()
+        if not course:
             raise TrainingPortalError("课程不存在。", 404)
         if "teacher_id" in fields and fields["teacher_id"]:
-            if not db.execute("SELECT 1 FROM college_user WHERE id=? AND active=1",
-                              (fields["teacher_id"],)).fetchone():
+            if not db.execute("SELECT 1 FROM college_user WHERE id=? AND college=? AND active=1",
+                              (fields["teacher_id"], course["college"])).fetchone():
                 raise TrainingPortalError("授课教师不存在或已停用。", 404)
         sets, params = [], []
         for key in ("name", "semester", "teacher_id", "description", "active"):
@@ -3559,17 +3561,28 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
 
     # ---- 教师/管理员：认证与内容维护（证书上架、官方日期、考纲知识点、三类标注）----
 
-    def staff(session: str | None) -> dict[str, Any]:
+    def staff(session: str | None, college: str | None = None) -> dict[str, Any]:
         who = staff_for_token(store_provider(), session)
         if not who:
             raise HTTPException(status_code=401, detail="请先使用教师或管理员账号登录。")
+        if college is not None and college != who["college"]:
+            raise HTTPException(status_code=403, detail="只能管理本院校的数据。")
         return who
 
-    def admin(session: str | None) -> dict[str, Any]:
-        who = staff(session)
+    def admin(session: str | None, college: str | None = None) -> dict[str, Any]:
+        who = staff(session, college)
         if who.get("role") != "admin":
             raise HTTPException(status_code=403, detail="该操作仅限实训管理员。")
         return who
+
+    def college_record(who: dict[str, Any], table: str, record_id: str) -> None:
+        # Table names are internal constants. Tenant ownership is immutable in
+        # these APIs; update payloads cannot transfer a record to another school.
+        with store_provider().connect() as db:
+            row = db.execute(f"SELECT id FROM {table} WHERE id=? AND college=?",
+                             (record_id, who["college"])).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="记录不存在或无权访问。")
 
     @app.post("/api/training/staff/auth/login")
     @guarded
@@ -3747,14 +3760,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_student_list(include_inactive: bool = True,
                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
-        return response({"students": list_students(store_provider(), include_inactive=include_inactive)})
+        who = staff(session)
+        return response({"students": list_students(store_provider(), who["college"], include_inactive=include_inactive)})
 
     @app.post("/api/training/staff/students")
     @guarded
     def staff_student_create(body: StudentCreate,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        staff(session, body.college)
         return response({"student": create_student(
             store_provider(), body.college, body.student_no, body.name,
             class_name=body.class_name, initial_password=body.initial_password,
@@ -3764,7 +3777,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_student_import(body: StudentImportBody,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        staff(session, body.college)
         return response({"import": import_students(
             store_provider(), body.college,
             [r.model_dump() for r in body.rows],
@@ -3783,7 +3796,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         与文本导入共用 import_students 下游（逐行导入、重复/错误行带原因返回、
         不部分静默成功）；解析边界见 parse_student_xlsx（只读缓存值、不执行
         公式、表头识别、不按列序猜测）。"""
-        staff(session)
+        staff(session, college)
         rows = parse_student_xlsx(file.file.read())
         return response({"import": import_students(
             store_provider(), college, rows,
@@ -3794,40 +3807,40 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_student_reset_password(student_id: str, body: StudentPasswordReset,
                                      session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
-        return response(reset_student_password(store_provider(), student_id, body.new_password))
+        who = staff(session)
+        return response(reset_student_password(store_provider(), student_id, body.new_password, college=who["college"]))
 
     @app.post("/api/training/staff/students/{student_id}/toggle")
     @guarded
     def staff_student_toggle(student_id: str, body: StudentToggle,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
-        return response({"student": set_student_active(store_provider(), student_id, body.active)})
+        who = staff(session)
+        return response({"student": set_student_active(store_provider(), student_id, body.active, college=who["college"])})
 
     @app.get("/api/training/staff/teachers")
     @guarded
     def staff_teacher_list(include_inactive: bool = False,
                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        who = staff(session)
         with store_provider().connect() as db:
-            where = "" if include_inactive else "WHERE active=1"
+            where = "" if include_inactive else " AND active=1"
             rows = db.execute(
-                f"""SELECT id, username, display_name, college, role FROM college_user {where}
-                    ORDER BY college, username""").fetchall()
+                f"""SELECT id, username, display_name, college, role FROM college_user WHERE college=?{where}
+                    ORDER BY username""", (who["college"],)).fetchall()
         return response({"teachers": [dict(r) for r in rows]})
 
     @app.get("/api/training/staff/courses")
     @guarded
     def staff_course_list(include_inactive: bool = True,
                           session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
-        return response({"courses": list_courses(store_provider(), include_inactive=include_inactive)})
+        who = staff(session)
+        return response({"courses": list_courses(store_provider(), who["college"], include_inactive=include_inactive)})
 
     @app.post("/api/training/staff/courses")
     @guarded
     def staff_course_create(body: CourseCreate,
                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+        who = staff(session, body.college)
         return response({"course": create_course(
             store_provider(), who["id"], body.college, body.name,
             semester=body.semester, teacher_id=body.teacher_id,
@@ -3837,7 +3850,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_course_update(course_id: str, body: CoursePatch,
                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        college_record(staff(session), "course", course_id)
         fields = {k: getattr(body, k) for k in body.model_fields_set}
         return response({"course": update_course(
             store_provider(), course_id, fields, class_names=body.class_names)})
@@ -3846,14 +3859,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_course_roster(course_id: str,
                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        college_record(staff(session), "course", course_id)
         return response(course_roster(store_provider(), course_id))
 
     @app.get("/api/training/staff/overview")
     @guarded
     def staff_college_overview(college: str,
                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+        who = staff(session, college)
         if who.get("role") not in ("admin", "school_admin"):
             raise HTTPException(status_code=403,
                                 detail="教学概况仅限实训管理员或校级管理员查看。")
@@ -3863,15 +3876,15 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_code_problem_list(include_inactive: bool = True,
                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        who = staff(session)
         return response({"problems": list_code_problems(
-            store_provider(), include_inactive=include_inactive)})
+            store_provider(), who["college"], include_inactive=include_inactive)})
 
     @app.post("/api/training/staff/code-problems")
     @guarded
     def staff_code_problem_create(body: CodeProblemCreate,
                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+        who = staff(session, body.college)
         return response({"problem": create_code_problem(
             store_provider(), who["id"], body.college, body.title,
             statement=body.statement, language=body.language,
@@ -3883,7 +3896,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_code_problem_update(problem_id: str, body: CodeProblemPatch,
                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        college_record(staff(session), "code_problem", problem_id)
         fields = {k: getattr(body, k) for k in body.model_fields_set}
         cases = [c.model_dump() for c in body.cases] if body.cases is not None else None
         return response({"problem": update_code_problem(
@@ -3893,21 +3906,21 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_code_submission_list(problem_id: str, include_code: bool = False,
                                    session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        college_record(staff(session), "code_problem", problem_id)
         return response({"submissions": list_code_submissions(
             store_provider(), problem_id=problem_id, include_code=include_code)})
 
     @app.get("/api/training/my/code/problems")
     @guarded
     def my_code_problem_list(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
-        student(session)  # 学生仅见开设中的题目，含公开样例输入
+        who = student(session)  # 学生仅见本院校开设中的题目，含公开样例输入
         with store_provider().connect() as db:
             rows = db.execute(
                 """SELECT p.id, p.title, p.statement, p.language, p.time_limit_ms,
                           p.memory_limit_kb, kp.name AS knowledge_point_name,
                           (SELECT count(*) FROM code_test_case t WHERE t.problem_id=p.id) AS case_count
                    FROM code_problem p LEFT JOIN knowledge_point kp ON kp.id=p.knowledge_point_id
-                   WHERE p.active=1 ORDER BY p.created_at DESC""").fetchall()
+                   WHERE p.active=1 AND p.college=? ORDER BY p.created_at DESC""", (who["college"],)).fetchall()
             samples = {r["problem_id"]: r["input_text"] for r in db.execute(
                 "SELECT problem_id, input_text FROM code_test_case WHERE sample=1 ORDER BY seq").fetchall()}
         problems = []
@@ -3940,14 +3953,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_classes(college: str,
                       session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        staff(session, college)
         return response({"classes": list_classes(store_provider(), college)})
 
     @app.post("/api/training/staff/classes/migrate")
     @guarded
     def staff_class_migrate(body: ClassMigrateBody,
                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+        who = staff(session, body.college)
         return response({"migration": migrate_class(
             store_provider(), who["id"], body.college, body.from_class, body.to_class)})
 
@@ -3955,7 +3968,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def staff_class_history(college: str, limit: int = 50,
                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        staff(session, college)
         return response({"history": list_class_history(store_provider(), college, limit=limit)})
 
     # ---- 高校组织架构（FR-U01 第一期：写仅限管理员，教师只读） ----
@@ -3964,7 +3977,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_department_list(college: str, include_archived: bool = True,
                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        staff(session, college)
         return response({"departments": list_departments(
             store_provider(), college, include_archived=include_archived)})
 
@@ -3972,14 +3985,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_department_create(body: OrgDepartmentCreate,
                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        admin(session, body.college)
         return response({"department": create_department(store_provider(), body.college, body.name)})
 
     @app.patch("/api/training/staff/org/departments/{department_id}")
     @guarded
     def org_department_update(department_id: str, body: OrgNamePatch,
                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        college_record(admin(session), "college_department", department_id)
         return response({"department": update_department(
             store_provider(), department_id, name=body.name, archived=body.archived)})
 
@@ -3987,14 +4000,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_department_delete(department_id: str,
                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        college_record(admin(session), "college_department", department_id)
         return response(delete_department(store_provider(), department_id))
 
     @app.get("/api/training/staff/org/terms")
     @guarded
     def org_term_list(college: str, include_archived: bool = True,
                       session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        staff(session, college)
         return response({"terms": list_terms(
             store_provider(), college, include_archived=include_archived)})
 
@@ -4002,7 +4015,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_term_create(body: OrgTermCreate,
                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        admin(session, body.college)
         return response({"term": create_term(
             store_provider(), body.college, body.name, start_date=body.start_date,
             end_date=body.end_date, is_current=body.is_current)})
@@ -4011,7 +4024,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_term_update(term_id: str, body: OrgTermPatch,
                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        college_record(admin(session), "college_term", term_id)
         return response({"term": update_term(
             store_provider(), term_id, name=body.name, start_date=body.start_date,
             end_date=body.end_date, is_current=body.is_current, archived=body.archived)})
@@ -4020,14 +4033,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_term_delete(term_id: str,
                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        college_record(admin(session), "college_term", term_id)
         return response(delete_term(store_provider(), term_id))
 
     @app.get("/api/training/staff/org/classes")
     @guarded
     def org_class_list(college: str, include_archived: bool = True,
                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        staff(session, college)
         return response({"classes": list_org_classes(
             store_provider(), college, include_archived=include_archived)})
 
@@ -4035,7 +4048,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_class_create(body: OrgClassCreate,
                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        admin(session, body.college)
         return response({"class": create_org_class(
             store_provider(), body.college, body.name,
             department_id=body.department_id, term_id=body.term_id)})
@@ -4044,7 +4057,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_class_update(class_id: str, body: OrgClassPatch,
                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        college_record(admin(session), "college_class", class_id)
         return response({"class": update_org_class(
             store_provider(), class_id, name=body.name, department_id=body.department_id,
             term_id=body.term_id, archived=body.archived)})
@@ -4053,14 +4066,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_class_delete(class_id: str,
                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        college_record(admin(session), "college_class", class_id)
         return response(delete_org_class(store_provider(), class_id))
 
     @app.post("/api/training/staff/org/classes/{class_id}/clone")
     @guarded
     def org_class_clone(class_id: str, body: OrgClassClone,
                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        admin(session)
+        college_record(admin(session), "college_class", class_id)
         return response({"clone": clone_org_class(
             store_provider(), class_id, term_id=body.term_id, name=body.name)})
 
@@ -4068,14 +4081,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_quota_overview_route(college: str,
                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        staff(session, college)
         return response({"quota": college_quota_overview(store_provider(), college)})
 
     @app.patch("/api/training/staff/org/quota")
     @guarded
     def org_quota_update(body: OrgQuotaPatch,
                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = admin(session)
+        who = admin(session, body.college)
         return response({"quota": set_college_quota(
             store_provider(), who["id"], body.college,
             body.teacher_quota, body.student_quota, body.revision)})
@@ -4085,20 +4098,21 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def org_roster_snapshot_take(term_id: str,
                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         who = admin(session)
+        college_record(who, "college_term", term_id)
         return response({"snapshot": take_roster_snapshot(store_provider(), who["id"], term_id)})
 
     @app.get("/api/training/staff/org/terms/{term_id}/roster-snapshot")
     @guarded
     def org_roster_snapshot_view(term_id: str,
                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session)
+        college_record(staff(session), "college_term", term_id)
         return response({"snapshot": view_roster_snapshot(store_provider(), term_id)})
 
     @app.post("/api/training/staff/teachers/import")
     @guarded
     def staff_teacher_import(body: StaffImportBody,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = admin(session)
+        who = admin(session, body.college)
         return response({"import": import_staff_users(
             store_provider(), body.college,
             [r.model_dump() for r in body.rows],

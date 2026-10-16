@@ -149,7 +149,6 @@ async function refresh() {
     api("/api/training/certificates"),
     api("/api/training/my/goals?include_archived=1"),
   ]);
-  loadCodePractice().catch(() => {});
   state.certificates = certs.certificates;
   state.goals = goals.goals;
   renderGoals();
@@ -181,8 +180,10 @@ async function refreshPractice() {
   const [kpData, wrong, open, dash, stats] = await Promise.all([
     state.prCert ? api(`/api/training/my/knowledge-points?certificate_id=${state.prCert}`)
                  : Promise.resolve({ knowledge_points: [] }),
-    api("/api/training/my/practice/wrong"),
-    api("/api/training/my/practice?status=open"),
+    state.prCert ? api(`/api/training/my/practice/wrong?certificate_id=${encodeURIComponent(state.prCert)}`)
+                 : Promise.resolve({ attempts: [] }),
+    state.prCert ? api(`/api/training/my/practice?status=open&certificate_id=${encodeURIComponent(state.prCert)}`)
+                 : Promise.resolve({ attempts: [] }),
     api("/api/training/my/dashboard"),
     state.prCert ? api(`/api/training/my/practice/stats?certificate_id=${state.prCert}`)
                  : Promise.resolve(null),
@@ -243,7 +244,7 @@ function renderOpen() {
   box.innerHTML = state.open.length ? `<h2 style="margin-top:18px;">未完成的练习</h2>` + state.open.map((a) => `
     <div class="item"><div class="item-head">
       <div class="muted">开始于 ${esc(a.created_at)}</div>
-      <button class="small" data-act="resume" data-id="${esc(a.id)}">继续作答</button>
+      <button class="small" data-act="practice-resume" data-id="${esc(a.id)}">继续作答</button>
     </div></div>`).join("") : "";
 }
 
@@ -320,14 +321,14 @@ function renderAttempt() {
       <div class="item"><strong>仿真材料（纯仿真教学企业，非真题）</strong>
         <div class="muted">${esc(m.company.name)} · 税号 ${esc(m.company.taxpayer_id)} · ${esc(m.company.industry)} · ${esc(m.company.period)}</div>
         <div><strong style="font-size:13px;">科目余额表</strong>
-          <table><tr><th>编码</th><th>科目</th><th>期初</th><th>借方</th><th>贷方</th><th>期末</th></tr>${accounts}</table></div>
+          <div class="table-scroll"><table><tr><th>编码</th><th>科目</th><th>期初</th><th>借方</th><th>贷方</th><th>期末</th></tr>${accounts}</table></div></div>
         <div><strong style="font-size:13px;">申报数据</strong>
-          <table><tr><th>项目</th><th>金额</th></tr>${decls}</table></div>
+          <div class="table-scroll"><table><tr><th>项目</th><th>金额</th></tr>${decls}</table></div></div>
         <div><strong style="font-size:13px;">标准化指标</strong>
-          <table><tr><th>指标</th><th>数值</th><th>取数来源</th></tr>${metrics}</table></div>
+          <div class="table-scroll"><table><tr><th>指标</th><th>数值</th><th>取数来源</th></tr>${metrics}</table></div></div>
       </div>
-      <div class="item"><strong>识别风险点</strong>
-        <div class="muted">勾选你认为构成风险的规则（可多选）；选错扣分，漏选不得分，提交后开放逐项解析。</div>
+      <div class="item"><strong>训练任务：识别涉税风险</strong>
+        <div class="muted">先核对上方账务、申报数据与指标，再勾选需要进一步核查的涉税风险（可多选）。选错扣分，漏选不得分；提交后查看判定依据与逐项解析。风险线索不等同于税务违法结论。</div>
         <div style="margin:6px 0;">${catalog}</div>
         <div class="actions">
           <button class="primary" data-act="submit">提交判分</button>
@@ -369,6 +370,7 @@ async function startPractice(body) {
   const data = await api("/api/training/my/practice/start", { method: "POST", body });
   state.attempt = data.attempt;
   renderAttempt();
+  document.getElementById("pr-attempt").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function showApp(loggedIn) {
@@ -511,7 +513,7 @@ document.getElementById("start-practice").addEventListener("click", () => {
   }).catch((err) => flash(err.message, true));
 });
 
-document.getElementById("pr-attempt").addEventListener("click", async (event) => {
+document.getElementById("pr-card").addEventListener("click", async (event) => {
   const btn = event.target.closest("button[data-act]");
   if (!btn) return;
   const act = btn.dataset.act;
@@ -525,6 +527,7 @@ document.getElementById("pr-attempt").addEventListener("click", async (event) =>
       renderAttempt();
       flash("已判分，解析已开放。");
       await refreshPractice();
+      await refreshProfile().catch(() => {});
     } catch (err) {
       document.getElementById("pr-error").textContent = err.message + "（你的选择已保留，可修正后重新提交）";
     }
@@ -557,7 +560,7 @@ document.getElementById("pr-attempt").addEventListener("click", async (event) =>
     startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
                     rule_id: btn.dataset.rule, seed: parseInt(btn.dataset.seed, 10),
                     mode: "redo_same" }).catch((err) => flash(err.message, true));
-  } else if (act === "resume") {
+  } else if (act === "practice-resume") {
     try {
       const data = await api(`/api/training/my/practice/${btn.dataset.id}`);
       state.attempt = data.attempt;
@@ -804,86 +807,5 @@ async function toggleKpHistory(btn, scope, kpId) {
     flash(err.message, true);
   }
 }
-
-/* ---------- 编程练习（判题线 v1） ---------- */
-
-const CODE_STATUS = { accepted: "全部通过", partial: "部分通过", wrong_answer: "答案不符",
-                      runtime_error: "运行出错", timeout: "超出时限",
-                      judgement_failed: "判题失败" };
-
-async function loadCodePractice() {
-  try {
-    const problems = (await api("/api/training/my/code/problems")).problems;
-    const sel = document.getElementById("cc-problem");
-    sel.innerHTML = problems.length
-      ? problems.map((p) => `<option value="${esc(p.id)}">${esc(p.title)}（${p.case_count} 组用例）</option>`).join("")
-      : `<option value="">（暂无开放中的编程题）</option>`;
-    sel.dataset.problems = JSON.stringify(problems);
-    sel.dispatchEvent(new Event("change"));
-    const history = (await api("/api/training/my/code/submissions")).submissions;
-    document.getElementById("cc-history").innerHTML = history.length
-      ? `最近提交：${history.slice(0, 5).map((s) =>
-          `${esc((s.submitted_at || "").slice(0, 16).replace("T", " "))} · ${s.judge ? `${esc(CODE_STATUS[s.judge.status] || s.judge.status)} ${s.judge.total_score} 分` : "未判题"}`).join(" ｜ ")}`
-      : "还没有提交过编程题。";
-  } catch (err) {
-    document.getElementById("cc-problem-info").innerHTML = `<span class="muted">编程题加载失败：${esc(err.message)}</span>`;
-  }
-}
-
-function showCodeProblemInfo(pid) {
-  const info = document.getElementById("cc-problem-info");
-  const problems = JSON.parse(document.getElementById("cc-problem").dataset.problems || "[]");
-  const p = problems.find((x) => x.id === pid);
-  if (!p) { info.innerHTML = ""; return; }
-  info.innerHTML = `限时 ${p.time_limit_ms}ms · ${p.case_count} 组用例（含 ${p.sample_input !== undefined ? "公开样例" : "隐藏用例"}）`
-    + (p.statement ? ` · ${esc(p.statement)}` : "")
-    + (p.sample_input !== undefined ? `<div class="detail" style="margin-top:4px;"><span class="muted">样例输入（可直接运行）：</span><code>${esc(p.sample_input.replace(/\n/g, "⏎"))}</code></div>` : "");
-}
-
-document.getElementById("cc-problem").addEventListener("change", (e) =>
-  showCodeProblemInfo(e.target.value));
-
-document.getElementById("cc-submit").addEventListener("click", async () => {
-  const sel = document.getElementById("cc-problem");
-  const pid = sel.value;
-  const code = document.getElementById("cc-code").value;
-  const box = document.getElementById("cc-result");
-  if (!pid) { flash("没有可提交的编程题。", true); return; }
-  if (!code.trim()) { flash("代码不能为空。", true); return; }
-  box.innerHTML = `<p class="muted">判题运行中（每用例最多数秒）…</p>`;
-  try {
-    const data = await api(`/api/training/my/code/${pid}/submit`,
-                           { method: "POST", body: { code_text: code } });
-    const r = data.result;
-    const badge = r.status === "accepted" ? "badge" : "badge warn";
-    box.innerHTML = `
-      <div class="item-head">
-        <div><span class="${badge}">${esc(CODE_STATUS[r.status] || r.status)}</span>
-          <strong>${r.total_score} 分</strong>
-          <span class="muted">通过 ${r.passed_count}/${r.case_count} 组用例</span></div>
-      </div>
-      ${r.detail.map((d) => d.error ? `<div class="detail warn">${esc(d.error)}</div>`
-        : `<div class="detail ${d.passed ? "ok" : "warn"}" style="margin-top:4px;">
-            用例 ${d.seq}：${d.passed ? "✅ 通过" : `❌ ${esc(CODE_STATUS[d.run_status] || d.run_status)}`} · ${d.runtime_ms}ms
-            ${d.output_excerpt ? `<div class="muted" style="margin-top:2px;">输出摘要：${esc(d.output_excerpt.slice(0, 120))}</div>` : ""}
-          </div>`).join("")}
-      <div class="muted" style="margin-top:4px;">${esc(data.sandbox_notice)}</div>`;
-    flash(`判题完成：${r.total_score} 分。`);
-    await loadCodePractice._historyOnly();
-  } catch (err) {
-    box.innerHTML = "";
-    flash(err.message, true);
-  }
-});
-
-loadCodePractice._historyOnly = async function () {
-  try {
-    const history = (await api("/api/training/my/code/submissions")).submissions;
-    document.getElementById("cc-history").innerHTML = history.length
-      ? `最近提交：${history.slice(0, 5).map((s) =>
-          `${esc((s.submitted_at || "").slice(0, 16).replace("T", " "))} · ${s.judge ? `${esc(CODE_STATUS[s.judge.status] || s.judge.status)} ${s.judge.total_score} 分` : "未判题"}`).join(" ｜ ")}`
-      : "还没有提交过编程题。";
-  } catch { /* 历史刷新失败不打断主流程 */ }
-};
 
 boot();

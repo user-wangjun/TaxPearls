@@ -205,8 +205,7 @@ class OrgStructureTests(unittest.TestCase):
 
     def test_cross_college_reference_rejected(self):
         self._login_admin()
-        other_term = self.client.post("/api/training/staff/org/terms", json={
-            "college": "其他职业学院", "name": "X-2026-1"}).json()["term"]["id"]
+        other_term = training_portal_module.create_term(self.store, "其他职业学院", "X-2026-1")["id"]
         res = self.client.post("/api/training/staff/org/classes", json={
             "college": COLLEGE, "name": "会计2601", "term_id": other_term})
         self.assertEqual(res.status_code, 422, res.text)
