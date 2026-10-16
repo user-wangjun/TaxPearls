@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -9,7 +10,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from src import engine, loader, render, risk_changes
+from src import engine, loader, render, risk_changes, legal_periods
 from src.models import Finding, Metric
 from webapp import app as module
 from webapp.storage import Store
@@ -74,6 +75,36 @@ class RiskChangeTests(unittest.TestCase):
         self.assertEqual(result["after_distance"],"0.025")
         new["dataset"].metrics["lo"].value=.02
         self.assertEqual(risk_changes.compare(old,new)["items"][0]["change"],"rule_changed")
+
+    def test_resolved_same_law_edition_compares_but_revision_does_not(self):
+        for first, second, expected in [('2026-01', '2026-02', 'worsened'),
+                                         ('2025-12', '2026-01', 'rule_changed')]:
+            old_rule = legal_periods.resolve(self.base, first)
+            old = entry('old', first, [Finding(old_rule, 'hit', .2, 'threshold', 'test')])
+            new_rule = legal_periods.resolve(self.base, second)
+            new = entry('new', second, [Finding(new_rule, 'hit', .4, 'threshold', 'test')])
+            self.assertEqual(risk_changes.compare(old, new)['items'][0]['change'], expected)
+            frozen = deepcopy(old['findings'][0].rule)
+            risk_changes.compare(old, new)
+            self.assertEqual(old['findings'][0].rule, frozen)
+
+    def test_same_numeric_bounds_with_changed_reference_metadata_are_not_comparable(self):
+        from tests.test_business_scope import reference_dataset, RULES
+        for key, value in [('publisher', '另一发布者'), ('version', '另一版本'), ('end', '2027-12-31')]:
+            old, new = entry('old', '2026-01', []), entry('new', '2026-02', [])
+            for snapshot in (old, new):
+                data = reference_dataset()
+                data.company.period = snapshot['period']
+                data.metrics['增值税.应纳税额'].value = Decimal('.1')
+                snapshot['dataset'] = data
+                snapshot['findings'] = [engine.evaluate(RULES['R-003'], data)]
+                self.assertEqual(snapshot['findings'][0].status, 'hit')
+            self.assertEqual(risk_changes.compare(old, new)['items'][0]['change'], 'persistent')
+            for name in ('参考.税负率下限', '参考.税负率上限'):
+                new['dataset'].metrics[name].reference[key] = value
+            new['findings'] = [engine.evaluate(RULES['R-003'], new['dataset'])]
+            self.assertEqual(new['findings'][0].status, 'hit')
+            self.assertEqual(risk_changes.compare(old, new)['items'][0]['change'], 'rule_changed')
 
     def test_directed_amount_gap_and_compound_or_graph_not_fake_score(self):
         rule = replace(self.base,logic={"type":"amount_mismatch","left":"x","right":"y","tolerance":1,"direction":"below"},evidence=["x","y"],inputs={"x":"x","y":"y"})

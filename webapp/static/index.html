@@ -619,8 +619,9 @@
           <div class="field"><label for="kgStart">检查起始日期</label><input id="kgStart" type="date" required></div>
           <div class="field"><label for="kgEnd">检查终止日期</label><input id="kgEnd" type="date" required></div>
           <div class="field"><label for="kgTopic">本次核查主题</label><input id="kgTopic" maxlength="2000" placeholder="留空使用检查项目名称"></div>
+          <div class="field"><label for="kgTokenBudget">AI 材料容量</label><select id="kgTokenBudget"><option value="6000">标准容量（6000）</option><option value="16000">较多原文（16000）</option><option value="32000">完整规则与多条原文（32000）</option></select><small>按文本字节保守限制，非实际 Token 用量；容量增加可能增加模型费用。超出时保留全文并转复核。</small></div>
         </div><div class="kg-evidence-actions"><button class="btn primary" type="submit">本地检索与核对</button><button type="button" id="kgAnalyze">AI 辅助分析</button><button type="button" id="kgReload">刷新任务与项目</button></div></fieldset></form>
-        <p id="kgRetrievalStatus" class="muted" role="status"></p><div id="kgTaskChecks"></div><div id="kgEvidenceResult" aria-live="polite"></div>
+        <div id="kgBindings"></div><p id="kgRetrievalStatus" class="muted" role="status"></p><div id="kgTaskChecks"></div><div id="kgEvidenceResult" aria-live="polite"></div>
         <div class="kg-evidence-actions"><button id="kgBackToInputs" type="button" hidden>返回资料补充</button><button id="kgRecheck" type="button" disabled>重检受影响项目（本地）</button><button id="kgArchiveReport" type="button" disabled>生成检查报告</button></div>
         <p id="kgReportStatus" class="muted" role="status"></p><div id="kgReportVersions"></div>
       </details>
@@ -931,7 +932,8 @@
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
 <script src="/graph.js?v=enterprise-review-1"></script>
-<script src="/knowledge-retrieval.js?v=20261015-check-report-2"></script>
+<script src="/rule-bindings.js?v=20261016"></script>
+<script src="/knowledge-retrieval.js?v=20261016-risk-policy-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>
 </body>

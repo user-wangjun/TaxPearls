@@ -5,6 +5,7 @@ from src import periods
 from dataclasses import asdict
 from decimal import Decimal
 import math
+import re
 
 from src import engine, loader
 
@@ -51,6 +52,15 @@ def _definition(rule) -> dict:
     # Dates and local paths change packaging, not the meaning of a finding.
     for key in ("effective_from", "effective_to", "source_file"):
         definition.pop(key, None)
+    if rule.legal_origin and rule.legal_context and not rule.legal_context.get('error'):
+        # Only resolver-generated interval labels vary with the audited period.
+        # Retain the actual edition text and references: a law revision is still
+        # a definition change, even when its numeric threshold is unchanged.
+        definition['legal_basis'] = [re.sub(
+            r'【本次适用段：\d{4}-\d{2}-\d{2} 至 \d{4}-\d{2}-\d{2}】$', '', text)
+            for text in rule.legal_basis]
+        definition.pop('legal_context', None)
+        definition.pop('legal_origin', None)
     return definition
 
 
@@ -59,6 +69,13 @@ def _range(finding, dataset):
         return None
     logic = finding.rule.logic
     return tuple(engine._expr(logic[key], dataset, finding.rule)[0] for key in ("min", "max"))
+
+
+def _reference_definition(finding, dataset):
+    if finding.rule.logic.get('type') != 'ratio_range':
+        return None
+    return [dataset.metrics[name].reference for key in ('min', 'max')
+            if isinstance(name := finding.rule.logic.get(key), str) and name in dataset.metrics]
 
 
 def _distance(finding, bounds):
@@ -113,8 +130,9 @@ def compare(before: dict, after: dict) -> dict:
                 new_range = _range(right, after["dataset"])
             except (engine.MissingMetric, engine.RuleError):
                 old_range, new_range = None, ()
-            if old_range != new_range:
-                change, reason = "rule_changed", "参考区间值变化，口径不一致，不能直接比较。"
+            if (old_range != new_range or _reference_definition(left, before['dataset'])
+                    != _reference_definition(right, after['dataset'])):
+                change, reason = "rule_changed", "参考区间值、来源版本或适用范围变化，口径不一致，不能直接比较。"
             elif left.status == "pass" and right.status == "hit":
                 change, reason = "new", "同口径规则由已执行通过转为命中。"
             elif left.status == "hit" and right.status == "pass":

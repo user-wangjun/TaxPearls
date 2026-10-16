@@ -4,6 +4,9 @@ from .common import digest, unit, period_basis
 
 
 def resolve(definition, processing, task):
+    if definition.get('source_schema') == 'BusinessMetric':
+        from src.rule_bindings import resolve
+        return resolve(definition, processing, task)
     source = tax_conditions.SOURCES.get(definition.get("source_schema"))
     if not source:
         return {"state": "unknown", "value": None, "unit": definition.get("unit"), "reason": "指标映射尚未配置。", "source_record_ids": []}
@@ -29,16 +32,25 @@ def resolve(definition, processing, task):
 def collect(definitions, processing, task):
     result = {}
     for mid, definition in definitions.items():
+        if definition.get('source_schema') == 'RuleCalculation':
+            continue
         fact = resolve(definition, processing, task)
         result[mid] = {**fact, "period_basis": definition.get("period_basis"),
                        "period_start": task["start_date"], "period_end": task["end_date"]}
+    from src.rule_conversion import calculate
+    for mid, definition in definitions.items():
+        if definition.get('source_schema') == 'RuleCalculation':
+            result[mid] = {**calculate(definition, result, task=task), 'period_basis':'rule_period',
+                           'period_start':task['start_date'], 'period_end':task['end_date']}
     return result
 
 
 def signature(facts):
     return digest({mid: {"state": fact.get("state"), "value": str(fact.get("value")) if fact.get("value") is not None else None,
                           "unit": unit(fact.get("unit")), "period_basis": period_basis(fact.get("period_basis")),
-                          "source_ids": sorted(fact.get("source_ids", fact.get("source_record_ids", [])))}
+                          "source_ids": sorted(fact.get("source_ids", fact.get("source_record_ids", []))),
+                          **{key:fact.get(key) for key in ('period_start','period_end','metric_period',
+                                                         'reference','company_scope','simulation')}}
                    for mid, fact in facts.items()})
 
 

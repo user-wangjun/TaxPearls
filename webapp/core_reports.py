@@ -20,6 +20,32 @@ from webapp.access import AccessDenied
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def report_evidence(slot):
+    package=slot['bundle']
+    cited={cid for claim in (slot.get('ai') or {}).get('assessments',[]) for cid in claim.get('clause_ids',[])}
+    items=package['policy_evidence']+package['policy_leads']
+    return [item for item in items if item.get('required') or item['clause_id'] in cited]
+
+
+def report_gaps(gaps):
+    grouped = {}
+    labels = {'change_pending': '政策修订关系尚待审核。'}
+    for gap in gaps:
+        key = (gap['code'], gap.get('message') or labels.get(gap['code'], gap['code']))
+        grouped.setdefault(key, {'message': key[1], 'count': 0})['count'] += 1
+    return list(grouped.values())
+
+
+def source_location(value):
+    try:
+        location=json.loads(value)
+        if isinstance(location,dict) and location.get('text_path') and location.get('start_line'):
+            return f"{location['text_path']} · 第{location['start_line']}至{location.get('end_line',location['start_line'])}行"
+    except (ValueError,TypeError):
+        pass
+    return value
+
+
 def migrate(db):
     db.execute('''CREATE TABLE IF NOT EXISTS core_tax_reports (
         batch_id TEXT NOT NULL REFERENCES material_batches(id),
@@ -93,6 +119,7 @@ def archive(store, actor, task_id, expected_revision):
         snapshot.update(version=version, created_at=stamp, input_revision=expected_revision,
                         report_no=f"TP-KG-{task_id[:8]}-V{version}", content_hash=content_hash)
         env = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
+        env.filters.update(report_evidence=report_evidence,report_gaps=report_gaps,source_location=source_location)
         html = env.from_string(template).render(report=snapshot)
         frozen = {"report": snapshot, "html": html, "html_sha256": hashlib.sha256(html.encode()).hexdigest(),
                   "template_sha256": hashlib.sha256(template.encode()).hexdigest()}

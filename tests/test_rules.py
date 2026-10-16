@@ -10,7 +10,7 @@ from openpyxl import Workbook
 import yaml
 
 from scripts.check_rules import (ROOT, case_values, check_finding, dataset_for, read_cases, verify)
-from src import config, engine, loader, render
+from src import config, engine, loader, render, periods, reference_scope
 
 
 RULES = {r.id: r for r in engine.load_rules(ROOT / "rules")}
@@ -25,6 +25,9 @@ def workbook(values, rule):
     ws.append(["项目", "内容"])
     for row in zip(config.COMPANY_FIELDS, ["仿真核对企业", "SYNTHETIC", "批发和零售业", "2026年度"]):
         ws.append(row)
+    company = dataset_for(rule, values).company
+    for label, key in config.COMPANY_SCOPE_FIELDS.items():
+        ws.append([label, getattr(company, key)])
     ws = wb.create_sheet("科目余额表")
     ws.append(config.COL_ACCOUNTS)
     for name, spec in config.ACCOUNT_MAP.items():
@@ -39,9 +42,18 @@ def workbook(values, rule):
     ws = wb.create_sheet("补充指标")
     ws.append(config.COL_SUPPLEMENT)
     reserved = set(config.ACCOUNT_MAP) | set(config.DECLARATION_ITEMS)
+    references = reference_scope.synthetic(company)
     for name, value in values.items():
         if name not in reserved:
-            ws.append([name, value, f"仿真底稿—{name}", "2026年度", rule.inputs[name]])
+            actual = periods.metric_period(name, '2026年度')
+            period = f'{actual.start.isoformat()}至{actual.end.isoformat()}' if actual else '2026年度'
+            ref = next((references[kind] for kind, spec in reference_scope.SPECS.items() if name in spec[:2]), None)
+            source = ref['source'] if ref else f"仿真底稿—{name}"
+            ws.append([name, value, source, period, rule.inputs[name]])
+    ws = wb.create_sheet(config.SHEET_REFERENCE)
+    ws.append(config.COL_REFERENCE)
+    for kind, data in reference_scope.synthetic(company).items():
+        ws.append([kind, *(data[k] for k in reference_scope.FIELDS)])
     return wb
 
 
@@ -62,7 +74,9 @@ class RuleCases(unittest.TestCase):
                         wb = workbook(case_values(group, case), RULES[rid])
                         wb.save(path)
                         wb.close()
-                        finding = engine.evaluate(RULES[rid], loader.load(path))
+                        dataset = loader.load(path)
+                        dataset.simulation = True  # Explicit test/teaching context, never inferred from a tax ID.
+                        finding = engine.evaluate(RULES[rid], dataset)
                         self.assertEqual(check_finding(finding, case), [])
 
     def test_original_workbook(self):

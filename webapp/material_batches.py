@@ -269,6 +269,9 @@ def listing(store, actor, *, workflow='all'):
 
 
 def _append(db, batch, actor, kind, payload, *, job_id=None):
+    if payload.get('core_task'):
+        from src.rule_bindings import restore
+        restore(payload)
     if payload.get('core_task') and payload.get('tax_checks'):
         from src.kg_retrieval.metrics import mark_stale
         mark_stale(payload)

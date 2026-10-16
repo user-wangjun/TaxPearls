@@ -3,7 +3,7 @@
 Uses the same standard template and runtime Excel dependency as the loader.
 No local artifact-authoring runtime is required by the deployed application.
 """
-from src import periods
+from src import periods, reference_scope
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
@@ -22,6 +22,13 @@ def export(dataset):
     """Export only input facts; refuse any numeric round-trip loss."""
     if not dataset.company.taxpayer_id.startswith("TEST-GEN-"):
         raise ValueError("仅可导出规则生成的纯仿真教学材料。")
+    for key, metric in dataset.metrics.items():
+        if key.startswith(('历史.', '年度.')):
+            try:
+                periods.validate_metric_period(key, metric.period, dataset.company.period)
+                periods.parse_period(metric.period, '冻结历史指标实际期间')
+            except loader.InputError as exc:
+                raise ValueError(f'冻结历史指标期间缺失或不匹配，未提供下载：{exc}') from None
     wb = Workbook()
     wb.remove(wb.active)
     wb.properties.creator = "TaxPearls"
@@ -68,6 +75,7 @@ def export(dataset):
     company = dataset.company
     sheet(config.SHEET_COMPANY, ["项目", "内容"],
           list(zip(config.COMPANY_FIELDS, (company.name, company.taxpayer_id, company.industry, company.period)))
+          + [(label, getattr(company, key)) for label, key in config.COMPANY_SCOPE_FIELDS.items()]
           + [("材料说明", "纯仿真标准化账套及底稿。不是真实票据或完整凭证账簿。不含标准答案。")], [24, 80])
     sheet(config.SHEET_ACCOUNTS, config.COL_ACCOUNTS,
           [(a.code, a.name, a.opening, a.debit, a.credit, a.closing) for a in dataset.accounts],
@@ -80,14 +88,12 @@ def export(dataset):
         sheet(name, config.COL_STATEMENT, [(k[len(prefix):], dataset.metrics[k].value) for k in keys], [40, 24])
         mapped.update(keys)
     historical, supplement = [], []
-    year = periods.parse_period(company.period, "教学年度").end.year
     for key, metric in sorted(dataset.metrics.items()):
         if key in mapped:
             continue
         period = company.period
         if key.startswith(("历史.", "年度.")):
-            actual = year - (2 if ".前年" in key else (1 if key.startswith("历史.") or ".上年" in key else 0))
-            period = str(actual)
+            period = metric.period
             rows = historical
         else:
             rows = supplement
@@ -101,6 +107,13 @@ def export(dataset):
             elif row[0].startswith("参考.") or row[0].endswith("税率"):
                 ws.cell(idx, 2).number_format = "0.00%"
     raw = BytesIO()
+    references = []
+    for kind, spec in reference_scope.SPECS.items():
+        metric = dataset.metrics.get(spec[0])
+        if metric and metric.reference:
+            data = reference_scope.normalize(metric.reference)
+            references.append([kind, *(data[key] for key in reference_scope.FIELDS)])
+    sheet(config.SHEET_REFERENCE, config.COL_REFERENCE, references, [18] + [36] * len(reference_scope.FIELDS))
     wb.save(raw)
     wb.close()
     # Fix OOXML clock metadata and ZIP timestamps so repeat downloads are stable.
@@ -120,4 +133,7 @@ def export(dataset):
     if (restored.company != company or restored.accounts != dataset.accounts
             or restored.declarations != dataset.declarations or restored.values() != dataset.values()):
         raise ValueError("导出材料重新导入后数值不一致，未提供下载。")
+    if any((key.startswith(('历史.', '年度.')) and restored.metrics[key].period != metric.period)
+           or restored.metrics[key].reference != metric.reference for key, metric in dataset.metrics.items()):
+        raise ValueError('导出材料重新导入后历史期间或参考依据不一致，未提供下载。')
     return result

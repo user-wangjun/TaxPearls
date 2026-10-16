@@ -26,7 +26,8 @@ InputError = loader.InputError
 MAX_TOTAL = MAX_EXPANDED
 MAX_FILES = 20
 COMPANY_KEYS = ("name", "taxpayer_id", "industry", "period")
-SCOPE_FIELDS = {'地区': 'region', '纳税人身份': 'taxpayer_type', '业务构成': 'business_scope'}
+SCOPE_FIELDS = config.COMPANY_SCOPE_FIELDS
+SCOPE_KEYS = tuple(SCOPE_FIELDS.values())
 
 
 def _text(value):
@@ -127,6 +128,7 @@ def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False,
         contract_links = loader._read_contract_links(wb)
         graph = related_graph.read_workbook(wb, company)
         loader._read_supplement(wb, company, metrics)
+        loader._read_reference(wb, metrics)
         tables = material_review.capture(wb, excluded=exported) if capture_standard else {}
         reviewable = material_review.fields({'standard_tables': tables})
         if (not accounts and not declarations and not metrics and not period_series and not invoices
@@ -685,12 +687,12 @@ def build_dataset(documents, selections, company_override, keys):
         edits = selection.get("company", {})
         if not isinstance(edits, dict):
             raise InputError("企业信息格式错误。")
-        for key in COMPANY_KEYS:
-            val = _text(edits.get(key, company[key]))
+        for key in (*COMPANY_KEYS, *SCOPE_KEYS):
+            val = _text(edits.get(key, company.get(key, '')))
             if len(val) > 200:
                 raise InputError("企业信息过长。")
             editable = doc["kind"] == "pdf" or doc.get("review_required", False)
-            if not editable and company[key] and val != company[key]:
+            if not editable and company.get(key) and val != company[key]:
                 raise InputError("Excel 中已有企业信息不能在核对页改写。")
             company[key] = val or _text(company_override.get(key, ""))
             if company[key]:
@@ -956,6 +958,15 @@ def build_dataset(documents, selections, company_override, keys):
             if key.startswith("人力.") and key.endswith("人数") and (value < 0 or value != value.to_integral_value()):
                 raise InputError("人数必须为非负整数。")
             detail = _text(row.get("detail"))
+            actual_period = _text(row.get('period'))
+            if len(actual_period) > 100:
+                raise InputError('指标实际期间超过 100 字。')
+            # Editable PDF rows cannot invent verified reference metadata. Use
+            # a source workbook for scoped benchmarks, not browser JSON.
+            if editable and row.get('reference'):
+                raise InputError('不能通过 PDF 指标编辑伪造参考值范围；请上传含来源和适用范围的参考工作簿。')
+            if company_data.get('period'):
+                periods.validate_metric_period(key, actual_period, company_data['period'])
             if len(detail) > 2000:
                 raise InputError("口径说明超过 2000 字。")
             if editable:
@@ -966,6 +977,8 @@ def build_dataset(documents, selections, company_override, keys):
                     raise InputError("PDF 指标须填写有效页码和口径说明。")
                 origin = f"PDF 第 {page} 页" if doc["kind"] == "pdf" else doc["pages"][page - 1]["label"]
                 row_source = f"{source} / {origin}（人工核对/录入）"
+                if actual_period:
+                    row_source += f'；人工核对实际期间 {actual_period}'
                 if selected_pdf:
                     row_source += f"；本次仅解析原件第 {selected_pdf['first']}–{selected_pdf['last']} 页/共 {selected_pdf['total_pages']} 页"
                 original = [r for r in doc["rows"] if r["name"] == key and r["page"] == page]
@@ -984,9 +997,12 @@ def build_dataset(documents, selections, company_override, keys):
                     raise InputError(f"指标「{key}」来自多份明细汇总；请先合并原始明细并去重，再上传一份完整清单。")
                 if metrics[key].value != value:
                     raise InputError(f"指标「{key}」在材料中存在冲突值，请核对后重选材料。")
+                if metrics[key].reference != row.get('reference'):
+                    raise InputError(f'指标「{key}」的参考来源或适用范围冲突，请核对后重选材料。')
                 metrics[key].source += "；" + row_source
             else:
-                metrics[key] = Metric(key, value, row_source, detail)
+                metrics[key] = Metric(key, value, row_source, detail, actual_period,
+                                      deepcopy(row.get('reference')))
     missing = [label for key, label in zip(COMPANY_KEYS, config.COMPANY_FIELDS) if not company_data.get(key)]
     if missing:
         raise InputError("请补充企业信息：" + "、".join(missing))
@@ -1003,7 +1019,8 @@ def build_dataset(documents, selections, company_override, keys):
                 raise InputError(f"指标「{key}」与原始账表计算值冲突，请核对。")
             metric.source += "；" + metrics[key].source
         metrics[key] = metric
-    company = Company(*(company_data[k] for k in COMPANY_KEYS))
+    company = Company(*(company_data[k] for k in COMPANY_KEYS),
+                      **{key: company_data.get(key, '') for key in SCOPE_KEYS})
     for key, metric in loader._invoice_metrics(company, list(invoices.values())).items():
         if key in metrics:
             if metrics[key].value != metric.value:

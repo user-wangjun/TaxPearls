@@ -5,10 +5,10 @@ declared inputs and white-listed expressions may be changed by the inverse
 solver. Generation is bounded and refuses unsatisfied or invalid conditions.
 """
 from __future__ import annotations
-from src import periods
+from src import periods, reference_scope
 
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal, ROUND_CEILING, localcontext
 from hashlib import sha256
 import json
@@ -17,7 +17,7 @@ from random import Random
 from . import config, engine, loader
 from .models import Account, Company, Dataset, Finding, Metric, Rule
 
-GENERATOR_VERSION = "1.0"
+GENERATOR_VERSION = "1.1"
 LEVELS = {"near": Decimal("0.2"), "normal": Decimal("1"), "obvious": Decimal("3")}
 # One consistent neutral ledger; no saved samples, uploaded data or providers.
 BASE = {
@@ -62,9 +62,14 @@ class Exercise:
 
 
 def case_digest(dataset, rules):
-    content = {"company":asdict(dataset.company),"accounts":[asdict(a) for a in dataset.accounts],
-               "declarations":dataset.declarations,"metrics":{key:asdict(m) for key,m in dataset.metrics.items()},
-               "rules":[asdict(r) for r in sorted(rules,key=lambda r:r.id)]}
+    def compact(value, optional):
+        return {k: v for k, v in asdict(value).items() if k not in optional or v not in (None, '')}
+    content = {"company":compact(dataset.company, config.COMPANY_SCOPE_FIELDS.values()),
+               "accounts":[asdict(a) for a in dataset.accounts], "declarations":dataset.declarations,
+               "metrics":{key:compact(m, ('period', 'reference')) for key,m in dataset.metrics.items()},
+               "rules":[compact(r, ('legal_origin', 'legal_context')) for r in sorted(rules,key=lambda r:r.id)]}
+    if dataset.simulation:
+        content['simulation'] = True
     encoded=json.dumps(content,ensure_ascii=False,sort_keys=True,separators=(",",":"),default=str,allow_nan=False)
     return sha256(encoded.encode()).hexdigest()
 
@@ -122,8 +127,18 @@ def _candidate_number(name, value):
 
 def _matches(logic, rule, values, hit):
     try:
-        data = Dataset(Company("仿真", "TEST", "仿真", "2026"), [], {},
-                       {key: Metric(key, val, "仿真底稿") for key, val in values.items()})
+        metrics = {}
+        for key, val in values.items():
+            actual = periods.metric_period(key, '2026')
+            metrics[key] = Metric(key, val, '仿真底稿', period=actual.label if actual else '')
+        company = Company('仿真', 'TEST', '仿真', '2026', '仿真地区', '一般纳税人（仿真）', '商品销售（仿真）')
+        references = reference_scope.synthetic(company)
+        for kind, spec in reference_scope.SPECS.items():
+            for key in spec[:2]:
+                if key in metrics:
+                    metrics[key].reference = references[kind]
+                    metrics[key].source = references[kind]['source']
+        data = Dataset(company, [], {}, metrics, simulation=True)
         return engine._logic(logic, data, rule)[0] == hit
     except (engine.MissingMetric, ArithmeticError, ValueError):
         return False
@@ -203,6 +218,9 @@ def _source(key, rule_inputs, year):
 
 def materialize(values, company, rules):
     """Build actual account/declaration/statement values, never override sources."""
+    company = replace(company, region=company.region or '仿真地区',
+                      taxpayer_type=company.taxpayer_type or '一般纳税人（仿真）',
+                      business_scope=company.business_scope or '商品销售（仿真）')
     inputs = {key: text for rule in rules for key, text in rule.inputs.items()}
     accounts = []
     for name, spec in config.ACCOUNT_MAP.items():
@@ -212,12 +230,18 @@ def materialize(values, company, rules):
             accounts.append(Account(code, name if index == 0 else "其他业务（仿真）", Decimal(0), debit, credit, Decimal(0)))
     declarations = {label: values.get(key, Decimal(0)) for key, label in config.DECLARATION_ITEMS.items()}
     metrics = loader._build_metrics(accounts, declarations)
+    references = reference_scope.synthetic(company)
     for key, value in sorted(values.items()):
         if key in metrics:
             continue
         source, detail = _source(key, inputs, periods.parse_period(company.period,"教学年度").end.year)
-        metrics[key] = Metric(key, value, source, detail)
-    return Dataset(company, accounts, declarations, metrics)
+        actual = periods.metric_period(key, company.period)
+        metric_period = f'{actual.start.isoformat()}至{actual.end.isoformat()}' if actual else ''
+        ref = next((references[kind] for kind, spec in reference_scope.SPECS.items() if key in spec[:2]), None)
+        if ref:
+            source = ref['source']
+        metrics[key] = Metric(key, value, source, detail, metric_period, ref)
+    return Dataset(company, accounts, declarations, metrics, simulation=True)
 
 
 def generate(rules: list[Rule], rule_id: str, seed: int = 1, level: str = "normal", year: int = 2026) -> Exercise:
@@ -249,7 +273,8 @@ def generate(rules: list[Rule], rule_id: str, seed: int = 1, level: str = "norma
     with localcontext() as context:
         context.prec = 40
         _inject(target.logic, target, values, level)
-    company = Company("规则生成教学企业（纯仿真）", f"TEST-GEN-{seed:010d}", "批发和零售业", str(year))
+    company = Company("规则生成教学企业（纯仿真）", f"TEST-GEN-{seed:010d}", "批发和零售业", str(year),
+                      '仿真地区', '一般纳税人（仿真）', '商品销售（仿真）')
     dataset = materialize(values, company, rules)
     findings = engine.run(rules, dataset)
     selected = next(f for f in findings if f.rule.id == rule_id)

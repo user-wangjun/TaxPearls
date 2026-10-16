@@ -1,6 +1,7 @@
 """Backward-compatible serialization of frozen audit evidence."""
 from __future__ import annotations
 from dataclasses import asdict
+from copy import deepcopy
 from decimal import Decimal
 from typing import Any
 from .models import Account, Company, Dataset, EvidenceItem, Finding, Metric, RelatedGraph, RelatedRelation, RelatedSubject, RelatedTrade, Rule
@@ -8,6 +9,7 @@ from .models import Account, Company, Dataset, EvidenceItem, Finding, Metric, Re
 
 def serialize_dataset(dataset: Dataset) -> dict[str, Any]:
     return {
+        **({'simulation': True} if dataset.simulation else {}),
         **({"sources": dataset.sources} if dataset.sources is not None else {}),
         "company": asdict(dataset.company),
         "accounts": [
@@ -16,7 +18,8 @@ def serialize_dataset(dataset: Dataset) -> dict[str, Any]:
         ],
         "declarations": {k: str(v) for k, v in dataset.declarations.items()},
         "metrics": {
-            k: {"name": m.name, "value": str(m.value), "source": m.source, "detail": m.detail}
+            k: {"name": m.name, "value": str(m.value), "source": m.source, "detail": m.detail,
+                "period": m.period, "reference": deepcopy(m.reference)}
             for k, m in dataset.metrics.items()
         },
         "related_graph": None if dataset.related_graph is None else {
@@ -32,6 +35,7 @@ def deserialize_dataset(data: dict[str, Any]) -> Dataset:
         return None if value is None else Decimal(str(value))
 
     return Dataset(
+        simulation=data.get('simulation') is True,
         sources=data.get("sources"),
         company=Company(**data["company"]),
         accounts=[
@@ -43,7 +47,8 @@ def deserialize_dataset(data: dict[str, Any]) -> Dataset:
         ],
         declarations={k: Decimal(v) for k, v in data["declarations"].items()},
         metrics={
-            k: Metric(name=m["name"], value=Decimal(m["value"]), source=m["source"], detail=m["detail"])
+            k: Metric(name=m["name"], value=Decimal(m["value"]), source=m["source"], detail=m["detail"],
+                      period=m.get('period', ''), reference=deepcopy(m.get('reference')))
             for k, m in data["metrics"].items()
         },
         related_graph=(RelatedGraph(

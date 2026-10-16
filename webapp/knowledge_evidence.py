@@ -119,6 +119,8 @@ def analyze(package):
             "返回JSON且只含assessments数组，每项字段严格为type,text,rule_id,clause_ids,source_ids,amounts,dates,required_materials。"
             "type仅risk_clue/condition_not_met/insufficient_evidence/excluded。"
             "程序FALSE必须为condition_not_met，明确本条件不形成风险线索；程序UNKNOWN只能insufficient_evidence。"
+            "优先级最高：只看check.evaluation判断整体核查状态。bundle_status不是ready时，所有数组项的type都必须为insufficient_evidence，"
+            "不得另加condition_not_met或risk_clue项。check.fact_evaluation和conditions中的FALSE/TRUE只是计算事实，不能覆盖整体UNKNOWN；可在证据不足项的text中解释这些事实。"
             "金额只在amounts里按{metric_id:指标ID,value:十进制字符串}引用，正文不重复金额；dates只使用包内ISO日期。"
             "规则阈值也属于金额，禁止在text中写数字金额或数字阈值，统一用‘内部筛查阈值’代称；具体比较值保留在程序条件中。"
             "所有引用必须来自本包，缺少企业事实时source_ids和amounts可为空。每项分析须引用clause_ids并列出需补材料。",
@@ -214,7 +216,15 @@ def register(app, get_store, get_user, allow):
     def checks(session: str | None = Cookie(default=None, alias="taxpearls_session")):
         get_user(session)
         with get_store().connect() as db:
-            return [dict(row) for row in db.execute("SELECT rule_id,rule_code,name,version,review_status,tax_type FROM TaxRule ORDER BY name,rule_id")]
+            from webapp.app import _effective_rules
+            from webapp.policy_graph import sync_rules
+            from src.rule_conversion import compile_rule
+            rules=_effective_rules()
+            sync_rules(db,rules)
+            active={compile_rule(rule)['rule_id'] for rule in rules}
+            return [{key:row[key] for key in ['rule_id','rule_code','name','version','review_status','tax_type','computation_converted']}
+                    for row in db.execute("SELECT rule_id,rule_code,name,version,review_status,tax_type,supersedes_id,conversion_json IS NOT NULL AS computation_converted FROM TaxRule WHERE execution_json IS NULL AND review_status NOT IN ('retired','rejected') ORDER BY name,rule_id")
+                    if not row['computation_converted'] or row['rule_id'] in active]
 
     @app.post("/api/knowledge/retrieve")
     def retrieve(body: RetrievalBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
@@ -241,6 +251,8 @@ def register(app, get_store, get_user, allow):
             with store.connect() as db:
                 current_actor(db, user)
                 context = relation_search.rule_context(db, body.rule_id)
+                from src.kg_retrieval.common import tax_type
+                task['tax_type']=tax_type(context['rule']['tax_type'])
                 if payload:
                     facts = metrics.collect(context["metrics"], payload["processing"], source_task)
                     catalog = [record["id"] for record in payload["processing"].get("records", [])]
