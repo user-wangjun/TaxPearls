@@ -1,0 +1,19 @@
+{
+  "data_scope": "synthetic",
+  "annotation": "Explicit engineering oracle from fabricated policy scenarios; not human tax-policy approval.",
+  "cases": [
+    {"id":"K01","rule_id":"R01","topic":"收入口径勾稽","expected_clauses":["CL01"],"allowed_clauses":["CL01","CL13"],"relation_required":["CL01"]},
+    {"id":"K02","rule_id":"R02","topic":"红字发票","keywords":["红字发票"],"expected_clauses":["CL02"],"allowed_clauses":["CL02","CL13","CL17","CL19"],"keyword_required":["CL02"]},
+    {"id":"K03","rule_id":"R02","topic":"客户把货退回，之前已经开过的票怎么办","expected_clauses":["CL02"],"allowed_clauses":["CL02","CL19"],"semantic_required":["CL02"]},
+    {"id":"K04","rule_id":"R04","topic":"小规模优惠及排除项","expected_clauses":["CL04","CL04E"],"allowed_clauses":["CL04","CL04E"],"expected_exceptions":["X04"]},
+    {"id":"K05","rule_id":"R05","topic":"项目甲 项目乙 口径修订","period_start":"2026-08-01","period_end":"2026-08-31","expected_clauses":["CL05","CL05A","CL20"],"allowed_clauses":["CL05","CL05A","CL20"],"expected_relationships":["AMEND-05"],"context_only":["CL05A"]},
+    {"id":"K06","rule_id":"R06","topic":"历史运输项目","period_start":"2023-05-01","period_end":"2023-05-31","expected_clauses":["CL06"],"allowed_clauses":["CL06"],"must_be_applicable":["CL06"]},
+    {"id":"K07","rule_id":"R06","topic":"历史运输项目","expected_clauses":[],"allowed_clauses":[],"must_not_be_applicable":["CL06"],"expected_excluded":["CL06"]},
+    {"id":"K08","rule_id":"R07","topic":"浙江区域试验","region_code":"CN-44","expected_clauses":[],"allowed_clauses":[],"expected_excluded":["CL07"],"must_not_be_applicable":["CL07"]},
+    {"id":"K09","rule_id":"R08","topic":"施行日期待查","expected_clauses":[],"allowed_clauses":[],"expected_leads":["CL08"],"expected_status":"insufficient"},
+    {"id":"K10","rule_id":"R01","topic":"营业收入与申报销售额","keywords":["营业收入"],"expected_clauses":["CL01"],"allowed_clauses":["CL01","CL13"],"multi_route_required":["CL01"]},
+    {"id":"K11","rule_id":"R01","topic":"收入口径勾稽","missing_metrics":["M01"],"expected_clauses":["CL01"],"allowed_clauses":["CL01","CL13"],"expected_gap_codes":["metric_missing"],"expected_evaluation":"UNKNOWN","unaffected_rule":"R03"},
+    {"id":"K12","rule_id":"R12","topic":"完整长条款与例外","token_budget":1800,"expected_clauses":["CL12","CL12E"],"allowed_clauses":["CL12","CL12E"],"expected_exceptions":["X12"],"must_preserve_full_text":true,"expected_status":"needs_review"},
+    {"id":"K13","rule_id":"R13","topic":"发票申报跨来源比较","fact_overrides":{"M13":{"value":"1000000.00"},"MI13":{"value":"900000.00"}},"expected_clauses":["CL13"],"allowed_clauses":["CL01","CL02","CL13","CL17"],"expected_gap_codes":["comparability_pending"],"expected_evaluation":"UNKNOWN"}
+  ]
+}

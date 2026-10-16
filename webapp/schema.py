@@ -555,5 +555,175 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_roster_class_history_time
                 ON roster_class_history(created_at);
         """)
+        # 课程管理（FR-U04 v1）：课程绑定授课教师与班级，支持同课多班（course_class 多行）。
+        # 停用不删行（课程与归属可追溯）；班级沿用 class_name 聚合键，与 student_info 对齐；
+        # 课程级作业序列（training_task 挂课程）预留到 v2，本版不含作业外键。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS course (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                college TEXT NOT NULL,                    -- 所属院校（实训数据隔离键）
+                name TEXT NOT NULL,                       -- 课程名称
+                semester TEXT,                            -- 学年学期（如 2026-2027-1，可空）
+                teacher_id TEXT REFERENCES college_user(id),  -- 授课教师（外键，可空）
+                description TEXT,                         -- 课程说明（可空）
+                active INTEGER NOT NULL DEFAULT 1,        -- 1=开设 0=停用（停用不删行）
+                created_at TEXT NOT NULL,                 -- 建课时间（ISO 8601 文本）
+                created_by TEXT REFERENCES college_user(id)   -- 建课操作人（外键）
+            );
+            CREATE TABLE IF NOT EXISTS course_class (
+                course_id TEXT NOT NULL REFERENCES course(id),
+                class_name TEXT NOT NULL,                 -- 绑定班级（与 student_info.class_name 同口径）
+                PRIMARY KEY (course_id, class_name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_course_college ON course(college, active);
+            CREATE INDEX IF NOT EXISTS idx_course_teacher ON course(teacher_id);
+        """)
+        # 高校组织架构（FR-U01 第一期）：院系 / 学年学期 / 班级实体。
+        # 与现有两层模型并存：student_info.class_name 文本名册不动，班级实体
+        # 经 (college, name) 对齐在读人数；层级变更不改写既有数据归属。
+        # 同院校下班级名在同学期内唯一（term_id 为空时由服务层校验，
+        # SQLite UNIQUE 不约束 NULL），故此处只建查询索引。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS college_department (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                name TEXT NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(college, name)
+            );
+            CREATE TABLE IF NOT EXISTS college_term (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                name TEXT NOT NULL,
+                start_date TEXT,
+                end_date TEXT,
+                is_current INTEGER NOT NULL DEFAULT 0,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(college, name)
+            );
+            CREATE TABLE IF NOT EXISTS college_class (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                name TEXT NOT NULL,
+                department_id TEXT REFERENCES college_department(id),
+                term_id TEXT REFERENCES college_term(id),
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_college_class_lookup
+                ON college_class(college, name);
+        """)
+        # 编程题库（FR-J01 v1，仅数据模型与管理）：题目 + 测试用例。
+        # 边界如实标注：判题沙箱（J03）、判题引擎（J04）、提交与版本存储（J02，
+        # 代码正文按 05 号文档加密留存）待判题专项接入；本版不含提交数据，
+        # 用例改动对历史判题记录复现的影响待 J02 落地时以版本机制实现。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS code_problem (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                college TEXT NOT NULL,                    -- 所属院校（实训数据隔离键）
+                title TEXT NOT NULL,                      -- 题目标题
+                statement TEXT NOT NULL DEFAULT '',       -- 题面描述（纯文本）
+                language TEXT NOT NULL DEFAULT 'python',  -- 判题语言（v1 仅 python）
+                time_limit_ms INTEGER NOT NULL DEFAULT 5000,
+                memory_limit_kb INTEGER NOT NULL DEFAULT 65536,
+                knowledge_point_id TEXT REFERENCES knowledge_point(id),  -- 关联知识点（可空）
+                active INTEGER NOT NULL DEFAULT 1,
+                created_by TEXT REFERENCES college_user(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS code_test_case (
+                id TEXT PRIMARY KEY,
+                problem_id TEXT NOT NULL REFERENCES code_problem(id),
+                seq INTEGER NOT NULL,                     -- 用例序号（题内从 1 递增）
+                input_text TEXT NOT NULL DEFAULT '',      -- 标准输入
+                expected_output TEXT NOT NULL DEFAULT '', -- 期望输出（逐字节比对，浮点容差属判题引擎）
+                weight REAL NOT NULL DEFAULT 1.0,         -- 计分权重
+                sample INTEGER NOT NULL DEFAULT 0,        -- 1=公开样例（学生可见）
+                created_at TEXT NOT NULL,
+                UNIQUE(problem_id, seq)
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_problem_college
+                ON code_problem(college, active);
+            -- 编程提交与判题（FR-J02 v1 + J04 教学级引擎）：代码正文按敏感存储
+            -- 保护（REGISTRY: code_submission.code_text）；一次提交一次判题，
+            -- 重判=重新提交新行（历史不被覆盖）。判题器为教学演示级受限子进程
+            -- （超时/独立目录/输出截断），非容器级安全边界，生产判题须专项。
+            CREATE TABLE IF NOT EXISTS code_submission (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                problem_id TEXT NOT NULL REFERENCES code_problem(id),
+                student_id TEXT NOT NULL REFERENCES student_info(id),
+                language TEXT NOT NULL DEFAULT 'python',  -- 与题目 language 一致（v1 仅 python）
+                code_text TEXT NOT NULL,                  -- 代码正文（敏感存储保护列）
+                status TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','judged','judgement_failed')),
+                submitted_at TEXT NOT NULL,
+                content_version_id TEXT,                  -- 预留：题库版本追溯（J02 边界）
+                UNIQUE(problem_id, student_id, submitted_at)
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_submission_problem
+                ON code_submission(problem_id, submitted_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_code_submission_student
+                ON code_submission(student_id, submitted_at DESC);
+            CREATE TABLE IF NOT EXISTS code_judge_result (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                submission_id TEXT NOT NULL UNIQUE REFERENCES code_submission(id),  -- 1:1
+                status TEXT NOT NULL
+                    CHECK (status IN ('accepted','partial','wrong_answer',
+                                      'runtime_error','timeout','judgement_failed')),
+                total_score REAL NOT NULL DEFAULT 0,      -- 加权得分（0~100）
+                passed_count INTEGER NOT NULL DEFAULT 0,
+                case_count INTEGER NOT NULL DEFAULT 0,
+                detail_json TEXT NOT NULL,                -- 逐用例：seq/passed/score/runtime_ms/输出摘要（截断）
+                judged_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_judge_submission
+                ON code_judge_result(submission_id);
+        """)
+        # 院校席位与配额（FR-U06）：教师/学生分席，院校按师生配额核销。
+        # 无记录院校按默认档放行（不阻塞既有部署）；调整走 revision 乐观锁
+        # 并逐次留痕（与 platform org_quota/members.set_quota 同模式）。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS college_quota (
+                college TEXT PRIMARY KEY,
+                teacher_quota INTEGER NOT NULL,
+                student_quota INTEGER NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0,
+                updated_by TEXT REFERENCES college_user(id),
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS college_quota_history (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                old_teacher_quota INTEGER,
+                old_student_quota INTEGER,
+                new_teacher_quota INTEGER NOT NULL,
+                new_student_quota INTEGER NOT NULL,
+                changed_by TEXT REFERENCES college_user(id),
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_college_quota_history_time
+                ON college_quota_history(college, created_at);
+        """)
+        # 学期名册快照（FR-U01 第二期）：把"当前在读学生 → 班级"归属按学期
+        # 冻结，供新学期重建班级后按旧学期回溯名册。重拍（同学期再快照）
+        # 覆盖更新（快照是当时事实的重读；归属变更审计链另有 roster_class_history）。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS college_roster_snapshot (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                term_id TEXT NOT NULL REFERENCES college_term(id),
+                student_id TEXT NOT NULL REFERENCES student_info(id),
+                class_name TEXT NOT NULL,
+                taken_by TEXT REFERENCES college_user(id),
+                taken_at TEXT NOT NULL,
+                UNIQUE(term_id, student_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_college_roster_snapshot_term
+                ON college_roster_snapshot(term_id, class_name);
+        """)
         from webapp import ai_keys
         ai_keys.migrate(db)
+        from webapp import policy_graph
+        policy_graph.migrate(db)

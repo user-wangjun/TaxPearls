@@ -96,19 +96,20 @@ class ExerciseGeneratorTests(unittest.TestCase):
                     case = generate(self.rules, rule.id, 2147483647, level, 2030)
                     content = exercise_materials.export(case.dataset)
                     restored = loader.load_bytes(content)
+                    restored.simulation = True
                     self.assertEqual(restored.values(), case.dataset.values())
                     self.assertEqual(sorted(f.rule.id for f in engine.run(self.rules, restored) if f.hit),
                                      case.metadata["standard_answer"])
                     wb = load_workbook(BytesIO(content))
-                    self.assertEqual(len(wb.sheetnames), 8)
+                    self.assertEqual(len(wb.sheetnames), 9)
                     for ws in wb:
                         self.assertEqual(ws.sheet_state, "visible")
                         for row in ws:
                             for cell in row:
                                 self.assertNotEqual(cell.data_type, "f")
                     periods = {row[0]: row[3] for row in list(wb["历史指标"].values)[1:]}
-                    self.assertEqual(periods["年度.前年净利润"], "2028")
-                    self.assertEqual(periods["历史.上年同期收入"], "2029")
+                    self.assertEqual(periods["年度.前年净利润"], case.dataset.metrics['年度.前年净利润'].period)
+                    self.assertEqual(periods["历史.上年同期收入"], case.dataset.metrics['历史.上年同期收入'].period)
                     wb.close()
                     with ZipFile(BytesIO(content)) as archive:
                         all_xml = b"".join(archive.read(n) for n in archive.namelist() if n.endswith(".xml"))
@@ -127,6 +128,19 @@ class ExerciseGeneratorTests(unittest.TestCase):
         case.dataset.company.taxpayer_id = "REAL-COMPANY"
         with self.assertRaisesRegex(ValueError, "纯仿真"):
             exercise_materials.export(case.dataset)
+
+    def test_export_never_reconstructs_missing_or_wrong_historical_periods(self):
+        for actual in ('', '2020年度', '2026年度'):
+            case = generate(self.rules, 'R-022')
+            case.dataset.metrics['历史.上年同期收入'].period = actual
+            before = deepcopy(case.dataset)
+            with self.assertRaisesRegex(ValueError, '冻结历史指标期间缺失或不匹配'):
+                exercise_materials.export(case.dataset)
+            self.assertEqual(case.dataset, before)
+        case = generate(self.rules, 'R-022')
+        case.dataset.metrics['历史.上年同期收入'].period = '2025年度'
+        restored = loader.load_bytes(exercise_materials.export(case.dataset))
+        self.assertEqual(restored.metrics['历史.上年同期收入'].period, '2025年度')
 
 
 class ExerciseWebTests(unittest.TestCase):
@@ -148,6 +162,17 @@ class ExerciseWebTests(unittest.TestCase):
 
     def generate(self,rule="R-020",**options):
         return self.client.post("/api/exercises",json={"rule_id":rule,"expected_version":"2.0","seed":17,**options})
+
+    def test_download_missing_frozen_history_period_returns_conflict_not_inferred_data(self):
+        audit_id = self.generate('R-022').json()['audit_id']
+        dataset = self.store.get_generated_material(audit_id, self.teacher)
+        original = deepcopy(dataset)
+        dataset.metrics['历史.上年同期收入'].period = ''
+        with patch.object(self.store, 'get_generated_material', return_value=dataset):
+            response = self.client.get(f'/api/exercises/{audit_id}/materials')
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn('冻结历史指标期间缺失或不匹配', response.text)
+        self.assertEqual(self.store.get_generated_material(audit_id, self.teacher), original)
 
     def test_catalog_and_all_twenty_four_generated_cases_atomic_report_archive(self):
         catalog=self.client.get("/api/exercises/rules")

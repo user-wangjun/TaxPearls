@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from tests.enterprise_support import audit, material_key
 
-from src import engine, loader, training
+from src import engine, loader, training, exercise_generator
 from webapp import app as app_module
 from webapp.storage import Store
 
@@ -84,8 +84,12 @@ class P1InputsAndTraining(unittest.TestCase):
         self.assertIn("误报", result["false_positives"][0]["explanation"])
 
     def test_pure_synthetic_sample_is_allowed_for_training(self):
-        data = loader.load(ROOT / "samples" / "合成测试数据" / "02-收入少申报-合成.xlsx")
+        data = exercise_generator.generate(self.rules, 'R-001', seed=2).dataset
         self.assertTrue(app_module._is_synthetic_dataset(data))
+
+    def test_legacy_synthetic_sample_with_current_period_as_history_is_rejected(self):
+        with self.assertRaisesRegex(loader.InputError, '历史.上年同期收入.*主期间要求不符'):
+            loader.load(ROOT / 'samples' / '合成测试数据' / '02-收入少申报-合成.xlsx')
 
 
 class P1WebFlow(unittest.TestCase):

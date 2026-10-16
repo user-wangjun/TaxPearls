@@ -193,7 +193,7 @@ def _header_template(verification_id: str = "") -> str:
             f'追溯标识 {escape(verification_id)}<br>{note}</div>')
 
 
-def _footer_template(report_no: str, footer_text: str = "") -> str:
+def _footer_template(report_no: str, footer_text: str = "", report_title: str = "税务风险审计报告") -> str:
     # ⚠️ Chromium 要求页码模板必须显式声明 font-size，否则文字不可见
     safe_footer = escape(" ".join(footer_text.split()))
     suffix = f"　{safe_footer}" if safe_footer else ""
@@ -201,7 +201,7 @@ def _footer_template(report_no: str, footer_text: str = "") -> str:
         '<div style="width:100%;padding:0 20mm;font-size:8pt;color:#8A94A6;'
         "font-family:'Microsoft YaHei','PingFang SC',sans-serif;"
         'display:flex;justify-content:space-between;">'
-        f"<span>税海拾珠 · 税务风险审计报告　{report_no}{suffix}</span>"
+        f"<span>税海拾珠 · {escape(report_title)}　{escape(report_no)}{suffix}</span>"
         '<span>第 <span class="pageNumber"></span> 页 / 共 <span class="totalPages"></span> 页</span>'
         "</div>"
     )
@@ -212,6 +212,7 @@ def export_pdf(
     out_path: str | Path,
     report_no: str = "",
     footer_text: str = "",
+    report_title: str = "税务风险审计报告",
 ) -> Path:
     """Use installed Chrome locally or bundled Chromium in the deployment image."""
     from playwright.sync_api import sync_playwright
@@ -244,7 +245,7 @@ def export_pdf(
                 print_background=True,
                 display_header_footer=True,
                 header_template=_header_template(verification_id_from_html(html)),
-                footer_template=_footer_template(report_no, footer_text),
+                footer_template=_footer_template(report_no, footer_text, report_title),
                 margin={"top": "18mm", "bottom": "18mm", "left": "20mm", "right": "20mm"},
             )
         finally:

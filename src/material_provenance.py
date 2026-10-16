@@ -6,6 +6,31 @@ import json
 from pathlib import Path
 
 PDF_VERSION = 'pdf-material-v1'
+INVOICE_VERSION = 'invoice-material-v2'
+
+
+def invoice_reanalysis_required(document):
+    """Retained invoice rows need a fresh original parse after adapter changes."""
+    if document.get('kind') == 'history' or not document.get('invoices'):
+        return False
+    if document.get('invoice_parser_version') != INVOICE_VERSION:
+        return True
+    extraction = document.get('extraction')
+    record = extraction.get('invoice_reanalysis', extraction.get('mapping_reanalysis', extraction.get('local'))) if isinstance(extraction, dict) else None
+    if not isinstance(record, dict) or record.get('status') != 'succeeded':
+        return True
+    saved = record.get('program')
+    if not isinstance(saved, dict) or not isinstance(saved.get('sources'), dict) or not isinstance(saved.get('dependencies'), dict):
+        return True
+    current = program('local')
+    if any(not current['sources'].get(name) or saved['sources'].get(name) != current['sources'][name]
+           for name in ('materials.py', 'loader.py', 'material_provenance.py', 'config.py', 'workbooks.py', 'legacy_workbooks.py')):
+        return True
+    packages = ('openpyxl',) if document.get('kind') in {'xlsx', 'xls', 'csv', 'tsv'} else ()
+    if document.get('kind') == 'xls':
+        packages += ('xlrd', 'olefile')
+    return any(not current['dependencies'].get(name) or saved['dependencies'].get(name) != current['dependencies'][name]
+               for name in packages)
 
 
 def pdf_reanalysis_required(document):
@@ -27,7 +52,7 @@ def pdf_reanalysis_required(document):
         return True
     current = program('local')
     return any(not current['sources'].get(name) or sources.get(name) != current['sources'][name]
-               for name in ('materials.py', 'loader.py', 'financial_import.py', 'config.py', 'periods.py',
+               for name in ('materials.py', 'loader.py', 'financial_import.py', 'config.py', 'periods.py', 'reference_scope.py',
                             'material_provenance.py', 'material_security.py', 'material_formats.py',
                             'material_format_guard.py', 'material_format_worker.py')) or any(
                not current['dependencies'].get(name) or dependencies.get(name) != current['dependencies'][name]
@@ -48,7 +73,7 @@ def program(kind):
     # Missing source/package information remains unknown, never inferred.
     files = ('ai_extraction.py', 'ai_transport.py', 'settings.py', 'periods.py') if kind == 'ai' else (
         'materials.py', 'loader.py', 'material_review.py', 'financial_import.py', 'workbooks.py',
-        'config.py', 'periods.py', 'models.py', 'related_graph.py', 'legacy_workbooks.py')
+        'config.py', 'periods.py', 'models.py', 'reference_scope.py', 'related_graph.py', 'legacy_workbooks.py')
     packages = ('pydantic', 'pypdfium2', 'Pillow') if kind == 'ai' else (
         'openpyxl', 'pdfplumber', 'pdfminer.six', 'Pillow', 'xlrd', 'olefile')
     sources, dependencies = {}, {}

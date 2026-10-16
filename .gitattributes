@@ -12,3 +12,6 @@
 *.docx binary
 *.zip binary
 *.webp binary
+
+# 法规留存原件按采集字节校验 SHA-256，保留原始换行和空白。
+"docs/法规原文/**" -text -whitespace

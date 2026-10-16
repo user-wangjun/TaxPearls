@@ -92,7 +92,8 @@ function switchPanel(id) {
 const dz = $("dropzone"), fi = $("fileInput");
 let materialDraft = null, materialCards = [], originalUrls = [];
 let materialRequest = 0;
-const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError});
+const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError,
+  continueCheck:id=>window.KnowledgeRetrieval?.openTask(id)});
 const enterpriseMaterials = createEnterpriseMaterials({api, el, $, user:()=>currentUser,
   clear:clearMaterials, showError, showResult:result=>{renderResult(result);switchPanel("auditPanel");},
   showReview:()=>switchPanel("uploadPanel")});
@@ -479,12 +480,20 @@ function findingCard(f) {
   /* 触发明细 */
   if (f.evidence && f.evidence.length) {
     body.appendChild(el("div", "ev-title", "触发明细（每项数值均标注取数来源）"));
-    const tbl = el("table", "ev");
+    const tbl = el("table", "ev finding-evidence");
+    const columns = el("colgroup");
+    for (const name of ["item", "value", "source"]) columns.appendChild(el("col", "evidence-" + name));
+    tbl.appendChild(columns);
     const trh = el("tr");
-    for (const h of ["项目", "数值", "取数来源"]) trh.appendChild(el("th", null, h));
+    for (const [index, h] of ["项目", "数值", "取数来源"].entries()) {
+      const th = el("th", index === 1 ? "v" : null, h);
+      th.scope = "col";
+      trh.appendChild(th);
+    }
     const thead = el("thead"); thead.appendChild(trh); tbl.appendChild(thead);
     const tb = el("tbody");
     for (const e of f.evidence) {
+      if (e.label === "阈值依据") continue;
       const tr = el("tr", e.emphasis ? "emph" : null);
       tr.appendChild(el("td", null, e.label));
       tr.appendChild(el("td", "v num", e.value));
@@ -492,7 +501,19 @@ function findingCard(f) {
       tb.appendChild(tr);
     }
     tbl.appendChild(tb);
-    body.appendChild(tbl);
+    if (tb.children.length) {
+      const scroll = el("div", "finding-evidence-scroll");
+      scroll.tabIndex = 0;
+      scroll.setAttribute("role", "region");
+      scroll.setAttribute("aria-label", "触发明细，窄屏可横向滚动查看取数来源");
+      scroll.appendChild(tbl);
+      body.appendChild(scroll);
+    }
+    for (const e of f.evidence.filter(item => item.label === "阈值依据")) {
+      const note = el("div", "finding-evidence-note");
+      note.append(el("strong", null, e.label), el("p", null, e.value), el("p", "muted", e.source));
+      body.appendChild(note);
+    }
   }
 
   /* 计算过程 + 阈值 */

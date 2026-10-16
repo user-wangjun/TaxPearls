@@ -32,12 +32,12 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
 from webapp.uploads import multipart, single_file
 
-from src import engine, loader, render, training, sandbox_feedback
+from src import engine, loader, render, training, sandbox_feedback, legal_periods
 from src import settings as _environment_settings  # noqa: F401 - Load .env before Store and route initialization.
 from src.mailer import MailError, send_password_reset_email, send_registration_code_email, send_login_code_email
 from src.models import Dataset, Rule
-from webapp import captcha, classroom, members, email_auth, ai_probes, ai_keys
-from webapp.access import AccessDenied
+from webapp import captcha, classroom, members, email_auth, ai_probes, ai_keys, policy_graph
+from webapp.access import AccessDenied, current_actor
 from webapp.enterprise_scope import identity
 from webapp.sensitive_storage import SensitiveStorageError
 from webapp.notifications import NotificationWorker, email_delivery_enabled
@@ -45,7 +45,7 @@ from webapp.storage import SetupAlreadyInitialized, Store, session_max_age
 from webapp.login_guard import LoginGuard, RateLimiter
 from webapp.knowledge import (
     ai_config, ask_graph, audit_narrative_hash, build_graph,
-    finding_evidence_hash, generate_audit_narrative, interpret_finding,
+    finding_evidence_hash, generate_audit_narrative, interpret_finding, extract_policy_candidates,
 )
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -632,7 +632,8 @@ def _audit_rules(dataset: Dataset, enabled: set[str] | None = None) -> list[Any]
             selected.append(engine.validate_rule_update(candidate))
         else:
             selected.append(base)
-    return selected
+    # Missing reviewed editions limit the affected rule, not the entire batch.
+    return [legal_periods.resolve(rule, dataset.company.period, strict=False) for rule in selected]
 
 
 def _rule_by_id(rule_id: str) -> Any:
@@ -880,7 +881,132 @@ def _graph_for_user(user, audit_id, taxpayer_id=None):
     if audit_id:
         _allow(user, "org_admin", "accountant", "teacher")
         entry = _audit_or_404(audit_id, user)
-    return build_graph(_effective_rules(), entry)
+    if entry is not None:
+        return {**build_graph([], entry), "schema_version": 1, "view": "frozen_audit_evidence"}
+    with store.connect() as db:
+        selected = policy_graph.sync_rules(db, _effective_rules())
+        return policy_graph.graph(db, selected)
+
+
+class PolicyBundleBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    bundle: dict[str, list[dict[str, Any]]]
+
+
+class PolicyPreviewBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    facts: dict[str, dict[str, Any]]
+    start: date
+    end: date
+    region: str = Field(min_length=1, max_length=100)
+    entities: list[str] = Field(default_factory=list, max_length=100)
+
+
+class PolicySourceReviewBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    issuer: str = Field(min_length=1, max_length=300)
+    validity_status: Literal['in_force', 'partially_modified', 'repealed', 'expired']
+    effective_from: date
+    effective_to: date | None = None
+    clause_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+@app.get("/api/knowledge/schema")
+def knowledge_schema(session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    _user(session)
+    with store.connect() as db:
+        return {"version": 1, "types": {table: [dict(r) for r in db.execute(f'PRAGMA table_info("{table}")')]
+                                        for table in policy_graph.IDS},
+                "relations": {name: sorted(pairs) for name, pairs in policy_graph.RELATIONS.items()},
+                "truth_values": ["TRUE", "FALSE", "UNKNOWN"]}
+
+
+@app.post("/api/knowledge/candidates")
+def knowledge_candidates(body: PolicyBundleBody,
+                         session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "platform_admin")
+    try:
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current_actor(db, user, {"platform_admin"})
+            result = policy_graph.import_bundle(db, body.bundle)
+            store._log(db, user, "import_policy_candidates", "knowledge", "v1", json.dumps(result))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"imported": result, "review_status": "candidate"}
+
+
+@app.post("/api/knowledge/rules/{rule_id}/approve")
+def knowledge_approve(rule_id: str,
+                      session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "platform_admin")
+    try:
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current_actor(db, user, {"platform_admin"})
+            result = policy_graph.approve_rule(db, rule_id, user["id"])
+            store._log(db, user, "approve_policy_rule", "knowledge", rule_id, result["version"])
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return result
+
+
+@app.post("/api/knowledge/policies/{policy_id}/verify")
+def knowledge_verify_source(policy_id: str, body: PolicySourceReviewBody,
+                            session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "platform_admin")
+    try:
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current_actor(db, user, {"platform_admin"})
+            result = policy_graph.verify_source(db, policy_id, issuer=body.issuer, validity_status=body.validity_status,
+                                                effective_from=body.effective_from.isoformat(),
+                                                effective_to=body.effective_to.isoformat() if body.effective_to else None,
+                                                clause_ids=body.clause_ids)
+            store._log(db, user, "verify_policy_source", "knowledge", policy_id, json.dumps(result, ensure_ascii=False))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return result
+
+
+@app.post("/api/knowledge/clauses/{clause_id}/extract")
+def knowledge_extract(clause_id: str,
+                      session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "platform_admin")
+    try:
+        with store.connect() as db:
+            current_actor(db, user, {"platform_admin"})
+            clause = policy_graph.get(db, "Clause", clause_id)
+            policy = policy_graph.get(db, "Policy", clause["policy_id"])
+            fields = {table: [r["name"] for r in db.execute(f'PRAGMA table_info("{table}")')]
+                      for table in policy_graph.IDS}
+        bundle, model = extract_policy_candidates(policy, clause, fields)
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current_actor(db, user, {"platform_admin"})
+            result = policy_graph.import_bundle(db, bundle) if any(bundle.values()) else {}
+            store._log(db, user, "extract_policy_candidates", "knowledge", clause_id, model)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"imported": result, "review_status": "candidate", "model": model}
+
+
+@app.post("/api/knowledge/rules/{rule_id}/preview")
+def knowledge_preview(rule_id: str, body: PolicyPreviewBody,
+                      session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "platform_admin")
+    try:
+        with store.connect() as db:
+            result = policy_graph.evaluate_rule(db, rule_id, body.facts, start=body.start.isoformat(),
+                                               end=body.end.isoformat(), region=body.region, entities=body.entities)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {**result, "mode": "manual_preview", "formal_finding": False}
 
 
 @app.get("/api/knowledge/enterprises")
@@ -1359,6 +1485,7 @@ async def audit(request: Request, session: str | None = Cookie(default=None, ali
         from src import material_format_guard
         await run_in_threadpool(material_format_guard.check, [(file.filename, data)])
         dataset = await run_in_threadpool(loader.load_bytes, data)
+        dataset.simulation = True  # This authenticated endpoint is teaching-only.
     except loader.InputError as exc:
         return _err(422, f"审计材料不符合模板要求：{exc}")
     return JSONResponse(await run_in_threadpool(_save_audit, dataset, user, client_id))
@@ -1414,6 +1541,10 @@ register_material_upload(app, _user, _allow, _save_audit, RULES_DIR, _audit_or_4
 from webapp.enterprise_materials import register as register_enterprise_materials
 from webapp.core_inputs import register as register_core_inputs
 register_core_inputs(app, lambda: store, _user, _allow, STATIC_DIR)
+from webapp.knowledge_evidence import register as register_knowledge_evidence
+register_knowledge_evidence(app, lambda: store, _user, _allow)
+from webapp.core_reports import register as register_core_reports
+register_core_reports(app, lambda: store, _user, _allow)
 register_enterprise_materials(app, lambda: store, _user, _allow, RULES_DIR,
                              lambda dataset: _audit_rules(dataset, store.enabled_rule_ids()),
                              _save_audit, lambda audit_id, user: _result(_audit_or_404(audit_id, user)))
@@ -1425,6 +1556,9 @@ classroom.register(app,lambda: store,_user,_allow,_is_synthetic_dataset,COOKIE_N
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
+
+from webapp import rule_bindings as rule_binding_routes
+rule_binding_routes.register(app,lambda:store,_user,_allow,_effective_rules)
 from webapp.training_portal import register as register_training_portal
 register_training_portal(app, lambda: store, "taxpearls_training_session")
 from webapp.training_content import register as register_training_content

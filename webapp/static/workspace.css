@@ -183,6 +183,19 @@ main>.wrap>.panel{width:100%;max-width:2300px;margin-left:auto;margin-right:auto
 table.ev{font-size:15px}
 table.ev th{font-size:13.5px}
 table.ev td.src{font-size:14px}
+.finding-evidence-scroll{max-width:100%;overflow-x:auto;container-type:inline-size}
+.finding-evidence-scroll:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+table.finding-evidence{table-layout:fixed;min-width:640px}
+table.finding-evidence col.evidence-item{width:max(10rem,calc(26cqw - 70px))}
+table.finding-evidence col.evidence-value{width:12rem}
+table.finding-evidence col.evidence-source{width:auto}
+table.finding-evidence th.v,table.finding-evidence td.v{text-align:center}
+table.finding-evidence td:first-child,table.finding-evidence td.src{overflow-wrap:anywhere;line-height:1.65}
+table.finding-evidence td.v{line-height:1.65;white-space:normal;overflow-wrap:anywhere}
+.finding-evidence-note{padding:12px 10px;border-bottom:1px solid var(--line);line-height:1.75;overflow-wrap:anywhere}
+.finding-evidence-note p{margin:4px 0 0}
+.finding-evidence-note .muted{font-size:14px}
+.card-body .calc-box.num{overflow-wrap:anywhere}
 .calc-box{font-size:15px}
 .plain-list{font-size:15px}
 .kv{font-size:15px}
@@ -1294,3 +1307,5 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
   #coreInputs .core-task-footer { flex-direction:column; gap:16px; }
   #coreInputs #coreCreateTask { width:100%; }
 }
+/* Business evidence preview; source text stays intact and wraps within the panel. */
+.kg-evidence{margin:18px 0}.kg-evidence summary{cursor:pointer;font-weight:600}.kg-evidence-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.kg-evidence fieldset{border:0;padding:0;margin:0}.kg-evidence-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}.kg-evidence-section{border-top:1px solid var(--line,#dce4ee);padding:12px 0}.kg-clause{padding:10px 0}.kg-original{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}.kg-json{white-space:pre-wrap;overflow-wrap:anywhere;max-height:480px;overflow:auto;font-size:12px}.kg-evidence-result{min-width:0}@media(max-width:760px){.kg-evidence-grid{grid-template-columns:1fr}}

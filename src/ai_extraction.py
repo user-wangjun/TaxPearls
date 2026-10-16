@@ -372,6 +372,7 @@ class AIExtractor:
                 if source_issue:
                     issues.append(source_issue)
                 evidence_verified = False
+                period_source_verified = False
                 period_mismatch = False
                 if row.evidence is None:
                     issues.append('缺少表名、金额栏、期间和单位的结构化证据')
@@ -436,6 +437,9 @@ class AIExtractor:
                 if row.evidence is not None and actual is not None and not period_mismatch:
                     detail += f'；证据实际期间 {actual.start.isoformat()}至{actual.end.isoformat()}'
                 rows.append({"name": row.name, "value": value, "page": row.page, "detail": detail,
+                             "period": (f'{actual.start.isoformat()}至{actual.end.isoformat()}'
+                                        if row.evidence is not None and actual is not None and period_source_verified
+                                        and source_matches and not period_mismatch else ''),
                              "ai_raw_value": row.raw_value, "ai_unit": unit, "ai_issues": issues,
                              "ai_quote": row.quote, "ai_text_verified": text_verified,
                              "ai_evidence": row.evidence.model_dump() if row.evidence else None,

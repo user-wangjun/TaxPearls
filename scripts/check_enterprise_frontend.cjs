@@ -93,6 +93,19 @@ async function main() {
   const adapterBody=JSON.parse(adapterWrite.options.body).selections.f;
   assert.deepEqual(adapterBody.standard_edits,{});assert.deepEqual(adapterBody.evidence_reviews,[]);
   adapterWrite.resolve(sample());await adapterSave;settleLists();await Promise.resolve();
+  // Stale invoice amounts cannot confirm or send old edits/reviews on a rescan.
+  const oldInvoice=structuredClone(oldAdapter);
+  oldInvoice.documents[0].financial_reanalysis_required=false;
+  oldInvoice.documents[0].invoice_reanalysis_required=true;
+  oldInvoice.analysis.feedback.blocking=[{code:"invoice_reanalysis_required",file_id:"f",message:"须核对发票原件"}];
+  const invoiceOpen=controller.open("batch");calls.shift().resolve(oldInvoice);await invoiceOpen;
+  assert.ok(all().some(n=>n.textContent.includes("发票适配已更新")));
+  assert.equal(button("确认材料并开始检测").disabled,true);
+  assert.equal(field("导出.xlsx 利润表!C3 用于检测的值"),undefined);
+  const invoiceSave=button("保存修改并重新分析").click(),invoiceWrite=calls.shift();
+  const invoiceBody=JSON.parse(invoiceWrite.options.body).selections.f;
+  assert.deepEqual(invoiceBody.standard_edits,{});assert.deepEqual(invoiceBody.evidence_reviews,[]);
+  invoiceWrite.resolve(sample());await invoiceSave;settleLists();await Promise.resolve();
   // Old PDF caches have the same no-edit/no-acknowledgement boundary, but
   // saving preserves the chosen original pages and clears old amount edits.
   const oldPdf=sample();oldPdf.analysis.can_confirm=false;
@@ -234,9 +247,17 @@ async function main() {
   assert.equal(field("指标数值").value,"13");
   assert.ok(all().some(n=>n.textContent==="原始 AI 候选与证据（只读，人工修改不覆盖）"));
   assert.ok(all().some(n=>n.tag==="pre"&&n.textContent.includes('"ai_raw_value": "12"')&&n.textContent.includes("收入 12")));
+  const actualPeriod=field("历史实际期间");
+  assert.equal(actualPeriod.maxLength,100);assert.ok(actualPeriod.placeholder.includes("2025年第1季度"));
+  actualPeriod.value="2025年第1季度";actualPeriod.listeners.input();
+  field("地区（待核对）").value="江苏省";
+  field("地区（待核对）").listeners.input();
+  assert.equal(button("确认材料并开始检测").disabled,true);
   const correctedSave=button("保存修改并重新分析").click(),correctedWrite=calls.shift();
   const correctedRow=JSON.parse(correctedWrite.options.body).selections.short.rows[0];
   assert.equal(correctedRow.value,"13");assert.ok(!("ai_raw_value" in correctedRow));
+  assert.equal(correctedRow.period,"2025年第1季度");
+  assert.equal(JSON.parse(correctedWrite.options.body).company.region,"江苏省");
   correctedWrite.resolve(correctedPDF);await correctedSave;settleLists();await Promise.resolve();
   // Sending a saved PDF is separate from local range saving and requires fresh consent.
   const selectedPDF=sample();selectedPDF.analysis.can_confirm=false;

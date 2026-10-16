@@ -1,10 +1,10 @@
 "use strict";
-function createCoreInputs({api, el, $, user, showError}) {
+function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}}) {
   const base = "/api/enterprise/input-tasks";
   let current = null, busy = false, dirty = false, generation = 0;
   let formOwner = user()?.id;
   const enabled = () => ["org_admin", "accountant"].includes(user()?.role);
-  const states = {needs_completion:"待补充或核对",ready_for_analysis:"资料已就绪，等待规则核验",parsing:"正在解析"};
+  const states = {needs_completion:"待补充或核对",ready_for_analysis:"资料已就绪，可继续核查",parsing:"正在解析"};
   const kinds = {account_balance:"科目余额表",vat_declaration:"增值税申报表",invoice_detail:"发票明细"};
   const json = value => ({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
   const button = (text, fn) => {const n=el("button","btn re",text);n.type="button";n.onclick=fn;return n;};
@@ -32,6 +32,10 @@ function createCoreInputs({api, el, $, user, showError}) {
     root.append(el("h3","",`${task.company_name} · ${task.tax_no}`),el("p","muted",`${task.start_date} 至 ${task.end_date} · 版本 ${current.revision}`),
       el("p",p.status==="ready_for_analysis"?"":"material-note",states[p.status]||p.status),el("p","muted",p.boundary));
     root.append(button("重新读取任务",()=>action(()=>api(base+"/"+current.id))));
+    const next=button("继续核查",()=>{if(busy)return;if(dirty){showError("请先保存资料口径核对，再继续核查。");return;}continueCheck(current.id);});
+    root.append(next,el("p","muted","带入本任务企业、期间及已保存资料；缺口会在相应核查项目中保留。"));
+    const saved=Object.values(current.tax_checks||{});
+    if(saved.length)root.append(el("p","material-note",`已保存 ${saved.length} 项核查；${saved.filter(s=>s.stale).length} 项因资料变化待重检。点击继续核查可查看结果和报告。`));
     const slots=el("div","core-slots");
     for(const [kind,name] of Object.entries(kinds)) {
       const card=el("section","material-card");card.append(el("h4","",name+"（必传）"));
@@ -81,5 +85,6 @@ function createCoreInputs({api, el, $, user, showError}) {
   }
   async function history(){const owner=user()?.id,ticket=generation,rows=await api(base);if(owner!==user()?.id||ticket!==generation||!enabled())return;const root=$("coreTaskHistory");root.replaceChildren(el("h3","","继续资料处理任务"));for(const row of rows)root.append(button(`${row.task.company_name} · ${row.task.start_date} 至 ${row.task.end_date} · ${states[row.status]||row.status}`,()=>action(()=>api(base+"/"+row.id))));}
   async function refresh(){const active=enabled();if(formOwner!==user()?.id){reset();clearScope();formOwner=user()?.id;}$("coreInputs").hidden=!active;$("coreLegacyToggle").hidden=!active;if(active)await history();}
-  return {refresh,reset};
+  async function openTask(id){return action(()=>api(base+"/"+encodeURIComponent(id)));}
+  return {refresh,reset,openTask};
 }

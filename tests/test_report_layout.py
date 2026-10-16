@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 from playwright.sync_api import sync_playwright
-from src import engine, loader, render
+from src import engine, render, exercise_generator
 from src.models import Company, Dataset, Metric
 from src.snapshots import serialize_dataset
 
@@ -83,8 +83,18 @@ class EvidencePrintLayout(unittest.TestCase):
         self.assertIn('仅有不完整底稿.pdf', html)
 
     def test_long_threshold_and_source_do_not_collapse_evidence_columns(self):
-        dataset = loader.load(ROOT / "samples" / "合成测试数据" / "02-收入少申报-合成.xlsx")
-        findings = engine.run(engine.load_rules(ROOT / "rules"), dataset)
+        rules = engine.load_rules(ROOT / 'rules')
+        values = {key: Decimal(str(value)) for key, value in exercise_generator.BASE.items()}
+        values.update({'营业收入': Decimal('1280000'), '增值税.一般计税应纳税额': Decimal('10000'),
+                       '增值税.应纳税额': Decimal('10000'), '人力.社保参保人数': Decimal('40')})
+        dataset = exercise_generator.materialize(values, Company('纯仿真布局测试', 'TEST-LAYOUT',
+            '批发和零售业', '2026', '仿真地区', '一般纳税人（仿真）', '商品销售（仿真）'), rules)
+        for metric in dataset.metrics.values():
+            metric.source += '；纯仿真长证据来源及金额栏次核对说明' * 20
+        findings = engine.run(rules, dataset)
+        hits = sum(f.hit for f in findings)
+        self.assertGreaterEqual(hits, 4)
+        self.assertFalse(any(f.status == 'skipped' for f in findings))
         with tempfile.TemporaryDirectory() as directory:
             with patch.object(render, "OUTPUT_DIR", Path(directory)):
                 html, _ = render.render_html(dataset, findings)
@@ -103,7 +113,7 @@ class EvidencePrintLayout(unittest.TestCase):
                             overflow: [...table.querySelectorAll('td')].some(cell => cell.scrollWidth > cell.clientWidth + 2)
                         };
                     })""")
-                    self.assertEqual(len(tables), 4)
+                    self.assertEqual(len(tables), hits)
                     for table in tables:
                         self.assertGreater(table["columns"][0], .20)
                         self.assertLess(table["columns"][1], .32)

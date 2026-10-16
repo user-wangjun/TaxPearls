@@ -433,7 +433,7 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=20261015-core-task-layout-1-graph-reset-regions-1">
+<link rel="stylesheet" href="/workspace.css?v=20261016-enterprise-integration-1">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -609,6 +609,22 @@
       <div class="page-head graph-page-head"><div><p class="eyebrow">税务洞察 / KNOWLEDGE EXPLORER</p><h2>让每一条关联，都有据可循<span class="graph-title-tag">知识图谱</span></h2><p class="muted">按税号汇集企业历次审查，追溯问题、材料与法规之间的关联。</p></div><div id="graphSummary" class="graph-summary"></div></div>
       <div class="graph-filterbar"><div class="field graph-scope"><label for="graphScope">图谱范围</label><select id="graphScope"><option value="">公共</option></select><p id="graphIdentity" class="muted graph-identity" hidden></p><div class="field" id="graphAuditField" hidden><label for="graphAudit">历史范围</label><select id="graphAudit"></select></div></div><div class="field graph-search"><label for="knowledgeSearch">搜索关联</label><input id="knowledgeSearch" placeholder="搜索指标、规则、法条、关联主体…"></div><div class="field"><label for="knowledgeCategory">规则类型</label><select id="knowledgeCategory"><option value="">全部类型</option><option>内部勾稽</option><option>外部交叉</option><option>指标偏离</option><option>关联方图</option></select></div><div class="field"><label for="graphRuleLevel">规则级别</label><select id="graphRuleLevel"><option value="">全部级别</option><option value="national">国家级规则</option><option value="local">省市级规则</option><option value="unspecified">未标注级别</option></select></div><div class="field"><label for="graphRegion">适用地域</label><select id="graphRegion" disabled><option value="">全部地域</option></select></div><div class="field"><label for="graphStatus">核对状态</label><select id="graphStatus"><option value="">全部状态</option><option value="hit">风险命中</option><option value="skipped">未执行</option><option value="pass">检查通过</option></select></div></div>
       <p id="graphCoverage" class="muted" role="status" hidden></p>
+      <details class="material-card kg-evidence" id="kgEvidencePanel">
+        <summary>政策检索与检查材料包</summary>
+        <p class="muted">选择检查项目，查看命中的政策、过滤原因、必要例外和数据缺口。选择企业任务后，从已保存资料取数并保留本次检查版本。</p>
+        <form id="kgEvidenceForm"><fieldset id="kgEvidenceFields"><div class="kg-evidence-grid">
+          <div class="field"><label for="kgTask">企业检查任务</label><select id="kgTask"><option value="">仅检索政策，不读取企业资料</option></select></div>
+          <div class="field"><label for="kgRule">检查项目</label><select id="kgRule" required><option value="">等待载入检查项目</option></select></div>
+          <div class="field"><label for="kgRegion">适用地区</label><select id="kgRegion"><option value="">尚未核实地区</option><option value="CN">仅确认全国范围</option></select></div>
+          <div class="field"><label for="kgStart">检查起始日期</label><input id="kgStart" type="date" required></div>
+          <div class="field"><label for="kgEnd">检查终止日期</label><input id="kgEnd" type="date" required></div>
+          <div class="field"><label for="kgTopic">本次核查主题</label><input id="kgTopic" maxlength="2000" placeholder="留空使用检查项目名称"></div>
+          <div class="field"><label for="kgTokenBudget">AI 材料容量</label><select id="kgTokenBudget"><option value="6000">标准容量（6000）</option><option value="16000">较多原文（16000）</option><option value="32000">完整规则与多条原文（32000）</option></select><small>按文本字节保守限制，非实际 Token 用量；容量增加可能增加模型费用。超出时保留全文并转复核。</small></div>
+        </div><div class="kg-evidence-actions"><button class="btn primary" type="submit">本地检索与核对</button><button type="button" id="kgAnalyze">AI 辅助分析</button><button type="button" id="kgReload">刷新任务与项目</button></div></fieldset></form>
+        <div id="kgBindings"></div><p id="kgRetrievalStatus" class="muted" role="status"></p><div id="kgTaskChecks"></div><div id="kgEvidenceResult" aria-live="polite"></div>
+        <div class="kg-evidence-actions"><button id="kgBackToInputs" type="button" hidden>返回资料补充</button><button id="kgRecheck" type="button" disabled>重检受影响项目（本地）</button><button id="kgArchiveReport" type="button" disabled>生成检查报告</button></div>
+        <p id="kgReportStatus" class="muted" role="status"></p><div id="kgReportVersions"></div>
+      </details>
       <div class="graph-workspace">
         <div class="graph-stage"><div class="graph-stage-heading"><div><span class="graph-live-dot"></span><strong>证据关系网络</strong><p id="graphCount"></p></div><span class="graph-mode" id="graphMode">关联视图</span></div><div class="graph-toolbar"><button id="graphOverview">全景</button><button id="graphFocus">聚焦关联</button><button id="graphExpand">展开一层</button><button id="graphZoomIn" aria-label="放大图谱">＋</button><button id="graphZoomOut" aria-label="缩小图谱">−</button><button id="graphCenter" title="恢复当前视图的布局与缩放">居中</button><button id="graphReset" title="清空筛选，恢复当前图谱的初始视图">复位</button></div><svg id="graphCanvas" viewBox="0 0 960 680" aria-label="交互式知识图谱"></svg><div id="graphLegend" class="graph-legend"></div><p class="graph-hint">滚轮缩放 · 拖动画布或节点 · 点击节点查看证据</p></div>
         <aside class="graph-inspector"><div class="inspector-heading"><span>◈</span><div><strong>洞察面板</strong><p>关联证据 · 智能解读</p></div></div><div class="inspector-tabs"><button id="nodeTab" class="active">节点详情</button><button id="aiTab">✦ AI 助手</button></div><div id="knowledgeDetail" aria-live="polite"></div><div id="graphAssistant" hidden><div class="ai-welcome"><span>✦</span><h3>沿着证据，深入一步</h3><p>选中图谱节点，让 AI 帮你理解关联、梳理疑点。</p></div><p id="graphAIStatus" class="muted"></p><div id="graphAIContext" class="ai-context"></div><div class="ai-prompts"><button data-question="解释当前节点及关联证据；如果是风险，说明为什么命中。">解释关联</button><button data-question="当前检查还缺哪些材料？请说明补充和核对顺序。">补充材料</button><button data-question="请根据证据给出排查顺序，并将可能原因标注为待核实。">排查建议</button></div><div id="graphMessages" aria-live="polite"></div><form id="graphQuestionForm"><textarea id="graphQuestion" aria-label="向图谱 AI 提问" placeholder="围绕当前节点提问…" maxlength="2000" required></textarea><button id="graphSend" class="btn pdf">发送问题 ↗</button></form></div></aside>
@@ -617,7 +633,7 @@
     <section class="panel" id="uploadPanel">
     <div class="sheet" id="coreInputs" hidden>
       <h2>基础审查资料准备</h2>
-      <p class="muted">先指定企业与检查区间，再上传科目余额表、增值税申报表和进销项发票明细。资料整理完成后停在规则核验之前。</p>
+      <p class="muted">先指定企业与检查区间，再上传科目余额表、增值税申报表和进销项发票明细，核对保存后点击“继续核查”，查看检查结果与报告。</p>
       <fieldset id="coreTaskForm"><legend>创建资料处理任务</legend>
         <div class="core-task-fields">
           <div class="core-task-group">
@@ -925,12 +941,14 @@
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/core-inputs.js?v=20261015-auto-fallback-1"></script>
-<script src="/enterprise.js?v=20261007-company-selector-2"></script>
+<script src="/enterprise.js?v=enterprise-invoice-20261013-1"></script>
 <script src="/ai-keys.js?v=20261012-model-combobox-11"></script>
-<script src="/console.js?v=20261012-ai-probes-1-core-inputs-1"></script>
+<script src="/console.js?v=20261015-risk-evidence-layout-1"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
 <script src="/graph.js?v=graph-reset-regions-1"></script>
+<script src="/rule-bindings.js?v=20261016"></script>
+<script src="/knowledge-retrieval.js?v=20261016-risk-policy-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>
 </body>

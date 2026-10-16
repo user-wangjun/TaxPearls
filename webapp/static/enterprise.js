@@ -260,7 +260,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
   }
   function render() {
     const root = $("materialReview"); root.hidden = false; root.classList.add("enterprise-review"); root.replaceChildren();
-    const staleAnalysis=batch.analysis.feedback.blocking.some(note=>["financial_reanalysis_required","pdf_reanalysis_required"].includes(note.code));
+    const staleAnalysis=batch.analysis.feedback.blocking.some(note=>["financial_reanalysis_required","pdf_reanalysis_required","invoice_reanalysis_required"].includes(note.code));
     $("dropzone").style.display = "none";
     root.append(el("h2", "", "企业材料核对"), el("p", "muted", `批次 ${batch.id.slice(0,8)} · 当前版本 ${batch.revision} · 分析版本 ${batch.analysis_revision??"尚未完成"}。一次检测一家企业、一个主期间，历史材料不并入本期金额。`));
     status = el("p", "material-note"); status.setAttribute("role","status"); root.append(status);
@@ -292,12 +292,13 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
       if(provenance.length)textDetails(editor,"企业信息预填来源（不等于原文已证实）",provenance.join("\n"));
     }
     if(batch.existing_match) editor.append(el("p","material-note",`税号已对应已有企业档案：${batch.existing_match.name}。确认检测将复用该档案，不重复建档、不覆盖档案名称或负责人。`));
+    editor.append(el('p','muted','参考值须上传带“参考值适用范围”表的来源工作簿，注明发布者、版本、来源、指标口径及适用起止日。缺失或不匹配只限制相关比较；仿真示意不用于企业正式检测。'));
     editor.append(scope,el("p", "muted", "无歧义信息会预填；可补填或修正，无须填写修改原因。用户值不代替原文事实，主体或期间冲突仍须处理。主期间支持完整月、季度、半年或年度。"));
     const selections = {};reviewChecks=[];extractionActions=[];
     for (const doc of batch.documents) {
       const selection = batch.selections[doc.id] || {}, card = el("section", "material-card");
       const staleFinancial=doc.financial_reanalysis_required===true;
-      const stalePdf=doc.pdf_reanalysis_required===true,staleParser=staleFinancial||stalePdf;
+      const stalePdf=doc.pdf_reanalysis_required===true,staleInvoice=doc.invoice_reanalysis_required===true,staleParser=staleFinancial||stalePdf||staleInvoice;
       card.append(el("h3", "", doc.name), el("p",doc.error?"material-note":"muted",doc.error||doc.summary)); editor.append(card);
       const label = el("label", "", "材料用途"), purpose = el("select"); purpose.setAttribute("aria-label",doc.name+" 材料用途");
       for (const [value,title] of [["current","本期检测"],["history","历史参考（不计入本期金额）"],["excluded","移出本次检测（保留原件与历史）"]]) { const option=el("option","",title);option.value=value;purpose.append(option); }
@@ -316,6 +317,8 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
         "财务适配已更新：以下旧候选不能用于确认。请先保存并重新分析，系统只读取留存原件，不发送模型；旧数值修正与复核将清除，历史版本及已生成结果保留。"));
       if(stalePdf) card.append(el("p","material-note",
         "PDF 适配已更新或旧解析状态不明：以下旧候选不能用于确认。保存并重新分析会从完整原件重读已选片段，不发送模型；旧金额编辑及复核将清除，原件、历史版本和已生成结果保留。"));
+      if(staleInvoice) card.append(el("p","material-note",
+        "发票适配已更新或旧解析状态不明：以下旧发票候选不能用于确认。请保存并重新分析，从留存原件核对重复、红字、作废及金额口径；旧金额修正与复核将清除，不发送模型，原件及历史结果保留。"));
       const editable = !staleParser && !doc.error && (doc.kind === "pdf" || doc.review_required);
       let rangeChanged=false,readRange=null;
       const rangeSource=doc.pdf_selection || (doc.kind==="pdf"&&!doc.error&&Number.isInteger(doc.page_count)&&doc.page_count>0 ?
@@ -473,22 +476,23 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
   }
   function rowEditor(parent,doc,values) {
     const wrap=el("div","material-table-wrap"), table=el("table","material-table"), head=el("tr"), body=el("tbody");
-    ["标准指标","数值（元；比率用小数）","来源页 / 表编号","栏次与口径说明","操作"].forEach(t=>head.append(el("th","",t)));table.append(head,body);wrap.append(table);parent.append(wrap);
+    ["标准指标","数值（元；比率用小数）","来源页 / 表编号","实际期间（历史指标须填）","栏次与口径说明","操作"].forEach(t=>head.append(el("th","",t)));table.append(head,body);wrap.append(table);parent.append(wrap);
     let rows=[];
     function add(value={},isNew=false) {
-      const tr=el("tr"),name=el("select"),amount=el("input"),page=el("input"),detail=el("input");
+      const tr=el("tr"),name=el("select"),amount=el("input"),page=el("input"),period=el("input"),detail=el("input");
       for(const key of Array.from(new Set([...Object.keys(batch.fields),...values.map(r=>r.name)])).sort()) {const option=el("option","",key);option.value=key;name.append(option);}
       if(value.name)name.value=value.name;amount.value=value.value??"";amount.inputMode="decimal";amount.placeholder="空白表示缺失";
       page.type="number";page.min=1;page.max=doc.page_count;page.value=value.page||1;detail.value=value.detail||"";detail.maxLength=2000;
-      for(const [node,label] of [[name,"标准指标"],[amount,"指标数值"],[page,"来源页码"],[detail,"口径说明"]]){node.setAttribute("aria-label",label);node.addEventListener("input",changed);}
-      const row={name,amount,page,detail};rows.push(row);
-      for(const node of [name,amount,page,detail,button("移除指标",()=>{rows=rows.filter(r=>r!==row);tr.remove();changed();})]){const td=el("td");td.append(node);tr.append(td);}
+      period.value=value.period||'';period.maxLength=100;period.placeholder='例如 2025年度 / 2025年第1季度';
+      for(const [node,label] of [[name,"标准指标"],[amount,"指标数值"],[page,"来源页码"],[period,"历史实际期间"],[detail,"口径说明"]]){node.setAttribute("aria-label",label);node.addEventListener("input",changed);}
+      const row={name,amount,page,period,detail};rows.push(row);
+      for(const node of [name,amount,page,period,detail,button("移除指标",()=>{rows=rows.filter(r=>r!==row);tr.remove();changed();})]){const td=el("td");td.append(node);tr.append(td);}
       if(value.ai_issues?.length)tr.cells[0].append(el("p","material-note",value.ai_issues.join("；")));
       if(value.ai_raw_value!==undefined)tr.cells[1].append(el("p","muted",`AI 候选原值（待核对）：${value.ai_raw_value??"缺失"} ${value.ai_unit||""}`));
       body.append(tr);if(isNew)changed();
     }
     values.forEach(v=>add(v));parent.append(button("添加未识别指标",()=>add({},true)));
-    return ()=>rows.map(r=>({name:r.name.value,value:r.amount.value.trim(),page:Number(r.page.value),detail:r.detail.value.trim()}));
+    return ()=>rows.map(r=>({name:r.name.value,value:r.amount.value.trim(),page:Number(r.page.value),period:r.period.value.trim(),detail:r.detail.value.trim()}));
   }
   function mappingEditor(parent,doc,existing,onChange) {
     const section=el("details"), selections=[];

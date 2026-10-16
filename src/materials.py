@@ -26,7 +26,8 @@ InputError = loader.InputError
 MAX_TOTAL = MAX_EXPANDED
 MAX_FILES = 20
 COMPANY_KEYS = ("name", "taxpayer_id", "industry", "period")
-SCOPE_FIELDS = {'地区': 'region', '纳税人身份': 'taxpayer_type', '业务构成': 'business_scope'}
+SCOPE_FIELDS = config.COMPANY_SCOPE_FIELDS
+SCOPE_KEYS = tuple(SCOPE_FIELDS.values())
 
 
 def _text(value):
@@ -127,6 +128,7 @@ def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False,
         contract_links = loader._read_contract_links(wb)
         graph = related_graph.read_workbook(wb, company)
         loader._read_supplement(wb, company, metrics)
+        loader._read_reference(wb, metrics)
         tables = material_review.capture(wb, excluded=exported) if capture_standard else {}
         reviewable = material_review.fields({'standard_tables': tables})
         if (not accounts and not declarations and not metrics and not period_series and not invoices
@@ -156,6 +158,8 @@ def _excel(data, doc, *, allow_incomplete_company=False, capture_standard=False,
                    fulfillments=_serial([asdict(item) for item in fulfillments]),
                    contract_links=_serial([asdict(item) for item in contract_links]),
                    related_graph=_serial(asdict(graph)) if graph else None)
+        if invoices:
+            doc['invoice_parser_version'] = provenance.INVOICE_VERSION
         if config.SHEET_COMPANY in wb.sheetnames:
             for row in wb[config.SHEET_COMPANY].iter_rows(min_row=2, values_only=True):
                 if len(row) >= 2 and _text(row[0]) in SCOPE_FIELDS and _text(row[1]):
@@ -271,11 +275,10 @@ def _xml(data, doc):
         f"XML 发票「{number}」作废标志",
     )
     raw_status = _xml_value(values, "InvoiceStatus", "Status", "发票状态", label="发票状态")
-    if void:
-        raw_status = "作废"
-    elif red:
-        raw_status = "红字"
-    status = loader._invoice_status(raw_status, amount, tax, f"XML 发票「{number}」")
+    status = loader._invoice_status(raw_status, amount, tax, f"XML 发票「{number}」",
+                                    total=total, red=red, void=void)
+    if status == '作废':
+        raise InputError(f"XML 数电发票「{number}」出现作废状态，不能自动剔除；请核对票种和原始状态，提供实际红字发票明细")
     seller_id = _xml_value(values, "SellerIdNum", "SellerTaxpayerId", "XsfNsrsbh", "销售方纳税人识别号", label="销售方税号")
     buyer_id = _xml_value(values, "BuyerIdNum", "PurchaserIdNum", "GmfNsrsbh", "购买方纳税人识别号", label="购买方税号")
     accounting_id = _xml_value(
@@ -304,23 +307,22 @@ def _xml(data, doc):
         _xml_value(values, "AmountOfTransferredOutInputVat", "TransferredOutInputVat", "进项转出税额", label="进项转出税额"),
         f"XML 发票「{number}」进项转出税额",
     )
-    deductible_tax = None
-    if kind in {"", "采购"} and status != "作废" and confirmed is True and (not usage or "抵扣" in usage):
-        deductible_tax = abs(tax)
-        if transferred:
-            transferred_tax = abs(transferred_tax or Decimal(0))
-            if transferred_tax > deductible_tax:
-                raise InputError(f"XML 发票「{number}」进项转出税额不能大于发票税额。")
-            deductible_tax -= transferred_tax
+    deductible_period = _xml_value(values, "PeriodOfUsageConfirmation", "DeductionPeriod", "抵扣所属期", label="抵扣所属期")
+    deductible_tax = loader._invoice_deduction(kind, status, tax, confirmed, usage, deductible_period,
+        transferred, transferred_tax, f"XML 发票「{number}」")
     detail = f"XML 数电发票；{kind or '待按企业税号判定方向'}{status}；不含税 {abs(amount):,.2f}；税额 {abs(tax):,.2f}"
     if total is not None:
         detail += f"；价税合计 {abs(total):,.2f}"
+    detail += f"；原文状态 {raw_status or '未提供'}；红字标志 {red}；作废标志 {void}；原文不含税 {amount}；原文税额 {tax}"
+    if kind in {'', '采购'} and deductible_tax is None:
+        detail += "；抵扣用途、确认或所属期依据不足，本票税额不计入本期确认抵扣"
     invoice = loader._Invoice(
         number, issued_on, kind, abs(amount), abs(tax), status, deductible_tax,
-        _xml_value(values, "PeriodOfUsageConfirmation", "DeductionPeriod", "抵扣所属期", label="抵扣所属期"),
+        deductible_period,
         seller_id, buyer_id, "XML 数电发票结构化元素", detail,
     )
     doc["invoices"] = [_serial(asdict(invoice))]
+    doc['invoice_parser_version'] = provenance.INVOICE_VERSION
     doc["warnings"].append("XML 已按结构化字段解析；当前不代替电子税务局验真或数字签名验证。")
     doc["summary"] = f"1 张 XML 数电发票：{number}，{kind or '购销方向提交时按企业税号判定'}，{status}"
 
@@ -685,12 +687,12 @@ def build_dataset(documents, selections, company_override, keys):
         edits = selection.get("company", {})
         if not isinstance(edits, dict):
             raise InputError("企业信息格式错误。")
-        for key in COMPANY_KEYS:
-            val = _text(edits.get(key, company[key]))
+        for key in (*COMPANY_KEYS, *SCOPE_KEYS):
+            val = _text(edits.get(key, company.get(key, '')))
             if len(val) > 200:
                 raise InputError("企业信息过长。")
             editable = doc["kind"] == "pdf" or doc.get("review_required", False)
-            if not editable and company[key] and val != company[key]:
+            if not editable and company.get(key) and val != company[key]:
                 raise InputError("Excel 中已有企业信息不能在核对页改写。")
             company[key] = val or _text(company_override.get(key, ""))
             if company[key]:
@@ -734,7 +736,7 @@ def build_dataset(documents, selections, company_override, keys):
             if deductible_tax is not None and (deductible_tax < 0 or deductible_tax > tax):
                 raise InputError(f"{source}：发票「{number}」抵扣税额须在 0 与发票税额之间")
             if number in invoices:
-                raise InputError(f"发票号码重复「{number}」；请先去重，禁止跨文件重复计入")
+                raise InputError(f"发票号码重复「{number}」：{invoices[number].source} 与 {source} / {_text(raw.get('source'))}；请核对重复或状态冲突，禁止跨文件重复计入")
             invoices[number] = loader._Invoice(
                 number, issued_on, kind, amount, tax, status, deductible_tax,
                 _text(raw.get("deductible_period")), _text(raw.get("seller_id")), _text(raw.get("buyer_id")),
@@ -956,6 +958,15 @@ def build_dataset(documents, selections, company_override, keys):
             if key.startswith("人力.") and key.endswith("人数") and (value < 0 or value != value.to_integral_value()):
                 raise InputError("人数必须为非负整数。")
             detail = _text(row.get("detail"))
+            actual_period = _text(row.get('period'))
+            if len(actual_period) > 100:
+                raise InputError('指标实际期间超过 100 字。')
+            # Editable PDF rows cannot invent verified reference metadata. Use
+            # a source workbook for scoped benchmarks, not browser JSON.
+            if editable and row.get('reference'):
+                raise InputError('不能通过 PDF 指标编辑伪造参考值范围；请上传含来源和适用范围的参考工作簿。')
+            if company_data.get('period'):
+                periods.validate_metric_period(key, actual_period, company_data['period'])
             if len(detail) > 2000:
                 raise InputError("口径说明超过 2000 字。")
             if editable:
@@ -966,6 +977,8 @@ def build_dataset(documents, selections, company_override, keys):
                     raise InputError("PDF 指标须填写有效页码和口径说明。")
                 origin = f"PDF 第 {page} 页" if doc["kind"] == "pdf" else doc["pages"][page - 1]["label"]
                 row_source = f"{source} / {origin}（人工核对/录入）"
+                if actual_period:
+                    row_source += f'；人工核对实际期间 {actual_period}'
                 if selected_pdf:
                     row_source += f"；本次仅解析原件第 {selected_pdf['first']}–{selected_pdf['last']} 页/共 {selected_pdf['total_pages']} 页"
                 original = [r for r in doc["rows"] if r["name"] == key and r["page"] == page]
@@ -984,9 +997,12 @@ def build_dataset(documents, selections, company_override, keys):
                     raise InputError(f"指标「{key}」来自多份明细汇总；请先合并原始明细并去重，再上传一份完整清单。")
                 if metrics[key].value != value:
                     raise InputError(f"指标「{key}」在材料中存在冲突值，请核对后重选材料。")
+                if metrics[key].reference != row.get('reference'):
+                    raise InputError(f'指标「{key}」的参考来源或适用范围冲突，请核对后重选材料。')
                 metrics[key].source += "；" + row_source
             else:
-                metrics[key] = Metric(key, value, row_source, detail)
+                metrics[key] = Metric(key, value, row_source, detail, actual_period,
+                                      deepcopy(row.get('reference')))
     missing = [label for key, label in zip(COMPANY_KEYS, config.COMPANY_FIELDS) if not company_data.get(key)]
     if missing:
         raise InputError("请补充企业信息：" + "、".join(missing))
@@ -1003,7 +1019,8 @@ def build_dataset(documents, selections, company_override, keys):
                 raise InputError(f"指标「{key}」与原始账表计算值冲突，请核对。")
             metric.source += "；" + metrics[key].source
         metrics[key] = metric
-    company = Company(*(company_data[k] for k in COMPANY_KEYS))
+    company = Company(*(company_data[k] for k in COMPANY_KEYS),
+                      **{key: company_data.get(key, '') for key in SCOPE_KEYS})
     for key, metric in loader._invoice_metrics(company, list(invoices.values())).items():
         if key in metrics:
             if metrics[key].value != metric.value:

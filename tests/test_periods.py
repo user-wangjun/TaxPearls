@@ -96,6 +96,28 @@ def partial_history_workbook(rows: list[list[object]]) -> bytes:
 
 
 class PeriodAggregationTests(unittest.TestCase):
+    def test_named_history_requires_actual_comparable_interval(self):
+        for name, actual in [('历史.上年同期收入', '2020年度'),
+                             ('历史.上年同期收入', '2025Q1'),
+                             ('年度.前年末资产', '2025年度')]:
+            raw = period_workbook('2026年度', [history_row(name, 100, actual)])
+            with self.subTest(name=name, actual=actual), self.assertRaises(InputError):
+                loader.load_bytes(raw)
+        raw = period_workbook('2026年度', [history_row('历史.上年同期收入', 100, '2025年度')])
+        self.assertEqual(loader.load_bytes(raw).metrics['历史.上年同期收入'].period, '2025年度')
+
+    def test_legacy_snapshot_without_actual_history_period_cannot_execute(self):
+        from src.models import Company, Dataset, Metric
+        from src.snapshots import deserialize_dataset, serialize_dataset
+        rule = next(r for r in RULES if r.id == 'R-022')
+        data = Dataset(Company('仿真', 'SYNTHETIC', '仿真', '2026年度'), [], {}, {
+            key: Metric(key, Decimal('100'), '构造来源') for key in rule.inputs})
+        snapshot = serialize_dataset(data)
+        snapshot['metrics']['历史.上年同期收入'].pop('period')
+        self.assertEqual(engine.evaluate(rule, deserialize_dataset(snapshot)).status, 'skipped')
+        data.metrics['历史.上年同期收入'].period = '2025年度'
+        self.assertEqual(engine.evaluate(rule, deserialize_dataset(serialize_dataset(data))).status, 'pass')
+
     def test_statement_date_is_not_a_complete_period(self):
         self.assertEqual(periods.statement_date('2024年2月29日'), '2024-02-29')
         for value in ('2025年2月29日', '2026-13-01', '2026-06', '2026H1',

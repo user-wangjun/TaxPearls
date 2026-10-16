@@ -1,0 +1,2092 @@
+{
+  "schema_version": 1,
+  "purpose": "广东省公开统计参考数据；人工查阅，不作为审计预警阈值",
+  "runtime_integration": false,
+  "rule_bounds": [],
+  "limitations": [
+    "派生毛利率=(汇总营业收入-汇总营业成本)/汇总营业收入，小数比率保留8位；不是企业毛利率的算术平均，也不是官方发布的毛利率区间。",
+    "四个汇总分组与明细行业交叉，不把全部行相加；原始空白保留null，原文明示0.00保留零，零收入不计算比率。",
+    "数据期间不等于未来适用期；2024、2025全年和2026上半年分别保存，不混算或外推到其他期间。",
+    "没有企业分布、分位数和上下限，没有纳税人身份细分及企业业务构成匹配，不能填入R-003或R-021正式区间。",
+    "本轮未找到广东省公开、同地区同行业同期且口径匹配的增值税税负上下限；历史咨询回复不能证明当前所有地区都不公开。",
+    "不得以个税核定所得率、企业所得税率、全国行业数据或单家上市公司毛利率替代广东行业增值税税负参考。"
+  ],
+  "tax_burden_source": {
+    "publisher": "国家税务总局东莞市税务局",
+    "url": "https://guangdong.chinatax.gov.cn/siteapps/webpage/gdtax/tjjcx/tjjcx_result.jsp?cid=3f7636f792034d57a649420804d1fcb9",
+    "title": "怎样查询各行业税负预警值",
+    "replied_on": "2021-07-16",
+    "retrieved_on": "2026-10-05",
+    "response_sha256": "a8b1ce94b94932123e5d728a95d8c60052900540f61b23cd621684ce0ec8fc2c",
+    "status": "历史咨询说明；不包含数值区间"
+  },
+  "editions": [
+    {
+      "publisher": "广东省统计局",
+      "url": "https://stats.gd.gov.cn/zyjjzb/content/post_4664160.html",
+      "title": "2024年1-12月分行业规模以上工业企业主要经济指标",
+      "published_on": "2025-02-06",
+      "retrieved_on": "2026-10-05",
+      "response_sha256": "9c7fe0346c7955b1ccb72ac300731ea40c393dbc7dacdc7fd530fd531d1a3d17",
+      "region": "广东省",
+      "period_start": "2024-01-01",
+      "period_end": "2024-12-31",
+      "population": "规模以上工业企业；不是全部企业，不涵盖批发零售、服务业或规模以下工业企业",
+      "rows": [
+        {
+          "industry": "全省总计",
+          "aggregate": true,
+          "revenue_100m_cny": "194052.09",
+          "cost_100m_cny": "162228.83",
+          "revenue_yoy_percent": "3.3",
+          "cost_yoy_percent": "3.5",
+          "derived_gross_margin_ratio": "0.16399339",
+          "source_table": "主要经济指标（三）",
+          "source_row": 3,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "采矿业",
+          "aggregate": true,
+          "revenue_100m_cny": "1397.42",
+          "cost_100m_cny": "670.09",
+          "revenue_yoy_percent": "-0.6",
+          "cost_yoy_percent": "3.0",
+          "derived_gross_margin_ratio": "0.52048060",
+          "source_table": "主要经济指标（三）",
+          "source_row": 4,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "煤炭开采和洗选业",
+          "aggregate": false,
+          "revenue_100m_cny": "0.00",
+          "cost_100m_cny": "0.00",
+          "revenue_yoy_percent": "0.0",
+          "cost_yoy_percent": "0.0",
+          "derived_gross_margin_ratio": null,
+          "source_table": "主要经济指标（三）",
+          "source_row": 5,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "石油和天然气开采业",
+          "aggregate": false,
+          "revenue_100m_cny": "988.19",
+          "cost_100m_cny": "360.83",
+          "revenue_yoy_percent": "1.5",
+          "cost_yoy_percent": "4.8",
+          "derived_gross_margin_ratio": "0.63485767",
+          "source_table": "主要经济指标（三）",
+          "source_row": 6,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "黑色金属矿采选业",
+          "aggregate": false,
+          "revenue_100m_cny": "37.57",
+          "cost_100m_cny": "32.62",
+          "revenue_yoy_percent": "-18.5",
+          "cost_yoy_percent": "-7.6",
+          "derived_gross_margin_ratio": "0.13175406",
+          "source_table": "主要经济指标（三）",
+          "source_row": 7,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "有色金属矿采选业",
+          "aggregate": false,
+          "revenue_100m_cny": "94.22",
+          "cost_100m_cny": "64.60",
+          "revenue_yoy_percent": "-5.0",
+          "cost_yoy_percent": "-11.0",
+          "derived_gross_margin_ratio": "0.31437062",
+          "source_table": "主要经济指标（三）",
+          "source_row": 8,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "非金属矿采选业",
+          "aggregate": false,
+          "revenue_100m_cny": "203.40",
+          "cost_100m_cny": "150.48",
+          "revenue_yoy_percent": "-11.7",
+          "cost_yoy_percent": "-3.0",
+          "derived_gross_margin_ratio": "0.26017699",
+          "source_table": "主要经济指标（三）",
+          "source_row": 9,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "开采专业及辅助性活动",
+          "aggregate": false,
+          "revenue_100m_cny": "74.05",
+          "cost_100m_cny": "61.56",
+          "revenue_yoy_percent": "31.2",
+          "cost_yoy_percent": "41.1",
+          "derived_gross_margin_ratio": "0.16866982",
+          "source_table": "主要经济指标（三）",
+          "source_row": 10,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "其他采矿业",
+          "aggregate": false,
+          "revenue_100m_cny": "0.00",
+          "cost_100m_cny": "0.00",
+          "revenue_yoy_percent": "0.0",
+          "cost_yoy_percent": "0.0",
+          "derived_gross_margin_ratio": null,
+          "source_table": "主要经济指标（三）",
+          "source_row": 11,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "制造业",
+          "aggregate": true,
+          "revenue_100m_cny": "178337.87",
+          "cost_100m_cny": "148707.60",
+          "revenue_yoy_percent": "3.6",
+          "cost_yoy_percent": "3.8",
+          "derived_gross_margin_ratio": "0.16614682",
+          "source_table": "主要经济指标（三）",
+          "source_row": 12,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "农副食品加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "4393.30",
+          "cost_100m_cny": "4080.27",
+          "revenue_yoy_percent": "-8.5",
+          "cost_yoy_percent": "-9.1",
+          "derived_gross_margin_ratio": "0.07125168",
+          "source_table": "主要经济指标（三）",
+          "source_row": 13,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "食品制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "2539.80",
+          "cost_100m_cny": "1692.76",
+          "revenue_yoy_percent": "3.3",
+          "cost_yoy_percent": "3.1",
+          "derived_gross_margin_ratio": "0.33350658",
+          "source_table": "主要经济指标（三）",
+          "source_row": 14,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "酒、饮料和精制茶制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1353.05",
+          "cost_100m_cny": "971.38",
+          "revenue_yoy_percent": "0.8",
+          "cost_yoy_percent": "-1.2",
+          "derived_gross_margin_ratio": "0.28208122",
+          "source_table": "主要经济指标（三）",
+          "source_row": 15,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "烟草制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "682.51",
+          "cost_100m_cny": "220.63",
+          "revenue_yoy_percent": "1.7",
+          "cost_yoy_percent": "1.4",
+          "derived_gross_margin_ratio": "0.67673734",
+          "source_table": "主要经济指标（三）",
+          "source_row": 16,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "纺织业",
+          "aggregate": false,
+          "revenue_100m_cny": "2174.58",
+          "cost_100m_cny": "1866.94",
+          "revenue_yoy_percent": "-4.4",
+          "cost_yoy_percent": "-4.7",
+          "derived_gross_margin_ratio": "0.14147100",
+          "source_table": "主要经济指标（三）",
+          "source_row": 17,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "纺织服装、服饰业",
+          "aggregate": false,
+          "revenue_100m_cny": "2177.99",
+          "cost_100m_cny": "1758.59",
+          "revenue_yoy_percent": "-9.5",
+          "cost_yoy_percent": "-10.0",
+          "derived_gross_margin_ratio": "0.19256287",
+          "source_table": "主要经济指标（三）",
+          "source_row": 18,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "皮革、毛皮、羽毛及其制品和制鞋业",
+          "aggregate": false,
+          "revenue_100m_cny": "1397.85",
+          "cost_100m_cny": "1207.24",
+          "revenue_yoy_percent": "-2.6",
+          "cost_yoy_percent": "-2.7",
+          "derived_gross_margin_ratio": "0.13635941",
+          "source_table": "主要经济指标（三）",
+          "source_row": 19,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "木材加工和木、竹、藤、棕、草制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "355.52",
+          "cost_100m_cny": "309.58",
+          "revenue_yoy_percent": "-8.1",
+          "cost_yoy_percent": "-8.5",
+          "derived_gross_margin_ratio": "0.12921917",
+          "source_table": "主要经济指标（三）",
+          "source_row": 20,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "家具制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "2058.07",
+          "cost_100m_cny": "1689.57",
+          "revenue_yoy_percent": "-2.6",
+          "cost_yoy_percent": "-2.5",
+          "derived_gross_margin_ratio": "0.17905125",
+          "source_table": "主要经济指标（三）",
+          "source_row": 21,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "造纸和纸制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "2562.80",
+          "cost_100m_cny": "2281.44",
+          "revenue_yoy_percent": "4.1",
+          "cost_yoy_percent": "3.8",
+          "derived_gross_margin_ratio": "0.10978617",
+          "source_table": "主要经济指标（三）",
+          "source_row": 22,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "印刷和记录媒介复制业",
+          "aggregate": false,
+          "revenue_100m_cny": "1280.17",
+          "cost_100m_cny": "1062.27",
+          "revenue_yoy_percent": "-1.7",
+          "cost_yoy_percent": "-2.0",
+          "derived_gross_margin_ratio": "0.17021177",
+          "source_table": "主要经济指标（三）",
+          "source_row": 23,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "文教、工美、体育和娱乐用品制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "4648.57",
+          "cost_100m_cny": "4213.46",
+          "revenue_yoy_percent": "2.8",
+          "cost_yoy_percent": "3.8",
+          "derived_gross_margin_ratio": "0.09360083",
+          "source_table": "主要经济指标（三）",
+          "source_row": 24,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "石油、煤炭及其他燃料加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "5925.98",
+          "cost_100m_cny": "5021.49",
+          "revenue_yoy_percent": "4.9",
+          "cost_yoy_percent": "5.4",
+          "derived_gross_margin_ratio": "0.15263129",
+          "source_table": "主要经济指标（三）",
+          "source_row": 25,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "化学原料和化学制品制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "8214.48",
+          "cost_100m_cny": "6858.59",
+          "revenue_yoy_percent": "7.5",
+          "cost_yoy_percent": "7.5",
+          "derived_gross_margin_ratio": "0.16506097",
+          "source_table": "主要经济指标（三）",
+          "source_row": 26,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "医药制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1962.52",
+          "cost_100m_cny": "1105.56",
+          "revenue_yoy_percent": "-4.5",
+          "cost_yoy_percent": "-2.9",
+          "derived_gross_margin_ratio": "0.43666307",
+          "source_table": "主要经济指标（三）",
+          "source_row": 27,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "化学纤维制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "216.25",
+          "cost_100m_cny": "183.19",
+          "revenue_yoy_percent": "14.9",
+          "cost_yoy_percent": "14.3",
+          "derived_gross_margin_ratio": "0.15287861",
+          "source_table": "主要经济指标（三）",
+          "source_row": 28,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "橡胶和塑料制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "6459.76",
+          "cost_100m_cny": "5440.19",
+          "revenue_yoy_percent": "2.5",
+          "cost_yoy_percent": "2.9",
+          "derived_gross_margin_ratio": "0.15783404",
+          "source_table": "主要经济指标（三）",
+          "source_row": 29,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "非金属矿物制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "5337.76",
+          "cost_100m_cny": "4552.61",
+          "revenue_yoy_percent": "-15.1",
+          "cost_yoy_percent": "-15.5",
+          "derived_gross_margin_ratio": "0.14709354",
+          "source_table": "主要经济指标（三）",
+          "source_row": 30,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "黑色金属冶炼和压延加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "4313.52",
+          "cost_100m_cny": "4129.66",
+          "revenue_yoy_percent": "-2.8",
+          "cost_yoy_percent": "-2.0",
+          "derived_gross_margin_ratio": "0.04262412",
+          "source_table": "主要经济指标（三）",
+          "source_row": 31,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "有色金属冶炼和压延加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "4936.55",
+          "cost_100m_cny": "4692.82",
+          "revenue_yoy_percent": "7.1",
+          "cost_yoy_percent": "8.0",
+          "derived_gross_margin_ratio": "0.04937254",
+          "source_table": "主要经济指标（三）",
+          "source_row": 32,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "金属制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "8805.80",
+          "cost_100m_cny": "7590.97",
+          "revenue_yoy_percent": "2.1",
+          "cost_yoy_percent": "2.0",
+          "derived_gross_margin_ratio": "0.13795794",
+          "source_table": "主要经济指标（三）",
+          "source_row": 33,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "通用设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "6296.42",
+          "cost_100m_cny": "5102.90",
+          "revenue_yoy_percent": "5.2",
+          "cost_yoy_percent": "5.7",
+          "derived_gross_margin_ratio": "0.18955533",
+          "source_table": "主要经济指标（三）",
+          "source_row": 34,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "专用设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "5766.89",
+          "cost_100m_cny": "4324.72",
+          "revenue_yoy_percent": "1.3",
+          "cost_yoy_percent": "1.5",
+          "derived_gross_margin_ratio": "0.25007760",
+          "source_table": "主要经济指标（三）",
+          "source_row": 35,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "汽车制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "12812.73",
+          "cost_100m_cny": "11430.88",
+          "revenue_yoy_percent": "-5.3",
+          "cost_yoy_percent": "-3.9",
+          "derived_gross_margin_ratio": "0.10784977",
+          "source_table": "主要经济指标（三）",
+          "source_row": 36,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "铁路、船舶、航空航天和其他运输设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1444.60",
+          "cost_100m_cny": "1239.27",
+          "revenue_yoy_percent": "12.0",
+          "cost_yoy_percent": "11.2",
+          "derived_gross_margin_ratio": "0.14213623",
+          "source_table": "主要经济指标（三）",
+          "source_row": 37,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "电气机械和器材制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "23122.77",
+          "cost_100m_cny": "18879.82",
+          "revenue_yoy_percent": "1.7",
+          "cost_yoy_percent": "1.5",
+          "derived_gross_margin_ratio": "0.18349661",
+          "source_table": "主要经济指标（三）",
+          "source_row": 38,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "计算机、通信和其他电子设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "53434.06",
+          "cost_100m_cny": "43835.66",
+          "revenue_yoy_percent": "12.1",
+          "cost_yoy_percent": "12.6",
+          "derived_gross_margin_ratio": "0.17963074",
+          "source_table": "主要经济指标（三）",
+          "source_row": 39,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "仪器仪表制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1831.92",
+          "cost_100m_cny": "1371.52",
+          "revenue_yoy_percent": "11.1",
+          "cost_yoy_percent": "10.6",
+          "derived_gross_margin_ratio": "0.25132102",
+          "source_table": "主要经济指标（三）",
+          "source_row": 40,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "其他制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "656.93",
+          "cost_100m_cny": "521.55",
+          "revenue_yoy_percent": "3.3",
+          "cost_yoy_percent": "3.0",
+          "derived_gross_margin_ratio": "0.20607980",
+          "source_table": "主要经济指标（三）",
+          "source_row": 41,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "废弃资源综合利用业",
+          "aggregate": false,
+          "revenue_100m_cny": "830.25",
+          "cost_100m_cny": "776.55",
+          "revenue_yoy_percent": "17.3",
+          "cost_yoy_percent": "19.3",
+          "derived_gross_margin_ratio": "0.06467931",
+          "source_table": "主要经济指标（三）",
+          "source_row": 42,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "金属制品、机械和设备修理业",
+          "aggregate": false,
+          "revenue_100m_cny": "344.47",
+          "cost_100m_cny": "295.54",
+          "revenue_yoy_percent": "19.6",
+          "cost_yoy_percent": "22.3",
+          "derived_gross_margin_ratio": "0.14204430",
+          "source_table": "主要经济指标（三）",
+          "source_row": 43,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "电力、热力、燃气及水生产和供应业",
+          "aggregate": true,
+          "revenue_100m_cny": "14316.79",
+          "cost_100m_cny": "12851.13",
+          "revenue_yoy_percent": "-0.3",
+          "cost_yoy_percent": "-0.1",
+          "derived_gross_margin_ratio": "0.10237351",
+          "source_table": "主要经济指标（三）",
+          "source_row": 44,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "电力、热力生产和供应业",
+          "aggregate": false,
+          "revenue_100m_cny": "10406.32",
+          "cost_100m_cny": "9395.86",
+          "revenue_yoy_percent": "-2.0",
+          "cost_yoy_percent": "-1.6",
+          "derived_gross_margin_ratio": "0.09710061",
+          "source_table": "主要经济指标（三）",
+          "source_row": 45,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "燃气生产和供应业",
+          "aggregate": false,
+          "revenue_100m_cny": "3039.47",
+          "cost_100m_cny": "2823.47",
+          "revenue_yoy_percent": "7.8",
+          "cost_yoy_percent": "7.5",
+          "derived_gross_margin_ratio": "0.07106502",
+          "source_table": "主要经济指标（三）",
+          "source_row": 46,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "水的生产和供应业",
+          "aggregate": false,
+          "revenue_100m_cny": "871.00",
+          "cost_100m_cny": "631.81",
+          "revenue_yoy_percent": "-5.5",
+          "cost_yoy_percent": "-7.7",
+          "derived_gross_margin_ratio": "0.27461538",
+          "source_table": "主要经济指标（三）",
+          "source_row": 47,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        }
+      ]
+    },
+    {
+      "publisher": "广东省统计局",
+      "url": "https://stats.gd.gov.cn/zyjjzb/content/post_4860577.html",
+      "title": "2025年1-12月分行业规模以上工业企业主要经济指标",
+      "published_on": "2026-02-12",
+      "retrieved_on": "2026-10-05",
+      "response_sha256": "0e9519c445936d6b6ed8e284ceeba0c60bf4db2615dcc1be9d38710417448526",
+      "region": "广东省",
+      "period_start": "2025-01-01",
+      "period_end": "2025-12-31",
+      "population": "规模以上工业企业；不是全部企业，不涵盖批发零售、服务业或规模以下工业企业",
+      "rows": [
+        {
+          "industry": "全省总计",
+          "aggregate": true,
+          "revenue_100m_cny": "193418.51",
+          "cost_100m_cny": "161349.55",
+          "revenue_yoy_percent": "0.4",
+          "cost_yoy_percent": "0.4",
+          "derived_gross_margin_ratio": "0.16580088",
+          "source_table": "主要经济指标（三）",
+          "source_row": 3,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "采矿业",
+          "aggregate": true,
+          "revenue_100m_cny": "1309.43",
+          "cost_100m_cny": "638.39",
+          "revenue_yoy_percent": "-6.6",
+          "cost_yoy_percent": "-4.7",
+          "derived_gross_margin_ratio": "0.51246726",
+          "source_table": "主要经济指标（三）",
+          "source_row": 4,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "煤炭开采和洗选业",
+          "aggregate": false,
+          "revenue_100m_cny": "0.00",
+          "cost_100m_cny": "0.00",
+          "revenue_yoy_percent": "0.0",
+          "cost_yoy_percent": "0.0",
+          "derived_gross_margin_ratio": null,
+          "source_table": "主要经济指标（三）",
+          "source_row": 5,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "石油和天然气开采业",
+          "aggregate": false,
+          "revenue_100m_cny": "928.80",
+          "cost_100m_cny": "360.78",
+          "revenue_yoy_percent": "-6.0",
+          "cost_yoy_percent": "0.0",
+          "derived_gross_margin_ratio": "0.61156331",
+          "source_table": "主要经济指标（三）",
+          "source_row": 6,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "黑色金属矿采选业",
+          "aggregate": false,
+          "revenue_100m_cny": "51.01",
+          "cost_100m_cny": "42.38",
+          "revenue_yoy_percent": "35.8",
+          "cost_yoy_percent": "30.0",
+          "derived_gross_margin_ratio": "0.16918251",
+          "source_table": "主要经济指标（三）",
+          "source_row": 7,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "有色金属矿采选业",
+          "aggregate": false,
+          "revenue_100m_cny": "80.24",
+          "cost_100m_cny": "49.22",
+          "revenue_yoy_percent": "-4.1",
+          "cost_yoy_percent": "-9.4",
+          "derived_gross_margin_ratio": "0.38659023",
+          "source_table": "主要经济指标（三）",
+          "source_row": 8,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "非金属矿采选业",
+          "aggregate": false,
+          "revenue_100m_cny": "176.48",
+          "cost_100m_cny": "125.82",
+          "revenue_yoy_percent": "-18.4",
+          "cost_yoy_percent": "-21.0",
+          "derived_gross_margin_ratio": "0.28705802",
+          "source_table": "主要经济指标（三）",
+          "source_row": 9,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "开采专业及辅助性活动",
+          "aggregate": false,
+          "revenue_100m_cny": "72.90",
+          "cost_100m_cny": "60.20",
+          "revenue_yoy_percent": "-4.6",
+          "cost_yoy_percent": "-4.7",
+          "derived_gross_margin_ratio": "0.17421125",
+          "source_table": "主要经济指标（三）",
+          "source_row": 10,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "其他采矿业",
+          "aggregate": false,
+          "revenue_100m_cny": "0.00",
+          "cost_100m_cny": "0.00",
+          "revenue_yoy_percent": "0.0",
+          "cost_yoy_percent": "0.0",
+          "derived_gross_margin_ratio": null,
+          "source_table": "主要经济指标（三）",
+          "source_row": 11,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "制造业",
+          "aggregate": true,
+          "revenue_100m_cny": "177746.13",
+          "cost_100m_cny": "147829.37",
+          "revenue_yoy_percent": "0.5",
+          "cost_yoy_percent": "0.5",
+          "derived_gross_margin_ratio": "0.16831174",
+          "source_table": "主要经济指标（三）",
+          "source_row": 12,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "农副食品加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "4326.93",
+          "cost_100m_cny": "4023.06",
+          "revenue_yoy_percent": "-2.0",
+          "cost_yoy_percent": "-1.9",
+          "derived_gross_margin_ratio": "0.07022762",
+          "source_table": "主要经济指标（三）",
+          "source_row": 13,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "食品制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "2508.49",
+          "cost_100m_cny": "1672.26",
+          "revenue_yoy_percent": "-2.3",
+          "cost_yoy_percent": "-2.7",
+          "derived_gross_margin_ratio": "0.33335991",
+          "source_table": "主要经济指标（三）",
+          "source_row": 14,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "酒、饮料和精制茶制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1168.10",
+          "cost_100m_cny": "822.47",
+          "revenue_yoy_percent": "-4.4",
+          "cost_yoy_percent": "-7.1",
+          "derived_gross_margin_ratio": "0.29589076",
+          "source_table": "主要经济指标（三）",
+          "source_row": 15,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "烟草制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "705.62",
+          "cost_100m_cny": "233.24",
+          "revenue_yoy_percent": "3.2",
+          "cost_yoy_percent": "5.2",
+          "derived_gross_margin_ratio": "0.66945381",
+          "source_table": "主要经济指标（三）",
+          "source_row": 16,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "纺织业",
+          "aggregate": false,
+          "revenue_100m_cny": "1615.02",
+          "cost_100m_cny": "1386.59",
+          "revenue_yoy_percent": "-27.2",
+          "cost_yoy_percent": "-27.3",
+          "derived_gross_margin_ratio": "0.14144097",
+          "source_table": "主要经济指标（三）",
+          "source_row": 17,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "纺织服装、服饰业",
+          "aggregate": false,
+          "revenue_100m_cny": "1732.10",
+          "cost_100m_cny": "1399.27",
+          "revenue_yoy_percent": "-22.0",
+          "cost_yoy_percent": "-22.2",
+          "derived_gross_margin_ratio": "0.19215403",
+          "source_table": "主要经济指标（三）",
+          "source_row": 18,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "皮革、毛皮、羽毛及其制品和制鞋业",
+          "aggregate": false,
+          "revenue_100m_cny": "1199.08",
+          "cost_100m_cny": "1030.84",
+          "revenue_yoy_percent": "-16.6",
+          "cost_yoy_percent": "-17.0",
+          "derived_gross_margin_ratio": "0.14030757",
+          "source_table": "主要经济指标（三）",
+          "source_row": 19,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "木材加工和木、竹、藤、棕、草制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "280.58",
+          "cost_100m_cny": "248.39",
+          "revenue_yoy_percent": "-22.8",
+          "cost_yoy_percent": "-21.7",
+          "derived_gross_margin_ratio": "0.11472664",
+          "source_table": "主要经济指标（三）",
+          "source_row": 20,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "家具制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1843.65",
+          "cost_100m_cny": "1514.64",
+          "revenue_yoy_percent": "-12.3",
+          "cost_yoy_percent": "-12.4",
+          "derived_gross_margin_ratio": "0.17845578",
+          "source_table": "主要经济指标（三）",
+          "source_row": 21,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "造纸和纸制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "2397.18",
+          "cost_100m_cny": "2127.95",
+          "revenue_yoy_percent": "-7.0",
+          "cost_yoy_percent": "-7.4",
+          "derived_gross_margin_ratio": "0.11231113",
+          "source_table": "主要经济指标（三）",
+          "source_row": 22,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "印刷和记录媒介复制业",
+          "aggregate": false,
+          "revenue_100m_cny": "1132.07",
+          "cost_100m_cny": "937.94",
+          "revenue_yoy_percent": "-12.3",
+          "cost_yoy_percent": "-12.4",
+          "derived_gross_margin_ratio": "0.17148233",
+          "source_table": "主要经济指标（三）",
+          "source_row": 23,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "文教、工美、体育和娱乐用品制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "5549.70",
+          "cost_100m_cny": "5100.39",
+          "revenue_yoy_percent": "17.7",
+          "cost_yoy_percent": "19.6",
+          "derived_gross_margin_ratio": "0.08096113",
+          "source_table": "主要经济指标（三）",
+          "source_row": 24,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "石油、煤炭及其他燃料加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "5550.38",
+          "cost_100m_cny": "4633.67",
+          "revenue_yoy_percent": "-6.4",
+          "cost_yoy_percent": "-7.8",
+          "derived_gross_margin_ratio": "0.16516166",
+          "source_table": "主要经济指标（三）",
+          "source_row": 25,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "化学原料和化学制品制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "8160.73",
+          "cost_100m_cny": "6839.36",
+          "revenue_yoy_percent": "-1.4",
+          "cost_yoy_percent": "-1.0",
+          "derived_gross_margin_ratio": "0.16191811",
+          "source_table": "主要经济指标（三）",
+          "source_row": 26,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "医药制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1956.44",
+          "cost_100m_cny": "1116.33",
+          "revenue_yoy_percent": "0.3",
+          "cost_yoy_percent": "1.8",
+          "derived_gross_margin_ratio": "0.42940750",
+          "source_table": "主要经济指标（三）",
+          "source_row": 27,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "化学纤维制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "226.07",
+          "cost_100m_cny": "187.47",
+          "revenue_yoy_percent": "3.5",
+          "cost_yoy_percent": "1.3",
+          "derived_gross_margin_ratio": "0.17074357",
+          "source_table": "主要经济指标（三）",
+          "source_row": 28,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "橡胶和塑料制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "6066.33",
+          "cost_100m_cny": "5083.41",
+          "revenue_yoy_percent": "-8.3",
+          "cost_yoy_percent": "-8.8",
+          "derived_gross_margin_ratio": "0.16202877",
+          "source_table": "主要经济指标（三）",
+          "source_row": 29,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "非金属矿物制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "4656.33",
+          "cost_100m_cny": "3974.01",
+          "revenue_yoy_percent": "-14.9",
+          "cost_yoy_percent": "-14.8",
+          "derived_gross_margin_ratio": "0.14653601",
+          "source_table": "主要经济指标（三）",
+          "source_row": 30,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "黑色金属冶炼和压延加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "3974.01",
+          "cost_100m_cny": "3806.32",
+          "revenue_yoy_percent": "-7.9",
+          "cost_yoy_percent": "-7.9",
+          "derived_gross_margin_ratio": "0.04219667",
+          "source_table": "主要经济指标（三）",
+          "source_row": 31,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "有色金属冶炼和压延加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "4802.92",
+          "cost_100m_cny": "4564.93",
+          "revenue_yoy_percent": "-2.5",
+          "cost_yoy_percent": "-2.6",
+          "derived_gross_margin_ratio": "0.04955111",
+          "source_table": "主要经济指标（三）",
+          "source_row": 32,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "金属制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "8243.04",
+          "cost_100m_cny": "7135.20",
+          "revenue_yoy_percent": "-8.2",
+          "cost_yoy_percent": "-7.8",
+          "derived_gross_margin_ratio": "0.13439702",
+          "source_table": "主要经济指标（三）",
+          "source_row": 33,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "通用设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "6690.61",
+          "cost_100m_cny": "5404.99",
+          "revenue_yoy_percent": "3.9",
+          "cost_yoy_percent": "3.6",
+          "derived_gross_margin_ratio": "0.19215288",
+          "source_table": "主要经济指标（三）",
+          "source_row": 34,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "专用设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "6172.93",
+          "cost_100m_cny": "4667.86",
+          "revenue_yoy_percent": "5.6",
+          "cost_yoy_percent": "6.5",
+          "derived_gross_margin_ratio": "0.24381777",
+          "source_table": "主要经济指标（三）",
+          "source_row": 35,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "汽车制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "9586.64",
+          "cost_100m_cny": "8364.78",
+          "revenue_yoy_percent": "-3.8",
+          "cost_yoy_percent": "-2.5",
+          "derived_gross_margin_ratio": "0.12745446",
+          "source_table": "主要经济指标（三）",
+          "source_row": 36,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "铁路、船舶、航空航天和其他运输设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1549.76",
+          "cost_100m_cny": "1321.91",
+          "revenue_yoy_percent": "10.4",
+          "cost_yoy_percent": "10.5",
+          "derived_gross_margin_ratio": "0.14702276",
+          "source_table": "主要经济指标（三）",
+          "source_row": 37,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "电气机械和器材制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "24115.14",
+          "cost_100m_cny": "19739.79",
+          "revenue_yoy_percent": "3.1",
+          "cost_yoy_percent": "3.4",
+          "derived_gross_margin_ratio": "0.18143581",
+          "source_table": "主要经济指标（三）",
+          "source_row": 38,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "计算机、通信和其他电子设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "57529.49",
+          "cost_100m_cny": "47240.31",
+          "revenue_yoy_percent": "7.3",
+          "cost_yoy_percent": "7.4",
+          "derived_gross_margin_ratio": "0.17885053",
+          "source_table": "主要经济指标（三）",
+          "source_row": 39,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "仪器仪表制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1934.63",
+          "cost_100m_cny": "1436.13",
+          "revenue_yoy_percent": "4.1",
+          "cost_yoy_percent": "3.2",
+          "derived_gross_margin_ratio": "0.25767201",
+          "source_table": "主要经济指标（三）",
+          "source_row": 40,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "其他制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "688.67",
+          "cost_100m_cny": "551.78",
+          "revenue_yoy_percent": "0.6",
+          "cost_yoy_percent": "1.4",
+          "derived_gross_margin_ratio": "0.19877445",
+          "source_table": "主要经济指标（三）",
+          "source_row": 41,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "废弃资源综合利用业",
+          "aggregate": false,
+          "revenue_100m_cny": "944.94",
+          "cost_100m_cny": "889.11",
+          "revenue_yoy_percent": "13.6",
+          "cost_yoy_percent": "14.3",
+          "derived_gross_margin_ratio": "0.05908312",
+          "source_table": "主要经济指标（三）",
+          "source_row": 42,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "金属制品、机械和设备修理业",
+          "aggregate": false,
+          "revenue_100m_cny": "438.56",
+          "cost_100m_cny": "374.96",
+          "revenue_yoy_percent": "21.6",
+          "cost_yoy_percent": "21.9",
+          "derived_gross_margin_ratio": "0.14502007",
+          "source_table": "主要经济指标（三）",
+          "source_row": 43,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "电力、热力、燃气及水生产和供应业",
+          "aggregate": true,
+          "revenue_100m_cny": "14362.95",
+          "cost_100m_cny": "12881.79",
+          "revenue_yoy_percent": "-0.3",
+          "cost_yoy_percent": "-0.3",
+          "derived_gross_margin_ratio": "0.10312366",
+          "source_table": "主要经济指标（三）",
+          "source_row": 44,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "电力、热力生产和供应业",
+          "aggregate": false,
+          "revenue_100m_cny": "10374.65",
+          "cost_100m_cny": "9368.32",
+          "revenue_yoy_percent": "-0.6",
+          "cost_yoy_percent": "-0.6",
+          "derived_gross_margin_ratio": "0.09699893",
+          "source_table": "主要经济指标（三）",
+          "source_row": 45,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "燃气生产和供应业",
+          "aggregate": false,
+          "revenue_100m_cny": "3165.93",
+          "cost_100m_cny": "2957.71",
+          "revenue_yoy_percent": "2.4",
+          "cost_yoy_percent": "3.0",
+          "derived_gross_margin_ratio": "0.06576898",
+          "source_table": "主要经济指标（三）",
+          "source_row": 46,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "水的生产和供应业",
+          "aggregate": false,
+          "revenue_100m_cny": "822.38",
+          "cost_100m_cny": "555.76",
+          "revenue_yoy_percent": "-6.0",
+          "cost_yoy_percent": "-12.3",
+          "derived_gross_margin_ratio": "0.32420536",
+          "source_table": "主要经济指标（三）",
+          "source_row": 47,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        }
+      ]
+    },
+    {
+      "publisher": "广东省统计局",
+      "url": "https://stats.gd.gov.cn/zyjjzb/content/post_4937566.html",
+      "title": "2026年1-6月分行业规模以上工业企业主要经济指标",
+      "published_on": "2026-08-03",
+      "retrieved_on": "2026-10-05",
+      "response_sha256": "8ae3702e6fe9341174efecaed90d05548e8d17af497aaed53271345b9378536c",
+      "region": "广东省",
+      "period_start": "2026-01-01",
+      "period_end": "2026-06-30",
+      "population": "规模以上工业企业；不是全部企业，不涵盖批发零售、服务业或规模以下工业企业",
+      "rows": [
+        {
+          "industry": "全省总计",
+          "aggregate": true,
+          "revenue_100m_cny": "95545.76",
+          "cost_100m_cny": "79562.16",
+          "revenue_yoy_percent": "7.0",
+          "cost_yoy_percent": "6.8",
+          "derived_gross_margin_ratio": "0.16728738",
+          "source_table": "主要经济指标（三）",
+          "source_row": 3,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "采矿业",
+          "aggregate": true,
+          "revenue_100m_cny": "744.20",
+          "cost_100m_cny": "338.70",
+          "revenue_yoy_percent": "13.5",
+          "cost_yoy_percent": "13.8",
+          "derived_gross_margin_ratio": "0.54488041",
+          "source_table": "主要经济指标（三）",
+          "source_row": 4,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "煤炭开采和洗选业",
+          "aggregate": false,
+          "revenue_100m_cny": null,
+          "cost_100m_cny": null,
+          "revenue_yoy_percent": null,
+          "cost_yoy_percent": null,
+          "derived_gross_margin_ratio": null,
+          "source_table": "主要经济指标（三）",
+          "source_row": 5,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "石油和天然气开采业",
+          "aggregate": false,
+          "revenue_100m_cny": "566.99",
+          "cost_100m_cny": "224.20",
+          "revenue_yoy_percent": "18.8",
+          "cost_yoy_percent": "33.3",
+          "derived_gross_margin_ratio": "0.60457856",
+          "source_table": "主要经济指标（三）",
+          "source_row": 6,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "黑色金属矿采选业",
+          "aggregate": false,
+          "revenue_100m_cny": "18.21",
+          "cost_100m_cny": "15.12",
+          "revenue_yoy_percent": "-15.1",
+          "cost_yoy_percent": "-18.0",
+          "derived_gross_margin_ratio": "0.16968699",
+          "source_table": "主要经济指标（三）",
+          "source_row": 7,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "有色金属矿采选业",
+          "aggregate": false,
+          "revenue_100m_cny": "55.03",
+          "cost_100m_cny": "27.23",
+          "revenue_yoy_percent": "30.6",
+          "cost_yoy_percent": "3.3",
+          "derived_gross_margin_ratio": "0.50517899",
+          "source_table": "主要经济指标（三）",
+          "source_row": 8,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "非金属矿采选业",
+          "aggregate": false,
+          "revenue_100m_cny": "77.11",
+          "cost_100m_cny": "52.17",
+          "revenue_yoy_percent": "-9.6",
+          "cost_yoy_percent": "-13.4",
+          "derived_gross_margin_ratio": "0.32343406",
+          "source_table": "主要经济指标（三）",
+          "source_row": 9,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "开采专业及辅助性活动",
+          "aggregate": false,
+          "revenue_100m_cny": "26.86",
+          "cost_100m_cny": "19.98",
+          "revenue_yoy_percent": "-8.5",
+          "cost_yoy_percent": "-18.1",
+          "derived_gross_margin_ratio": "0.25614296",
+          "source_table": "主要经济指标（三）",
+          "source_row": 10,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "其他采矿业",
+          "aggregate": false,
+          "revenue_100m_cny": null,
+          "cost_100m_cny": null,
+          "revenue_yoy_percent": null,
+          "cost_yoy_percent": null,
+          "derived_gross_margin_ratio": null,
+          "source_table": "主要经济指标（三）",
+          "source_row": 11,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "制造业",
+          "aggregate": true,
+          "revenue_100m_cny": "87860.04",
+          "cost_100m_cny": "72943.25",
+          "revenue_yoy_percent": "7.2",
+          "cost_yoy_percent": "7.0",
+          "derived_gross_margin_ratio": "0.16977900",
+          "source_table": "主要经济指标（三）",
+          "source_row": 12,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "农副食品加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "2026.03",
+          "cost_100m_cny": "1885.07",
+          "revenue_yoy_percent": "3.6",
+          "cost_yoy_percent": "3.7",
+          "derived_gross_margin_ratio": "0.06957449",
+          "source_table": "主要经济指标（三）",
+          "source_row": 13,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "食品制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "1210.93",
+          "cost_100m_cny": "819.73",
+          "revenue_yoy_percent": "5.2",
+          "cost_yoy_percent": "5.4",
+          "derived_gross_margin_ratio": "0.32305748",
+          "source_table": "主要经济指标（三）",
+          "source_row": 14,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "酒、饮料和精制茶制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "608.17",
+          "cost_100m_cny": "420.02",
+          "revenue_yoy_percent": "0.2",
+          "cost_yoy_percent": "-1.5",
+          "derived_gross_margin_ratio": "0.30937074",
+          "source_table": "主要经济指标（三）",
+          "source_row": 15,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "烟草制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "376.82",
+          "cost_100m_cny": "118.79",
+          "revenue_yoy_percent": "1.7",
+          "cost_yoy_percent": "3.1",
+          "derived_gross_margin_ratio": "0.68475665",
+          "source_table": "主要经济指标（三）",
+          "source_row": 16,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "纺织业",
+          "aggregate": false,
+          "revenue_100m_cny": "712.42",
+          "cost_100m_cny": "611.62",
+          "revenue_yoy_percent": "-2.4",
+          "cost_yoy_percent": "-2.7",
+          "derived_gross_margin_ratio": "0.14148957",
+          "source_table": "主要经济指标（三）",
+          "source_row": 17,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "纺织服装、服饰业",
+          "aggregate": false,
+          "revenue_100m_cny": "773.68",
+          "cost_100m_cny": "611.72",
+          "revenue_yoy_percent": "-8.5",
+          "cost_yoy_percent": "-10.1",
+          "derived_gross_margin_ratio": "0.20933719",
+          "source_table": "主要经济指标（三）",
+          "source_row": 18,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "皮革、毛皮、羽毛及其制品和制鞋业",
+          "aggregate": false,
+          "revenue_100m_cny": "523.42",
+          "cost_100m_cny": "449.86",
+          "revenue_yoy_percent": "-9.5",
+          "cost_yoy_percent": "-10.1",
+          "derived_gross_margin_ratio": "0.14053724",
+          "source_table": "主要经济指标（三）",
+          "source_row": 19,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "木材加工和木、竹、藤、棕、草制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "116.86",
+          "cost_100m_cny": "103.92",
+          "revenue_yoy_percent": "-9.6",
+          "cost_yoy_percent": "-9.3",
+          "derived_gross_margin_ratio": "0.11073079",
+          "source_table": "主要经济指标（三）",
+          "source_row": 20,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "家具制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "675.79",
+          "cost_100m_cny": "553.73",
+          "revenue_yoy_percent": "-17.1",
+          "cost_yoy_percent": "-17.7",
+          "derived_gross_margin_ratio": "0.18061824",
+          "source_table": "主要经济指标（三）",
+          "source_row": 21,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "造纸和纸制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "1157.64",
+          "cost_100m_cny": "1026.62",
+          "revenue_yoy_percent": "5.7",
+          "cost_yoy_percent": "4.8",
+          "derived_gross_margin_ratio": "0.11317854",
+          "source_table": "主要经济指标（三）",
+          "source_row": 22,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "印刷和记录媒介复制业",
+          "aggregate": false,
+          "revenue_100m_cny": "514.21",
+          "cost_100m_cny": "426.53",
+          "revenue_yoy_percent": "-3.8",
+          "cost_yoy_percent": "-3.8",
+          "derived_gross_margin_ratio": "0.17051399",
+          "source_table": "主要经济指标（三）",
+          "source_row": 23,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "文教、工美、体育和娱乐用品制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "2446.21",
+          "cost_100m_cny": "2225.38",
+          "revenue_yoy_percent": "-3.2",
+          "cost_yoy_percent": "-4.3",
+          "derived_gross_margin_ratio": "0.09027434",
+          "source_table": "主要经济指标（三）",
+          "source_row": 24,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "石油、煤炭及其他燃料加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "2831.08",
+          "cost_100m_cny": "2275.22",
+          "revenue_yoy_percent": "6.6",
+          "cost_yoy_percent": "2.4",
+          "derived_gross_margin_ratio": "0.19634203",
+          "source_table": "主要经济指标（三）",
+          "source_row": 25,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "化学原料和化学制品制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "4294.30",
+          "cost_100m_cny": "3595.37",
+          "revenue_yoy_percent": "12.9",
+          "cost_yoy_percent": "13.6",
+          "derived_gross_margin_ratio": "0.16275761",
+          "source_table": "主要经济指标（三）",
+          "source_row": 26,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "医药制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "779.19",
+          "cost_100m_cny": "408.64",
+          "revenue_yoy_percent": "-10.2",
+          "cost_yoy_percent": "-13.6",
+          "derived_gross_margin_ratio": "0.47555795",
+          "source_table": "主要经济指标（三）",
+          "source_row": 27,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "化学纤维制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "132.13",
+          "cost_100m_cny": "110.61",
+          "revenue_yoy_percent": "13.1",
+          "cost_yoy_percent": "13.2",
+          "derived_gross_margin_ratio": "0.16286990",
+          "source_table": "主要经济指标（三）",
+          "source_row": 28,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "橡胶和塑料制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "2956.59",
+          "cost_100m_cny": "2471.55",
+          "revenue_yoy_percent": "1.2",
+          "cost_yoy_percent": "0.7",
+          "derived_gross_margin_ratio": "0.16405386",
+          "source_table": "主要经济指标（三）",
+          "source_row": 29,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "非金属矿物制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "1793.26",
+          "cost_100m_cny": "1522.05",
+          "revenue_yoy_percent": "-13.1",
+          "cost_yoy_percent": "-13.1",
+          "derived_gross_margin_ratio": "0.15123853",
+          "source_table": "主要经济指标（三）",
+          "source_row": 30,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "黑色金属冶炼和压延加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "1886.00",
+          "cost_100m_cny": "1812.49",
+          "revenue_yoy_percent": "-0.8",
+          "cost_yoy_percent": "-0.1",
+          "derived_gross_margin_ratio": "0.03897667",
+          "source_table": "主要经济指标（三）",
+          "source_row": 31,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "有色金属冶炼和压延加工业",
+          "aggregate": false,
+          "revenue_100m_cny": "2428.12",
+          "cost_100m_cny": "2308.15",
+          "revenue_yoy_percent": "18.2",
+          "cost_yoy_percent": "18.2",
+          "derived_gross_margin_ratio": "0.04940860",
+          "source_table": "主要经济指标（三）",
+          "source_row": 32,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "金属制品业",
+          "aggregate": false,
+          "revenue_100m_cny": "3936.28",
+          "cost_100m_cny": "3461.65",
+          "revenue_yoy_percent": "2.4",
+          "cost_yoy_percent": "2.8",
+          "derived_gross_margin_ratio": "0.12057831",
+          "source_table": "主要经济指标（三）",
+          "source_row": 33,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "通用设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "3231.71",
+          "cost_100m_cny": "2611.86",
+          "revenue_yoy_percent": "7.7",
+          "cost_yoy_percent": "7.0",
+          "derived_gross_margin_ratio": "0.19180248",
+          "source_table": "主要经济指标（三）",
+          "source_row": 34,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "专用设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "3040.25",
+          "cost_100m_cny": "2300.66",
+          "revenue_yoy_percent": "12.4",
+          "cost_yoy_percent": "12.9",
+          "derived_gross_margin_ratio": "0.24326618",
+          "source_table": "主要经济指标（三）",
+          "source_row": 35,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "汽车制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "4253.95",
+          "cost_100m_cny": "3840.61",
+          "revenue_yoy_percent": "1.4",
+          "cost_yoy_percent": "5.3",
+          "derived_gross_margin_ratio": "0.09716616",
+          "source_table": "主要经济指标（三）",
+          "source_row": 36,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "铁路、船舶、航空航天和其他运输设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "764.39",
+          "cost_100m_cny": "653.48",
+          "revenue_yoy_percent": "7.1",
+          "cost_yoy_percent": "7.4",
+          "derived_gross_margin_ratio": "0.14509609",
+          "source_table": "主要经济指标（三）",
+          "source_row": 37,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "电气机械和器材制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "12274.22",
+          "cost_100m_cny": "10190.10",
+          "revenue_yoy_percent": "8.0",
+          "cost_yoy_percent": "8.6",
+          "derived_gross_margin_ratio": "0.16979653",
+          "source_table": "主要经济指标（三）",
+          "source_row": 38,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "计算机、通信和其他电子设备制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "29953.10",
+          "cost_100m_cny": "24347.21",
+          "revenue_yoy_percent": "12.3",
+          "cost_yoy_percent": "11.3",
+          "derived_gross_margin_ratio": "0.18715559",
+          "source_table": "主要经济指标（三）",
+          "source_row": 39,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "仪器仪表制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "989.57",
+          "cost_100m_cny": "739.88",
+          "revenue_yoy_percent": "8.5",
+          "cost_yoy_percent": "8.9",
+          "derived_gross_margin_ratio": "0.25232172",
+          "source_table": "主要经济指标（三）",
+          "source_row": 40,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "其他制造业",
+          "aggregate": false,
+          "revenue_100m_cny": "356.75",
+          "cost_100m_cny": "286.59",
+          "revenue_yoy_percent": "13.4",
+          "cost_yoy_percent": "15.2",
+          "derived_gross_margin_ratio": "0.19666433",
+          "source_table": "主要经济指标（三）",
+          "source_row": 41,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "废弃资源综合利用业",
+          "aggregate": false,
+          "revenue_100m_cny": "581.98",
+          "cost_100m_cny": "548.31",
+          "revenue_yoy_percent": "71.5",
+          "cost_yoy_percent": "73.5",
+          "derived_gross_margin_ratio": "0.05785422",
+          "source_table": "主要经济指标（三）",
+          "source_row": 42,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "金属制品、机械和设备修理业",
+          "aggregate": false,
+          "revenue_100m_cny": "234.99",
+          "cost_100m_cny": "205.84",
+          "revenue_yoy_percent": "17.3",
+          "cost_yoy_percent": "21.9",
+          "derived_gross_margin_ratio": "0.12404783",
+          "source_table": "主要经济指标（三）",
+          "source_row": 43,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "电力、热力、燃气及水生产和供应业",
+          "aggregate": true,
+          "revenue_100m_cny": "6941.52",
+          "cost_100m_cny": "6280.20",
+          "revenue_yoy_percent": "4.0",
+          "cost_yoy_percent": "4.6",
+          "derived_gross_margin_ratio": "0.09527020",
+          "source_table": "主要经济指标（三）",
+          "source_row": 44,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "电力、热力生产和供应业",
+          "aggregate": false,
+          "revenue_100m_cny": "5031.75",
+          "cost_100m_cny": "4591.44",
+          "revenue_yoy_percent": "6.2",
+          "cost_yoy_percent": "7.3",
+          "derived_gross_margin_ratio": "0.08750633",
+          "source_table": "主要经济指标（三）",
+          "source_row": 45,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "燃气生产和供应业",
+          "aggregate": false,
+          "revenue_100m_cny": "1586.02",
+          "cost_100m_cny": "1478.13",
+          "revenue_yoy_percent": "-1.7",
+          "cost_yoy_percent": "-2.1",
+          "derived_gross_margin_ratio": "0.06802562",
+          "source_table": "主要经济指标（三）",
+          "source_row": 46,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        },
+        {
+          "industry": "水的生产和供应业",
+          "aggregate": false,
+          "revenue_100m_cny": "323.75",
+          "cost_100m_cny": "210.64",
+          "revenue_yoy_percent": "0.0",
+          "cost_yoy_percent": "-2.3",
+          "derived_gross_margin_ratio": "0.34937452",
+          "source_table": "主要经济指标（三）",
+          "source_row": 47,
+          "source_columns": {
+            "revenue": 2,
+            "cost": 4
+          }
+        }
+      ]
+    }
+  ]
+}

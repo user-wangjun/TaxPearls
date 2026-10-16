@@ -23,9 +23,11 @@ from functools import wraps
 from pathlib import Path
 from typing import Any, Callable
 
+import openpyxl
+
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
-from fastapi import Cookie, HTTPException, Request, Response
+from fastapi import Cookie, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -156,6 +158,31 @@ def change_staff_password(store, staff: dict[str, Any], old_password: str, new_p
     return {"password_changed": True}
 
 
+def change_student_password(store, student: dict[str, Any], old_password: str,
+                            new_password: str) -> dict[str, Any]:
+    """学生本人修改密码：验证当前密码，更新后清除本人全部会话（需重新登录）。
+
+    与教师改密同口径；学生初始密码为默认口令（Tp#学号2026），首登改密即
+    消除默认口令风险。教师重置入口保留（不验证旧密码，属管理员动作）。"""
+    new_password = _validate_student_password(new_password)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM student_info WHERE id=? AND active=1",
+                         (student["id"],)).fetchone()
+        if not row:
+            raise TrainingPortalError("学生账号不存在或已停用。", 404)
+        try:
+            _passwords.verify(row["password_hash"], old_password or "")
+        except (VerifyMismatchError, InvalidHashError):
+            raise TrainingPortalError("当前密码不正确。", 401) from None
+        if old_password == new_password:
+            raise TrainingPortalError("新密码不能与当前密码相同。")
+        db.execute("UPDATE student_info SET password_hash=? WHERE id=?",
+                   (_passwords.hash(new_password), row["id"]))
+        db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (row["id"],))
+    return {"password_changed": True}
+
+
 # ---------------------------------------------------------------------------
 # 教师端学生名册管理（小范围真实使用：单个添加 + 批量导入）
 # ---------------------------------------------------------------------------
@@ -191,6 +218,7 @@ def create_student(store, college: str, student_no: str, name: str, *,
     password = _validate_student_password(initial_password or f"Tp#{student_no}2026")
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
+        require_student_slot(db, college)  # FR-U06：事务内核销，并发不绕过
         dup = db.execute(
             "SELECT id FROM student_info WHERE college=? AND student_no=?", (college, student_no)
         ).fetchone()
@@ -226,6 +254,79 @@ def import_students(store, college: str, rows: list[dict[str, Any]], *,
     return {"created": created, "skipped": skipped}
 
 
+_XLSX_MAX_ROWS = 1000         # 单次导入数据行上限；超出整体拒绝，请分批
+_XLSX_MAX_BYTES = 2 * 1024 * 1024  # 单文件大小上限（2MB）；超出整体拒绝
+
+
+def _xlsx_cell_text(cells: tuple, index: int | None) -> str:
+    """读取单元格为文本：数字学号（int/整值 float）转为无小数点字符串。"""
+    if index is None or index >= len(cells) or cells[index] is None:
+        return ""
+    value = cells[index]
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value).strip()
+
+
+def parse_student_xlsx(data: bytes, *,
+                       max_bytes: int = _XLSX_MAX_BYTES,
+                       max_rows: int = _XLSX_MAX_ROWS) -> list[dict[str, Any]]:
+    """Excel 名册直读（FR-U03 第二期）：把 .xlsx 名册解析为 import_students 的行。
+
+    边界沿用项目惯例：只读单元格缓存值（data_only=True），不执行公式——公式
+    单元格无缓存按空值处理，不补造；第一行必须是表头且含「学号」「姓名」列
+    （「班级」列可选），不按列序猜测；整行全空的行忽略（与文本导入一致）；
+    文件大小与数据行数超上限整体拒绝，不静默截断。"""
+    if not data:
+        raise TrainingPortalError("文件为空。", 400)
+    if len(data) > max_bytes:
+        raise TrainingPortalError(f"文件超过大小上限（{max_bytes // 1024} KB），请分批导入。", 413)
+    try:
+        workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:
+        # 外部上传的字节流无法保证可解析：zip 损坏（BadZipFile）、旧版 .xls
+        # （InvalidFileException）、缺关键部件（KeyError）等一律按"无法读取"拒绝。
+        raise TrainingPortalError(
+            "无法读取的 Excel 文件，仅支持 .xlsx（旧版 .xls 请先另存为 .xlsx）。", 400) from None
+    try:
+        sheet = workbook.worksheets[0]  # 只读第一个工作表，不按表名猜测
+        data_rows = sheet.iter_rows(values_only=True)
+        header = next(data_rows, None)
+        if header is None:
+            raise TrainingPortalError("工作表为空。", 422)
+        col_no = col_name = col_class = None
+        for index, raw in enumerate(header):
+            text = str(raw or "").strip()
+            if col_no is None and "学号" in text:
+                col_no = index
+            elif col_name is None and "姓名" in text:
+                col_name = index
+            elif col_class is None and "班级" in text:
+                col_class = index
+        if col_no is None or col_name is None:
+            raise TrainingPortalError(
+                "第一行需为表头且包含「学号」和「姓名」列（「班级」列可选）。", 422)
+        rows: list[dict[str, Any]] = []
+        for cells in data_rows:
+            if len(rows) >= max_rows:
+                raise TrainingPortalError(
+                    f"数据行超过单次上限（{max_rows} 行），请分批导入。", 422)
+            student_no = _xlsx_cell_text(cells, col_no)
+            name = _xlsx_cell_text(cells, col_name)
+            class_name = _xlsx_cell_text(cells, col_class)
+            if not student_no and not name and not class_name:
+                continue
+            rows.append({"student_no": student_no, "name": name,
+                         "class_name": class_name or None})
+        if not rows:
+            raise TrainingPortalError("未读取到数据行（表头之外没有有效内容）。", 422)
+        return rows
+    finally:
+        workbook.close()
+
+
 def reset_student_password(store, student_id: str, new_password: str) -> dict[str, Any]:
     password = _validate_student_password(new_password)
     with store.connect() as db:
@@ -252,6 +353,380 @@ def set_student_active(store, student_id: str, active: bool) -> dict[str, Any]:
     return dict(row)
 
 
+# ---- 编程题库（FR-J01 v1：数据模型与管理；判题引擎/沙箱待专项） ----
+
+def list_code_problems(store, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        where = "" if include_inactive else "WHERE p.active=1"
+        rows = db.execute(
+            f"""SELECT p.id, p.college, p.title, p.language, p.time_limit_ms,
+                       p.memory_limit_kb, p.knowledge_point_id, p.active, p.created_at,
+                       (SELECT count(*) FROM code_test_case t WHERE t.problem_id=p.id) AS case_count,
+                       kp.name AS knowledge_point_name
+                FROM code_problem p LEFT JOIN knowledge_point kp ON kp.id=p.knowledge_point_id
+                {where} ORDER BY p.created_at DESC""").fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_code_problem(store, operator_id: str, college: str, title: str, *,
+                        statement: str = "", language: str = "python",
+                        time_limit_ms: int = 5000, memory_limit_kb: int = 65536,
+                        knowledge_point_id: str | None = None,
+                        cases: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    title = (title or "").strip()
+    language = (language or "python").strip().lower()
+    if not title:
+        raise TrainingPortalError("题目标题必填。")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    if language != "python":
+        raise TrainingPortalError("v1 仅支持 python 语言判题环境。")
+    if time_limit_ms not in range(500, 60001):
+        raise TrainingPortalError("时间限制须在 500~60000 毫秒。")
+    if memory_limit_kb not in range(1024, 1048577):
+        raise TrainingPortalError("内存限制须在 1024~1048576 KB。")
+    cleaned_cases = _clean_test_cases(cases)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if knowledge_point_id and not db.execute(
+                "SELECT 1 FROM knowledge_point WHERE id=?", (knowledge_point_id,)).fetchone():
+            raise TrainingPortalError("关联知识点不存在。", 404)
+        pid = str(uuid.uuid4())
+        db.execute(
+            """INSERT INTO code_problem (id, college, title, statement, language,
+                                         time_limit_ms, memory_limit_kb, knowledge_point_id,
+                                         active, created_by, created_at)
+               VALUES (?,?,?,?,?,?,?, ?,1,?,?)""",
+            (pid, college, title, statement or "", language,
+             time_limit_ms, memory_limit_kb, knowledge_point_id, operator_id, _now()))
+        _insert_test_cases(db, pid, cleaned_cases)
+        row = db.execute("SELECT * FROM code_problem WHERE id=?", (pid,)).fetchone()
+        payload = dict(row)
+        payload["case_count"] = len(cleaned_cases)
+        payload["cases"] = cleaned_cases
+    return payload
+
+
+def update_code_problem(store, problem_id: str, fields: dict[str, Any],
+                        cases: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    allowed = {"title", "statement", "language", "time_limit_ms", "memory_limit_kb",
+               "knowledge_point_id", "active"}
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM code_problem WHERE id=?", (problem_id,)).fetchone():
+            raise TrainingPortalError("题目不存在。", 404)
+        if fields.get("language") and fields["language"] != "python":
+            raise TrainingPortalError("v1 仅支持 python 语言判题环境。")
+        sets, params = [], []
+        for key in sorted(allowed & set(fields)):
+            value = fields[key]
+            if key == "title":
+                value = (value or "").strip()
+                if not value:
+                    raise TrainingPortalError("题目标题必填。")
+            sets.append(f"{key}=?")
+            params.append(value)
+        if sets:
+            params.append(problem_id)
+            db.execute(f"UPDATE code_problem SET {', '.join(sets)} WHERE id=?", params)
+        if cases is not None:
+            cleaned = _clean_test_cases(cases)
+            db.execute("DELETE FROM code_test_case WHERE problem_id=?", (problem_id,))
+            _insert_test_cases(db, problem_id, cleaned)
+        row = db.execute("SELECT * FROM code_problem WHERE id=?", (problem_id,)).fetchone()
+        payload = dict(row)
+        payload["case_count"] = db.execute(
+            "SELECT count(*) n FROM code_test_case WHERE problem_id=?",
+            (problem_id,)).fetchone()["n"]
+        payload["cases"] = [dict(r) for r in db.execute(
+            "SELECT seq, input_text, expected_output, weight, sample FROM code_test_case"
+            " WHERE problem_id=? ORDER BY seq", (problem_id,)).fetchall()]
+    return payload
+
+
+def _clean_test_cases(cases: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    cleaned = []
+    for i, c in enumerate(cases or [], start=1):
+        input_text = str(c.get("input_text") or "")
+        expected = str(c.get("expected_output") or "")
+        raw_weight = c.get("weight")
+        weight = 1.0 if raw_weight is None else float(raw_weight)
+        if weight <= 0:
+            raise TrainingPortalError(f"第 {i} 个用例权重必须为正数。")
+        cleaned.append({"seq": i, "input_text": input_text, "expected_output": expected,
+                        "weight": weight, "sample": 1 if c.get("sample") else 0})
+    return cleaned
+
+
+def _insert_test_cases(db, problem_id: str, cases: list[dict[str, Any]]) -> None:
+    for c in cases:
+        db.execute(
+            """INSERT INTO code_test_case (id, problem_id, seq, input_text,
+                                           expected_output, weight, sample, created_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (str(uuid.uuid4()), problem_id, c["seq"], c["input_text"],
+             c["expected_output"], c["weight"], c["sample"], _now()))
+
+
+
+
+_COURSE_SELECT = """
+    SELECT c.id, c.college, c.name, c.semester, c.teacher_id, c.description,
+           c.active, c.created_at,
+           u.display_name AS teacher_name, u.username AS teacher_username
+    FROM course c LEFT JOIN college_user u ON u.id = c.teacher_id
+"""
+
+
+def _course_payload(db, row: sqlite3.Row) -> dict[str, Any]:
+    classes = [r["class_name"] for r in db.execute(
+        "SELECT class_name FROM course_class WHERE course_id=? ORDER BY class_name", (row["id"],))]
+    enrolled = db.execute(
+        """SELECT count(*) n FROM student_info s
+           WHERE s.active=1 AND s.college=? AND s.class_name IN
+           (SELECT class_name FROM course_class WHERE course_id=?)""",
+        (row["college"], row["id"])).fetchone()["n"]
+    return {**dict(row), "classes": classes, "student_count": enrolled}
+
+
+def list_courses(store, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        where = "" if include_inactive else "WHERE c.active=1"
+        rows = db.execute(f"{_COURSE_SELECT} {where} ORDER BY c.created_at DESC").fetchall()
+        return [_course_payload(db, r) for r in rows]
+
+
+# ---- 编程提交与判题（FR-J02 v1 提交加密存储 + J04 教学级引擎） ----
+
+_CODE_SUBMISSION_RATE_SECONDS = 30  # 同学生同题两次提交最小间隔（防刷沙箱）
+
+
+def submit_code(store, problem_id: str, student_id: str, code_text: str) -> dict[str, Any]:
+    code_text = (code_text or "").replace("\r\n", "\n")
+    if not (1 <= len(code_text) <= 65536):
+        raise TrainingPortalError("代码长度须在 1~65536 字符。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        problem = db.execute(
+            "SELECT id, language, time_limit_ms, active FROM code_problem WHERE id=?",
+            (problem_id,)).fetchone()
+        if not problem or not problem["active"]:
+            raise TrainingPortalError("题目不存在或已停用。", 404)
+        if problem["language"] != "python":
+            raise TrainingPortalError("v1 仅支持 python 判题。")
+        recent = db.execute(
+            """SELECT submitted_at FROM code_submission
+               WHERE problem_id=? AND student_id=? ORDER BY submitted_at DESC LIMIT 1""",
+            (problem_id, student_id)).fetchone()
+        if recent:
+            elapsed = (datetime.fromisoformat(_now())
+                       - datetime.fromisoformat(recent["submitted_at"])).total_seconds()
+            if elapsed < _CODE_SUBMISSION_RATE_SECONDS:
+                raise TrainingPortalError(
+                    f"提交过于频繁，同题每 {_CODE_SUBMISSION_RATE_SECONDS} 秒限一次，请稍候。")
+        sid = str(uuid.uuid4())
+        db.execute(
+            """INSERT INTO code_submission (id, problem_id, student_id, language,
+                                            code_text, status, submitted_at)
+               VALUES (?,?,?,?,?, 'pending', ?)""",
+            (sid, problem_id, student_id, problem["language"],
+             db.field_codec.seal(code_text, "code_submission", "code_text", sid),
+             _now()))
+    return judge_submission(store, sid)
+
+
+def judge_submission(store, submission_id: str) -> dict[str, Any]:
+    """教学级判题（J04 v1）：逐用例受限运行并加权计分。
+
+    边界：单进程同步执行（J05 异步队列待专项）；逐字节级比对归一化后
+    进行，浮点容差/多解判定未实现；判题器边界见 code_sandbox.SANDBOX_NOTICE。"""
+    from webapp import code_sandbox
+    with store.connect() as db:
+        submission = db.execute(
+            "SELECT * FROM code_submission WHERE id=?", (submission_id,)).fetchone()
+        if not submission:
+            raise TrainingPortalError("提交不存在。", 404)
+        problem = db.execute(
+            "SELECT time_limit_ms FROM code_problem WHERE id=?",
+            (submission["problem_id"],)).fetchone()
+        code = submission["code_text"]  # 行工厂（attach row handler）已按身份校验并解密
+        cases = [dict(r) for r in db.execute(
+            "SELECT seq, input_text, expected_output, weight FROM code_test_case"
+            " WHERE problem_id=? ORDER BY seq", (submission["problem_id"],)).fetchall()]
+        detail: list[dict[str, Any]] = []
+        passed_weight = 0.0
+        total_weight = 0.0
+        passed_count = 0
+        worst = "accepted"
+        severity = {"accepted": 0, "wrong_answer": 1, "runtime_error": 2, "timeout": 3}
+        for case in cases:
+            run = code_sandbox.run_case(code, case["input_text"],
+                                        time_limit_ms=problem["time_limit_ms"])
+            ok = run["status"] == "ok" and code_sandbox.judge_output(
+                run["output"], case["expected_output"])
+            total_weight += float(case["weight"])
+            if ok:
+                passed_weight += float(case["weight"])
+                passed_count += 1
+            else:
+                status = run["status"] if run["status"] in (
+                    code_sandbox.STATUS_RUNTIME_ERROR, code_sandbox.STATUS_TIMEOUT) \
+                    else code_sandbox.STATUS_WRONG
+                if severity[status] > severity[worst]:
+                    worst = status
+            detail.append({
+                "seq": case["seq"], "passed": ok,
+                "runtime_ms": run["runtime_ms"],
+                "run_status": run["status"],
+                "output_excerpt": run["output"][:512],
+            })
+        total_score = round(passed_weight / total_weight * 100, 2) if total_weight else 0.0
+        final_status = worst if passed_count < len(cases) else "accepted"
+        if not cases:
+            final_status = "judgement_failed"
+            detail = [{"error": "题目没有配置测试用例，无法判题。"}]
+        rid = str(uuid.uuid4())
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            """INSERT INTO code_judge_result (id, submission_id, status, total_score,
+                                              passed_count, case_count, detail_json, judged_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (rid, submission_id, final_status, total_score, passed_count,
+             len(cases), json.dumps(detail, ensure_ascii=False), _now()))
+        db.execute("UPDATE code_submission SET status='judged' WHERE id=?", (submission_id,))
+        row = db.execute("SELECT * FROM code_judge_result WHERE id=?", (rid,)).fetchone()
+    return {**dict(row), "detail": json.loads(row["detail_json"]),
+            "sandbox_notice": code_sandbox.SANDBOX_NOTICE}
+
+
+def _submission_view(row: sqlite3.Row, include_code: bool = False) -> dict[str, Any]:
+    payload = {key: row[key] for key in
+               ("id", "problem_id", "student_id", "language", "status", "submitted_at")}
+    if include_code:
+        payload["code_text"] = row["code_text"]  # 行工厂已解密（codec row handler）
+    return payload
+
+
+def list_code_submissions(store, *, problem_id: str | None = None,
+                          student_id: str | None = None,
+                          include_code: bool = False,
+                          limit: int = 50) -> list[dict[str, Any]]:
+    clauses, params = [], []
+    if problem_id:
+        clauses.append("s.problem_id=?"); params.append(problem_id)
+    if student_id:
+        clauses.append("s.student_id=?"); params.append(student_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(max(1, min(int(limit), 200)))
+    out = []
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT s.*, r.status AS judge_status, r.total_score,
+                       r.passed_count, r.case_count, r.judged_at
+                FROM code_submission s
+                LEFT JOIN code_judge_result r ON r.submission_id = s.id
+                {where} ORDER BY s.submitted_at DESC LIMIT ?""", params).fetchall()
+        for row in rows:
+            view = {key: row[key] for key in
+                    ("id", "problem_id", "student_id", "language", "status", "submitted_at")}
+            view["judge"] = None if row["judge_status"] is None else {
+                "status": row["judge_status"], "total_score": row["total_score"],
+                "passed_count": row["passed_count"], "case_count": row["case_count"],
+                "judged_at": row["judged_at"]}
+            if include_code:
+                view["code_text"] = row["code_text"]  # 行工厂（attach row handler）已解密
+            out.append(view)
+    return out
+
+
+
+
+# ---- 课程管理（FR-U04 v1：课程绑定教师与班级，支持同课多班） ----
+
+def create_course(store, operator_id: str, college: str, name: str, *,
+                  semester: str | None = None, teacher_id: str | None = None,
+                  class_names: list[str] | None = None,
+                  description: str | None = None) -> dict[str, Any]:
+    name = (name or "").strip()
+    semester = (semester or "").strip() or None
+    if not name:
+        raise TrainingPortalError("课程名称必填。")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if teacher_id and not db.execute(
+                "SELECT 1 FROM college_user WHERE id=? AND active=1", (teacher_id,)).fetchone():
+            raise TrainingPortalError("授课教师不存在或已停用。", 404)
+        dup = db.execute(
+            """SELECT id FROM course WHERE college=? AND name=? AND IFNULL(semester,'')=? AND active=1""",
+            (college, name, semester or "")).fetchone()
+        if dup:
+            raise TrainingPortalError(f"同院校同学期已存在开设中的课程「{name}」。")
+        cid = str(uuid.uuid4())
+        db.execute(
+            """INSERT INTO course (id, college, name, semester, teacher_id, description,
+                                   active, created_at, created_by)
+               VALUES (?,?,?,?,?,?,1,?,?)""",
+            (cid, college, name, semester, teacher_id,
+             (description or "").strip() or None, _now(), operator_id))
+        for cn in sorted({(c or "").strip() for c in (class_names or []) if (c or "").strip()}):
+            db.execute("INSERT INTO course_class (course_id, class_name) VALUES (?,?)", (cid, cn))
+        row = db.execute(f"{_COURSE_SELECT} WHERE c.id=?", (cid,)).fetchone()
+        return _course_payload(db, row)
+
+
+def update_course(store, course_id: str, fields: dict[str, Any],
+                  class_names: list[str] | None = None) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        if not db.execute("SELECT 1 FROM course WHERE id=?", (course_id,)).fetchone():
+            raise TrainingPortalError("课程不存在。", 404)
+        if "teacher_id" in fields and fields["teacher_id"]:
+            if not db.execute("SELECT 1 FROM college_user WHERE id=? AND active=1",
+                              (fields["teacher_id"],)).fetchone():
+                raise TrainingPortalError("授课教师不存在或已停用。", 404)
+        sets, params = [], []
+        for key in ("name", "semester", "teacher_id", "description", "active"):
+            if key in fields and fields[key] is not None:
+                value = fields[key]
+                if key in ("name", "description"):
+                    value = (value or "").strip() or None
+                elif key == "semester":
+                    value = (value or "").strip() or None
+                sets.append(f"{key}=?")
+                params.append(value)
+        if sets:
+            params.append(course_id)
+            db.execute(f"UPDATE course SET {', '.join(sets)} WHERE id=?", params)
+        if class_names is not None:
+            cleaned = sorted({(c or "").strip() for c in class_names if (c or "").strip()})
+            db.execute("DELETE FROM course_class WHERE course_id=?", (course_id,))
+            for cn in cleaned:
+                db.execute("INSERT INTO course_class (course_id, class_name) VALUES (?,?)",
+                           (course_id, cn))
+        row = db.execute(f"{_COURSE_SELECT} WHERE c.id=?", (course_id,)).fetchone()
+        return _course_payload(db, row)
+
+
+def course_roster(store, course_id: str) -> dict[str, Any]:
+    """课程花名册：按绑定班级聚合在读学生（同院校口径，含同课多班去重）。"""
+    with store.connect() as db:
+        course = db.execute("SELECT id, name, college FROM course WHERE id=?", (course_id,)).fetchone()
+        if not course:
+            raise TrainingPortalError("课程不存在。", 404)
+        students = db.execute(
+            """SELECT DISTINCT s.student_no, s.name, s.class_name
+               FROM course_class cc
+               JOIN student_info s ON s.class_name = cc.class_name
+                    AND s.active=1 AND s.college=?
+               WHERE cc.course_id=? ORDER BY s.student_no""",
+            (course["college"], course_id)).fetchall()
+    return {"course": {"id": course["id"], "name": course["name"]},
+            "students": [dict(r) for r in students],
+            "count": len(students)}
+
+
 # ---- 班级与教师名册（FR-U03 第一期：班级统计 / 整建制迁移 / 教师批量导入） ----
 
 def list_classes(store, college: str) -> list[dict[str, Any]]:
@@ -265,6 +740,79 @@ def list_classes(store, college: str) -> list[dict[str, Any]]:
                WHERE college=? AND class_name IS NOT NULL AND TRIM(class_name) != ''
                GROUP BY class_name ORDER BY class_name""", (college,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def college_overview(store, college: str) -> dict[str, Any]:
+    """院校教学概况（FR-U05 简化版，管理员只读聚合）。
+
+    口径对账：班级沿用 list_classes（FR-U03 同口径），课程沿用课程管理
+    （FR-U04 同口径），跨层级数字可相互核对。边界如实说明：组织架构多层
+    （院系/专业）属 FR-U01 未建；考证内容层（知识点/标注/关联）为全平台
+    共享数据，不按院校隔离；不含作答明细下钻（个人档案本人隔离）。"""
+    with store.connect() as db:
+        students_total = db.execute(
+            "SELECT count(*) n FROM student_info WHERE college=?", (college,)).fetchone()["n"]
+        students_active = db.execute(
+            "SELECT count(*) n FROM student_info WHERE college=? AND active=1",
+            (college,)).fetchone()["n"]
+        teachers = db.execute(
+            "SELECT count(*) n FROM college_user WHERE college=? AND active=1",
+            (college,)).fetchone()["n"]
+        courses = db.execute(
+            """SELECT c.id, c.name, c.semester, c.active,
+                      u.display_name AS teacher_name,
+                      (SELECT count(*) FROM course_class cc WHERE cc.course_id=c.id) AS class_count,
+                      (SELECT count(*) FROM student_info s WHERE s.active=1 AND s.college=c.college
+                        AND s.class_name IN
+                            (SELECT class_name FROM course_class cc2 WHERE cc2.course_id=c.id))
+                      AS student_count
+               FROM course c LEFT JOIN college_user u ON u.id = c.teacher_id
+               WHERE c.college=? ORDER BY c.created_at DESC""", (college,)).fetchall()
+        content = {
+            "knowledge_points": db.execute(
+                "SELECT count(*) n FROM knowledge_point WHERE active=1").fetchone()["n"],
+            "linked_points": db.execute(
+                "SELECT count(DISTINCT knowledge_point_id) n FROM knowledge_point_link").fetchone()["n"],
+            "high_freq_marks": db.execute(
+                "SELECT count(*) n FROM knowledge_point_mark").fetchone()["n"],
+        }
+        departments = []
+        for d in db.execute(
+                """SELECT id, name FROM college_department
+                   WHERE college=? AND archived=0 ORDER BY name""", (college,)).fetchall():
+            dclasses = [r["name"] for r in db.execute(
+                """SELECT name FROM college_class
+                   WHERE college=? AND department_id=? AND archived=0 ORDER BY name""",
+                (college, d["id"])).fetchall()]
+            roster = 0
+            courses_covered = 0
+            if dclasses:
+                marks = ",".join("?" * len(dclasses))
+                roster = db.execute(
+                    f"""SELECT count(*) n FROM student_info
+                        WHERE college=? AND active=1 AND class_name IN ({marks})""",
+                    (college, *dclasses)).fetchone()["n"]
+                courses_covered = db.execute(
+                    f"""SELECT count(DISTINCT cc.course_id) n FROM course_class cc
+                        JOIN course c ON c.id=cc.course_id AND c.college=? AND c.active=1
+                        WHERE cc.class_name IN ({marks})""",
+                    (college, *dclasses)).fetchone()["n"]
+            departments.append({
+                "id": d["id"], "name": d["name"], "classes": len(dclasses),
+                "students": roster, "courses_covered": courses_covered,
+            })
+    return {
+        "college": college,
+        "students": {"total": students_total, "active": students_active},
+        "teachers": teachers,
+        "classes": list_classes(store, college),
+        "courses": [dict(r) for r in courses],
+        "departments": departments,
+        "content": content,
+        "scope_note": "班级/课程按院校聚合；考证内容层为全平台共享数据，不按院校隔离；"
+                      "院系聚合基于组织架构实体（FR-U01），实体班级与名册文本班级的对齐"
+                      "情况以班级名匹配为准；校级管理员（FR-U02）为只读视图。",
+    }
 
 
 def migrate_class(store, changed_by: str, college: str, from_class: str, to_class: str) -> dict[str, Any]:
@@ -311,13 +859,561 @@ def list_class_history(store, college: str, *, limit: int = 50) -> list[dict[str
     return [dict(r) for r in rows]
 
 
+# ---- 高校组织架构（FR-U01 第一期：院系 / 学年学期 / 班级实体） ----
+#
+# 与现有两层模型并存：student_info.class_name 文本名册与既有作业数据归属
+# 一律不改写；班级实体作为注册表经 (college, name) 对齐在读人数。写操作
+# 仅限实训管理员（与教师批量导入同权限语义），教师只读。
+
+class OrgDepartmentCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    name: str
+
+
+class OrgNamePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    archived: bool | None = None
+
+
+class OrgTermCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    name: str
+    start_date: str | None = None
+    end_date: str | None = None
+    is_current: bool = False
+
+
+class OrgTermPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    is_current: bool | None = None
+    archived: bool | None = None
+
+
+class OrgClassCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    name: str
+    department_id: str | None = None
+    term_id: str | None = None
+
+
+class OrgClassPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    department_id: str | None = None
+    term_id: str | None = None
+    archived: bool | None = None
+
+
+class OrgClassClone(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    term_id: str
+    name: str | None = None
+
+
+def _iso_date_or_none(value: str | None, field: str) -> str | None:
+    value = (value or "").strip() or None
+    if value is None:
+        return None
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise TrainingPortalError(f"{field}须为 YYYY-MM-DD 格式。") from None
+
+
+def _org_name(value: str, what: str) -> str:
+    value = (value or "").strip()
+    if not value:
+        raise TrainingPortalError(f"{what}名称必填。")
+    return value
+
+
+def list_departments(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
+    """院系列表，附引用班级数（删除保护提示用）。"""
+    where = "" if include_archived else "AND d.archived=0"
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT d.id, d.college, d.name, d.archived, d.created_at,
+                      count(c.id) AS classes
+               FROM college_department d
+               LEFT JOIN college_class c ON c.department_id = d.id
+               WHERE d.college=? {where}
+               GROUP BY d.id
+               ORDER BY d.archived, d.name""", (college,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_department(store, college: str, name: str) -> dict[str, Any]:
+    college = (college or "").strip()
+    name = _org_name(name, "院系")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        dup = db.execute("SELECT id FROM college_department WHERE college=? AND name=?",
+                         (college, name)).fetchone()
+        if dup:
+            raise TrainingPortalError(f"该院系下已存在「{name}」。", 409)
+        did = str(uuid.uuid4())
+        db.execute("INSERT INTO college_department (id, college, name, archived, created_at)"
+                   " VALUES (?,?,?,0,?)", (did, college, name, _now()))
+        row = db.execute("SELECT * FROM college_department WHERE id=?", (did,)).fetchone()
+    return dict(row)
+
+
+def _update_archived(db, table: str, row_id: str, archived: bool | None) -> None:
+    if archived is not None:
+        db.execute(f"UPDATE {table} SET archived=? WHERE id=?", (1 if archived else 0, row_id))
+
+
+def update_department(store, department_id: str, *, name: str | None = None,
+                      archived: bool | None = None) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_department WHERE id=?", (department_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("院系不存在。", 404)
+        if name is not None:
+            name = _org_name(name, "院系")
+            dup = db.execute(
+                "SELECT id FROM college_department WHERE college=? AND name=? AND id!=?",
+                (row["college"], name, department_id)).fetchone()
+            if dup:
+                raise TrainingPortalError(f"该院系下已存在「{name}」。", 409)
+            db.execute("UPDATE college_department SET name=? WHERE id=?", (name, department_id))
+        _update_archived(db, "college_department", department_id, archived)
+        row = db.execute("SELECT * FROM college_department WHERE id=?", (department_id,)).fetchone()
+    return dict(row)
+
+
+def delete_department(store, department_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_department WHERE id=?", (department_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("院系不存在。", 404)
+        used = db.execute("SELECT count(*) n FROM college_class WHERE department_id=?",
+                          (department_id,)).fetchone()["n"]
+        if used:
+            raise TrainingPortalError(f"该院系仍被 {used} 个班级引用，请先调整班级归属或归档院系。", 409)
+        db.execute("DELETE FROM college_department WHERE id=?", (department_id,))
+    return {"deleted": True, "id": department_id}
+
+
+def list_terms(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
+    where = "" if include_archived else "AND t.archived=0"
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT t.id, t.college, t.name, t.start_date, t.end_date, t.is_current,
+                       t.archived, t.created_at, count(c.id) AS classes
+                FROM college_term t
+                LEFT JOIN college_class c ON c.term_id = t.id
+                WHERE t.college=? {where}
+                GROUP BY t.id
+                ORDER BY t.archived, t.name""", (college,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_term(store, college: str, name: str, *, start_date: str | None = None,
+                end_date: str | None = None, is_current: bool = False) -> dict[str, Any]:
+    college = (college or "").strip()
+    name = _org_name(name, "学期")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    start_date = _iso_date_or_none(start_date, "开始日期")
+    end_date = _iso_date_or_none(end_date, "结束日期")
+    if start_date and end_date and end_date < start_date:
+        raise TrainingPortalError("结束日期不能早于开始日期。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        dup = db.execute("SELECT id FROM college_term WHERE college=? AND name=?",
+                         (college, name)).fetchone()
+        if dup:
+            raise TrainingPortalError(f"已存在学期「{name}」。", 409)
+        if is_current:
+            db.execute("UPDATE college_term SET is_current=0 WHERE college=?", (college,))
+        tid = str(uuid.uuid4())
+        db.execute("INSERT INTO college_term (id, college, name, start_date, end_date,"
+                   " is_current, archived, created_at) VALUES (?,?,?,?,?,?,0,?)",
+                   (tid, college, name, start_date, end_date, 1 if is_current else 0, _now()))
+        row = db.execute("SELECT * FROM college_term WHERE id=?", (tid,)).fetchone()
+    return dict(row)
+
+
+def update_term(store, term_id: str, *, name: str | None = None, start_date: str | None = None,
+                end_date: str | None = None, is_current: bool | None = None,
+                archived: bool | None = None) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("学期不存在。", 404)
+        if name is not None:
+            name = _org_name(name, "学期")
+            dup = db.execute("SELECT id FROM college_term WHERE college=? AND name=? AND id!=?",
+                             (row["college"], name, term_id)).fetchone()
+            if dup:
+                raise TrainingPortalError(f"已存在学期「{name}」。", 409)
+            db.execute("UPDATE college_term SET name=? WHERE id=?", (name, term_id))
+        if start_date is not None or end_date is not None:
+            new_start = _iso_date_or_none(start_date, "开始日期") if start_date is not None else row["start_date"]
+            new_end = _iso_date_or_none(end_date, "结束日期") if end_date is not None else row["end_date"]
+            if new_start and new_end and new_end < new_start:
+                raise TrainingPortalError("结束日期不能早于开始日期。")
+            db.execute("UPDATE college_term SET start_date=?, end_date=? WHERE id=?",
+                       (new_start, new_end, term_id))
+        if is_current:
+            db.execute("UPDATE college_term SET is_current=0 WHERE college=?", (row["college"],))
+        if is_current is not None:
+            db.execute("UPDATE college_term SET is_current=? WHERE id=?",
+                       (1 if is_current else 0, term_id))
+        _update_archived(db, "college_term", term_id, archived)
+        row = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+    return dict(row)
+
+
+def delete_term(store, term_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("学期不存在。", 404)
+        used = db.execute("SELECT count(*) n FROM college_class WHERE term_id=?",
+                          (term_id,)).fetchone()["n"]
+        if used:
+            raise TrainingPortalError(f"该学期仍被 {used} 个班级引用，请先调整班级归属或归档学期。", 409)
+        db.execute("DELETE FROM college_term WHERE id=?", (term_id,))
+    return {"deleted": True, "id": term_id}
+
+
+def _class_unique_check(db, college: str, name: str, term_id: str | None,
+                        exclude_id: str | None = None) -> None:
+    """同院校 + 同班级名 + 同学期唯一（term_id 为空时同样查重，补 SQLite NULL 语义）。"""
+    params: list[Any] = [college, name]
+    where = "college=? AND name=?"
+    if term_id:
+        where += " AND term_id=?"
+        params.append(term_id)
+    else:
+        where += " AND term_id IS NULL"
+    if exclude_id:
+        where += " AND id!=?"
+        params.append(exclude_id)
+    dup = db.execute(f"SELECT id FROM college_class WHERE {where}", params).fetchone()
+    if dup:
+        raise TrainingPortalError(f"同学期下已存在班级「{name}」。", 409)
+
+
+def _org_ref_check(db, college: str, department_id: str | None,
+                   term_id: str | None) -> tuple[str | None, str | None]:
+    """引用的院系/学期必须存在且属于同院校（跨院校引用拒绝）。"""
+    if department_id:
+        row = db.execute("SELECT id FROM college_department WHERE id=?", (department_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("院系不存在。", 404)
+        own = db.execute("SELECT college FROM college_department WHERE id=?", (department_id,)).fetchone()
+        if own["college"] != college:
+            raise TrainingPortalError("院系属于其他院校。", 422)
+    if term_id:
+        own = db.execute("SELECT college FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not own:
+            raise TrainingPortalError("学期不存在。", 404)
+        if own["college"] != college:
+            raise TrainingPortalError("学期属于其他院校。", 422)
+    return department_id, term_id
+
+
+def list_org_classes(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
+    """班级实体列表：对齐文本名册统计在读人数，不改写学生归属。"""
+    where = "" if include_archived else "AND c.archived=0"
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT c.id, c.college, c.name, c.department_id, c.term_id, c.archived,
+                       c.created_at, d.name AS department_name, t.name AS term_name,
+                       (SELECT count(*) FROM student_info s
+                        WHERE s.college=c.college AND s.class_name=c.name AND s.active=1)
+                       AS active_students
+                FROM college_class c
+                LEFT JOIN college_department d ON d.id=c.department_id
+                LEFT JOIN college_term t ON t.id=c.term_id
+                WHERE c.college=? {where}
+                ORDER BY c.archived, c.name""", (college,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_org_class(store, college: str, name: str, *, department_id: str | None = None,
+                 term_id: str | None = None) -> dict[str, Any]:
+    college = (college or "").strip()
+    name = _org_name(name, "班级")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        department_id, term_id = _org_ref_check(db, college, (department_id or "").strip() or None,
+                                                (term_id or "").strip() or None)
+        _class_unique_check(db, college, name, term_id)
+        cid = str(uuid.uuid4())
+        db.execute("INSERT INTO college_class (id, college, name, department_id, term_id,"
+                   " archived, created_at) VALUES (?,?,?,?,?,0,?)",
+                   (cid, college, name, department_id, term_id, _now()))
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (cid,)).fetchone()
+    return dict(row)
+
+
+def update_org_class(store, class_id: str, *, name: str | None = None,
+                 department_id: str | None = None, term_id: str | None = None,
+                 archived: bool | None = None) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("班级不存在。", 404)
+        new_name = _org_name(name, "班级") if name is not None else row["name"]
+        new_department = row["department_id"]
+        new_term = row["term_id"]
+        if department_id is not None or term_id is not None:
+            if department_id is not None:
+                new_department = department_id.strip() or None
+            if term_id is not None:
+                new_term = term_id.strip() or None
+            new_department, new_term = _org_ref_check(db, row["college"], new_department, new_term)
+        _class_unique_check(db, row["college"], new_name, new_term, exclude_id=class_id)
+        db.execute("UPDATE college_class SET name=?, department_id=?, term_id=? WHERE id=?",
+                   (new_name, new_department, new_term, class_id))
+        _update_archived(db, "college_class", class_id, archived)
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
+    return dict(row)
+
+
+def delete_org_class(store, class_id: str) -> dict[str, Any]:
+    """班级实体只是注册表，学生名册不受影响；直接删除并返回。"""
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("班级不存在。", 404)
+        db.execute("DELETE FROM college_class WHERE id=?", (class_id,))
+    return {"deleted": True, "id": class_id}
+
+
+def clone_org_class(store, class_id: str, *, term_id: str, name: str | None = None) -> dict[str, Any]:
+    """班级按学期重建：复制实体元数据到新学期（学生名册不动，归属调整走 U03 迁移）。"""
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("班级不存在。", 404)
+        term_id = (term_id or "").strip()
+        _org_ref_check(db, row["college"], None, term_id)
+        term = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if term_id == row["term_id"]:
+            raise TrainingPortalError("目标学期与班级当前学期相同。", 422)
+        new_name = _org_name(name, "班级") if name is not None else row["name"]
+        _class_unique_check(db, row["college"], new_name, term_id)
+        cid = str(uuid.uuid4())
+        db.execute("INSERT INTO college_class (id, college, name, department_id, term_id,"
+                   " archived, created_at) VALUES (?,?,?,?,?,0,?)",
+                   (cid, row["college"], new_name, row["department_id"], term_id, _now()))
+        new_row = db.execute("SELECT * FROM college_class WHERE id=?", (cid,)).fetchone()
+    return {"class": dict(new_row), "cloned_from": class_id, "term_name": term["name"]}
+
+
+# ---- 院校席位与配额（FR-U06）：师生分席、事务内核销、调整留痕 ----
+#
+# 无配额记录的院校按默认档放行（不阻塞既有部署）；一旦配置即按记录执行。
+# 核销必须在 BEGIN IMMEDIATE 写事务内 count-check-insert（SQLite 单写者
+# 串行化，并发不绕过——与 platform members.require_slot 同模式）。
+
+_DEFAULT_TEACHER_QUOTA = 10
+_DEFAULT_STUDENT_QUOTA = 200
+_QUOTA_UPPER = 10000
+
+
+class OrgQuotaPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    teacher_quota: int
+    student_quota: int
+    revision: int
+
+
+def college_quota_state(db, college: str) -> dict[str, Any]:
+    """用量与配额快照（可在已持有的写事务内调用，供核销判定）。"""
+    row = db.execute("SELECT teacher_quota, student_quota, revision FROM college_quota"
+                     " WHERE college=?", (college,)).fetchone()
+    teachers = db.execute("SELECT count(*) FROM college_user"
+                          " WHERE college=? AND active=1 AND role='teacher'",
+                          (college,)).fetchone()[0]
+    students = db.execute("SELECT count(*) FROM student_info WHERE college=? AND active=1",
+                          (college,)).fetchone()[0]
+    tq = row["teacher_quota"] if row else _DEFAULT_TEACHER_QUOTA
+    sq = row["student_quota"] if row else _DEFAULT_STUDENT_QUOTA
+    return {"college": college, "configured": bool(row),
+            "teacher_quota": tq, "student_quota": sq,
+            "teachers_used": teachers, "students_used": students,
+            "teacher_remaining": max(0, tq - teachers), "student_remaining": max(0, sq - students),
+            "revision": row["revision"] if row else 0}
+
+
+def require_teacher_slot(db, college: str) -> None:
+    state = college_quota_state(db, college)
+    if state["teacher_remaining"] < 1:
+        raise TrainingPortalError(
+            f"教师席位已满（{state['teachers_used']}/{state['teacher_quota']}），"
+            "请先停用不用的教师账号或调整院校配额。", 409)
+
+
+def require_student_slot(db, college: str) -> None:
+    state = college_quota_state(db, college)
+    if state["student_remaining"] < 1:
+        raise TrainingPortalError(
+            f"学生席位已满（{state['students_used']}/{state['student_quota']}），"
+            "请先停用不用的学生或调整院校配额。", 409)
+
+
+def college_quota_overview(store, college: str, *, history_limit: int = 10) -> dict[str, Any]:
+    college = (college or "").strip()
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        state = college_quota_state(db, college)
+        hist = [dict(r) for r in db.execute(
+            """SELECT h.old_teacher_quota, h.old_student_quota, h.new_teacher_quota,
+                      h.new_student_quota, h.created_at, u.display_name AS changed_by_name
+               FROM college_quota_history h LEFT JOIN college_user u ON u.id=h.changed_by
+               WHERE h.college=? ORDER BY h.created_at DESC, h.rowid DESC LIMIT ?""",
+            (college, max(1, min(int(history_limit), 50)))).fetchall()]
+    state["history"] = hist
+    return state
+
+
+def set_college_quota(store, actor_id: str, college: str, teacher_quota: int,
+                      student_quota: int, revision: int) -> dict[str, Any]:
+    """调整院校配额：revision 乐观锁、不得低于当前用量、逐次留痕。"""
+    college = (college or "").strip()
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    for value, label in ((teacher_quota, "教师"), (student_quota, "学生")):
+        if not isinstance(value, int) or not 1 <= value <= _QUOTA_UPPER:
+            raise TrainingPortalError(f"{label}配额须为 1–{_QUOTA_UPPER} 的整数。", 422)
+    if not isinstance(revision, int) or revision < 0:
+        raise TrainingPortalError("版本信息无效，请刷新后重试。", 422)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT teacher_quota, student_quota, revision FROM college_quota"
+                         " WHERE college=?", (college,)).fetchone()
+        current_rev = row["revision"] if row else 0
+        if current_rev != revision:
+            raise TrainingPortalError("配额配置已变化，请刷新后重试。", 409)
+        state = college_quota_state(db, college)
+        if teacher_quota < state["teachers_used"]:
+            raise TrainingPortalError(
+                f"教师配额不能低于当前在读教师数（{state['teachers_used']}）。", 422)
+        if student_quota < state["students_used"]:
+            raise TrainingPortalError(
+                f"学生配额不能低于当前在读学生数（{state['students_used']}）。", 422)
+        now = _now()
+        db.execute("""INSERT INTO college_quota
+                      (college, teacher_quota, student_quota, revision, updated_by, updated_at)
+                      VALUES (?,?,?,?,?,?)
+                      ON CONFLICT(college) DO UPDATE SET
+                      teacher_quota=excluded.teacher_quota, student_quota=excluded.student_quota,
+                      revision=college_quota.revision+1, updated_by=excluded.updated_by,
+                      updated_at=excluded.updated_at""",
+                   (college, teacher_quota, student_quota, current_rev + 1, actor_id, now))
+        db.execute("""INSERT INTO college_quota_history
+                      (id, college, old_teacher_quota, old_student_quota,
+                       new_teacher_quota, new_student_quota, changed_by, created_at)
+                      VALUES (?,?,?,?,?,?,?,?)""",
+                   (str(uuid.uuid4()), college,
+                    row["teacher_quota"] if row else None,
+                    row["student_quota"] if row else None,
+                    teacher_quota, student_quota, actor_id, now))
+        state = college_quota_state(db, college)
+    return state
+
+
+# ---- 学期名册快照（FR-U01 第二期）：按学期冻结在读归属，供历史回溯 ----
+#
+# 快照语义 = 重拍时刻该院校全部在读学生的班级归属；重拍覆盖更新（同一
+# 学期每人一条，UNIQUE(term_id, student_id)）；已停用或未分班学生不入
+# 快照。归属变更审计链另有 roster_class_history，两者互不替代。
+
+def take_roster_snapshot(store, actor_id: str, term_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        term = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not term:
+            raise TrainingPortalError("学期不存在。", 404)
+        students = db.execute(
+            """SELECT id, class_name FROM student_info
+               WHERE college=? AND active=1 AND class_name IS NOT NULL AND TRIM(class_name)!=''""",
+            (term["college"],)).fetchall()
+        now = _now()
+        existing = {r["student_id"]: r["id"] for r in db.execute(
+            "SELECT id, student_id FROM college_roster_snapshot WHERE term_id=?",
+            (term_id,)).fetchall()}
+        inserted = updated = 0
+        keep = set()
+        for s in students:
+            keep.add(s["id"])
+            if s["id"] in existing:
+                db.execute(
+                    "UPDATE college_roster_snapshot SET class_name=?, taken_by=?, taken_at=? WHERE id=?",
+                    (s["class_name"], actor_id, now, existing[s["id"]]))
+                updated += 1
+            else:
+                db.execute(
+                    """INSERT INTO college_roster_snapshot
+                       (id, college, term_id, student_id, class_name, taken_by, taken_at)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()), term["college"], term_id, s["id"],
+                     s["class_name"], actor_id, now))
+                inserted += 1
+        removed = 0
+        for sid, row_id in existing.items():
+            if sid not in keep:  # 重拍时已停用/未分班的学生移出快照
+                db.execute("DELETE FROM college_roster_snapshot WHERE id=?", (row_id,))
+                removed += 1
+    return {"term_id": term_id, "term_name": term["name"], "snapshotted": len(students),
+            "inserted": inserted, "updated": updated, "removed": removed}
+
+
+def view_roster_snapshot(store, term_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        term = db.execute("SELECT * FROM college_term WHERE id=?", (term_id,)).fetchone()
+        if not term:
+            raise TrainingPortalError("学期不存在。", 404)
+        rows = db.execute(
+            """SELECT r.class_name, s.student_no, s.name, r.taken_at
+               FROM college_roster_snapshot r JOIN student_info s ON s.id=r.student_id
+               WHERE r.term_id=? ORDER BY r.class_name, s.student_no""", (term_id,)).fetchall()
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        groups.setdefault(r["class_name"], []).append(
+            {"student_no": r["student_no"], "name": r["name"]})
+    return {"term_id": term_id, "term_name": term["name"],
+            "taken_at": max((r["taken_at"] for r in rows), default=None),
+            "total": len(rows),
+            "classes": [{"class_name": k, "students": v} for k, v in sorted(groups.items())]}
+
+
 def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
-                       default_password: str, created_by: str) -> dict[str, Any]:
-    """批量建教师账号（FR-U03）；仅管理员可调用（路由层强制）。
+                       default_password: str, created_by: str,
+                       role: str = "teacher") -> dict[str, Any]:
+    """批量建教师/校级管理员账号（FR-U03/FR-U02）；仅管理员可调用（路由层强制）。
 
     逐行导入，单行失败不中断整批；重复/错误行带原因返回，不部分静默成功。
-    批量导入只建 teacher 角色；admin 账号仍走人工建立，避免批量提权。"""
+    role 限 teacher / school_admin；admin 账号仍走人工建立，避免批量提权。"""
     _validate_student_password(default_password)
+    if role not in ("teacher", "school_admin"):
+        raise TrainingPortalError("role 仅支持 teacher 或 school_admin（admin 走人工建立）。")
     college = (college or "").strip()
     if not college:
         raise TrainingPortalError("院校必填。")
@@ -334,22 +1430,28 @@ def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
         if not display_name:
             skipped.append({"line": index, "username": line_no, "reason": "姓名必填。"})
             continue
-        with store.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
-            dup = db.execute("SELECT id FROM college_user WHERE username=?", (username,)).fetchone()
-            if dup:
-                skipped.append({"line": index, "username": line_no,
-                                "reason": "登录名已存在（全局唯一）。"})
-                continue
-            uid = str(uuid.uuid4())
-            db.execute(
-                """INSERT INTO college_user
-                   (id, username, password_hash, display_name, college, department, email, phone,
-                    role, active, created_at)
-                   VALUES (?,?,?,?,?,NULL,?,?, 'teacher', 1, ?)""",
-                (uid, username, _passwords.hash(default_password), display_name, college,
-                 (str(row.get("email") or "").strip() or None),
-                 (str(row.get("phone") or "").strip() or None), _now()))
+        try:
+            with store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                require_teacher_slot(db, college)  # FR-U06：事务内核销，并发不绕过（教师/校级管理员同槽）
+                dup = db.execute("SELECT id FROM college_user WHERE username=?", (username,)).fetchone()
+                if dup:
+                    skipped.append({"line": index, "username": line_no,
+                                    "reason": "登录名已存在（全局唯一）。"})
+                    continue
+                uid = str(uuid.uuid4())
+                db.execute(
+                    """INSERT INTO college_user
+                       (id, username, password_hash, display_name, college, department, email, phone,
+                        role, active, created_at)
+                       VALUES (?,?,?,?,?,NULL,?,?, ?, 1, ?)""",
+                    (uid, username, _passwords.hash(default_password), display_name, college,
+                     (str(row.get("email") or "").strip() or None),
+                     (str(row.get("phone") or "").strip() or None), role, _now()))
+        except TrainingPortalError as exc:
+            # 席位已满等可预见原因按行跳过，不中断整批（不部分静默成功）。
+            skipped.append({"line": index, "username": line_no, "reason": str(exc)})
+            continue
         created.append({"id": uid, "username": username, "display_name": display_name})
     return {"created": created, "skipped": skipped}
 
@@ -538,7 +1640,7 @@ def staff_for_token(store, token: str | None) -> dict[str, Any] | None:
                WHERE t.token_hash=? AND t.expires_at>=?""",
             (_hash_token(token), _now()),
         ).fetchone()
-    if not row or not row["active"] or row["role"] not in ("teacher", "admin"):
+    if not row or not row["active"] or row["role"] not in ("teacher", "admin", "school_admin"):
         return None
     return _staff_public(row)
 
@@ -1438,10 +2540,13 @@ def _scored_view(row: sqlite3.Row, db=None) -> dict[str, Any]:
 
 
 def list_attempts(store, student_id: str, *, cert_id: str | None = None,
-                  status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+                  status: str | None = None, kp_id: str | None = None,
+                  limit: int = 50) -> list[dict[str, Any]]:
     clauses, params = ["WHERE student_id=?"], [student_id]
     if cert_id:
         clauses.append("AND certificate_id=?"); params.append(cert_id)
+    if kp_id:
+        clauses.append("AND knowledge_point_id=?"); params.append(kp_id)
     if status in ("open", "scored"):
         clauses.append("AND status=?"); params.append(status)
     if status == "open":
@@ -1963,6 +3068,62 @@ class StaffPasswordChange(BaseModel):
     new_password: str = Field(min_length=1)
 
 
+class CourseCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1)
+    college: str = Field(min_length=1)
+    semester: str | None = None
+    teacher_id: str | None = None
+    class_names: list[str] = Field(default_factory=list)
+    description: str | None = None
+
+
+class CoursePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    semester: str | None = None
+    teacher_id: str | None = None
+    description: str | None = None
+    active: bool | None = None
+    class_names: list[str] | None = None
+
+
+class CodeTestCaseIn(BaseModel):
+    input_text: str = ""
+    expected_output: str = ""
+    weight: float = 1.0
+    sample: bool = False
+
+
+class CodeSubmitBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    code_text: str = Field(min_length=1)
+
+
+class CodeProblemCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str = Field(min_length=1)
+    title: str = Field(min_length=1)
+    statement: str = ""
+    language: str = "python"
+    time_limit_ms: int = 5000
+    memory_limit_kb: int = 65536
+    knowledge_point_id: str | None = None
+    cases: list[CodeTestCaseIn] = Field(default_factory=list)
+
+
+class CodeProblemPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = None
+    statement: str | None = None
+    language: str | None = None
+    time_limit_ms: int | None = None
+    memory_limit_kb: int | None = None
+    knowledge_point_id: str | None = None
+    active: bool | None = None
+    cases: list[CodeTestCaseIn] | None = None
+
+
 class StudentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     college: str = Field(min_length=1)
@@ -2000,6 +3161,7 @@ class StaffImportBody(BaseModel):
     college: str = Field(min_length=1)
     default_password: str = Field(min_length=1)
     rows: list[StaffImportRow] = Field(min_length=1)
+    role: str = "teacher"  # teacher=教师 / school_admin=校级管理员（FR-U02）；admin 走人工建立
 
 
 class ClassMigrateBody(BaseModel):
@@ -2203,6 +3365,17 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def training_me(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         return response({"student": student(session)})
 
+    @app.post("/api/training/auth/change-password")
+    @guarded
+    def training_change_password(body: StaffPasswordChange,
+                                 session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        """学生本人自助修改密码（旧密码验证 + 全部会话失效，需重新登录）。"""
+        who = student(session)
+        result = change_student_password(store_provider(), who, body.old_password, body.new_password)
+        resp = response(result)
+        resp.delete_cookie(cookie_name, path="/")
+        return resp
+
     @app.get("/api/training/certificates")
     @guarded
     def training_certificates(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
@@ -2315,15 +3488,15 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.get("/api/training/my/practice")
     @guarded
     def practice_list(certificate_id: str | None = None, status: str | None = None,
+                      kp_id: str | None = None,
                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student(session)
         return response({"attempts": list_attempts(
-            store_provider(), who["id"], cert_id=certificate_id, status=status)})
+            store_provider(), who["id"], cert_id=certificate_id, status=status, kp_id=kp_id)})
 
     @app.post("/api/training/my/practice/{attempt_id}/submit")
     @guarded
-    def practice_submit(attempt_id: str, body: PracticeSubmit,
-                        session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+    def practice_submit(attempt_id: str, body: PracticeSubmit,                        session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student(session)
         return response({"attempt": submit_practice(
             store_provider(), who["id"], attempt_id, body.selected_rule_ids)})
@@ -2598,6 +3771,25 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
             default_password=body.default_password,
             default_class_name=body.default_class_name)})
 
+    @app.post("/api/training/staff/students/import-xlsx")
+    @guarded
+    def staff_student_import_xlsx(file: UploadFile = File(...),
+                                  college: str = Form(...),
+                                  default_password: str = Form(...),
+                                  default_class_name: str = Form(""),
+                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """Excel 名册直读（FR-U03 第二期）：教师上传 .xlsx 名册批量建学生号。
+
+        与文本导入共用 import_students 下游（逐行导入、重复/错误行带原因返回、
+        不部分静默成功）；解析边界见 parse_student_xlsx（只读缓存值、不执行
+        公式、表头识别、不按列序猜测）。"""
+        staff(session)
+        rows = parse_student_xlsx(file.file.read())
+        return response({"import": import_students(
+            store_provider(), college, rows,
+            default_password=default_password,
+            default_class_name=(default_class_name or "").strip() or None)})
+
     @app.post("/api/training/staff/students/{student_id}/reset-password")
     @guarded
     def staff_student_reset_password(student_id: str, body: StudentPasswordReset,
@@ -2611,6 +3803,136 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         staff(session)
         return response({"student": set_student_active(store_provider(), student_id, body.active)})
+
+    @app.get("/api/training/staff/teachers")
+    @guarded
+    def staff_teacher_list(include_inactive: bool = False,
+                           session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        with store_provider().connect() as db:
+            where = "" if include_inactive else "WHERE active=1"
+            rows = db.execute(
+                f"""SELECT id, username, display_name, college, role FROM college_user {where}
+                    ORDER BY college, username""").fetchall()
+        return response({"teachers": [dict(r) for r in rows]})
+
+    @app.get("/api/training/staff/courses")
+    @guarded
+    def staff_course_list(include_inactive: bool = True,
+                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"courses": list_courses(store_provider(), include_inactive=include_inactive)})
+
+    @app.post("/api/training/staff/courses")
+    @guarded
+    def staff_course_create(body: CourseCreate,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"course": create_course(
+            store_provider(), who["id"], body.college, body.name,
+            semester=body.semester, teacher_id=body.teacher_id,
+            class_names=body.class_names, description=body.description)})
+
+    @app.patch("/api/training/staff/courses/{course_id}")
+    @guarded
+    def staff_course_update(course_id: str, body: CoursePatch,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        fields = {k: getattr(body, k) for k in body.model_fields_set}
+        return response({"course": update_course(
+            store_provider(), course_id, fields, class_names=body.class_names)})
+
+    @app.get("/api/training/staff/courses/{course_id}/roster")
+    @guarded
+    def staff_course_roster(course_id: str,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response(course_roster(store_provider(), course_id))
+
+    @app.get("/api/training/staff/overview")
+    @guarded
+    def staff_college_overview(college: str,
+                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        if who.get("role") not in ("admin", "school_admin"):
+            raise HTTPException(status_code=403,
+                                detail="教学概况仅限实训管理员或校级管理员查看。")
+        return response({"overview": college_overview(store_provider(), college)})
+
+    @app.get("/api/training/staff/code-problems")
+    @guarded
+    def staff_code_problem_list(include_inactive: bool = True,
+                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"problems": list_code_problems(
+            store_provider(), include_inactive=include_inactive)})
+
+    @app.post("/api/training/staff/code-problems")
+    @guarded
+    def staff_code_problem_create(body: CodeProblemCreate,
+                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session)
+        return response({"problem": create_code_problem(
+            store_provider(), who["id"], body.college, body.title,
+            statement=body.statement, language=body.language,
+            time_limit_ms=body.time_limit_ms, memory_limit_kb=body.memory_limit_kb,
+            knowledge_point_id=body.knowledge_point_id,
+            cases=[c.model_dump() for c in body.cases])})
+
+    @app.patch("/api/training/staff/code-problems/{problem_id}")
+    @guarded
+    def staff_code_problem_update(problem_id: str, body: CodeProblemPatch,
+                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        fields = {k: getattr(body, k) for k in body.model_fields_set}
+        cases = [c.model_dump() for c in body.cases] if body.cases is not None else None
+        return response({"problem": update_code_problem(
+            store_provider(), problem_id, fields, cases=cases)})
+
+    @app.get("/api/training/staff/code-problems/{problem_id}/submissions")
+    @guarded
+    def staff_code_submission_list(problem_id: str, include_code: bool = False,
+                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"submissions": list_code_submissions(
+            store_provider(), problem_id=problem_id, include_code=include_code)})
+
+    @app.get("/api/training/my/code/problems")
+    @guarded
+    def my_code_problem_list(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        student(session)  # 学生仅见开设中的题目，含公开样例输入
+        with store_provider().connect() as db:
+            rows = db.execute(
+                """SELECT p.id, p.title, p.statement, p.language, p.time_limit_ms,
+                          p.memory_limit_kb, kp.name AS knowledge_point_name,
+                          (SELECT count(*) FROM code_test_case t WHERE t.problem_id=p.id) AS case_count
+                   FROM code_problem p LEFT JOIN knowledge_point kp ON kp.id=p.knowledge_point_id
+                   WHERE p.active=1 ORDER BY p.created_at DESC""").fetchall()
+            samples = {r["problem_id"]: r["input_text"] for r in db.execute(
+                "SELECT problem_id, input_text FROM code_test_case WHERE sample=1 ORDER BY seq").fetchall()}
+        problems = []
+        for r in rows:
+            item = dict(r)
+            item["sample_input"] = samples.get(r["id"])
+            problems.append(item)
+        return response({"problems": problems})
+
+    @app.post("/api/training/my/code/{problem_id}/submit")
+    @guarded
+    def my_code_submit(problem_id: str, body: CodeSubmitBody,
+                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        result = submit_code(store_provider(), problem_id, who["id"], body.code_text)
+        return response({"result": result,
+                         "sandbox_notice": result.get("sandbox_notice")})
+
+    @app.get("/api/training/my/code/submissions")
+    @guarded
+    def my_code_submissions(problem_id: str | None = None,
+                            session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response({"submissions": list_code_submissions(
+            store_provider(), problem_id=problem_id, student_id=who["id"])})
 
     # ---- 班级与教师名册（FR-U03 第一期） ----
 
@@ -2636,6 +3958,142 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         staff(session)
         return response({"history": list_class_history(store_provider(), college, limit=limit)})
 
+    # ---- 高校组织架构（FR-U01 第一期：写仅限管理员，教师只读） ----
+
+    @app.get("/api/training/staff/org/departments")
+    @guarded
+    def org_department_list(college: str, include_archived: bool = True,
+                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"departments": list_departments(
+            store_provider(), college, include_archived=include_archived)})
+
+    @app.post("/api/training/staff/org/departments")
+    @guarded
+    def org_department_create(body: OrgDepartmentCreate,
+                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"department": create_department(store_provider(), body.college, body.name)})
+
+    @app.patch("/api/training/staff/org/departments/{department_id}")
+    @guarded
+    def org_department_update(department_id: str, body: OrgNamePatch,
+                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"department": update_department(
+            store_provider(), department_id, name=body.name, archived=body.archived)})
+
+    @app.delete("/api/training/staff/org/departments/{department_id}")
+    @guarded
+    def org_department_delete(department_id: str,
+                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response(delete_department(store_provider(), department_id))
+
+    @app.get("/api/training/staff/org/terms")
+    @guarded
+    def org_term_list(college: str, include_archived: bool = True,
+                      session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"terms": list_terms(
+            store_provider(), college, include_archived=include_archived)})
+
+    @app.post("/api/training/staff/org/terms")
+    @guarded
+    def org_term_create(body: OrgTermCreate,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"term": create_term(
+            store_provider(), body.college, body.name, start_date=body.start_date,
+            end_date=body.end_date, is_current=body.is_current)})
+
+    @app.patch("/api/training/staff/org/terms/{term_id}")
+    @guarded
+    def org_term_update(term_id: str, body: OrgTermPatch,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"term": update_term(
+            store_provider(), term_id, name=body.name, start_date=body.start_date,
+            end_date=body.end_date, is_current=body.is_current, archived=body.archived)})
+
+    @app.delete("/api/training/staff/org/terms/{term_id}")
+    @guarded
+    def org_term_delete(term_id: str,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response(delete_term(store_provider(), term_id))
+
+    @app.get("/api/training/staff/org/classes")
+    @guarded
+    def org_class_list(college: str, include_archived: bool = True,
+                       session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"classes": list_org_classes(
+            store_provider(), college, include_archived=include_archived)})
+
+    @app.post("/api/training/staff/org/classes")
+    @guarded
+    def org_class_create(body: OrgClassCreate,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"class": create_org_class(
+            store_provider(), body.college, body.name,
+            department_id=body.department_id, term_id=body.term_id)})
+
+    @app.patch("/api/training/staff/org/classes/{class_id}")
+    @guarded
+    def org_class_update(class_id: str, body: OrgClassPatch,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"class": update_org_class(
+            store_provider(), class_id, name=body.name, department_id=body.department_id,
+            term_id=body.term_id, archived=body.archived)})
+
+    @app.delete("/api/training/staff/org/classes/{class_id}")
+    @guarded
+    def org_class_delete(class_id: str,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response(delete_org_class(store_provider(), class_id))
+
+    @app.post("/api/training/staff/org/classes/{class_id}/clone")
+    @guarded
+    def org_class_clone(class_id: str, body: OrgClassClone,
+                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session)
+        return response({"clone": clone_org_class(
+            store_provider(), class_id, term_id=body.term_id, name=body.name)})
+
+    @app.get("/api/training/staff/org/quota")
+    @guarded
+    def org_quota_overview_route(college: str,
+                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"quota": college_quota_overview(store_provider(), college)})
+
+    @app.patch("/api/training/staff/org/quota")
+    @guarded
+    def org_quota_update(body: OrgQuotaPatch,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = admin(session)
+        return response({"quota": set_college_quota(
+            store_provider(), who["id"], body.college,
+            body.teacher_quota, body.student_quota, body.revision)})
+
+    @app.post("/api/training/staff/org/terms/{term_id}/roster-snapshot")
+    @guarded
+    def org_roster_snapshot_take(term_id: str,
+                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = admin(session)
+        return response({"snapshot": take_roster_snapshot(store_provider(), who["id"], term_id)})
+
+    @app.get("/api/training/staff/org/terms/{term_id}/roster-snapshot")
+    @guarded
+    def org_roster_snapshot_view(term_id: str,
+                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session)
+        return response({"snapshot": view_roster_snapshot(store_provider(), term_id)})
+
     @app.post("/api/training/staff/teachers/import")
     @guarded
     def staff_teacher_import(body: StaffImportBody,
@@ -2644,7 +4102,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return response({"import": import_staff_users(
             store_provider(), body.college,
             [r.model_dump() for r in body.rows],
-            default_password=body.default_password, created_by=who["id"])})
+            default_password=body.default_password, created_by=who["id"],
+            role=body.role)})
 
     @app.get("/training-certificates")
     def training_portal_page() -> FileResponse:

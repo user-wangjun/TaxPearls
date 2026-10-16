@@ -81,7 +81,8 @@ def scan_workbook(book, doc):
 def _rows(doc, selection):
     if not isinstance(selection.get('rows', doc.get('rows', [])), list):
         raise InputError('指标编辑须为列表。')
-    return [{k: row.get(k, '') for k in ('name', 'value', 'page', 'detail')}
+    return [{**{k: row.get(k, '') for k in ('name', 'value', 'page', 'detail')},
+             **({'period': row['period']} if row.get('period') else {})}
             for row in selection.get('rows', doc.get('rows', [])) if isinstance(row, dict)]
 
 
@@ -97,6 +98,11 @@ def review_requirements(doc, selection, scope=None):
             not isinstance(x, str) or not re.fullmatch(r'[0-9a-f]{64}', x) for x in reviews):
         raise InputError('逐项证据复核编号格式无效。')
     scope = {k: str(v or '').strip() for k, v in (scope or doc.get('company', {})).items()}
+    # Newly optional fields must bind real scope changes, but an omitted field
+    # and an empty UI control mean the same thing in older review contracts.
+    for key in ('region', 'taxpayer_type', 'business_scope'):
+        if not scope.get(key):
+            scope.pop(key, None)
     if 'taxpayer_id' in scope:
         scope['taxpayer_id'] = re.sub(r'\s+', '', scope['taxpayer_id']).upper()
     context = {'version': VERSION, 'sha256': doc.get('sha256', doc.get('fingerprint')),
@@ -162,6 +168,11 @@ def review_requirements(doc, selection, scope=None):
 def blockers(doc, selection, scope=None, *, require_review=True):
     if selection.get('purpose') == 'excluded':
         return []
+    if provenance.invoice_reanalysis_required(doc):
+        return [{'code': 'invoice_reanalysis_required', 'file_id': doc['id'],
+                 'message': '发票适配已更新或旧解析状态不明，须重新读取留存原件。',
+                 'impact': '旧发票状态、金额和可确认缓存不能绕过新版异常校验。',
+                 'required': '保存并重新分析，清除旧金额修正与复核并重新核对；或明确排除此文件。不会发送模型。'}]
     if provenance.pdf_reanalysis_required(doc):
         return [{'code': 'pdf_reanalysis_required', 'file_id': doc['id'],
                  'message': 'PDF 适配已更新或旧解析状态不明，须重新核对留存原件。',

@@ -7,7 +7,7 @@ confirmation; this module alone does not authorize or execute an audit.
 from copy import deepcopy
 import re
 
-from src import config, engine, materials, periods, related_graph, material_review, material_security, financial_import
+from src import config, engine, materials, periods, related_graph, material_review, material_security, financial_import, reference_scope
 from src.input_errors import InputError
 from src.snapshots import serialize_dataset
 from webapp.enterprise_scope import FIELDS
@@ -101,12 +101,17 @@ def analyze(documents, company, selections, rules):
     if result['feedback']['blocking']:
         return result
     company_values = {'name': target['name'], 'taxpayer_id': target['taxpayer_id'],
-                      'industry': target['industry'] or '未提供', 'period': main.label}
+                      'industry': target['industry'] or '未提供', 'period': main.label,
+                      **{key: target.get(key, '') for key in materials.SCOPE_KEYS}}
     prepared, prepared_selections = [], {}
     selected_count = 0
     keys = {key for rule in rules for key in rule.inputs}
     # Parsing may contain other supported metrics needed by period derivation.
     keys |= set(config.PERIOD_SERIES)
+    reference_names = {name for spec in reference_scope.SPECS.values() for name in spec[:2]}
+    uses_reference = any(row.get('name') in reference_names for document in documents
+                         if selections.get(document['id'], {}).get('purpose', 'current') != 'excluded'
+                         for row in document.get('rows', []))
     selected_bases = {financial_import.statement_basis(d) for d in documents
                       if selections.get(d['id'], {}).get('purpose', 'current') != 'excluded' and financial_import.statement_basis(d)}
     if len(selected_bases) > 1:
@@ -142,6 +147,13 @@ def analyze(documents, company, selections, rules):
             note('blocking', 'read_failed', original['error'], file_id, '本文件未读取，不能当作没有字段。', '替换或明确移除此文件。')
             continue
         original_scope = original['company']
+        scope_keys = ('industry', *materials.SCOPE_KEYS) if uses_reference else ()
+        conflicts = [key for key in scope_keys
+                     if original_scope.get(key) and target.get(key) and original_scope[key] != target[key]]
+        if conflicts:
+            note('blocking', 'reference_company_scope_conflict', '企业行业或参考适用范围与原件信息冲突。', file_id,
+                 '不能通过表单改写已有事实来匹配参考值。', '核对原件信息，排除不同范围材料后重新分析。')
+            continue
         if purpose == 'current' and any(s.get('as_of') and s['as_of'] != main.end.isoformat()
                                        for s in original.get('pdf_statements', [])):
             note('blocking', 'statement_date_conflict', 'PDF 原文报表时点与主期间终点不同。', file_id,
