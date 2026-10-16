@@ -46,7 +46,8 @@ def build_graph(rules, entry=None):
     for rule in rules:
         rid = add("rule", rule.name, id=rule.id, category=rule.category,
                   tax_type=rule.tax_type, severity=rule.severity, scope=rule.scope,
-                  suggestion=rule.suggestion, version=rule.version)
+                  suggestion=rule.suggestion, version=rule.version,
+                  rule_level=rule.rule_level, region=rule.region.strip())
         for name in dict.fromkeys([*rule.inputs, *rule.evidence]):
             metric = entry["dataset"].metrics.get(name) if entry else None
             mid = add("metric", name, value=str(metric.value) if metric else None,
@@ -65,7 +66,8 @@ def build_graph(rules, entry=None):
             fid = add("risk", finding.rule.name, id="finding:"+rule.id,
                       status=finding.status, severity=rule.severity, category=rule.category,
                       conclusion=finding.conclusion, calculation=finding.calculation,
-                      reason=finding.skip_reason, rule_id=rid)
+                      reason=finding.skip_reason, rule_id=rid,
+                      rule_level=rule.rule_level, region=rule.region.strip())
             link(company, fid, "核对结果")
             link(fid, rid, "由规则判定")
     if entry and entry["dataset"].related_graph:

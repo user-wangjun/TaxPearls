@@ -687,8 +687,19 @@ class Store:
                 raise AccessDenied('负责人必须是本机构有效会计。', 422)
         if user['role'] == 'accountant' and accountant_id not in (None, user['id']):
             raise AccessDenied('会计不能指派客户负责人。', 403)
+        from webapp.enterprise_scope import identity
+        taxpayer_id = identity(taxpayer_id)
+        if not taxpayer_id:
+            raise AccessDenied('纳税人识别号不能为空。', 422)
         lookup = self._field_codec.taxpayer_lookup(user['org_id'], taxpayer_id)
-        row = db.execute("SELECT * FROM clients WHERE org_id=? AND taxpayer_lookup=?", (user["org_id"], lookup)).fetchone()
+        # Check every canonical match even when the equality index finds a row:
+        # a legacy spelling and a canonical archive may already coexist.
+        matches = [dict(candidate) for candidate in db.execute(
+            "SELECT * FROM clients WHERE org_id=?", (user["org_id"],))
+            if identity(candidate["taxpayer_id"]) == taxpayer_id]
+        if len(matches) > 1:
+            raise AccessDenied('税号对应多个企业档案，请先在管理中清理重复档案后再操作。', 409)
+        row = matches[0] if matches else None
         if row:
             if user['role'] == 'accountant':
                 if row['accountant_id'] != user['id']:

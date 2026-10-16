@@ -138,6 +138,8 @@ class Rule:
     version: str = "1.0"
     effective_from: str | None = None
     effective_to: str | None = None
+    rule_level: str = "unspecified"
+    region: str = ""
 
 
 @dataclass

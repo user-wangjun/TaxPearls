@@ -180,14 +180,19 @@ const graph = fs.readFileSync("webapp/static/graph.js", "utf8");
 const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), graph.indexOf("async function loadGraph()"));
 (async () => {
   for (const role of ["platform_admin", "student", "org_admin", "accountant", "teacher"]) {
-    const calls = [], errors = [], choices = [];
-    const context = {currentUser:{id:'user',role}, graphRequest:0, graphCurrent:()=>true, clearGraph(){}, $:()=>({value:"", replaceChildren(){}}),
+    const calls = [], errors = [], choices = [], nodes = new Map();
+    const context = {currentUser:{id:'user',role}, graphRequest:0, graphScopes:new Map(), graphCurrent:()=>true, clearGraph(){},
+      $:id=>{if(!nodes.has(id))nodes.set(id,{value:id==='graphScope'?'TESTA':id==='graphAudit'?'audit-1':'',replaceChildren(){this.value='';}});return nodes.get(id);},
       option:(_select, value)=>choices.push(value), showError:error=>errors.push(error),
-      api:async url=>{calls.push(url); return [{id:"audit-1"}];}, loadGraph:async()=>{}};
+      api:async url=>{calls.push(url); return [{taxpayer_id:'TESTA',name:'合成企业',audits:[{id:'audit-1',period:'2026-01',audited_at:'2026-02-01T00:00:00Z'}]}];}, loadGraph:async()=>{}};
     vm.createContext(context);
     vm.runInContext(selection, context);
     await context.loadKnowledge();
-    assert.deepEqual(calls, ["org_admin", "accountant", "teacher"].includes(role) ? ["/api/audits"] : []);
+    const enterpriseRole=["org_admin", "accountant", "teacher"].includes(role);
+    assert.deepEqual(calls, enterpriseRole ? ["/api/knowledge/enterprises"] : []);
+    assert.equal(context.$('graphScope').value,enterpriseRole?'TESTA':'');
+    assert.equal(context.$('graphAuditField').hidden,!enterpriseRole);
+    if(enterpriseRole){assert.ok(choices.includes('TESTA'));assert.equal(context.$('graphAudit').value,'audit-1');}
     assert.equal(errors.length, 0);
     assert.equal(choices[0], "");
   }
@@ -271,19 +276,21 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
     append(...items){this.children.push(...items);}, get childElementCount(){return this.children.length;}});
   const graphNodes=new Map(),graphCalls=[],graphDraws=[];
   const graphCtx={currentUser:{id:'owner',role:'org_admin'},graphCanvas:{...node(),style:{},setAttribute(){}},
-    $:id=>{if(!graphNodes.has(id))graphNodes.set(id,{...node(),value:'',style:{}});return graphNodes.get(id);},
+    URLSearchParams,
+    $:id=>{if(!graphNodes.has(id))graphNodes.set(id,{...node(),value:'',style:{},addEventListener(){}});return graphNodes.get(id);},
     option:(select,value)=>select.append(value),updateAIContext(){},
     api:url=>new Promise((resolve,reject)=>graphCalls.push({url,resolve,reject})),
     filterGraph:()=>graphDraws.push(vm.runInContext('graphData.audit_id',graphCtx)),focusGraph(){}};
   vm.createContext(graphCtx);
-  vm.runInContext('let graphRequest=0,graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
-    graph.slice(graph.indexOf('function graphCurrent('),graph.indexOf('$("graphAudit").addEventListener')),graphCtx);
+  vm.runInContext('let graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
+    graph.slice(graph.indexOf('function graphCurrent('),graph.indexOf('$("graphAudit").addEventListener'))+
+    graph.slice(graph.indexOf('function updateGraphRegions('),graph.indexOf('for(const id of ["knowledgeSearch"')),graphCtx);
   const listOld=graphCtx.loadKnowledge(),oldList=graphCalls.shift();
-  const listNew=graphCtx.loadKnowledge();graphCalls.shift().resolve([{id:'new'}]);
+  const listNew=graphCtx.loadKnowledge();graphCalls.shift().resolve([{taxpayer_id:'new',name:'新企业',audits:[]}]);
   await new Promise(resolve=>setImmediate(resolve));
   graphCalls.shift().resolve({nodes:[],edges:[],audit_id:null,ai:{configured:false}});await listNew;
-  oldList.resolve([{id:'old'}]);await listOld;
-  assert.deepEqual(graphCtx.$('graphAudit').children,['','new']);assert.equal(graphCalls.length,0);
+  oldList.resolve([{taxpayer_id:'old',name:'旧企业',audits:[]}]);await listOld;
+  assert.deepEqual(graphCtx.$('graphScope').children,['','new']);assert.equal(graphCalls.length,0);
   const graphOld=graphCtx.loadGraph(),oldGraph=graphCalls.shift();
   const graphNew=graphCtx.loadGraph();graphCalls.shift().resolve({nodes:[],edges:[],audit_id:'new',ai:{configured:false}});await graphNew;
   oldGraph.resolve({nodes:[],edges:[],audit_id:'old',ai:{configured:true}});await graphOld;
@@ -294,12 +301,16 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   const failure=graphCtx.loadGraph();graphCalls.shift().reject(new Error('graph failure'));await failure;
   assert.equal(graphCtx.$('graphCount').textContent,'graph failure');assert.equal(graphCtx.$('graphSummary').children.length,0);
   const changedOwner=graphCtx.loadKnowledge(),ownerCall=graphCalls.shift();graphCtx.currentUser={id:'other',role:'org_admin'};
-  ownerCall.resolve([{id:'private'}]);await changedOwner;assert.deepEqual(graphCtx.$('graphAudit').children,['']);
+  ownerCall.resolve([{taxpayer_id:'private',name:'不可显示的企业',audits:[]}]);await changedOwner;assert.deepEqual(graphCtx.$('graphScope').children,['']);
   vm.runInContext(graph.slice(graph.indexOf('function neighbors('),graph.indexOf('function layoutGraph(')),graphCtx);
   graphCtx.layoutGraph=()=>{};graphCtx.drawGraph=()=>{};graphCtx.renderNode=()=>{};
   vm.runInContext('graphData={nodes:[{id:"trade",category:"关联方图",status:"skipped",kind:"trade"}],edges:[]};',graphCtx);
   graphCtx.$('knowledgeCategory').value='关联方图';graphCtx.$('graphStatus').value='skipped';
   graphCtx.filterGraph();assert.equal(vm.runInContext('graphVisible.has("trade")',graphCtx),true);
+  vm.runInContext('graphData={nodes:[{id:"national",kind:"rule",rule_level:"national"},{id:"local",kind:"rule",rule_level:"provincial",region:"浙江省"},{id:"metric",kind:"metric"}],edges:[{source:"national",target:"metric"},{source:"local",target:"metric"}]};',graphCtx);
+  graphCtx.$('knowledgeCategory').value='';graphCtx.$('graphStatus').value='';graphCtx.$('graphRuleLevel').value='national';
+  graphCtx.filterGraph();assert.equal(vm.runInContext('graphVisible.has("national")&&graphVisible.has("metric")&&!graphVisible.has("local")',graphCtx),true);
+  assert.equal(vm.runInContext('neighbors(graphVisible).has("local")',graphCtx),false);
   vm.runInContext(graph.slice(graph.indexOf('function layoutGraph('),graph.indexOf('function drawGraph(')),graphCtx);
   vm.runInContext('graphData={nodes:[],edges:[]};graphFocused=true;graphVisible=new Set();',graphCtx);
   graphCtx.innerWidth=390;graphCtx.layoutGraph(); // empty focused mobile view must not dereference undefined
