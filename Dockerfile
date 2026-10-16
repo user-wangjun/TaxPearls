@@ -22,6 +22,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY src ./src
 COPY webapp ./webapp
 COPY rules ./rules
+COPY ["docs/企业政策适用目录.yaml", "./docs/企业政策适用目录.yaml"]
 COPY templates ./templates
 COPY logo ./logo
 COPY scripts/ops_db.py ./scripts/ops_db.py

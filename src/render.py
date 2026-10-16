@@ -104,6 +104,7 @@ def build_view_model(dataset: Dataset, findings: list[Finding]) -> dict:
 
     return {
         "company": dataset.company,
+        "policy_assessment": dataset.policy_assessment,
         "findings": vm_findings,
         "hit_findings": hit,
         "pass_findings": passed,

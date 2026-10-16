@@ -104,6 +104,8 @@ class Dataset:
     # None denotes legacy snapshots, whose available evidence is described conservatively.
     sources: list[str] | None = None
     simulation: bool = False
+    # Separate evidence-bound policy layer; never injected into rule values().
+    policy_assessment: dict[str, Any] | None = None
 
     def values(self) -> dict[str, Decimal | float]:
         """供规则引擎求值用的扁平数值表。"""

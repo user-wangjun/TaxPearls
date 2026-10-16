@@ -41,6 +41,8 @@ def project(view):
     value = deepcopy(latest(view))
     from src import vat_reconciliation as vat
     value["vat_review_current"] = bool(vat.review(value))
+    from webapp import core_policies
+    core_policies.project(value)
     return {
         **value,
         "id": view["id"],
@@ -322,6 +324,9 @@ def register(app, get_store, get_user, allow, static_dir):
             documents.append(doc)
         payload["documents"] = documents
         payload["processing"] = core_materials.prepare(payload["task"], documents)
+        if payload.get('policy_input'):
+            from webapp import core_policies
+            core_policies.update(payload)
         batches.append_revision(store, user, task_id, revision, "edit", payload)
         return read(user, task_id)
 
@@ -397,13 +402,16 @@ def register(app, get_store, get_user, allow, static_dir):
         user = actor(session)
         value = await body(request)
         try:
-            if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode"}:
+            if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input"}:
                 raise InputError("请求包含未知字段。")
             view = batches.read(get_store(), user, task_id)
             payload = deepcopy(latest(view))
             revision = value.get("expected_revision")
             if type(revision) is not int or revision != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
+            if 'policy_input' in value:
+                from src import policies
+                payload['policy_input'] = policies.normalize(value['policy_input'])
             if "applicable_forms" in value:
                 payload["task"]["applicable_forms"] = forms(value["applicable_forms"])
             changes = value.get("source_options", {})

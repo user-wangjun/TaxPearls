@@ -1,7 +1,7 @@
 "use strict";
-function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}}) {
+function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, policyUI=()=>null}) {
   const base = "/api/enterprise/input-tasks";
-  let current = null, busy = false, dirty = false, generation = 0;
+  let current = null, busy = false, dirty = false, generation = 0, policyCatalog=null;
   let formOwner = user()?.id;
   const enabled = () => ["org_admin", "accountant"].includes(user()?.role);
   const states = {needs_completion:"待补充或核对",ready_for_analysis:"资料已就绪，可继续核查",parsing:"正在解析"};
@@ -73,8 +73,15 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}}) {
       for(const part of doc.parts)parts.append(el("p","muted",`${part.name} · ${part.form_type} · ${part.period?.join(" 至 ")||"期间未识别"} · ${part.unit||"单位未识别"}`));card.append(parts);
       review.append(card);editors.push({id:doc.id,unit,start,end,form,direction,exclude,reviewed,ocr});
     }
-    const save=button("保存核对并重新整理资料",()=>action(()=>{const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:e.ocr.input.checked,confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value,direction:e.direction.input.value}};
-      return api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,applicable_forms:scopeKnown.input.checked?applicable.input.value.split(/[;；]/).map(s=>s.trim()).filter(Boolean):null,source_options:options,mapping_mode:"ai"}));},true));review.append(save);root.append(review);
+    let readPolicy=null;
+    if(policyCatalog&&policyUI()){
+      const panel=el("div");review.append(panel);
+      readPolicy=policyUI().editor(panel,policyCatalog,current.policy_input,current.policy_assessment,()=>{dirty=true;},()=>{dirty=true;},()=>{});
+      panel.append(el("p","muted",`目录来源核对截至 ${policyCatalog.checked_as_of}；政策条件与本任务资料版本绑定，单独复核，不替代知识图谱的规则审核。`));
+      if(current.policy_error)panel.append(el("p","material-note",current.policy_error));
+    }
+    const save=button("保存核对并重新整理资料",()=>{const policyInput=readPolicy?.();return action(()=>{const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:e.ocr.input.checked,confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value,direction:e.direction.input.value}};
+      return api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,applicable_forms:scopeKnown.input.checked?applicable.input.value.split(/[;；]/).map(s=>s.trim()).filter(Boolean):null,source_options:options,mapping_mode:"ai",...(readPolicy?{policy_input:policyInput}:{})}));},true);});review.append(save);root.append(review);
     const problems=el("section","enterprise-feedback"+(p.issues.length?" blocking":""));problems.append(el("h4","",`资料缺口与冲突（${p.issues.length}）`));
     for(const item of p.issues)problems.append(el("p","",item.message+(item.source_position?" · "+item.source_position:"")));root.append(problems);
     if(p.notices.length){const notes=el("details");notes.append(el("summary","",`来源说明（${p.notices.length}）`));for(const n of p.notices)notes.append(el("p","muted",n.message+(n.source_position?" · "+n.source_position:"")));root.append(notes);}
@@ -84,7 +91,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}}) {
     const trace=el("details");trace.append(el("summary","","版本与操作记录"));for(const v of current.versions)trace.append(el("p","muted",`版本 ${v.revision} · ${v.kind} · ${v.created_at}`));root.append(trace);
   }
   async function history(){const owner=user()?.id,ticket=generation,rows=await api(base);if(owner!==user()?.id||ticket!==generation||!enabled())return;const root=$("coreTaskHistory");root.replaceChildren(el("h3","","继续资料处理任务"));for(const row of rows)root.append(button(`${row.task.company_name} · ${row.task.start_date} 至 ${row.task.end_date} · ${states[row.status]||row.status}`,()=>action(()=>api(base+"/"+row.id))));}
-  async function refresh(){const active=enabled();if(formOwner!==user()?.id){reset();clearScope();formOwner=user()?.id;}$("coreInputs").hidden=!active;$("coreLegacyToggle").hidden=!active;if(active)await history();}
+  async function refresh(){const active=enabled();if(formOwner!==user()?.id){reset();clearScope();formOwner=user()?.id;}$("coreInputs").hidden=!active;$("coreLegacyToggle").hidden=!active;if(active){const owner=user()?.id,ticket=generation;if(policyUI()){const config=await api("/api/enterprise/materials/config");if(owner!==user()?.id||ticket!==generation)return;policyCatalog=config.policy_catalog;}await history();}}
   async function openTask(id){return action(()=>api(base+"/"+encodeURIComponent(id)));}
   return {refresh,reset,openTask};
 }

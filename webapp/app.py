@@ -729,6 +729,7 @@ def _result(entry: dict[str, Any]) -> dict[str, Any]:
         "findings": vm["findings"], "metrics": _metrics_list(dataset),
         "narrative": narrative,
         "material_reference": entry.get("material_reference"),
+        "policy_assessment": dataset.policy_assessment,
     }
 
 

@@ -32,7 +32,10 @@ class TenantIsolationTests(unittest.TestCase):
         self.env.start()
         self.tmp = TemporaryDirectory()
         self.old = module.store
-        self.store = Store(Path(self.tmp.name) / 'tenant.db')
+        # TestClient starts a background notification worker, so this is a
+        # long-lived service store, not a short-lived script connection.
+        # Match production's WAL keepalive to avoid Windows SHM mapping races.
+        self.store = Store(Path(self.tmp.name) / 'tenant.db', keepalive=True)
         module.store = self.store
         self.password = 'Tenant-isolation-2026!'
         self.admin = self.person('alpha-admin', 'org_admin', 'alpha')
@@ -48,6 +51,7 @@ class TenantIsolationTests(unittest.TestCase):
 
     def tearDown(self):
         self.client.__exit__(None, None, None)
+        self.store.close()
         module.store = self.old
         self.tmp.cleanup()
         self.env.stop()

@@ -14,6 +14,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     region:"uploadCompanyRegion",taxpayer_type:"uploadCompanyTaxpayerType",business_scope:"uploadCompanyBusinessScope",
     period_start:"uploadCompanyStart",period_end:"uploadCompanyEnd"};
   const uploadOrigins = {};
+  let policyCatalog=null, uploadPolicyRead=()=>({selected:[],facts:{},reviews:{}}), uploadPolicyRoot=null;
   for(const [key,id] of Object.entries(uploadFields)) $(id).addEventListener("input",()=>{uploadOrigins[key]="user";});
   if(!$("uploadCompanyMode").value) $("uploadCompanyMode").value="new";
   $("uploadCompanyMode").addEventListener("change",()=>selectClient($("uploadCompanyMode").value==="new"?"":$("uploadCompanyMode").value));
@@ -21,6 +22,8 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     for(const [key,id] of Object.entries(uploadFields)) if(all||uploadOrigins[key]!=="user") {$(id).value="";delete uploadOrigins[key];}
   }
   async function selectClient(id) {
+    // Qualifications are per enterprise/period, never inherited from another client.
+    if(policyCatalog&&uploadPolicyRoot) uploadPolicyRead=policyEditor(uploadPolicyRoot,policyCatalog,{},null,()=>{});
     if(id==="new")id="";
     const request=++profileRequest,owner=user()?.id;
     $("uploadCompanyMode").value=id||"new";
@@ -46,7 +49,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     const value=$("uploadCompanyMode").value,clientId=value&&value!=="new"?value:"",mode=clientId?"existing":"new";
     const company={};
     for(const [key,id] of Object.entries(uploadFields)) if(uploadOrigins[key]==="user")company[key]=$(id).value;
-    return {mode,clientId,company};
+    return {mode,clientId,company,policyInput:uploadPolicyRead()};
   }
   const pending = () => batch?.jobs?.some(job => ["queued","running"].includes(job.state));
   const currentFailed = () => batch?.jobs?.some(job => job.state==="failed" && job.input_revision===batch.revision);
@@ -69,6 +72,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     profileRequest++;profileLoading=false;
     if(uploadOwner!==user()?.id||!enabled()) {
       uploadOwner=user()?.id;clearArchiveFields(true);$("uploadCompanyMode").value="new";
+      policyCatalog=null;uploadPolicyRoot?.replaceChildren();uploadPolicyRead=()=>({selected:[],facts:{},reviews:{}});
       $("uploadProfileHint").textContent="新建企业可留空，上传后从材料预填并核对。";
     }
     urls.forEach(URL.revokeObjectURL); urls.clear();
@@ -122,6 +126,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     await perform(async () => {
       const data = form(files); if (declaration.clientId) data.append("client_id", declaration.clientId);
       data.append("company_mode",declaration.mode);data.append("company",JSON.stringify(declaration.company));
+      data.append("policy_input",JSON.stringify(declaration.policyInput));
       const value = await api(base, {method:"POST",body:data});
       if (valid()) { batch = value; render(); $("materialReview").scrollIntoView({block:"start"}); refresh(); }
     });
@@ -139,12 +144,20 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     const root = $("enterpriseHistory"), owner = user()?.id, request = ++listRequest;
     root.hidden = !enabled();
     $("materialRetentionHint").textContent = enabled() ? "企业原件加密留存；本次检测一家企业、一个主期间" : "教学核对草稿仅暂存在内存，不使用真实企业原件";
-    if (!enabled()) { root.replaceChildren(); return; }
+    if (!enabled()) { root.replaceChildren();policyCatalog=null;uploadPolicyRoot?.replaceChildren();uploadPolicyRead=()=>({selected:[],facts:{},reviews:{}}); return; }
     const current = () => owner === user()?.id && request === listRequest && enabled();
     root.replaceChildren(el("h2", "", "继续已有材料批次"), el("p", "muted", "正在读取……"));
     try {
       const [rows, config] = await Promise.all([api(base), api(base + "/config")]);
       if (!current()) return;
+      if(config.policy_catalog) {
+        const draft=uploadPolicyRead();
+        if(!uploadPolicyRoot) {uploadPolicyRoot=el("section","material-card");$("uploadScope").append(uploadPolicyRoot);}
+        if(policyCatalog?.fingerprint!==config.policy_catalog.fingerprint) {
+          policyCatalog=config.policy_catalog;draft.reviews={};
+          uploadPolicyRead=policyEditor(uploadPolicyRoot,policyCatalog,draft,null,()=>{});
+        }
+      }
       root.replaceChildren(el("h2", "", "继续已有材料批次"), el("p", config.retention_ready ? "muted" : "material-note", config.message));
       root.append(button("刷新材料列表", refresh));
       const operations = el("div");
@@ -185,6 +198,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     root.replaceChildren();root.hidden=!enabled();if(root.hidden)return;
     const current=()=>request===referenceRequest&&owner===user()?.id&&enabled();
     const link=result.material_reference;
+    policyView(root,result.policy_assessment);
     if(!link){root.append(el("p","muted","此历史结果未保存材料确认版本关联；不将当前上传材料推定为其原始依据。"));return;}
     root.append(el("h3","","本结果的确认材料"),el("p","muted",`批次 ${link.batch_id} · 分析版本 ${link.analysis_revision} · 确认版本 ${link.confirmation_revision}`));
     const detail=el("div");
@@ -221,6 +235,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
         textDetails(detail,"当时采用的输入指标与来源",snapshot.metrics);
         textDetails(detail,"当时的用户修改与原文差异",snapshot.edits);
         textDetails(detail,"当时的检查范围与限制",{checks:snapshot.checks,feedback:snapshot.feedback});
+        policyView(detail,snapshot.policy_assessment);
         detail.append(button("继续此批次（读取最新版本）",()=>open(snapshot.batch_id)));
       }catch(error){if(current()){detail.replaceChildren(el("p","material-note",error.message));load.textContent="重试读取确认材料";}}
       finally{if(current())load.disabled=false;}
@@ -234,6 +249,88 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     const control = el("input"); control.type = type;
     control.value = value ?? ""; control.maxLength = 200; control.setAttribute("aria-label",aria);
     control.addEventListener("input",onInput); label.append(control); parent.append(label); return control;
+  }
+  function policyView(parent, assessment) {
+    if(!assessment)return;
+    const section=el("section","material-card");parent.append(section);
+    section.append(el("h3","","政策适用判断（独立于24条风险规则）"),el("p","muted",`目录 ${assessment.version} · 来源核对截至 ${assessment.checked_as_of}；不计算税款，不替代申报或行政认定。`));
+    if(assessment.consistency) {
+      section.append(el("p",assessment.consistency.status==="checked"?"muted":"material-note","跨政策核对："+assessment.consistency.status_label));
+      for(const issue of assessment.consistency.issues)section.append(el("p","material-note",issue.message));
+    }
+    for(const result of assessment.results) {
+      const card=el("details");card.open=true;
+      card.append(el("summary","",result.name+" · "+result.status_label),el("p","muted",`所采版本：${result.effective_from} 至 ${result.effective_to||"未声明截止（非永久有效保证）"}；事项：${result.business_start||"待核对"} 至 ${result.business_end||"待核对"}`));
+      for(const text of [...result.reasons,...result.notes])card.append(el("p","",text));
+      if(result.missing_fields.length)card.append(el("p","material-note","缺少值或依据："+result.missing_fields.map(f=>f.label).join("；")));
+      for(const fact of result.facts)card.append(el("p","muted",`${fact.label}：${fact.value_label??fact.value} · 依据：${fact.source||"未提供"}`));
+      for(const id of result.source_ids) {
+        const source=assessment.sources.find(s=>s.id===id);if(!source)continue;
+        const a=el("a","",source.document_number+" · 官方原文");
+        // Never turn arbitrary persisted material text into a navigable link.
+        if(/^https:\/\/(www\.gdpc\.gov\.cn|www\.gd\.gov\.cn|szs\.mof\.gov\.cn|fgk\.chinatax\.gov\.cn)\//.test(source.url)) {a.href=source.url;a.target="_blank";a.rel="noopener noreferrer";}
+        card.append(a,el("p","muted",source.title));
+      }
+      section.append(card);
+    }
+    for(const relation of assessment.relationships)section.append(el("p","",relation.message),el("p","muted","依据："+(relation.source_id||"未采齐，待核对")+" "+(relation.clause||"")));
+  }
+  function policyEditor(parent, catalog, initial, assessment, onChange, onReview=()=>{dirty=true;controls();}, registerReview=check=>reviewChecks.push(check)) {
+    parent.replaceChildren();
+    parent.classList.add("policy-panel");
+    let selected=new Set(initial?.selected||[]),facts=JSON.parse(JSON.stringify(initial?.facts||{})),reviews={...(initial?.reviews||{})};
+    const acknowledgements=[];
+    const heading=el("h3","","政策条件（选填，未选择仍可运行原规则）"),choices=el("div"),fields=el("div","material-company"),review=el("div");
+    parent.append(heading,el("p","muted","选择本次需要核对的政策；未知留空。填写业务事实并注明材料位置，不根据地区、财报余额或历史身份自动授予资格。事项日期留空沿用主期间；月/季增值税须对应实际计税期间。"),choices,fields,review);
+    function allowed() {return new Set(["business_start","business_end",...Array.from(selected).flatMap(id=>catalog.policy_fields[id]||[])]);}
+    function visible(key) {
+      const val=k=>facts[k]?.value;
+      if(key==="vat_natural_month")return val("vat_subject")==="natural";
+      if(key==="cit_operating_period")return val("cit_stats")==="operating_average";
+      if(key==="six_settlement")return val("six_eligibility")==="small_cit";
+      if(key==="six_individual")return val("six_eligibility")==="individual";
+      if(["six_new","six_before_settlement","six_people","six_assets"].includes(key))return val("six_eligibility")==="new_general";
+      if(["rd_contract","rd_overseas_cost","rd_domestic_cost"].includes(key))return val("rd_mode")==="overseas_org";
+      if(key==="rd_amortization")return val("rd_mode")==="capital";
+      if(key==="deed_proof")return ["cash","exchange"].includes(val("deed_kind"));
+      if(["deed_price","deed_compensation"].includes(key))return val("deed_kind")==="cash";
+      if(key==="deed_difference")return val("deed_kind")==="exchange";
+      return true;
+    }
+    function invalidate() {reviews={};for(const a of acknowledgements){a.check.checked=false;a.check.disabled=true;}onChange();}
+    function drawFields() {
+      fields.replaceChildren();if(!selected.size)return;
+      for(const key of allowed()) {
+        if(!visible(key))continue;
+        const spec=catalog.fields[key];if(!spec)continue;
+        const label=el("label","",spec.label),control=el(spec.type==="choice"?"select":"input"),source=el("input");
+        control.setAttribute("aria-label","政策 "+spec.label);source.setAttribute("aria-label","政策依据 "+spec.label);
+        if(spec.type==="choice") {
+          const blank=el("option","","未知/待核对");blank.value="";control.append(blank);
+          for(const [value,text] of Object.entries(spec.choices)){const option=el("option","",text);option.value=value;control.append(option);}
+        } else {control.type=spec.type==="date"?"date":"text";control.inputMode=spec.type.includes("number")?"decimal":"text";control.maxLength=100;}
+        control.value=facts[key]?.value||"";source.value=facts[key]?.source||"";source.maxLength=500;source.placeholder="依据：文件、页/单元格或资格资料位置";
+        const update=()=>{facts[key]={value:control.value.trim(),source:source.value.trim()};invalidate();};
+        control.addEventListener("input",update);
+        // Only choices change conditional fields. Rebuilding on a numeric
+        // input's blur detached the source field while the user was filling it.
+        if(spec.type==="choice")control.addEventListener("change",()=>{update();drawFields();});
+        source.addEventListener("input",update);
+        label.append(control,source);fields.append(label);
+      }
+    }
+    for(const policy of catalog.policies) {
+      const label=el("label","material-check",policy.name),check=el("input");check.type="checkbox";check.checked=selected.has(policy.id);check.setAttribute("aria-label","选择政策 "+policy.name);
+      check.addEventListener("change",()=>{if(check.checked)selected.add(policy.id);else selected.delete(policy.id);facts=Object.fromEntries(Object.entries(facts).filter(([key])=>allowed().has(key)));invalidate();drawFields();});label.append(check);choices.append(label);
+    }
+    drawFields();policyView(review,assessment);
+    for(const result of assessment?.results||[]) if(result.review_token) {
+      const label=el("label","material-check","已对照依据核对上述业务事实与政策条件："+result.name),check=el("input");check.type="checkbox";check.checked=result.reviewed;check.setAttribute("aria-label","政策复核 "+result.id);
+      check.addEventListener("change",()=>{if(check.checked)reviews[result.id]=result.review_token;else delete reviews[result.id];onReview();});
+      label.append(check);review.append(label);registerReview(check);
+      acknowledgements.push({id:result.id,token:result.review_token,check});
+    }
+    return ()=>({selected:Array.from(selected),facts:Object.fromEntries(Object.entries(facts).filter(([key,v])=>allowed().has(key)&&(v.value||v.source))),reviews:Object.fromEntries(acknowledgements.filter(a=>selected.has(a.id)&&a.check.checked&&!a.check.disabled&&reviews[a.id]===a.token).map(a=>[a.id,a.token]))});
   }
   function pollBatch() {
     clearTimeout(pollTimer);pollTimer=null;
@@ -295,6 +392,9 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     editor.append(el('p','muted','参考值须上传带“参考值适用范围”表的来源工作簿，注明发布者、版本、来源、指标口径及适用起止日。缺失或不匹配只限制相关比较；仿真示意不用于企业正式检测。'));
     editor.append(scope,el("p", "muted", "无歧义信息会预填；可补填或修正，无须填写修改原因。用户值不代替原文事实，主体或期间冲突仍须处理。主期间支持完整月、季度、半年或年度。"));
     const selections = {};reviewChecks=[];extractionActions=[];
+    const policySection=el("section","material-card");editor.append(policySection);
+    const readPolicy=batch.policy_catalog?policyEditor(policySection,batch.policy_catalog,batch.policy_input,batch.analysis.policy_assessment,changed):()=>({selected:[],facts:{},reviews:{}});
+    if(batch.policy_reanalysis_required)policySection.append(el("p","material-note","政策目录或程序已更新，以下是旧分析；保存重新分析后重新核对，旧报告不改写。"));
     for (const doc of batch.documents) {
       const selection = batch.selections[doc.id] || {}, card = el("section", "material-card");
       const staleFinancial=doc.financial_reanalysis_required===true;
@@ -407,6 +507,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
     }
     save = button("保存修改并重新分析",()=>perform(async valid=>{
       const data = {expected_revision:batch.revision, company:Object.fromEntries(Object.entries(company).map(([k,v])=>[k,v.value.trim()])), selections:Object.fromEntries(Object.entries(selections).map(([k,v])=>[k,v()]))};
+      if(batch.policy_catalog)data.policy_input=readPolicy();
       const value = await api(endpoint("/analyze"),json(data));
       if (valid()) {batch=value;dirty=false;needsReload=false;render();refresh();}
     })); editor.append(save);
@@ -614,5 +715,5 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
       })),button("取消",()=>preview.remove()));parent.append(preview);
     });
   }
-  return {enabled,reset,refresh,upload,open,renderReference,selectClient};
+  return {enabled,reset,refresh,upload,open,renderReference,selectClient,policyUI:{editor:policyEditor,view:policyView}};
 }

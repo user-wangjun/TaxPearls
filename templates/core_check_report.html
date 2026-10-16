@@ -35,6 +35,29 @@
 <h3>AI 辅助说明</h3>{% if slot.ai and slot.ai.validated %}{% for c in slot.ai.assessments %}<p>{{ c.text }}</p><p class="muted">条款 {{ c.clause_ids|join('、') }} · 企业来源 {{ c.source_ids|join('、') or '缺失' }}{% for a in c.amounts %}<br>金额引用 {{ a.metric_id }}：{{ a.value }}{% endfor %}<br>需补充：{{ c.required_materials|join('、') or '请复核原始材料' }}</p>{% endfor %}{% elif slot.ai %}<p>AI 输出未通过校验或尚需复核：{{ slot.ai.reason or slot.ai.status }}。未将无效分析作为结论。</p>{% else %}<p>本次未调用 AI；以上为本地程序与政策证据核对结果。</p>{% endif %}
 {% if slot.ai and slot.ai.usage %}<p class="muted">AI 用量：{% for u in slot.ai.usage %}{{ u.model }}，输入 {{ u.usage.prompt_tokens|default('未返回') }} / 输出 {{ u.usage.completion_tokens|default('未返回') }} Token，{{ u.elapsed_seconds }} 秒{% if not loop.last %}；{% endif %}{% endfor %}。未换算成账单金额。</p>{% endif %}
 </section>{% endfor %}
+{% set policy_assessment=report.policy_assessment %}
+{% if policy_assessment %}
+<section class="policy-notes">
+<h2 class="confirmed-input-heading">附录：政策适用与复核依据</h2>
+<p class="small muted">独立于本任务风险规则，不改写风险结论，不计算税款，不替代申报或行政认定。目录 {{ policy_assessment.version }}，官方来源核对截至 {{ policy_assessment.checked_as_of }}，指纹 {{ policy_assessment.fingerprint }}。下列业务事实由用户提供并复核，不表示系统独立证明真实资格；此报告冻结当时版本，后续政策变化不重写。</p>
+{% if policy_assessment.consistency %}
+<p class="small">跨政策核对：{{ policy_assessment.consistency.status_label }}</p>
+{% for issue in policy_assessment.consistency.issues %}<p class="small">{{ issue.message }}</p>{% endfor %}
+{% endif %}
+{% for item in policy_assessment.results %}
+<h3>{{ item.name }} · {{ item.status_label }}</h3>
+<p class="small">{{ item.document_number }}；所采生效区间 {{ item.effective_from }} 至 {{ item.effective_to or '未声明截止（非永久有效保证）' }}；事项区间 {{ item.business_start or '待核对' }} 至 {{ item.business_end or '待核对' }}。</p>
+{% for reason in item.reasons %}<p class="small">{{ reason }}</p>{% endfor %}
+{% for note in item.notes %}<p class="small">{{ note }}</p>{% endfor %}
+{% if item.missing_fields %}<p class="small">缺少值或依据：{% for field in item.missing_fields %}{{ field.label }}{% if not loop.last %}；{% endif %}{% endfor %}</p>{% endif %}
+{% if item.facts %}<table class="evidence-table confirmed-inputs"><thead><tr><th>业务事实</th><th>保存值</th><th>用户提供的依据位置</th></tr></thead><tbody>{% for fact in item.facts %}<tr><td>{{ fact.label }}</td><td>{{ fact.value_label|default(fact.value) }}</td><td class="src">{{ fact.source or '待核对' }}</td></tr>{% endfor %}</tbody></table>{% endif %}
+{% for source in policy_assessment.sources %}{% if source.id in item.source_ids %}<p class="small muted">{{ source.title }}（{{ source.document_number }}）：{{ source.url }}</p>{% endif %}{% endfor %}
+{% endfor %}
+<h3>冲突、择一与叠加说明</h3>
+{% for relation in policy_assessment.relationships %}<p class="small">{{ relation.message }} 依据：{{ relation.source_id or '未采齐，待核对' }} {{ relation.clause or '' }}</p>{% endfor %}
+{% for limitation in policy_assessment.limitations %}<p class="small muted">{{ limitation }}</p>{% endfor %}
+</section>
+{% endif %}
 <div class="source-evidence"><h2>取数定位与版本溯源</h2>{% for s in report.sources %}<p>记录 {{ s.record_id }} · 文件 {{ s.file_id }} · {{ s.source_position }}</p><table><thead><tr><th>原始字段</th><th>原表位置</th><th>原始值</th></tr></thead><tbody>{% for field,source in s.field_sources.items() %}<tr><td>{{ source.source_label or field }}</td><td>{{ source.position }}</td><td>{{ source.raw_value }}</td></tr>{% endfor %}</tbody></table>{% endfor %}
 {% for f in report.source_files or [] %}<p>证明原件：{{ f.name }} · {{ f.purpose }}<br>文件 {{ f.file_id }} · SHA-256 {{ f.sha256 }}</p>{% endfor %}
 </div><p class="muted">内容指纹 {{ report.content_hash }}</p>
