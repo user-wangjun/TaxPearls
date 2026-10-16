@@ -391,6 +391,11 @@
   .material-table th:nth-child(3) { width:70px; }
   .material-card pre { white-space:pre-wrap; overflow-wrap:anywhere; max-height:280px; overflow:auto; background:var(--bg); padding:12px; font-size:12px; }
   .material-check { display:block; margin:12px 0; line-height:1.8; }
+  .policy-panel { min-width:0; overflow-wrap:anywhere; }
+  .policy-panel .material-check { display:flex; align-items:center; gap:8px; margin:8px 0; }
+  .policy-panel .material-check input[type=checkbox] { order:-1; flex:0 0 18px; width:18px; height:18px; margin:0; padding:0; }
+  .policy-panel .material-company input, .policy-panel .material-company select { min-width:0; width:100%; box-sizing:border-box; }
+  @media(max-width:700px) { .policy-panel .material-company { grid-template-columns:minmax(0,1fr); } }
   label .req { color: var(--high); margin-left: 3px; font-weight: 600; }
 
   /* 上传设置卡片：去掉 fieldset 默认边框，按全站 field 控件与分组卡片组织 */

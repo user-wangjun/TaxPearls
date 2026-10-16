@@ -83,6 +83,7 @@ def archive(store, actor, task_id, expected_revision):
         raise AccessDenied("任务版本已变化，请重新读取后生成报告。", 409)
     payload = core_inputs.latest(view)
     checks = deepcopy(payload.get("tax_checks", {}))
+    from webapp import core_policies
     if not checks:
         raise AccessDenied("请先完成至少一项核查，再生成检查报告。", 409)
     with store.connect() as db:
@@ -90,6 +91,7 @@ def archive(store, actor, task_id, expected_revision):
         batch = batches._authorize(db, actor, task_id)
         if batch["revision"] != expected_revision:
             raise AccessDenied("资料已更新，请重新读取。", 409)
+        policy_assessment = core_policies.current_for_report(payload)
         for rid, slot in checks.items():
             old = slot["bundle"]
             fresh = metrics.build_task_bundle(db, payload, old["task"], rid, topic=old["check"]["topic"],
@@ -109,6 +111,7 @@ def archive(store, actor, task_id, expected_revision):
                    {sid for slot in checks.values() for fact in slot["bundle"]["facts"] for sid in fact["source_ids"]}]
         template = (ROOT / "templates/core_check_report.html").read_text(encoding="utf-8")
         snapshot = {"schema": 1, "task": deepcopy(payload["task"]), "checks": checks,
+                    'policy_assessment': policy_assessment,
                     "processing": {key: deepcopy(payload["processing"].get(key)) for key in ("status", "issues", "notices")},
                     "sources": sources, "summary": summary(checks), "formal_finding": False,
                     "template_sha256": hashlib.sha256(template.encode()).hexdigest(),
@@ -127,6 +130,8 @@ def archive(store, actor, task_id, expected_revision):
         env = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
         env.filters.update(report_evidence=report_evidence,report_gaps=report_gaps,source_location=source_location)
         html = env.from_string(template).render(report=snapshot)
+        if core_policies.current_for_report(payload) != policy_assessment:
+            raise AccessDenied("报告生成期间政策版本变化，请重新核对。", 409)
         frozen = {"report": snapshot, "html": html, "html_sha256": hashlib.sha256(html.encode()).hexdigest(),
                   "template_sha256": hashlib.sha256(template.encode()).hexdigest()}
         cipher = batches._seal(batches._json(frozen), context(actor["org_id"], task_id, version))

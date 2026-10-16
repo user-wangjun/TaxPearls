@@ -12,7 +12,7 @@ async function main() {
   let actor={id:"owner",role:"org_admin"}, controller;
   const timers=new Map();let timerId=0;
   const context={URL:{revokeObjectURL(){}},setTimeout(fn){const id=++timerId;timers.set(id,fn);return id;},clearTimeout(id){timers.delete(id);},window:{confirm:()=>true},
-    FormData:class{append(){}},fetch:()=>{throw new Error("unexpected download");}};
+    FormData:class{constructor(){this.values=[];}append(key,value){this.values.push([key,value]);}},fetch:()=>{throw new Error("unexpected download");}};
   vm.createContext(context);
   vm.runInContext(fs.readFileSync("webapp/static/enterprise.js","utf8"),context);
   const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
@@ -448,6 +448,86 @@ async function main() {
   assert.equal($("uploadCompanyMode").value,"new");
   const profileDenied=controller.selectClient("revoked");calls.shift().reject(Object.assign(new Error("access denied"),{status:403}));await profileDenied;
   assert.equal($("uploadCompanyTaxId").value,"");assert.ok($("uploadProfileHint").textContent.includes("未读取"));
+  // Policy acknowledgement is tied to saved facts, not just a checked box.
+  const policyBatch=sample();
+  policyBatch.policy_catalog={policies:[{id:"P",name:"测试政策"}],policy_fields:{P:["vat_sales"]},fields:{
+    business_start:{label:"事项开始",type:"date"},business_end:{label:"事项结束",type:"date"},
+    vat_sales:{label:"销售额",type:"number"}}};
+  policyBatch.policy_input={selected:["P"],facts:{vat_sales:{value:"9",source:"合成第1页"}},reviews:{}};
+  policyBatch.analysis.policy_assessment={version:"test",checked_as_of:"2026-10-06",sources:[],relationships:[],results:[{
+    id:"P",name:"测试政策",status_label:"待核对",effective_from:"2026-01-01",effective_to:"2027-12-31",
+    business_start:"2026-01-01",business_end:"2026-01-31",reasons:["请复核"],notes:[],missing_fields:[],facts:[],source_ids:[],review_token:"c".repeat(64),reviewed:false}]};
+  const policyOpen=controller.open("policy");calls.shift().resolve(policyBatch);await policyOpen;
+  const policyAck=field("政策复核 P");policyAck.checked=true;policyAck.listeners.change();
+  const policySave=button("保存修改并重新分析").click(),policyWrite=calls.shift();
+  assert.equal(JSON.parse(policyWrite.options.body).policy_input.reviews.P,"c".repeat(64));
+  policyWrite.resolve(policyBatch);await policySave;settleLists();await Promise.resolve();
+  field("政策复核 P").checked=true;field("政策复核 P").listeners.change();
+  field("企业名称（必填）").value="修改主体";field("企业名称（必填）").listeners.input();
+  assert.equal(field("政策复核 P").checked,false);assert.equal(field("政策复核 P").disabled,true);
+  const clearedPolicySave=button("保存修改并重新分析").click(),clearedPolicyWrite=calls.shift();
+  assert.deepEqual(JSON.parse(clearedPolicyWrite.options.body).policy_input.reviews,{});
+  clearedPolicyWrite.resolve(policyBatch);await clearedPolicySave;settleLists();await Promise.resolve();
+  field("政策复核 P").checked=true;field("政策复核 P").listeners.change();
+  field("政策 销售额").value="10";field("政策 销售额").listeners.input();
+  assert.equal(field("政策复核 P").checked,false);
+  const editedPolicySave=button("保存修改并重新分析").click(),editedPolicyWrite=calls.shift();
+  assert.equal(JSON.parse(editedPolicyWrite.options.body).policy_input.facts.vat_sales.value,"10");
+  assert.deepEqual(JSON.parse(editedPolicyWrite.options.body).policy_input.reviews,{});
+  editedPolicyWrite.resolve(policyBatch);await editedPolicySave;settleLists();await Promise.resolve();
+  field("选择政策 测试政策").checked=false;field("选择政策 测试政策").listeners.change();
+  const removedPolicySave=button("保存修改并重新分析").click(),removedPolicyWrite=calls.shift();
+  assert.deepEqual(JSON.parse(removedPolicyWrite.options.body).policy_input,{selected:[],facts:{},reviews:{}});
+  removedPolicyWrite.resolve(sample());await removedPolicySave;settleLists();await Promise.resolve();
+  // A server-detected conflict is visible and has no acknowledgement escape.
+  const conflictingPolicy=JSON.parse(JSON.stringify(policyBatch));
+  conflictingPolicy.analysis.policy_assessment.consistency={status:"conflict",status_label:"存在业务事实冲突，相关政策待核对",issues:[{message:"合成身份冲突：须核对登记资料"}]};
+  conflictingPolicy.analysis.policy_assessment.results[0].review_token=null;
+  const conflictingPolicyOpen=controller.open("policy");calls.shift().resolve(conflictingPolicy);await conflictingPolicyOpen;
+  assert.equal(field("政策复核 P"),undefined);
+  assert.ok(all().some(n=>n.textContent==="跨政策核对：存在业务事实冲突，相关政策待核对"));
+  assert.ok(all().some(n=>n.textContent==="合成身份冲突：须核对登记资料"));
+  assert.equal(button("确认材料并开始检测").disabled,false); // Original rules remain available.
+  const combinationPolicy=JSON.parse(JSON.stringify(policyBatch));
+  combinationPolicy.analysis.policy_assessment.consistency={status:"needs_review",status_label:"仍有待核对事项，不能形成组合适用结论",issues:[]};
+  const combinationPolicyOpen=controller.open("policy");calls.shift().resolve(combinationPolicy);await combinationPolicyOpen;
+  assert.ok(all().some(n=>n.textContent==="跨政策核对：仍有待核对事项，不能形成组合适用结论"));
+  // First upload after login snapshots policy inputs before reset clears the
+  // former account's controls. Regression for the real-browser finding.
+  actor={id:"new-policy-owner",role:"org_admin"};
+  const policyList=controller.refresh();calls.shift().resolve([]);calls.shift().resolve({retention_ready:true,message:"ready",policy_catalog:{...policyBatch.policy_catalog,fingerprint:"new"}});await policyList;
+  const uploadPolicyNode=all($("uploadScope"));
+  const uploadSelection=uploadPolicyNode.find(n=>n["aria-label"]==="选择政策 测试政策");uploadSelection.checked=true;uploadSelection.listeners.change();
+  const uploadSales=all($("uploadScope")).find(n=>n["aria-label"]==="政策 销售额");uploadSales.value="9";uploadSales.listeners.input();
+  assert.equal(uploadSales.listeners.change,undefined); // blur must not rebuild/detach the next source field
+  const uploadBasis=all($("uploadScope")).find(n=>n["aria-label"]==="政策依据 销售额");uploadBasis.value="上传前合成第1页";uploadBasis.listeners.input();
+  const policyUpload=controller.upload([{name:"policy.xlsx",size:100}]),policyUploadCall=calls.shift();
+  const beforeUploadPolicy=JSON.parse(policyUploadCall.options.body.values.find(([key])=>key==="policy_input")[1]);
+  assert.deepEqual(beforeUploadPolicy,{selected:["P"],facts:{vat_sales:{value:"9",source:"上传前合成第1页"}},reviews:{}});
+  policyUploadCall.resolve(sample());await policyUpload;settleLists();await Promise.resolve();
+  // The integrated single enterprise selector must clear qualifications when
+  // switching clients; the removed auditClient selector is not a dependency.
+  const integratedList=controller.refresh();calls.shift().resolve([]);calls.shift().resolve({retention_ready:true,message:"ready",policy_catalog:{...policyBatch.policy_catalog,fingerprint:"integrated"}});await integratedList;
+  const integratedSelection=all($("uploadScope")).find(n=>n["aria-label"]==="选择政策 测试政策");
+  integratedSelection.checked=true;integratedSelection.listeners.change();
+  const integratedSales=all($("uploadScope")).find(n=>n["aria-label"]==="政策 销售额");
+  integratedSales.value="123";integratedSales.listeners.input();
+  const integratedProfile=controller.selectClient("integrated-client");
+  calls.shift().resolve({company:{name:"整合企业",taxpayer_id:"INTEGRATED"},analysis_count:0});await integratedProfile;
+  assert.equal($("uploadCompanyMode").value,"integrated-client");
+  const integratedUpload=controller.upload([{name:"integrated.xlsx",size:100}]),integratedWrite=calls.shift();
+  const integratedForm=Object.fromEntries(integratedWrite.options.body.values);
+  assert.equal(integratedForm.client_id,"integrated-client");
+  assert.equal(integratedForm.company_mode,"existing");
+  assert.deepEqual(JSON.parse(integratedForm.policy_input),{selected:[],facts:{},reviews:{}});
+  integratedWrite.resolve(sample());await integratedUpload;settleLists();await Promise.resolve();
+  await controller.selectClient("new");
+  assert.equal($("uploadCompanyMode").value,"new");
+  const integratedNewUpload=controller.upload([{name:"integrated-new.xlsx",size:100}]),integratedNewWrite=calls.shift();
+  const integratedNewForm=Object.fromEntries(integratedNewWrite.options.body.values);
+  assert.equal(integratedNewForm.client_id,undefined);
+  assert.equal(integratedNewForm.company_mode,"new");
+  integratedNewWrite.resolve(sample());await integratedNewUpload;settleLists();await Promise.resolve();
   // A prior tenant's material-list response cannot leak after a role switch.
   const listing=controller.refresh();actor={id:"other",role:"teacher"};
   calls.shift().resolve([{id:"private",revision:1,created_at:"today"}]);calls.shift().resolve({retention_ready:true,message:"ready"});await listing;

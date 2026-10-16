@@ -8,6 +8,7 @@ file names and edit history. Keys are not stored alongside the database.
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import binascii
 import hashlib
 import json
@@ -467,6 +468,8 @@ def confirmed(store, actor, audit_id):
                           for original in payload['documents'] if original['id'] == doc['id']],
             'edits': analysis['edits'], 'checks': analysis['checks'], 'feedback': analysis['feedback'],
             'metrics': list(analysis['dataset'].get('metrics', {}).values())}
+        if analysis.get('policy_assessment') is not None:
+            output['policy_assessment'] = deepcopy(analysis['policy_assessment'])
         _event(db, batch, actor, 'view_confirmation', {'audit_id': audit_id, **link})
         return output
 
@@ -481,6 +484,8 @@ def record_execution(db, actor, audit_id, client_id, dataset, findings, context)
     """
     from dataclasses import asdict
     from src.snapshots import serialize_dataset
+    from src import policies
+    from src.input_errors import InputError
     batch_id, expected = context['batch_id'], context['revision']
     batch = _authorize(db, actor, batch_id)
     if batch['revision'] != expected:
@@ -492,6 +497,13 @@ def record_execution(db, actor, audit_id, client_id, dataset, findings, context)
     if hashlib.sha256(_json(payload)).hexdigest() != context['sha256']:
         raise AccessDenied('材料分析版本不匹配。', 409)
     analysis = payload.get('analysis', {})
+    try:
+        policies.assert_current(dataset.policy_assessment)
+        assessment = policies.assess(payload['company'], (payload.get('scope_context') or {}).get('policy_input'))
+    except InputError as exc:
+        raise AccessDenied(str(exc), 409) from None
+    if _json(dataset.policy_assessment) != _json(assessment):
+        raise AccessDenied('政策判断与所确认的业务事实不一致，请重新分析。', 409)
     if (analysis.get('can_confirm') is not True or analysis.get('feedback', {}).get('blocking')
             or _json(analysis.get('dataset')) != _json(serialize_dataset(dataset))):
         raise AccessDenied('输入尚未完成核对，不能开始检测。', 409)
@@ -519,7 +531,8 @@ def record_execution(db, actor, audit_id, client_id, dataset, findings, context)
                       'analysis_sha256': context['sha256'], 'audit_id': audit_id,
                       'scope': analysis['company'], 'files': analysis['files'],
                       'edits': analysis['edits'], 'checks': analysis['checks'],
-                      'feedback': analysis['feedback']})
+                      'feedback': analysis['feedback'],
+                      **({'policy_assessment': dataset.policy_assessment} if dataset.policy_assessment is not None else {})})
     db.execute('UPDATE material_batches SET client_id=? WHERE id=?', (client_id, batch_id))
     db.execute('INSERT INTO material_executions VALUES (?,?,?,?)', (batch_id, expected, revision, audit_id))
     _event(db, batch, actor, 'execution', {'audit_id': audit_id, 'confirmation_revision': revision,

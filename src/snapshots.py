@@ -11,6 +11,7 @@ def serialize_dataset(dataset: Dataset) -> dict[str, Any]:
     return {
         **({'simulation': True} if dataset.simulation else {}),
         **({"sources": dataset.sources} if dataset.sources is not None else {}),
+        **({"policy_assessment": deepcopy(dataset.policy_assessment)} if dataset.policy_assessment is not None else {}),
         "company": asdict(dataset.company),
         "accounts": [
             {k: (str(v) if isinstance(v, Decimal) else v) for k, v in asdict(a).items()}
@@ -37,6 +38,7 @@ def deserialize_dataset(data: dict[str, Any]) -> Dataset:
     return Dataset(
         simulation=data.get('simulation') is True,
         sources=data.get("sources"),
+        policy_assessment=deepcopy(data.get('policy_assessment')),
         company=Company(**data["company"]),
         accounts=[
             Account(

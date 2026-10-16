@@ -231,6 +231,14 @@ def register(app, get_store, get_user, allow):
         if not payload.get("tax_checks"):
             raise HTTPException(409, "尚无已保存项目，请先选择一项进行核查。")
         changed, reused = [], []
+        from webapp import core_policies
+        policy_before = deepcopy(payload.get('policy_assessment'))
+        if payload.get('policy_input'):
+            try:
+                core_policies.update(payload)
+            except (core_policies.InputError, ValueError, OSError) as exc:
+                raise HTTPException(409, '政策版本无法核对：' + str(exc)) from None
+        policy_changed = policy_before != payload.get('policy_assessment')
         try:
             with store.connect() as db:
                 current_actor(db, user)
@@ -246,9 +254,10 @@ def register(app, get_store, get_user, allow):
                                                       "analyzed_at": members.now(), "input_revision": view["revision"], "cached": False}
             from webapp.core_reports import summary
             payload["tax_check_summary"] = summary(payload["tax_checks"])
-            revision = batches.append_revision(store, user, task_id, view["revision"], "analysis", payload) if changed else view["revision"]
+            revision = batches.append_revision(store, user, task_id, view["revision"], "analysis", payload) if changed or policy_changed else view["revision"]
             return {"revision": revision, "changed_rule_ids": changed, "reused_rule_ids": reused,
-                    "tax_checks": payload["tax_checks"], "summary": payload["tax_check_summary"], "external_api_calls": 0}
+                    "tax_checks": payload["tax_checks"], "summary": payload["tax_check_summary"], "external_api_calls": 0,
+                    'policy_assessment': payload.get('policy_assessment'), 'policy_changed': policy_changed}
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
 

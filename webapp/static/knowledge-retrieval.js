@@ -56,6 +56,7 @@
   function section(title){const box=el("details","kg-evidence-section");box.append(el("summary",null,title));$kg("kgEvidenceResult").append(box);return box;}
   function show(result){
     last=result;const data=result.bundle,root=$kg("kgEvidenceResult");root.replaceChildren();
+    if(detail?.policy_assessment&&typeof enterpriseMaterials!=="undefined")enterpriseMaterials.policyUI.view(root,detail.policy_assessment);
     if(data.check.conversion)root.append(el("p","material-note","内部规则事实计算："+({TRUE:"满足原筛查条件",FALSE:"未满足原筛查条件",UNKNOWN:"数据或口径不足"}[data.check.fact_evaluation]||"待核对")+"。规则审核、政策适用性和风险判断分别保留，不能作为违法认定。"));
     const states={ready:"材料完整，可辅助核查",needs_review:"存在待复核事项",insufficient:"证据不足"};
     root.append(el("h3",null,data.check.topic),el("p","material-note",result.stale?"资料已更新，以下为历史结果，须重新核查":states[data.bundle_status]||data.bundle_status),el("p","muted",data.task.data_scope==="synthetic"?"纯合成工程样本，不是真实政策或企业结论。":"结果保留数据和政策缺口，AI 分析作为待复核线索。"));
@@ -85,7 +86,7 @@
   }
   async function recheck(){
     if(busy||!detail)return;const ticket=++generation,identity=currentUser.id,id=detail.id;busy=true;$kg("kgEvidenceFields").disabled=true;buttons();message("正在核对变化，只更新受影响项目，不调用 AI…");
-    try{const result=await api(`/api/enterprise/input-tasks/${encodeURIComponent(id)}/recheck`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_revision:detail.revision})});if(!current(ticket,identity))return;detail.revision=result.revision;detail.tax_checks=result.tax_checks;const task=tasks.find(t=>t.id===id);if(task)task.revision=result.revision;savedChecks();restore();message(`已更新 ${result.changed_rule_ids.length} 项，复用 ${result.reused_rule_ids.length} 项；本次未调用 AI。`);await archiveReport(ticket,identity);}catch(error){if(current(ticket,identity))message(error.message);}finally{if(current(ticket,identity)){busy=false;$kg("kgEvidenceFields").disabled=false;buttons();}}
+    try{const result=await api(`/api/enterprise/input-tasks/${encodeURIComponent(id)}/recheck`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({expected_revision:detail.revision})});if(!current(ticket,identity))return;detail.revision=result.revision;detail.tax_checks=result.tax_checks;detail.policy_assessment=result.policy_assessment;const task=tasks.find(t=>t.id===id);if(task)task.revision=result.revision;savedChecks();restore();message(`已更新 ${result.changed_rule_ids.length} 项，复用 ${result.reused_rule_ids.length} 项；本次未调用 AI。`);await archiveReport(ticket,identity);}catch(error){if(current(ticket,identity))message(error.message);}finally{if(current(ticket,identity)){busy=false;$kg("kgEvidenceFields").disabled=false;buttons();}}
   }
   $kg("kgTask").addEventListener("change",()=>{if(busy)return;$kg("kgRegion").value="";selectTask();});$kg("kgRule").addEventListener("change",()=>{if(!busy)restore();});$kg("kgReload").addEventListener("click",()=>{if(!busy)activate();});$kg("kgAnalyze").addEventListener("click",()=>run(true));$kg("kgEvidenceForm").addEventListener("submit",event=>{event.preventDefault();run(false);});
   $kg("kgArchiveReport").addEventListener("click",()=>{if(!busy)archiveReport();});

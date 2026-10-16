@@ -123,6 +123,7 @@
 
   .muted { color: #6B7280; }
   .small { font-size: 9pt; }
+  .policy-notes p { overflow-wrap: anywhere; }
 
   /* ============================ 数据表 ============================ */
   table.data {
@@ -580,6 +581,28 @@
   </tr>
 </table>
 
+{% if policy_assessment %}
+<section class="policy-notes">
+<h2 class="confirmed-input-heading">附录：政策适用与复核依据</h2>
+<p class="small muted">独立于原24条风险规则，不改写风险结论，不计算税款，不替代申报或行政认定。目录 {{ policy_assessment.version }}，官方来源核对截至 {{ policy_assessment.checked_as_of }}，指纹 {{ policy_assessment.fingerprint }}。下列业务事实由用户提供并复核，不表示系统独立证明真实资格；此报告冻结当时版本，后续政策变化不重写。</p>
+{% if policy_assessment.consistency %}
+<p class="small">跨政策核对：{{ policy_assessment.consistency.status_label }}</p>
+{% for issue in policy_assessment.consistency.issues %}<p class="small">{{ issue.message }}</p>{% endfor %}
+{% endif %}
+{% for item in policy_assessment.results %}
+<h3>{{ item.name }} · {{ item.status_label }}</h3>
+<p class="small">{{ item.document_number }}；所采生效区间 {{ item.effective_from }} 至 {{ item.effective_to or '未声明截止（非永久有效保证）' }}；事项区间 {{ item.business_start or '待核对' }} 至 {{ item.business_end or '待核对' }}。</p>
+{% for reason in item.reasons %}<p class="small">{{ reason }}</p>{% endfor %}
+{% for note in item.notes %}<p class="small">{{ note }}</p>{% endfor %}
+{% if item.missing_fields %}<p class="small">缺少值或依据：{% for field in item.missing_fields %}{{ field.label }}{% if not loop.last %}；{% endif %}{% endfor %}</p>{% endif %}
+{% if item.facts %}<table class="evidence-table confirmed-inputs"><thead><tr><th>业务事实</th><th>保存值</th><th>用户提供的依据位置</th></tr></thead><tbody>{% for fact in item.facts %}<tr><td>{{ fact.label }}</td><td>{{ fact.value_label|default(fact.value) }}</td><td class="src">{{ fact.source or '待核对' }}</td></tr>{% endfor %}</tbody></table>{% endif %}
+{% for source in policy_assessment.sources %}{% if source.id in item.source_ids %}<p class="small muted">{{ source.title }}（{{ source.document_number }}）：{{ source.url }}</p>{% endif %}{% endfor %}
+{% endfor %}
+<h3>冲突、择一与叠加说明</h3>
+{% for relation in policy_assessment.relationships %}<p class="small">{{ relation.message }} 依据：{{ relation.source_id or '未采齐，待核对' }} {{ relation.clause or '' }}</p>{% endfor %}
+{% for limitation in policy_assessment.limitations %}<p class="small muted">{{ limitation }}</p>{% endfor %}
+</section>
+{% endif %}
 {% if material_reference %}
 <h2 class="confirmed-input-heading">附录：已确认输入指标与来源</h2>
 <p class="small muted">下表是本报告冻结输入的保存值，含已确认人工修改及派生指标，不等于所有指标都已执行检查或原件全部内容已读取。企业信息与主期间为本次确认范围，用户补填不代替原文证明；原始页、金额栏次、单位和识别候选原值以各项来源说明为准。未读取页、未映射项目和缺失值不补造，材料修改及复核记录可通过本报告的确认材料版本查询。</p>

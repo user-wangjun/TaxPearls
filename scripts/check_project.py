@@ -16,7 +16,7 @@ def main():
     os.chdir(ROOT)
     sys.path.insert(0, str(ROOT))
     def fingerprint():
-        paths = [ROOT / "main.py", *[p for d in ("src", "webapp", "scripts", "tests", "rules", "templates") for p in (ROOT / d).rglob("*") if p.suffix in {".py", ".js", ".html", ".css", ".yaml"}]]
+        paths = [ROOT / "main.py", ROOT / "docs" / "企业政策适用目录.yaml", *[p for d in ("src", "webapp", "scripts", "tests", "rules", "templates") for p in (ROOT / d).rglob("*") if p.suffix in {".py", ".js", ".html", ".css", ".yaml"}]]
         return {str(p.relative_to(ROOT)):hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
     before = fingerprint()
     for path in [ROOT / 'main.py', *[p for d in ('src', 'webapp', 'scripts', 'tests')

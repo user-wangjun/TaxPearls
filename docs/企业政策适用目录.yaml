@@ -1,0 +1,624 @@
+{
+  "schema_version": 1,
+  "version": "2026-10-06-v1",
+  "checked_as_of": "2026-10-06",
+  "scope": "首批广东地方与全国在广东适用的七个政策主题；仅条件判断，不改原24条规则或计算税款",
+  "policies": [
+    {
+      "id": "GD-DEED-BASE",
+      "name": "广东契税基本税率及征收征用后重新承受优惠",
+      "tax": "契税",
+      "document_number": "第86号公告",
+      "effective_from": "2021-09-01",
+      "effective_to": null,
+      "source_ids": [
+        "gd-deed",
+        "gd-revision"
+      ],
+      "parameters": [
+        {
+          "name": "基本税率",
+          "value": "0.03",
+          "unit": "小数比率",
+          "source_id": "gd-deed",
+          "clause": "决定第一项，公报第49页",
+          "evidence_text": "我省契税适用税率为百分之三"
+        }
+      ],
+      "conditions": [
+        "土地、房屋权属所涉计税事项在广东省；核实承受方与权属转移类型",
+        "先核对国家规定的减免，再使用地方基本税率",
+        "征收/征用后重新承受优惠须有县级以上人民政府征收/征用及补偿资料"
+      ],
+      "exclusions": [
+        "不得给个人住房优惠或法定免税事项一律套3%",
+        "未核对国家契税计税依据和特殊优惠时，不将合同总价直接乘3%",
+        "因不可抗力住房灭失按面积判断的部分未整理成金额公式"
+      ],
+      "policy_level": "provincial",
+      "applicable_regions": [
+        "广东省"
+      ]
+    },
+    {
+      "id": "GD-PROPERTY-BASE",
+      "name": "广东房产税从价和从租基本计算口径",
+      "tax": "房产税",
+      "document_number": "粤府〔1986〕168号；第289号令修订",
+      "effective_from": "2021-09-29",
+      "effective_to": null,
+      "source_ids": [
+        "gd-property",
+        "gd-revision"
+      ],
+      "parameters": [
+        {
+          "name": "从价原值减除比例",
+          "value": "0.30",
+          "unit": "小数比率",
+          "source_id": "gd-property",
+          "clause": "第四条，PDF第2页",
+          "evidence_text": "一次减除30%"
+        },
+        {
+          "name": "从价年税率",
+          "value": "0.012",
+          "unit": "小数比率",
+          "source_id": "gd-property",
+          "clause": "第五条，PDF第2页",
+          "evidence_text": "税率为1.2%"
+        },
+        {
+          "name": "从租基本税率",
+          "value": "0.12",
+          "unit": "小数比率",
+          "source_id": "gd-property",
+          "clause": "第五条，PDF第2页",
+          "evidence_text": "税率为12%"
+        }
+      ],
+      "conditions": [
+        "房产在广东所列城市、县城、建制镇、工矿区征税范围内；不是仅凭企业注册地匹配",
+        "按第三条核定产权所有人/经营管理人/承典人/代管人/使用人的纳税身份",
+        "从价原值须经账簿及税法口径核对；无原值、不实原值由所在地税务机关核定",
+        "从租与从价按实际用途、期间分别判断，先检查法定及其他优惠"
+      ],
+      "exclusions": [
+        "不把固定资产净值当房产原值",
+        "个人自有自用非营业房产、法定免税和其他特殊出租优惠不得套基本公式",
+        "税款按年征收分期缴纳，不能把年税额当月税额"
+      ],
+      "policy_level": "provincial",
+      "applicable_regions": [
+        "广东省"
+      ]
+    },
+    {
+      "id": "VAT-THRESHOLD-2026",
+      "name": "2026—2027小规模纳税人增值税起征点",
+      "tax": "增值税",
+      "document_number": "2026年第10号；2026年第4号；增值税法",
+      "effective_from": "2026-01-01",
+      "effective_to": "2027-12-31",
+      "source_ids": [
+        "vat-2026",
+        "vat-law",
+        "vat-administration"
+      ],
+      "parameters": [
+        {
+          "name": "月起征点",
+          "value": "100000",
+          "unit": "人民币元",
+          "source_id": "vat-2026",
+          "clause": "第一条第（一）项",
+          "evidence_text": "起征点为月销售额10万元",
+          "operator": "lt"
+        },
+        {
+          "name": "季度起征点",
+          "value": "300000",
+          "unit": "人民币元",
+          "source_id": "vat-2026",
+          "clause": "第一条第（一）项",
+          "evidence_text": "起征点为季度销售额30万元",
+          "operator": "lt"
+        },
+        {
+          "name": "按次（日）起征点",
+          "value": "1000",
+          "unit": "人民币元",
+          "source_id": "vat-2026",
+          "clause": "第一条第（二）项",
+          "evidence_text": "每次（日）销售额1000元",
+          "operator": "lt"
+        }
+      ],
+      "conditions": [
+        "核实小规模纳税人身份，以及主管税务机关确定的月、季或按次纳税方式",
+        "起征点比较使用规定口径的不含税销售额，差额计税按规定扣除后的不含税余额判断",
+        "一日多次交易合并按日；自然人的月纳税特殊情形按2026年第4号逐项核对",
+        "核实全部/部分放弃免税以及专用发票情况"
+      ],
+      "exclusions": [
+        "2026应按增值税法第二十三条：未达到免税，达到全额计税；不得沿用旧版含本数<=判定",
+        "达到起征点后不是只对超过起征点的差额征税",
+        "不能将销售额分拆后分别享受起征点；也不能自行改月为季",
+        "注册在广东不等于小规模资格成立"
+      ],
+      "policy_level": "national",
+      "applicable_regions": [
+        "全国"
+      ]
+    },
+    {
+      "id": "VAT-REDUCED-2026",
+      "name": "2026—2027小规模纳税人3%征收率减按1%政策",
+      "tax": "增值税",
+      "document_number": "2026年第10号；国家税务总局2026年第4号",
+      "effective_from": "2026-01-01",
+      "effective_to": "2027-12-31",
+      "source_ids": [
+        "vat-2026",
+        "vat-administration",
+        "vat-law"
+      ],
+      "parameters": [
+        {
+          "name": "规定征收率",
+          "value": "0.03",
+          "unit": "小数比率",
+          "source_id": "vat-2026",
+          "clause": "第三条第（三）部分第6点",
+          "evidence_text": "依照3%征收率减按1%征收率"
+        },
+        {
+          "name": "优惠征收率",
+          "value": "0.01",
+          "unit": "小数比率",
+          "source_id": "vat-2026",
+          "clause": "第三条第（三）部分第6点",
+          "evidence_text": "减按1%征收率征收增值税"
+        }
+      ],
+      "conditions": [
+        "小规模纳税人发生适用所采条款的增值税应税交易",
+        "先核对免税及起征点，再核对减税；确认未放弃减税",
+        "核对该交易是否有其他专项简易计税规定，不能只看小规模身份"
+      ],
+      "exclusions": [
+        "明确不含销售/出租不动产和转让土地使用权",
+        "自己使用过的固定资产、旧货等同文件另列情形须单独判断，不能全业务统一乘1%",
+        "预缴地预收款与最终申报应税销售额不能混为同一个输入"
+      ],
+      "policy_level": "national",
+      "applicable_regions": [
+        "全国"
+      ]
+    },
+    {
+      "id": "CIT-SMALL",
+      "name": "小型微利企业所得税优惠及资格统计",
+      "tax": "企业所得税",
+      "document_number": "2023年第12号；历史基础2023年第6号、2022年第13号",
+      "effective_from": "2023-01-01",
+      "effective_to": "2027-12-31",
+      "source_ids": [
+        "small-2023",
+        "small-2023-start",
+        "small-2022-start"
+      ],
+      "parameters": [
+        {
+          "name": "所得计入比例",
+          "value": "0.25",
+          "unit": "小数比率",
+          "source_id": "small-2023",
+          "clause": "第三条",
+          "evidence_text": "减按25%计算应纳税所得额"
+        },
+        {
+          "name": "税率",
+          "value": "0.20",
+          "unit": "小数比率",
+          "source_id": "small-2023",
+          "clause": "第三条",
+          "evidence_text": "按20%的税率缴纳企业所得税"
+        },
+        {
+          "name": "年度应纳税所得额上限",
+          "value": "3000000",
+          "unit": "人民币元",
+          "source_id": "small-2023",
+          "clause": "第五条",
+          "evidence_text": "年度应纳税所得额不超过300万元",
+          "operator": "lte"
+        },
+        {
+          "name": "全年季度平均人数上限",
+          "value": "300",
+          "unit": "人",
+          "source_id": "small-2023",
+          "clause": "第五条",
+          "evidence_text": "从业人数不超过300人",
+          "operator": "lte"
+        },
+        {
+          "name": "全年季度平均资产总额上限",
+          "value": "50000000",
+          "unit": "人民币元",
+          "source_id": "small-2023",
+          "clause": "第五条",
+          "evidence_text": "资产总额不超过5000万元",
+          "operator": "lte"
+        }
+      ],
+      "conditions": [
+        "从事国家非限制和禁止行业；所得、人数和资产三个条件同时成立",
+        "人数含建立劳动关系的职工及接受的劳务派遣人员",
+        "人数与资产按全年季度平均值，不直接取年末数",
+        "年中开业/终止按实际经营期确定相关指标"
+      ],
+      "exclusions": [
+        "营业收入或会计利润不等于年度应纳税所得额",
+        "任一资格条件超过上限不能只对300万元以内部分套此优惠",
+        "小规模增值税纳税人身份不能替代小型微利企业所得税资格"
+      ],
+      "policy_level": "national",
+      "applicable_regions": [
+        "全国"
+      ]
+    },
+    {
+      "id": "SMALL-SIX-TWO",
+      "name": "小微企业六税两费减半征收及叠加顺序",
+      "tax": "六税两费",
+      "document_number": "财政部 税务总局公告2023年第12号",
+      "effective_from": "2023-01-01",
+      "effective_to": "2027-12-31",
+      "source_ids": [
+        "small-2023"
+      ],
+      "parameters": [
+        {
+          "name": "减征比例",
+          "value": "0.50",
+          "unit": "小数比率",
+          "source_id": "small-2023",
+          "clause": "第二条",
+          "evidence_text": "减半征收"
+        }
+      ],
+      "conditions": [
+        "增值税小规模纳税人、小型微利企业或个体工商户三类主体之一",
+        "限公告所列六税两费，不是所有税费",
+        "小型微利资格按年度汇算结果；一般纳税人新设企业首次汇算前按第五条特殊条件判断"
+      ],
+      "exclusions": [
+        "资源税不含水资源税，印花税不含证券交易印花税",
+        "不包括增值税、企业所得税、契税等未列税种",
+        "不能把多项减免比例直接相加，或凭年末人员/资产替代资格"
+      ],
+      "policy_level": "national",
+      "applicable_regions": [
+        "全国"
+      ]
+    },
+    {
+      "id": "CIT-RD",
+      "name": "研发费用100%加计扣除与无形资产200%摊销",
+      "tax": "企业所得税",
+      "document_number": "2023年第7号；财税〔2015〕119号、财税〔2018〕64号配套",
+      "effective_from": "2023-01-01",
+      "effective_to": null,
+      "source_ids": [
+        "rd-2023",
+        "rd-scope",
+        "rd-overseas"
+      ],
+      "parameters": [
+        {
+          "name": "费用化追加扣除比例",
+          "value": "1.00",
+          "unit": "小数比率",
+          "source_id": "rd-2023",
+          "clause": "第一条",
+          "evidence_text": "实际发生额的100%"
+        },
+        {
+          "name": "资本化税前摊销倍数",
+          "value": "2.00",
+          "unit": "倍",
+          "source_id": "rd-2023",
+          "clause": "第一条",
+          "evidence_text": "无形资产成本的200%"
+        },
+        {
+          "name": "境外委托计入口径比例",
+          "value": "0.80",
+          "unit": "小数比率",
+          "source_id": "rd-overseas",
+          "clause": "第一条",
+          "evidence_text": "费用实际发生额的80%"
+        },
+        {
+          "name": "境外委托加计限额",
+          "value": "2/3",
+          "unit": "境内符合条件研发费用的比例",
+          "source_id": "rd-overseas",
+          "clause": "第一条",
+          "evidence_text": "境内符合条件的研发费用三分之二"
+        }
+      ],
+      "conditions": [
+        "核算健全、查账征收且能准确归集研发费用的居民企业",
+        "研发活动及费用必须符合规定范围，分项目辅助账、研发与经营费用分别核算",
+        "核对不适用行业和活动；一般技术支持、常规升级、质量控制等不自动认作研发",
+        "境外委托按机构/个人、独立交易、技术合同登记及备查资料单独判断"
+      ],
+      "exclusions": [
+        "不能把全部研发支出/会计科目余额直接认定为合格费用",
+        "财税〔2015〕119号旧50%/150%比例不用于当前普通计算；委托境外一律不扣旧条款已被2018年64号调整",
+        "境外个人委托不属于2018年64号范围；限额不能忽略",
+        "其他费用上限、费用归集细则、特殊行业更高比例及具体摊销年限还需配套核对"
+      ],
+      "policy_level": "national",
+      "applicable_regions": [
+        "全国"
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "id": "gd-deed",
+      "url": "https://www.gdpc.gov.cn/gdrdw/attachment/0/16/16913/167193.pdf",
+      "title": "广东省人大常委会公报2021年第6期：契税决定及第86号公告",
+      "document_number": "广东省第十三届人民代表大会常务委员会公告第86号",
+      "required_text": [
+        "第86号",
+        "2021年7月30日",
+        "自2021年9月1日起施行",
+        "我省契税适用税率为百分之三",
+        "国家有免征或者减征规定的，从其规定"
+      ],
+      "format": "pdf",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "04e239e6117146e84e50350955c311e8848c5fa4b1c5afde9df2f60ac8fc3c7c",
+        "text_sha256": "bf2d93ab6380965f984ce547cae9b5b34886287c638e510e529658500b7764ce",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "gd-property",
+      "url": "https://www.gd.gov.cn/attachment/0/486/486093/3718399.pdf",
+      "title": "广东省房产税施行细则（2021修订文本）",
+      "document_number": "粤府〔1986〕168号；广东省人民政府令第289号修改",
+      "required_text": [
+        "2021年9月29日",
+        "一次减除30%",
+        "税率为1.2%",
+        "税率为12%",
+        "按年征收",
+        "一九八七年一月一日"
+      ],
+      "format": "pdf",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "950d94b6de04435f5a77a7727352d93c16651fb992779cf21181dea76e334b8f",
+        "text_sha256": "a8238f6ba08b9af8ce99a60c1644f921c117fe4e7987a3d08aa9a6ef061453c4",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "gd-revision",
+      "url": "https://www.gd.gov.cn/gkmlpt/content/3/3617/post_3617369.html",
+      "title": "广东省人民政府关于废止和修改部分省政府规章的决定",
+      "document_number": "粤府令第289号",
+      "required_text": [
+        "第289号",
+        "2021年9月29日",
+        "自公布之日起施行",
+        "广东省契税实施办法",
+        "广东省房产税施行细则"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "ed84c321dbbbfe1e2d39fee5a5556e1aec1dd2e9ec1db109cb1053a0d8f99d9b",
+        "text_sha256": "f8975312ef7eb3c66e0c6f836e0c92e9f6171c9292979e9a5c688f44000053bc",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "vat-2026",
+      "url": "https://szs.mof.gov.cn/zhengcefabu/202601/t20260131_3983036.htm",
+      "title": "关于增值税法施行后增值税优惠政策衔接事项的公告",
+      "document_number": "财政部 税务总局公告2026年第10号",
+      "required_text": [
+        "公告2026年第10号",
+        "起征点为月销售额10万元",
+        "起征点为季度销售额30万元",
+        "每次（日）销售额1000元",
+        "除销售、出租不动产或者转让土地使用权之外",
+        "依照3%征收率减按1%征收率",
+        "2025年12月31日前制发文件",
+        "同时停止执行"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "49226fcdaaae93ac89d335d1607e8fa16b6effd6ec0e82fd4bc3e92aa8966390",
+        "text_sha256": "7613f360514f2fce72e9781f3ecfdc30694051333a75335abaea31c3d4cd82c0",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "vat-administration",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c100012/c5247426/content.html",
+      "title": "国家税务总局关于起征点标准等增值税征管事项的公告",
+      "document_number": "国家税务总局公告2026年第4号",
+      "required_text": [
+        "销售额未达到起征点标准",
+        "放弃免税",
+        "放弃减税",
+        "自2026年1月1日起施行",
+        "2023年第1号"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "239bc9e469917b01aaeda0f70596badd2073d151be226d40e6b9b316cd8a9319",
+        "text_sha256": "0ef052795bd511f7cff9fde79e1718946109b2a7cc2004f437d66ac815ce8cf2",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "vat-law",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c100009/c5237365/content.html",
+      "title": "中华人民共和国增值税法",
+      "document_number": "中华人民共和国主席令第四十一号",
+      "required_text": [
+        "第二十三条",
+        "销售额未达到起征点的",
+        "达到起征点的",
+        "全额计算缴纳增值税",
+        "自2026年1月1日起施行"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "4015e7a4bff3703a8a21095fffd92d5454931b97f00ff33855e52cd1bc54478f",
+        "text_sha256": "1d66de151060545a7d9cec2124d1b91a4064464ac20763919c07d85b5a0b6bdf",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "small-2023",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5210453/content.html",
+      "title": "关于进一步支持小微企业和个体工商户发展有关税费政策的公告",
+      "document_number": "财政部 税务总局公告2023年第12号",
+      "required_text": [
+        "2023年1月1日至2027年12月31日",
+        "不含水资源税",
+        "不含证券交易印花税",
+        "减按25%",
+        "按20%的税率",
+        "从业人数不超过300人",
+        "资产总额不超过5000万元",
+        "全年各季度平均值之和÷4"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "5e2ab42fade216e8ff30720b8a29be374354afb2420d569e1da97ebaf754a610",
+        "text_sha256": "e2dd17e2e36655fb5758d14737b9bcc62c48a219c5e966e114e98c7924077110",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "small-2023-start",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5201976/content.html",
+      "title": "关于小微企业和个体工商户所得税优惠政策的公告",
+      "document_number": "财政部 税务总局公告2023年第6号",
+      "required_text": [
+        "不超过100万元的部分",
+        "减按25%",
+        "2023年1月1日至2024年12月31日"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "2aa62a8f099433fbc4e4438571d417c66c04b0eaca0b4ed983e8a2647d148795",
+        "text_sha256": "7d18334acbe1b2bdc067802cabfd223e23c980e7fbd6179514ca6346bfd360cf",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "small-2022-start",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5202032/content.html",
+      "title": "关于进一步实施小微企业所得税优惠政策的公告",
+      "document_number": "财政部 税务总局公告2022年第13号",
+      "required_text": [
+        "超过100万元但不超过300万元",
+        "减按25%",
+        "按20%的税率"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "0726489edbce8b1c67ff83e226ea6990cb8ff8faae0aff37cbc6f1557329600f",
+        "text_sha256": "9631fa439f91145bf475c432515449d4cf98e2a882290e7e69ba8b08cfeff3b2",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "rd-2023",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5201978/content.html",
+      "title": "关于进一步完善研发费用税前加计扣除政策的公告",
+      "document_number": "财政部 税务总局公告2023年第7号",
+      "required_text": [
+        "自2023年1月1日起",
+        "100%",
+        "无形资产成本的200%",
+        "财税〔2015〕119号",
+        "财税〔2018〕64号"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "6034667b818de0fa61f1515395f80413276175c247405fb110576b3c98af218f",
+        "text_sha256": "504410d985359989d22ba7872755858d2aa435dc5aa55eafd1b4af835b699d53",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "rd-scope",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5203882/content.html",
+      "title": "关于完善研究开发费用税前加计扣除政策的通知",
+      "document_number": "财税〔2015〕119号",
+      "required_text": [
+        "查账征收",
+        "居民企业",
+        "辅助账",
+        "不得实行加计扣除",
+        "批发和零售业"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "1e98e4120f06a99fedbc60142801242f929466bcc74bc1dcde7eae2ec954785c",
+        "text_sha256": "7761dabfc33a6e1e7172b90587665f437c7011a9121a7921739f5ea30f4b017f",
+        "anchors_verified": true
+      }
+    },
+    {
+      "id": "rd-overseas",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c102416/c5202434/content.html",
+      "title": "关于企业委托境外研究开发费用税前加计扣除有关政策问题的通知",
+      "document_number": "财税〔2018〕64号",
+      "required_text": [
+        "80%",
+        "三分之二",
+        "不包括委托境外个人",
+        "自2018年1月1日起"
+      ],
+      "format": "html",
+      "verification": {
+        "checked_on": "2026-10-06",
+        "sha256": "58808d2e1c80ee9ea171282e4074203015c3f24f672ed373d08201f3d90a2d40",
+        "text_sha256": "b6e2d281725b5edae4216c58401d341aa78c853936d819a9178aee23bc6da04c",
+        "anchors_verified": true
+      }
+    }
+  ],
+  "runtime_integration": true,
+  "automatic_calculation_enabled": false,
+  "limitations": [
+    "仅判断所采条款的条件，不计算税款，不替代申报或行政认定。",
+    "未声明截止不表示永久有效；跨生效边界须拆分或另行核对。",
+    "政策不能覆盖24条原规则；政策征收率不是行业税负参考值。",
+    "每项事实须注明来源并核对；企业地区不等于财产所在地。"
+  ],
+  "verification_note": "已直接读取12份官方来源并核对所采条款锚点；不是全税法穷尽审查或持续有效保证。业务事实由用户提供并复核，目录不自动证明资格。"
+}

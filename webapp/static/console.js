@@ -92,7 +92,7 @@ function switchPanel(id) {
 const dz = $("dropzone"), fi = $("fileInput");
 let materialDraft = null, materialCards = [], originalUrls = [];
 let materialRequest = 0;
-const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError,
+const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError, policyUI:()=>enterpriseMaterials.policyUI,
   continueCheck:id=>window.KnowledgeRetrieval?.openTask(id)});
 const enterpriseMaterials = createEnterpriseMaterials({api, el, $, user:()=>currentUser,
   clear:clearMaterials, showError, showResult:result=>{renderResult(result);switchPanel("auditPanel");},

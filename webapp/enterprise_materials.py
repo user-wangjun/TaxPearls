@@ -24,6 +24,7 @@ from src.models import Rule
 from src.settings import AISettings
 from webapp import ai_keys
 from src.snapshots import deserialize_dataset
+from src import policies
 from webapp import enterprise_analysis, enterprise_scope, material_batches as batches, material_operations
 from webapp.access import AccessDenied
 from webapp import material_jobs
@@ -49,6 +50,12 @@ def _analysis_payload(documents, company, selections, base_rules, rules_for_data
             selection['standard_edits'] = material_review.normalize(document, selection['standard_edits'])
     analysis = enterprise_analysis.analyze(documents, company, selections, base_rules)
     company = analysis['company']
+    policy_input = policies.normalize((scope_context or {}).get('policy_input'))
+    assessment = policies.assess(company, policy_input)
+    if assessment is not None:
+        analysis['policy_assessment'] = assessment
+        if analysis['dataset'] is not None:
+            analysis['dataset']['policy_assessment'] = deepcopy(assessment)
     selected = base_rules
     if analysis['dataset'] is not None:
         try:
@@ -84,6 +91,11 @@ def _field_changes(previous, current):
     Actor and timestamp are supplied by the immutable revision transaction.
     """
     output = []
+    old_policy = (previous.get('scope_context') or {}).get('policy_input')
+    new_policy = (current.get('scope_context') or {}).get('policy_input')
+    if old_policy != new_policy:
+        output.append({'field': 'policy_input', 'old': old_policy, 'new': new_policy,
+                       'source': '本次政策业务事实与复核', 'origin': 'user'})
     for key, value in current['company'].items():
         if value != previous['company'].get(key):
             output.append({'field': 'company.' + key, 'old': previous['company'].get(key),
@@ -159,6 +171,10 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                         scope = {}
                 doc['ai_period'] = {key: scope.get(key, '') for key in ('period_start', 'period_end')}
         analysis = deepcopy(latest['payload']['analysis'])
+        assessment = analysis.get('policy_assessment')
+        stale_policy = bool(assessment and (not policies.program_current() or assessment.get('fingerprint') != policies.fingerprint()))
+        if stale_policy:
+            analysis['can_confirm'] = False
         matched = None
         if not view['client_id']:
             tax = enterprise_scope.identity(latest['payload']['company'].get('taxpayer_id'))
@@ -178,6 +194,9 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                 'company': latest['payload']['company'], 'selections': latest['payload']['selections'],
                 'client_id': view['client_id'], 'scope_context': latest['payload'].get('scope_context'),
                 'existing_match': matched,
+                'policy_catalog': policies.public_catalog(),
+                'policy_input': (latest['payload'].get('scope_context') or {}).get('policy_input', {}),
+                'policy_reanalysis_required': stale_policy,
                 'analysis': {k: v for k, v in analysis.items() if k != 'dataset'},
                 'metrics': list(dataset.get('metrics', {}).values()),
                 'fields': latest['payload'].get('fields', {}), 'executions': view['executions']}
@@ -324,27 +343,35 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
         actor(session)
         try:
             batches._key()
-            return {'retention_ready': True, 'message': '原件受控留存已配置；一次检测一家企业、一个主期间。'}
+            return {'retention_ready': True, 'message': '原件受控留存已配置；一次检测一家企业、一个主期间。', 'policy_catalog': policies.public_catalog()}
         except batches.MaterialStorageError:
-            return {'retention_ready': False, 'message': '请由部署人员配置独立材料加密密钥，再使用企业上传。不会降级明文留存。'}
+            return {'retention_ready': False, 'message': '请由部署人员配置独立材料加密密钥，再使用企业上传。不会降级明文留存。', 'policy_catalog': policies.public_catalog()}
 
     @app.post('/api/enterprise/materials')
     async def upload(request: Request, session: str | None = Cookie(default=None, alias='taxpearls_session')):
         user = actor(session)
         try:
-            async with multipart(request, total_limit=materials.MAX_TOTAL + 1024 * 1024, max_files=20, max_fields=4, material_scope=user['org_id']) as form:
+            async with multipart(request, total_limit=materials.MAX_TOTAL + 1024 * 1024, max_files=20, max_fields=5, material_scope=user['org_id']) as form:
                 uploads = [(v.filename or '未命名', await v.read()) for _, v in form.multi_items() if isinstance(v, UploadFile)]
                 mode, client_id = form.get('extraction', 'local'), form.get('client_id') or None
                 company_mode = form.get('company_mode', 'existing' if client_id else 'new')
                 raw_company = form.get('company', '{}')
+                raw_policy = form.get('policy_input', '{}')
                 try:
                     company = json.loads(raw_company) if isinstance(raw_company, str) and len(raw_company) <= 4096 else None
+                    if not isinstance(raw_policy, str) or len(raw_policy) > 32768:
+                        raise InputError('政策输入超过32KB或格式无效。')
+                    policy_input = policies.normalize(json.loads(raw_policy))
                 except ValueError:
                     raise InputError('企业信息JSON格式无效。') from None
                 await form.close()
                 if mode not in {'local', 'auto', 'ai'} or client_id is not None and not isinstance(client_id, str):
                     raise InputError('提取方式或客户档案格式无效。')
                 scope_context = enterprise_scope.context(get_store(), user, company_mode, client_id, company)
+                if policy_input['selected']:
+                    # Initial upload cannot reuse a token from another batch.
+                    policy_input['reviews'] = {}
+                    scope_context['policy_input'] = policy_input
                 if material_jobs.QueueSettings.from_env().enabled:
                     queued = await run_in_threadpool(material_jobs.submit,get_store(),user,uploads,mode,engine.load_rules(rules_dir),client_id=client_id,scope_context=scope_context)
                     return JSONResponse(project(batches.read(get_store(),user,queued['id']),user),status_code=202)
@@ -416,7 +443,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
             detail = {k: payload[k] for k in ('company', 'selections', 'parser_version',
                       'supplement_differences', 'deleted_file_id', 'requires_confirmation',
                       'analysis_revision', 'audit_id', 'analysis_sha256', 'scope',
-                      'files', 'edits', 'checks', 'feedback') if k in payload}
+                      'files', 'edits', 'checks', 'feedback', 'policy_assessment', 'scope_context') if k in payload}
             if 'changes' in payload:
                 detail['changes'] = payload['changes']
             if 'analysis' in payload:
@@ -499,6 +526,9 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                 raise InputError('材料选择格式无效。')
             selections[file_id] = {**selections.get(file_id, {}), **change}
         original_previous = deepcopy(previous)
+        scope_context = deepcopy(previous.get('scope_context') or {})
+        if 'policy_input' in value:
+            scope_context['policy_input'] = policies.normalize(value['policy_input'])
         mapped_originals = {}
         for index, document in enumerate(previous['documents']):
             selection = selections.get(document['id'], {})
@@ -614,7 +644,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                 if selections.get(doc['id'], {}).get('purpose') != 'excluded':
                     raise AccessDenied('原件已删除，请明确排除关联材料后重新分析。', 409)
         payload = _analysis_payload(previous['documents'], company, selections,
-                                    engine.load_rules(rules_dir), rules_for_dataset, previous.get('scope_context'))
+                                    engine.load_rules(rules_dir), rules_for_dataset, scope_context)
         if payload.get('scope_context'):
             origins = payload['scope_context'].setdefault('prefill_origins', {})
             for key in value.get('company', {}):
@@ -687,7 +717,7 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
     async def analyze_materials(batch_id: str, request: Request,
                                 session: str | None = Cookie(default=None, alias='taxpearls_session')):
         user = actor(session)
-        value = await body(request, {'expected_revision', 'company', 'selections'})
+        value = await body(request, {'expected_revision', 'company', 'selections', 'policy_input'})
         if not isinstance(value.get('company', {}), dict) or not isinstance(value.get('selections', {}), dict):
             raise HTTPException(422, '企业信息和材料选择须为对象。')
         if not slots.acquire(blocking=False):
@@ -713,6 +743,10 @@ def register(app, get_store, get_user, allow, rules_dir, rules_for_dataset, save
                 return audit_result(existing, user)
             raise AccessDenied('材料已变化，请重新核对并确认当前分析。', 409)
         payload = latest['payload']
+        try:
+            policies.assert_current(payload['analysis'].get('policy_assessment'))
+        except InputError as exc:
+            raise AccessDenied(str(exc), 409) from None
         # Check retained originals independently of cached readiness, without changing the frozen payload.
         selected_originals = {d.get('original_id') for d in payload['documents']
             if payload['selections'].get(d['id'], {}).get('purpose', 'current') != 'excluded'}
