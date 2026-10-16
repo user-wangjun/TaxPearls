@@ -2,6 +2,7 @@
 from io import BytesIO
 import json
 import os
+import secrets
 from unittest.mock import patch
 
 from openpyxl import load_workbook
@@ -9,6 +10,19 @@ from pdfplumber.page import Page
 from tests.test_enterprise_materials import EnterpriseMaterialFixture
 from tests.test_materials import COMPANY, FIXTURES, accounts
 from webapp import app as module, material_batches
+
+
+def seed_legacy_client(store, actor, name, raw_taxpayer_id, accountant_id=None):
+    """Insert an archive exactly as pre-normalization databases hold it, whitespace and case intact."""
+    client_id = secrets.token_hex(12)
+    with store.connect() as db:
+        db.execute(
+            "INSERT INTO clients (id,org_id,name,taxpayer_id,accountant_id,created_at,taxpayer_lookup) VALUES (?,?,?,?,?,?,?)",
+            (client_id, actor['org_id'], name,
+             db.field_codec.seal(raw_taxpayer_id, 'clients', 'taxpayer_id', client_id),
+             accountant_id, '2026-01-01T00:00:00+00:00',
+             db.field_codec.taxpayer_lookup(actor['org_id'], raw_taxpayer_id)))
+    return store.get_client(client_id)
 
 
 class EnterpriseScopeTests(EnterpriseMaterialFixture):
@@ -71,7 +85,7 @@ class EnterpriseScopeTests(EnterpriseMaterialFixture):
         self.assertEqual(self.store.get_audit(response.json()['audit_id'])['client_id'], archive['id'])
 
     def test_legacy_tax_format_reuses_identity_without_rewriting_archive(self):
-        archive = self.store.upsert_client(self.admin, '旧格式档案', ' test-upload ', self.accountant['id'])
+        archive = seed_legacy_client(self.store, self.admin, '旧格式档案', ' test-upload ', self.accountant['id'])
         item = self.scoped_upload()
         self.assertEqual(item['existing_match']['client_id'], archive['id'])
         response = self.confirm(item)
@@ -79,13 +93,27 @@ class EnterpriseScopeTests(EnterpriseMaterialFixture):
         self.assertEqual(self.counts()['clients'], 1)
         self.assertEqual(self.store.get_audit(response.json()['audit_id'])['client_id'], archive['id'])
         self.assertEqual(self.store.get_client(archive['id'])['taxpayer_id'], ' test-upload ')
+        reused = self.store.upsert_client(self.admin, '规范写法档案', 'TEST-UPLOAD', self.accountant['id'])
+        self.assertEqual(reused['id'], archive['id'])
+        self.assertEqual(self.counts()['clients'], 1)
+        self.assertEqual(self.store.get_client(archive['id'])['taxpayer_id'], ' test-upload ')
 
     def test_ambiguous_legacy_identity_blocks_new_confirmation(self):
-        self.store.upsert_client(self.admin, '旧档案甲', ' test-upload ')
-        self.store.upsert_client(self.admin, '旧档案乙', 'test-upload')
+        seed_legacy_client(self.store, self.admin, '旧档案甲', ' test-upload ')
+        seed_legacy_client(self.store, self.admin, '旧档案乙', 'test-upload')
         item = self.scoped_upload()
         self.assertEqual(self.confirm(item).status_code, 409)
         self.assertEqual(self.counts()['audits'], 0)
+        seed_legacy_client(self.store, self.admin, '旧档案丙', ' testupload ')
+        seed_legacy_client(self.store, self.admin, '旧档案丁', 'TestUpload')
+        duplicate = self.client.post('/api/clients', json={'name': '再建一份', 'taxpayer_id': 'TESTUPLOAD'})
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        hyphen = self.client.post('/api/clients', json={'name': '连字符税号', 'taxpayer_id': 'TEST-UPLOAD'})
+        self.assertEqual(hyphen.status_code, 422, hyphen.text)
+        seed_legacy_client(self.store, self.admin, '规范税号档案', 'TESTMIXED')
+        seed_legacy_client(self.store, self.admin, '旧格式同税号档案', ' test mixed ')
+        mixed = self.client.post('/api/clients', json={'name': '不应任选一份更新', 'taxpayer_id': 'TESTMIXED'})
+        self.assertEqual(mixed.status_code, 409, mixed.text)
 
     def test_confirmed_history_prefills_context_not_old_period_and_keeps_old_snapshot(self):
         first = self.scoped_upload({'industry': '已核对行业', 'region': '广东省', 'taxpayer_type': '本期身份', 'business_scope': '本期业务'})

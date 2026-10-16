@@ -38,6 +38,7 @@ from src.mailer import MailError, send_password_reset_email, send_registration_c
 from src.models import Dataset, Rule
 from webapp import captcha, classroom, members, email_auth, ai_probes, ai_keys, policy_graph
 from webapp.access import AccessDenied, current_actor
+from webapp.enterprise_scope import identity
 from webapp.sensitive_storage import SensitiveStorageError
 from webapp.notifications import NotificationWorker, email_delivery_enabled
 from webapp.storage import SetupAlreadyInitialized, Store, session_max_age
@@ -867,9 +868,15 @@ class GraphQuestion(BaseModel):
     node_id: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=2000)
     audit_id: str | None = None
+    taxpayer_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
-def _graph_for_user(user, audit_id):
+def _graph_for_user(user, audit_id, taxpayer_id=None):
+    if taxpayer_id is not None:
+        _allow(user, "org_admin", "accountant", "teacher")
+        from webapp.enterprise_graph import read_enterprise_history, build_enterprise_graph
+        company, entries = read_enterprise_history(store, user, taxpayer_id, audit_id)
+        return build_enterprise_graph(company, entries, user['org_id'], audit_id)
     entry = None
     if audit_id:
         _allow(user, "org_admin", "accountant", "teacher")
@@ -1002,11 +1009,19 @@ def knowledge_preview(rule_id: str, body: PolicyPreviewBody,
     return {**result, "mode": "manual_preview", "formal_finding": False}
 
 
+@app.get("/api/knowledge/enterprises")
+def knowledge_enterprises(session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    user = _user(session)
+    _allow(user, "org_admin", "accountant", "teacher")
+    from webapp.enterprise_graph import read_enterprise_history
+    return read_enterprise_history(store, user)
+
+
 @app.get("/api/knowledge/graph")
-def knowledge_graph(audit_id: str | None = None,
+def knowledge_graph(audit_id: str | None = None, taxpayer_id: str | None = None,
                     session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
     user = _user(session)
-    graph = _graph_for_user(user, audit_id)
+    graph = _graph_for_user(user, audit_id, taxpayer_id)
     base, model, _ = ai_config()
     return {**graph, "ai": {"configured": bool(base and model), "model": model}}
 
@@ -1015,9 +1030,12 @@ def knowledge_graph(audit_id: str | None = None,
 def knowledge_ask(body: GraphQuestion,
                   session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
     user = _user(session)
-    graph = _graph_for_user(user, body.audit_id)
+    graph = _graph_for_user(user, body.audit_id, body.taxpayer_id)
     result = ask_graph(graph, body.node_id, body.question)
-    if body.audit_id:
+    if body.taxpayer_id is not None:
+        if _graph_for_user(user, body.audit_id, body.taxpayer_id) != graph:
+            raise HTTPException(status_code=409, detail="企业历史或访问权限已变化，请重新载入图谱后提问。")
+    elif body.audit_id:
         _audit_or_404(body.audit_id, user)
     return result
 
@@ -1435,9 +1453,12 @@ def clients(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> li
 def create_client(body: ClientBody, session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
     user = _user(session)
     _allow(user, "org_admin")
-    name, taxpayer_id = body.name.strip(), body.taxpayer_id.strip()
+    name = body.name.strip()
+    taxpayer_id = identity(body.taxpayer_id)
     if not name or not taxpayer_id:
         raise HTTPException(status_code=422, detail="企业名称和纳税人识别号不能为空。")
+    if re.search(r"[^0-9A-Z]", taxpayer_id):
+        raise HTTPException(status_code=422, detail="纳税人识别号只能包含数字和大写字母，请核对后重新填写。")
     if body.accountant_id:
         accountant = store.get_user(body.accountant_id)
         if not accountant or accountant["role"] != "accountant" or accountant["org_id"] != user["org_id"]:

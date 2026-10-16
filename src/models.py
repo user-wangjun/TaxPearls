@@ -144,6 +144,8 @@ class Rule:
     version: str = "1.0"
     effective_from: str | None = None
     effective_to: str | None = None
+    rule_level: str = "unspecified"
+    region: str = ""
     legal_origin: dict[str, Any] | None = None
     legal_context: dict[str, Any] | None = None
 

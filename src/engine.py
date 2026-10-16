@@ -37,7 +37,7 @@ REQUIRED_FIELDS = {
     "id", "name", "category", "tax_type", "severity", "logic", "evidence",
     "legal_basis", "suggestion", "inputs", "scope", "threshold_basis", "references", "version",
 }
-OPTIONAL_FIELDS = {"description"}
+OPTIONAL_FIELDS = {"description", "rule_level", "region"}
 VALID_SEVERITY = {"high", "medium", "low"}
 OPS = {"add", "sub", "mul", "div", "min", "max"}
 
@@ -177,6 +177,7 @@ def load_rules(rules_dir: str | Path) -> list[Rule]:
                 raise RuleError("公式依赖、inputs、evidence 必须一致，含动态阈值的全部原始指标")
             if "description" in doc and not isinstance(doc["description"], str):
                 raise RuleError("description 必须为字符串")
+            validate_rule_region(doc.get("rule_level", "unspecified"), doc.get("region", ""))
             seen.add(doc["id"])
             rules.append(Rule(**doc, source_file=path.name))
         except (yaml.YAMLError, RuleError, ValueError, TypeError) as exc:
@@ -184,6 +185,17 @@ def load_rules(rules_dir: str | Path) -> list[Rule]:
     if not rules:
         raise RuleError(f"{rules_dir} 下没有找到任何规则文件")
     return rules
+
+
+def validate_rule_region(level, region):
+    if not isinstance(level, str) or level not in {"national", "provincial", "municipal", "unspecified"}:
+        raise RuleError("rule_level 必须是 national / provincial / municipal / unspecified")
+    if not isinstance(region, str):
+        raise RuleError("region 必须为字符串")
+    if level in {"provincial", "municipal"} and not region.strip():
+        raise RuleError("省市级规则必须填写 region 适用地域")
+    if level in {"national", "unspecified"} and region.strip():
+        raise RuleError("只有省市级规则可以填写 region 适用地域")
 
 
 def validate_rule_update(rule: Rule) -> Rule:
@@ -196,6 +208,7 @@ def validate_rule_update(rule: Rule) -> Rule:
     """
     if not isinstance(rule.version, str) or not rule.version.strip():
         raise RuleError("version 必须是非空字符串")
+    validate_rule_region(rule.rule_level, rule.region)
     if not isinstance(rule.threshold_basis, str) or not rule.threshold_basis.strip():
         raise RuleError("threshold_basis 必须是非空字符串")
     deps = _validate_logic(rule.logic)

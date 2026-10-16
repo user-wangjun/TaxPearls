@@ -1,0 +1,296 @@
+{
+  "is_fictional_fixture": true,
+  "description": "全部政策与条款均为架空模拟，禁止用于真实税务分析",
+  "Policy": [
+    {
+      "policy_id": "DEMO-P01",
+      "title": "虚构政策A（基础条款）",
+      "region": "CN",
+      "effective_from": "2024-01-01",
+      "effective_to": null,
+      "doc_no": "DEMO-NO-A",
+      "status": "fictional"
+    },
+    {
+      "policy_id": "DEMO-P02",
+      "title": "虚构政策B（首次修订）",
+      "region": "CN",
+      "effective_from": "2026-07-01",
+      "effective_to": null,
+      "doc_no": "DEMO-NO-B",
+      "status": "fictional"
+    },
+    {
+      "policy_id": "DEMO-P03",
+      "title": "虚构政策C（二次修订）",
+      "region": "CN",
+      "effective_from": "2026-09-01",
+      "effective_to": null,
+      "doc_no": "DEMO-NO-C",
+      "status": "fictional"
+    },
+    {
+      "policy_id": "DEMO-P04",
+      "title": "虚构广东地区补充说明",
+      "region": "CN-44",
+      "effective_from": "2025-01-01",
+      "effective_to": null,
+      "doc_no": "DEMO-NO-D",
+      "status": "fictional"
+    },
+    {
+      "policy_id": "DEMO-P05",
+      "title": "虚构浙江地区补充说明",
+      "region": "CN-33",
+      "effective_from": "2025-01-01",
+      "effective_to": null,
+      "doc_no": "DEMO-NO-E",
+      "status": "fictional"
+    },
+    {
+      "policy_id": "DEMO-P06",
+      "title": "虚构无关其他税种政策",
+      "region": "CN",
+      "effective_from": "2025-01-01",
+      "effective_to": null,
+      "doc_no": "DEMO-NO-F",
+      "status": "fictional"
+    },
+    {
+      "policy_id": "DEMO-P07",
+      "title": "虚构效力未知政策",
+      "region": "CN",
+      "effective_from": null,
+      "effective_to": null,
+      "doc_no": "DEMO-NO-G",
+      "status": "fictional"
+    },
+    {
+      "policy_id": "DEMO-P08",
+      "title": "虚构补充解释政策",
+      "region": "CN",
+      "effective_from": "2025-05-01",
+      "effective_to": null,
+      "doc_no": "DEMO-NO-H",
+      "status": "fictional"
+    }
+  ],
+  "Clause": [
+    {
+      "clause_id": "DEMO-C01",
+      "policy_id": "DEMO-P01",
+      "label": "第一条",
+      "text": "虚构规则：检查申报销售数据时，应同时核对统计期间、发票状态与可能调整事项。此段仅供软件测试，不代表税法。",
+      "effective_from": "2024-01-01",
+      "effective_to": null
+    },
+    {
+      "clause_id": "DEMO-C02",
+      "policy_id": "DEMO-P01",
+      "label": "第二条",
+      "text": "虚构例外：如果测试对象存在经核对的特殊调整事项，则应解释差额，不得仅凭差额作出结论。",
+      "effective_from": "2024-01-01",
+      "effective_to": null
+    },
+    {
+      "clause_id": "DEMO-C03",
+      "policy_id": "DEMO-P01",
+      "label": "第三条",
+      "text": "虚构旧版本：测试情形应检查基础条件A。",
+      "effective_from": "2024-01-01",
+      "effective_to": "2026-06-30"
+    },
+    {
+      "clause_id": "DEMO-C04",
+      "policy_id": "DEMO-P02",
+      "label": "第一条",
+      "text": "虚构首次修订：自2026年7月1日起用条件B替代旧条件A。",
+      "effective_from": "2026-07-01",
+      "effective_to": "2026-08-31"
+    },
+    {
+      "clause_id": "DEMO-C05",
+      "policy_id": "DEMO-P03",
+      "label": "第一条",
+      "text": "虚构二次修订：自2026年9月1日起用条件C替代条件B。",
+      "effective_from": "2026-09-01",
+      "effective_to": null
+    },
+    {
+      "clause_id": "DEMO-C06",
+      "policy_id": "DEMO-P04",
+      "label": "第一条",
+      "text": "虚构广东场景：对于本地测试对象应另检查地区情形G。",
+      "effective_from": "2025-01-01",
+      "effective_to": null
+    },
+    {
+      "clause_id": "DEMO-C07",
+      "policy_id": "DEMO-P05",
+      "label": "第一条",
+      "text": "虚构浙江场景：对于本地测试对象应另检查地区情形Z。",
+      "effective_from": "2025-01-01",
+      "effective_to": null
+    },
+    {
+      "clause_id": "DEMO-C08",
+      "policy_id": "DEMO-P06",
+      "label": "第一条",
+      "text": "虚构其他税种无关文字，不应成为增值税差异检查的正式证据。",
+      "effective_from": "2025-01-01",
+      "effective_to": null
+    },
+    {
+      "clause_id": "DEMO-C09",
+      "policy_id": "DEMO-P07",
+      "label": "第一条",
+      "text": "虚构生效日期不明确的测试条款，不能默认一直有效。",
+      "effective_from": null,
+      "effective_to": null
+    },
+    {
+      "clause_id": "DEMO-C10",
+      "policy_id": "DEMO-P08",
+      "label": "第一条",
+      "text": "虚构补充规则：红字、作废与跨期要根据已核实口径核对。",
+      "effective_from": "2025-05-01",
+      "effective_to": null
+    },
+    {
+      "clause_id": "DEMO-C11",
+      "policy_id": "DEMO-P08",
+      "label": "第二条",
+      "text": "虚构说明：本条包含但书，但是特殊情形X除外；仅供测试例外补齐逻辑。",
+      "effective_from": "2025-05-01",
+      "effective_to": null
+    },
+    {
+      "clause_id": "DEMO-C12",
+      "policy_id": "DEMO-P08",
+      "label": "第三条",
+      "text": "虚构调整事项：不得直接把发票开具期视作纳税义务发生期。",
+      "effective_from": "2025-05-01",
+      "effective_to": null
+    }
+  ],
+  "TaxRule": [
+    {
+      "rule_id": "DEMO-VAT-R01",
+      "rule_type": "risk_screen",
+      "review_status": "approved_for_fixture_only",
+      "title": "销项开票与申报差异"
+    },
+    {
+      "rule_id": "DEMO-VAT-R02",
+      "rule_type": "risk_screen",
+      "review_status": "approved_for_fixture_only",
+      "title": "销项税额与申报差异"
+    },
+    {
+      "rule_id": "DEMO-VAT-R03",
+      "rule_type": "risk_screen",
+      "review_status": "approved_for_fixture_only",
+      "title": "进项金额与申报抵扣差异"
+    },
+    {
+      "rule_id": "DEMO-VAT-R04",
+      "rule_type": "risk_screen",
+      "review_status": "approved_for_fixture_only",
+      "title": "账面科目与申报差异"
+    },
+    {
+      "rule_id": "DEMO-VAT-R05",
+      "rule_type": "risk_screen",
+      "review_status": "approved_for_fixture_only",
+      "title": "发票清洗一致性"
+    },
+    {
+      "rule_id": "DEMO-VAT-R06",
+      "rule_type": "risk_screen",
+      "review_status": "approved_for_fixture_only",
+      "title": "申报主附表勾稽"
+    }
+  ],
+  "Metric": [
+    {
+      "metric_id": "DEMO-M01",
+      "name": "销项发票不含税金额",
+      "source_schema": "Invoice"
+    },
+    {
+      "metric_id": "DEMO-M02",
+      "name": "增值税申报销售额",
+      "source_schema": "VATDeclaration"
+    }
+  ],
+  "Entity": [
+    {
+      "entity_id": "DEMO-E01",
+      "name": "虚构一般纳税人场景",
+      "entity_type": "taxpayer"
+    },
+    {
+      "entity_id": "DEMO-E44",
+      "name": "广东模拟区域",
+      "entity_type": "region"
+    }
+  ],
+  "Condition": [
+    {
+      "condition_id": "DEMO-CD01",
+      "rule_id": "DEMO-VAT-R01",
+      "expression": "仅比较已确认相同期且口径可比的两种数据；不设虚构法定门槛"
+    }
+  ],
+  "Exception": [
+    {
+      "exception_id": "DEMO-X01",
+      "rule_id": "DEMO-VAT-R01",
+      "source_clause_id": "DEMO-C02",
+      "description": "存在经核实的特殊调整事项"
+    },
+    {
+      "exception_id": "DEMO-X02",
+      "rule_id": "DEMO-VAT-R01",
+      "source_clause_id": "DEMO-C11",
+      "description": "特殊情形X除外"
+    }
+  ],
+  "Relationship": [
+    {
+      "from": "DEMO-VAT-R01",
+      "type": "DERIVES_FROM",
+      "to": "DEMO-C01"
+    },
+    {
+      "from": "DEMO-VAT-R01",
+      "type": "HAS_EXCEPTION",
+      "to": "DEMO-X01"
+    },
+    {
+      "from": "DEMO-VAT-R01",
+      "type": "HAS_EXCEPTION",
+      "to": "DEMO-X02"
+    },
+    {
+      "from": "DEMO-C04",
+      "type": "AMENDS",
+      "to": "DEMO-C03"
+    },
+    {
+      "from": "DEMO-C05",
+      "type": "AMENDS",
+      "to": "DEMO-C04"
+    },
+    {
+      "from": "DEMO-C10",
+      "type": "SUPPLEMENTS",
+      "to": "DEMO-C01"
+    },
+    {
+      "from": "DEMO-C11",
+      "type": "SUPPLEMENTS",
+      "to": "DEMO-C02"
+    }
+  ]
+}

@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict, replace
 from io import BytesIO
 from pathlib import Path
 import tempfile
@@ -53,6 +54,51 @@ class KnowledgeTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as error:
                 ask_graph(self.graph, "R-001", "解释")
             self.assertEqual(error.exception.status_code, 503)
+
+    def test_rule_regions_and_historical_graph_metadata(self):
+        base = self.rules[0]
+        rules = [replace(base, id="R-101", rule_level="national"),
+                 replace(base, id="R-102", rule_level="provincial", region="浙江省"),
+                 replace(base, id="R-103", rule_level="municipal", region="浙江省杭州市"),
+                 replace(base, id="R-104")]
+        for rule in rules:
+            engine.validate_rule_update(rule)
+        graph = build_graph(rules)
+        nodes = {n['id']: n for n in graph['nodes'] if n['kind'] == 'rule'}
+        self.assertEqual(nodes['R-101']['rule_level'], 'national')
+        self.assertEqual(nodes['R-102']['region'], '浙江省')
+        self.assertEqual(nodes['R-103']['rule_level'], 'municipal')
+        self.assertEqual(nodes['R-104']['rule_level'], 'unspecified')
+        old = asdict(base)
+        old.pop('rule_level'); old.pop('region')
+        self.assertEqual(type(base)(**old).rule_level, 'unspecified')
+        data = loader.load(ROOT / 'samples/样例企业-审计材料.xlsx')
+        finding = engine.evaluate(rules[2], data)
+        frozen = build_graph([rules[0]], {'id': 'history', 'dataset': data, 'findings': [finding]})
+        for node in frozen['nodes']:
+            if node['kind'] in {'rule', 'risk'}:
+                self.assertEqual(node['rule_level'], 'municipal')
+                self.assertEqual(node['region'], '浙江省杭州市')
+
+    def test_rule_region_yaml_validation(self):
+        import yaml
+        base = asdict(self.rules[0])
+        for key in ('source_file', 'effective_from', 'effective_to', 'legal_origin', 'legal_context'):
+            base.pop(key)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'rule.yaml'
+            for level, region, valid in [('national', '', True), ('provincial', '浙江省', True),
+                                         ('municipal', '浙江省杭州市', True), ('unspecified', '', True),
+                                         ('provincial', '', False), ('municipal', ' ', False),
+                                         ('national', '浙江省', False), ('invented', '', False),
+                                         ([], '', False), ('municipal', 123, False)]:
+                with self.subTest(level=level, region=region):
+                    path.write_text(yaml.safe_dump({**base, 'rule_level': level, 'region': region}, allow_unicode=True), encoding='utf-8')
+                    if valid:
+                        self.assertEqual(engine.load_rules(directory)[0].rule_level, level)
+                    else:
+                        with self.assertRaises(engine.RuleError):
+                            engine.load_rules(directory)
 
     def test_reject_unreferenced_model_answer(self):
         response = {"choices": [{"finish_reason": "stop", "message": {"content": '{"answer":"unsupported","citations":["invented"]}'}}]}

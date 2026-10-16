@@ -48,13 +48,13 @@ class ClientArchiveTests(unittest.TestCase):
                     self.assertEqual(client.get('/api/clients').status_code, 403)
                     self.assertEqual(client.post('/api/login', json={'username':'orgadmin','password':'orgadmin-pass-2026'}).status_code, 200)
                     rejected = client.post("/api/clients", json={
-                        "name": "跨机构客户", "taxpayer_id": "OTHER-ORG",
+                        "name": "跨机构客户", "taxpayer_id": "OTHERORG",
                         "accountant_id": users["outsideacct"]["id"],
                     })
                     self.assertEqual(rejected.status_code, 422)
 
                     mismatch = client.post("/api/clients", json={
-                        "name": "识别号不匹配客户", "taxpayer_id": "WRONG-TAX-ID",
+                        "name": "识别号不匹配客户", "taxpayer_id": "WRONGTAXID",
                         "accountant_id": users["accountant1"]["id"],
                     })
                     self.assertEqual(mismatch.status_code, 200, mismatch.text)
@@ -122,6 +122,49 @@ class ClientArchiveTests(unittest.TestCase):
                 reopened = Store(db_path)
                 self.assertEqual(reopened.get_client(client_id)["taxpayer_id"], dataset.company.taxpayer_id)
                 self.assertIsNotNone(reopened.get_audit(audit_id))
+            finally:
+                app_module.store = old_store
+
+
+@material_key
+class TaxpayerIdNormalizationTests(unittest.TestCase):
+    def test_create_normalizes_and_dedupes_canonical_identity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            db_path = Path(directory) / "clients.db"
+            old_store = app_module.store
+            app_module.store = Store(db_path)
+            try:
+                with TestClient(app_module.app) as client:
+                    self.assertEqual(client.post("/api/setup", json={
+                        "username": "rootadmin", "password": "platform-pass-2026",
+                        "display_name": "平台管理员", "org_id": "org-a",
+                    }).status_code, 200)
+                    app_module.store.create_user("orgadmin", "orgadmin-pass-2026", "orgadmin", "org_admin", "org-a")
+                    self.assertEqual(client.post("/api/login", json={
+                        "username": "orgadmin", "password": "orgadmin-pass-2026",
+                    }).status_code, 200)
+
+                    created = client.post("/api/clients", json={
+                        "name": "甲公司", "taxpayer_id": " 91xX00 ",
+                    })
+                    self.assertEqual(created.status_code, 200, created.text)
+                    self.assertEqual(created.json()["taxpayer_id"], "91XX00")
+                    client_id = created.json()["id"]
+
+                    variant = client.post("/api/clients", json={
+                        "name": "甲公司（新名称）", "taxpayer_id": "91xx00",
+                    })
+                    self.assertEqual(variant.status_code, 200, variant.text)
+                    self.assertEqual(variant.json()["id"], client_id)
+                    listed = client.get("/api/clients").json()
+                    self.assertEqual([row["taxpayer_id"] for row in listed].count("91XX00"), 1)
+                    self.assertEqual(next(row for row in listed if row["id"] == client_id)["name"], "甲公司（新名称）")
+
+                    junk = client.post("/api/clients", json={"name": "垃圾档案", "taxpayer_id": "见附件"})
+                    self.assertEqual(junk.status_code, 422)
+
+                reopened = Store(db_path)
+                self.assertEqual(reopened.get_client(client_id)["taxpayer_id"], "91XX00")
             finally:
                 app_module.store = old_store
 

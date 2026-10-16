@@ -12,7 +12,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, ConfigDict, Field
 
 from src import render
-from src.kg_retrieval import bundle, metrics, relation_search
+from src.kg_retrieval import metrics
 from src.kg_retrieval.common import digest
 from webapp import core_inputs, material_batches as batches, members
 from webapp.access import AccessDenied
@@ -64,6 +64,11 @@ def summary(checks):
     result = {"total": len(checks), "clues": 0, "not_met": 0, "excluded": 0, "needs_review": 0}
     for slot in checks.values():
         package = slot["bundle"]
+        if package["check"]["rule_id"] == "VAT-R01" and not slot.get("stale"):
+            risk = (slot.get("ai") or {}).get("risk_assessment", package.get("risk_assessment", {}))
+            key = {"NO_RISK_SIGNAL": "not_met", "RISK_CANDIDATE": "clues", "NOT_APPLICABLE": "excluded"}.get(risk.get("status"), "needs_review")
+            result[key] += 1
+            continue
         pending = (slot.get("stale") or package["bundle_status"] != "ready"
                    or slot.get("ai") and (not slot["ai"].get("validated") or slot["ai"].get("status") == "needs_review"))
         key = "needs_review" if pending else {"condition_met": "clues", "condition_not_met": "not_met", "excluded": "excluded"}.get(package["check"]["disposition"], "needs_review")
@@ -85,13 +90,10 @@ def archive(store, actor, task_id, expected_revision):
         batch = batches._authorize(db, actor, task_id)
         if batch["revision"] != expected_revision:
             raise AccessDenied("资料已更新，请重新读取。", 409)
-        catalog = [row["id"] for row in payload["processing"].get("records", [])]
         for rid, slot in checks.items():
             old = slot["bundle"]
-            definitions = relation_search.rule_context(db, rid)["metrics"]
-            facts = metrics.collect(definitions, payload["processing"], payload["task"])
-            fresh = bundle.build(db, old["task"], rid, facts, topic=old["check"]["topic"], source_catalog=catalog,
-                                 token_budget=old["batching"]["soft_token_budget"])
+            fresh = metrics.build_task_bundle(db, payload, old["task"], rid, topic=old["check"]["topic"],
+                                              token_budget=old["batching"]["soft_token_budget"])
             if slot.get("stale") or fresh["content_hash"] != old["content_hash"]:
                 raise AccessDenied("资料或政策依据已变化，请重新核查后生成报告。", 409)
             if (slot.get("ai") or {}).get("validated"):
@@ -111,6 +113,10 @@ def archive(store, actor, task_id, expected_revision):
                     "sources": sources, "summary": summary(checks), "formal_finding": False,
                     "template_sha256": hashlib.sha256(template.encode()).hexdigest(),
                     "scope": "仅包含本任务已保存的核查项目，未运行项目不作结论。"}
+        file_evidence = {sid[5:] for slot in checks.values() for f in slot["bundle"]["facts"] for sid in f["source_ids"] if sid.startswith("file:")}
+        snapshot["source_files"] = [{"file_id":d["id"],"name":d["name"],"sha256":d["sha256"],
+                                     "purpose":"零发生额原件，由本任务核对人确认"}
+                                    for d in payload.get("documents", []) if d["id"] in file_evidence]
         content_hash = digest(snapshot)
         previous = db.execute("SELECT * FROM core_tax_reports WHERE batch_id=? ORDER BY version DESC LIMIT 1", (task_id,)).fetchone()
         if previous and previous["content_hash"] == content_hash:

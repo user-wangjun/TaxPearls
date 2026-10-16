@@ -455,12 +455,14 @@ def graph(db, selected=None):
                 snapshot = json.loads(row.pop("execution_json"))
                 node.pop("execution_json", None)
                 node.update(category=snapshot["category"], scope=snapshot["scope"],
+                            rule_level=snapshot.get('rule_level','unspecified'), region=snapshot.get('region','').strip(),
                             suggestion=snapshot["suggestion"], references=snapshot["references"],
                             requirement=snapshot["threshold_basis"], legacy_references_unverified=True)
             if table=='TaxRule' and row.get('conversion_json'):
                 snapshot=json.loads(row['conversion_json'])['source_rule']
                 node.pop('conversion_json',None)
                 node.update(category=snapshot['category'],scope=snapshot['scope'],suggestion=snapshot['suggestion'],
+                            rule_level=snapshot.get('rule_level','unspecified'),region=snapshot.get('region','').strip(),
                             references=snapshot['references'],requirement=snapshot['threshold_basis'],computation_converted=True)
             identifiers[(table, record_id)] = node["id"]
             nodes.append(node)
