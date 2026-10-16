@@ -618,15 +618,30 @@
     <div class="sheet" id="coreInputs" hidden>
       <h2>基础审查资料准备</h2>
       <p class="muted">先指定企业与检查区间，再上传科目余额表、增值税申报表和进销项发票明细。资料整理完成后停在规则核验之前。</p>
-      <fieldset id="coreTaskForm"><legend>创建资料处理任务</legend><div class="material-company">
-        <label>企业名称<input id="coreCompanyName" maxlength="200" required></label>
-        <label>税号<input id="coreTaxNo" maxlength="20" required></label>
-        <label>检查起始日<input id="coreStart" type="date" required></label>
-        <label>检查终止日<input id="coreEnd" type="date" required></label>
-      </div><label><input id="coreMappingAI" type="checkbox">未知表头允许交给已配置模型映射（仅表头与脱敏值形态，不发送整张表）</label>
-      <p class="muted">原件加密留存。扫描 PDF 的识别不足会明确提示核对，不把空白当作零。单份10MB，每任务最多20份。</p>
-      <label><input id="coreOCR" type="checkbox">允许无法本地提取的申报PDF页交给配置模型OCR（发送页图，结果须对照原页核对）</label>
-      <button id="coreCreateTask" class="btn" type="button">创建任务</button></fieldset>
+      <fieldset id="coreTaskForm"><legend>创建资料处理任务</legend>
+        <div class="core-task-fields">
+          <div class="core-task-group">
+            <h3>企业信息</h3>
+            <label class="field">企业名称<input id="coreCompanyName" maxlength="200" placeholder="填写企业全称" required></label>
+            <label class="field">税号<input id="coreTaxNo" maxlength="20" placeholder="填写纳税人识别号" required></label>
+          </div>
+          <div class="core-task-group">
+            <h3>检查区间</h3>
+            <label class="field">检查起始日<input id="coreStart" type="date" required></label>
+            <label class="field">检查终止日<input id="coreEnd" type="date" required></label>
+          </div>
+        </div>
+        <div class="core-task-footer">
+          <div class="core-task-help">
+            <p class="muted">本地优先解析，必要时自动使用已配置模型辅助识别。</p>
+            <details><summary>资料处理说明</summary>
+              <p class="muted">未知表头自动尝试字段映射，仅发送表头与脱敏值形态；无法本地提取的申报 PDF 页自动尝试 OCR，发送对应页图。模型未配置或识别失败会提示核对，OCR 结果仍须对照原页确认。</p>
+              <p class="muted">原件加密留存，不把空白当作零。单份上限 10MB，每任务最多 20 份。</p>
+            </details>
+          </div>
+          <button id="coreCreateTask" class="btn pdf" type="button">创建任务并上传资料</button>
+        </div>
+      </fieldset>
       <div id="coreTaskResult" aria-live="polite"></div><div id="coreTaskHistory"></div>
     </div>
     <details id="coreLegacyToggle" hidden><summary>历史材料检测入口</summary><p class="muted">下方为原有材料与报告流程；本次基础资料任务不从这里执行检测。</p></details>
@@ -909,7 +924,7 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
-<script src="/core-inputs.js?v=20261013-core-inputs-1"></script>
+<script src="/core-inputs.js?v=20261015-auto-fallback-1"></script>
 <script src="/enterprise.js?v=20261007-company-selector-2"></script>
 <script src="/ai-keys.js?v=20261012-model-combobox-11"></script>
 <script src="/console.js?v=20261012-ai-probes-1-core-inputs-1"></script>

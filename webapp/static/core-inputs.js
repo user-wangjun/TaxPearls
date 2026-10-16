@@ -8,7 +8,7 @@ function createCoreInputs({api, el, $, user, showError}) {
   const kinds = {account_balance:"科目余额表",vat_declaration:"增值税申报表",invoice_detail:"发票明细"};
   const json = value => ({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
   const button = (text, fn) => {const n=el("button","btn re",text);n.type="button";n.onclick=fn;return n;};
-  function clearScope(){for(const id of ["coreCompanyName","coreTaxNo","coreStart","coreEnd"])$(id).value="";$("coreMappingAI").checked=$("coreOCR").checked=false;}
+  function clearScope(){for(const id of ["coreCompanyName","coreTaxNo","coreStart","coreEnd"])$(id).value="";}
   function reset() {generation++;current=null;busy=dirty=false;$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
   async function action(fn, saving=false) {
     if(busy||!enabled())return;
@@ -19,7 +19,6 @@ function createCoreInputs({api, el, $, user, showError}) {
     catch(error){if(owner===user()?.id&&ticket===generation)showError(error.message);}
     finally{if(ticket===generation){busy=false;$("coreTaskForm").disabled=false;$("coreTaskResult").querySelectorAll("fieldset,button,input,select").forEach(n=>n.disabled=false);}}
   }
-  function mode() {return $("coreMappingAI").checked?"ai":"local";}
   $("coreCreateTask").onclick=()=>action(()=>api(base,json({company_name:$("coreCompanyName").value,tax_no:$("coreTaxNo").value,
     start_date:$("coreStart").value,end_date:$("coreEnd").value})));
   function select(label, choices, value) {
@@ -38,12 +37,12 @@ function createCoreInputs({api, el, $, user, showError}) {
       const card=el("section","material-card");card.append(el("h4","",name+"（必传）"));
       card.append(el("p","muted",kind==="account_balance"?"Excel 科目汇总余额；不是逐笔明细账。":kind==="vat_declaration"?"Excel / PDF 主表及适用附表，可多文件合并期间。":"Excel / 数电 XML，须覆盖进销项；按开具日期统计。"));
       const pick=el("input");pick.type="file";pick.multiple=true;pick.accept=kind==="account_balance"?".xlsx,.xls":kind==="vat_declaration"?".xlsx,.xls,.pdf":".xlsx,.xls,.xml";pick.setAttribute("aria-label",name+"上传");
-      pick.onchange=()=>{const files=Array.from(pick.files);if(!files.length)return;action(()=>{const form=new FormData();form.append("material_type",kind);form.append("expected_revision",current.revision);form.append("mapping_mode",mode());form.append("ocr",kind==="vat_declaration"&&$("coreOCR").checked?"1":"0");files.forEach(f=>form.append("files",f));return api(base+"/"+current.id+"/files",{method:"POST",body:form});});};
+      pick.onchange=()=>{const files=Array.from(pick.files);if(!files.length)return;return action(()=>{const form=new FormData();form.append("material_type",kind);form.append("expected_revision",current.revision);form.append("mapping_mode","ai");form.append("ocr",kind==="vat_declaration"?"1":"0");files.forEach(f=>form.append("files",f));return api(base+"/"+current.id+"/files",{method:"POST",body:form});});};
       pick.disabled=busy;card.append(pick,el("p","muted",`已保存 ${current.documents.filter(d=>d.material_type===kind).length} 份。`));slots.append(card);
     }
     root.append(slots);
     const excluded=(current.files||[]).filter(file=>current.source_options[file.id]?.excluded&&!file.deleted_at);
-    if(excluded.length){const box=el("section","material-card");box.append(el("h4","","已排除的资料（原件保留，可恢复）"));for(const file of excluded){const options=current.source_options[file.id];box.append(el("p","muted",options.original_name),button("恢复资料："+options.original_name,()=>action(()=>api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,source_options:{[file.id]:{excluded:false}},mapping_mode:mode()})))));}root.append(box);}
+    if(excluded.length){const box=el("section","material-card");box.append(el("h4","","已排除的资料（原件保留，可恢复）"));for(const file of excluded){const options=current.source_options[file.id];box.append(el("p","muted",options.original_name),button("恢复资料："+options.original_name,()=>action(()=>api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,source_options:{[file.id]:{excluded:false}},mapping_mode:"ai"})))));}root.append(box);}
     const review=el("fieldset");review.disabled=busy;
     review.addEventListener("input",()=>{dirty=true;});review.addEventListener("change",()=>{dirty=true;});
     review.append(el("legend","","资料口径核对"),el("p","muted","仅填写已核实的信息，留空沿用文件识别值。填写的是人工确认信息，不会改写原件或声称文件已经证明。一个文件的统一口径会应用到其所有工作表；混合期间请保留原识别值。"));
@@ -71,7 +70,7 @@ function createCoreInputs({api, el, $, user, showError}) {
       review.append(card);editors.push({id:doc.id,unit,start,end,form,direction,exclude,reviewed,ocr});
     }
     const save=button("保存核对并重新整理资料",()=>action(()=>{const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:e.ocr.input.checked,confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value,direction:e.direction.input.value}};
-      return api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,applicable_forms:scopeKnown.input.checked?applicable.input.value.split(/[;；]/).map(s=>s.trim()).filter(Boolean):null,source_options:options,mapping_mode:mode()}));},true));review.append(save);root.append(review);
+      return api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,applicable_forms:scopeKnown.input.checked?applicable.input.value.split(/[;；]/).map(s=>s.trim()).filter(Boolean):null,source_options:options,mapping_mode:"ai"}));},true));review.append(save);root.append(review);
     const problems=el("section","enterprise-feedback"+(p.issues.length?" blocking":""));problems.append(el("h4","",`资料缺口与冲突（${p.issues.length}）`));
     for(const item of p.issues)problems.append(el("p","",item.message+(item.source_position?" · "+item.source_position:"")));root.append(problems);
     if(p.notices.length){const notes=el("details");notes.append(el("summary","",`来源说明（${p.notices.length}）`));for(const n of p.notices)notes.append(el("p","muted",n.message+(n.source_position?" · "+n.source_position:"")));root.append(notes);}
