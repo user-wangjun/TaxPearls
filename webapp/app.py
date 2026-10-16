@@ -32,7 +32,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
 from webapp.uploads import multipart, single_file
 
-from src import engine, loader, render, training, sandbox_feedback
+from src import engine, loader, render, training, sandbox_feedback, legal_periods
 from src import settings as _environment_settings  # noqa: F401 - Load .env before Store and route initialization.
 from src.mailer import MailError, send_password_reset_email, send_registration_code_email, send_login_code_email
 from src.models import Dataset, Rule
@@ -631,7 +631,8 @@ def _audit_rules(dataset: Dataset, enabled: set[str] | None = None) -> list[Any]
             selected.append(engine.validate_rule_update(candidate))
         else:
             selected.append(base)
-    return selected
+    # Missing reviewed editions limit the affected rule, not the entire batch.
+    return [legal_periods.resolve(rule, dataset.company.period, strict=False) for rule in selected]
 
 
 def _rule_by_id(rule_id: str) -> Any:
@@ -1463,6 +1464,7 @@ async def audit(request: Request, session: str | None = Cookie(default=None, ali
         from src import material_format_guard
         await run_in_threadpool(material_format_guard.check, [(file.filename, data)])
         dataset = await run_in_threadpool(loader.load_bytes, data)
+        dataset.simulation = True  # This authenticated endpoint is teaching-only.
     except loader.InputError as exc:
         return _err(422, f"审计材料不符合模板要求：{exc}")
     return JSONResponse(await run_in_threadpool(_save_audit, dataset, user, client_id))
@@ -1533,6 +1535,9 @@ classroom.register(app,lambda: store,_user,_allow,_is_synthetic_dataset,COOKIE_N
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
+
+from webapp import rule_bindings as rule_binding_routes
+rule_binding_routes.register(app,lambda:store,_user,_allow,_effective_rules)
 from webapp.training_portal import register as register_training_portal
 register_training_portal(app, lambda: store, "taxpearls_training_session")
 from webapp.training_content import register as register_training_content

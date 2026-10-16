@@ -46,7 +46,9 @@ def check(clause, policy, task, changes, *, source_cache=None):
     result = {"clause_id": clause["clause_id"], "status": "applicable", "reasons": [], "segments": [],
               "effective_from": clause.get("effective_from") or policy.get("effective_from"),
               "effective_to": clause.get("effective_to") or policy.get("effective_to")}
-    if tax_type(policy["tax_type"]) != task["tax_type"]:
+    policy_type=tax_type(policy['tax_type'])
+    supporting=policy_type in {'TAX_ADMIN','ACCOUNTING','SOCIAL_INSURANCE'} and policy_type!=task['tax_type']
+    if policy_type != task["tax_type"] and not supporting:
         result.update(status="excluded", reasons=["税种不属于本次检查范围。"])
         return result
     match = region_matches(policy.get("region_code"), task.get("region_code"))
@@ -113,4 +115,6 @@ def check(clause, policy, task, changes, *, source_cache=None):
         result["reasons"].append("政策当前失效或部分修改，条款历史适用区间仍待核实。")
     if result["reasons"]:
         result["status"] = "needs_review"
+    elif supporting and result['status']=='applicable':
+        result.update(status='context_only',context_kind='supporting_basis')
     return result

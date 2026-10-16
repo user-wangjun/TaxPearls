@@ -16,12 +16,14 @@ def digest(value):
 def implementation_fingerprint():
     root = Path(__file__).resolve().parents[2]
     files = [*Path(__file__).parent.glob("*.py"), root / "src/tax_conditions.py",
-             root / "webapp/policy_graph.py", root / "webapp/knowledge_evidence.py"]
+             root / "webapp/policy_graph.py", root / "webapp/knowledge_evidence.py",
+             *[root/'src'/name for name in ['rule_conversion.py','rule_bindings.py','policy_corpus.py','engine.py','config.py',
+                                           'periods.py','reference_scope.py','models.py','snapshots.py']]]
     return digest({str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(files)})
 
 
 def tax_type(value):
-    return {"增值税": "VAT", "VAT": "VAT"}.get(value, value)
+    return {"增值税":"VAT","个人所得税":"PIT","企业所得税":"EIT","综合":"ACCOUNTING",'IIT':'PIT','CIT':'EIT'}.get(value,value)
 
 
 def unit(value):
@@ -41,8 +43,8 @@ def checked_task(task):
     if result["period_start"] > result["period_end"]:
         raise ValueError("检查期间起止倒置。")
     result["tax_type"] = tax_type(result.get("tax_type", "VAT"))
-    if result["tax_type"] != "VAT":
-        raise ValueError("首期仅支持增值税检索。")
+    if result["tax_type"] not in {'VAT','PIT','EIT','ACCOUNTING','TAX_ADMIN','SOCIAL_INSURANCE'}:
+        raise ValueError('未注册的核查税种或会计核对范围。')
     if result.get("data_scope", "enterprise") not in {"synthetic", "enterprise"}:
         raise ValueError("数据范围无效。")
     result.setdefault("data_scope", "enterprise")

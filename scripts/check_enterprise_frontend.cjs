@@ -247,9 +247,17 @@ async function main() {
   assert.equal(field("指标数值").value,"13");
   assert.ok(all().some(n=>n.textContent==="原始 AI 候选与证据（只读，人工修改不覆盖）"));
   assert.ok(all().some(n=>n.tag==="pre"&&n.textContent.includes('"ai_raw_value": "12"')&&n.textContent.includes("收入 12")));
+  const actualPeriod=field("历史实际期间");
+  assert.equal(actualPeriod.maxLength,100);assert.ok(actualPeriod.placeholder.includes("2025年第1季度"));
+  actualPeriod.value="2025年第1季度";actualPeriod.listeners.input();
+  field("地区（待核对）").value="江苏省";
+  field("地区（待核对）").listeners.input();
+  assert.equal(button("确认材料并开始检测").disabled,true);
   const correctedSave=button("保存修改并重新分析").click(),correctedWrite=calls.shift();
   const correctedRow=JSON.parse(correctedWrite.options.body).selections.short.rows[0];
   assert.equal(correctedRow.value,"13");assert.ok(!("ai_raw_value" in correctedRow));
+  assert.equal(correctedRow.period,"2025年第1季度");
+  assert.equal(JSON.parse(correctedWrite.options.body).company.region,"江苏省");
   correctedWrite.resolve(correctedPDF);await correctedSave;settleLists();await Promise.resolve();
   // Sending a saved PDF is separate from local range saving and requires fresh consent.
   const selectedPDF=sample();selectedPDF.analysis.can_confirm=false;

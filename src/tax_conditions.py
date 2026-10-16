@@ -108,6 +108,17 @@ def compare(condition, definitions, facts):
 def validate_mapping(metric):
     """A pending mapping is allowed in a candidate, never at approval/execution."""
     schema = metric.get("source_schema")
+    if schema == 'RuleCalculation':
+        from src.rule_conversion import validate_calculation
+        validate_calculation(metric)
+        return
+    if schema == 'BusinessMetric':
+        filters = json.loads(metric.get('source_filter_json', '{}'))
+        if (set(filters) != {'name'} or filters['name'] != metric.get('logical_code')
+                or metric.get('source_field') != 'value' or metric.get('aggregation') != 'direct'
+                or metric.get('calculation_code') or metric.get('period_basis') != 'rule_period'):
+            raise ValueError('业务指标绑定定义无效。')
+        return
     if schema not in SOURCES:
         raise ValueError("指标尚未配置受支持的材料来源。")
     _, period, fields = SOURCES[schema]

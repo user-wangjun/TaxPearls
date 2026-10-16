@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 import yaml
 from .models import Dataset, EvidenceItem, Finding, Rule
+from . import periods, legal_periods, reference_scope
+from .input_errors import InputError
 
 
 class RuleError(Exception):
@@ -211,6 +213,11 @@ def _need(dataset, key, rule):
     if not dataset.source_of(key).strip():
         raise MissingMetric(f"指标「{key}」缺少证据来源；请补充：{source}")
     try:
+        periods.validate_metric_period(key, dataset.metrics[key].period, dataset.company.period)
+        reference_scope.validate(dataset, key, rule)
+    except InputError as exc:
+        raise MissingMetric(str(exc)) from exc
+    try:
         return _decimal(value)
     except (ValueError, InvalidOperation) as exc:
         raise MissingMetric(f"指标「{key}」无效：{exc}；请复核：{source}") from exc
@@ -274,6 +281,10 @@ def readiness(rule: Rule, dataset: Dataset) -> list[str]:
     keeps zero denominators and invalid references consistent with execution.
     """
     problems = []
+    try:
+        legal_periods.resolve(rule, dataset.company.period)
+    except InputError as exc:
+        problems.append(str(exc))
     for key in rule.inputs:
         try:
             _need(dataset, key, rule)
@@ -308,7 +319,13 @@ def readiness(rule: Rule, dataset: Dataset) -> list[str]:
 
 
 def evaluate(rule: Rule, dataset: Dataset) -> Finding:
+    # Freeze even an unavailable legal edition without displaying a newer act.
+    rule = legal_periods.resolve(rule, dataset.company.period, strict=False)
     try:
+        try:
+            rule = legal_periods.resolve(rule, dataset.company.period)
+        except InputError as exc:
+            raise MissingMetric(str(exc)) from exc
         evidence = []
         for key in rule.evidence:
             value = _need(dataset, key, rule)
@@ -316,6 +333,10 @@ def evaluate(rule: Rule, dataset: Dataset) -> Finding:
             source = dataset.source_of(key) + (f"；{detail}" if detail else "")
             evidence.append(EvidenceItem(key, f"{value:,.6f}".rstrip("0").rstrip("."), source, True))
         hit, measured, calc, threshold = _logic(rule.logic, dataset, rule)
+        for key in rule.evidence:
+            if dataset.metrics[key].reference:
+                evidence.append(EvidenceItem('参考适用范围 · ' + key,
+                    reference_scope.description(dataset.metrics[key].reference), '输入来源参考；不是法定标准'))
         evidence.append(EvidenceItem("阈值依据", rule.threshold_basis, "规则配置；不是法定违法认定标准"))
         return Finding(
             rule=rule, status="hit" if hit else "pass",

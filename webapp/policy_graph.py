@@ -55,6 +55,7 @@ def migrate(db):
         "Clause": {"version": "TEXT NOT NULL DEFAULT '1'", "supersedes_id": "TEXT REFERENCES Clause(clause_id)"},
         "TaxRule": {"rule_code": "TEXT", "version": "TEXT NOT NULL DEFAULT '1'", "fingerprint": "TEXT",
                     "execution_json": "TEXT CHECK(execution_json IS NULL OR json_valid(execution_json))",
+                    "conversion_json": "TEXT CHECK(conversion_json IS NULL OR json_valid(conversion_json))",
                     "supersedes_id": "TEXT REFERENCES TaxRule(rule_id)"},
         "Metric": {"logical_code": "TEXT", "version": "TEXT NOT NULL DEFAULT '1'",
                    "supersedes_id": "TEXT REFERENCES Metric(metric_id)"},
@@ -216,6 +217,8 @@ def import_bundle(db, bundle):
                         raise ValueError("导入只能创建候选，不能携带审核结果。")
                 if table == "TaxRule" and row.get("execution_json"):
                     raise ValueError("执行器快照只能由现有规则适配器产生。")
+                if table == 'TaxRule' and row.get('conversion_json'):
+                    raise ValueError('规则转换凭据只能由已验证的转换器产生。')
                 if table == "Condition" and row.get("right_kind") == "literal" and not isinstance(row.get("right_literal"), str):
                     raise ValueError("条件常量须为字符串，避免金额经过浮点数转换。")
                 if row.get("supersedes_id") == row[IDS[table]]:
@@ -312,6 +315,9 @@ def import_corpus(db, manifest_path, document_ids, originals_dir):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     if not document_ids or len(set(document_ids)) != len(document_ids):
         raise ValueError("须明确选择不重复的政策文档 ID。")
+    if manifest.get('graph_preparation',{}).get('format')=='policy-corpus-v1':
+        from src.policy_corpus import import_plan, prepare
+        return import_plan(db,prepare(manifest_path,document_ids),originals_dir)
     documents = {r["id"]: r for r in manifest["documents"]}
     bundle = {"Policy": [], "Clause": []}
     created = []
@@ -374,6 +380,8 @@ def sync_rules(db, rules):
         record_id = f"{rule.id}@{rule.version}:{digest[:16]}"
         selected[record_id] = rule.id
         if db.execute("SELECT 1 FROM TaxRule WHERE rule_id=?", (record_id,)).fetchone():
+            from src.rule_conversion import install
+            install(db, rule, record_id)
             continue
         db.execute("INSERT INTO TaxRule (rule_id,rule_code,version,fingerprint,name,tax_type,rule_type,"
                    "applicable_region,valid_from,valid_to,outcome_text,execution_json,notes) "
@@ -390,17 +398,41 @@ def sync_rules(db, rules):
             edge_id = fingerprint([record_id, mid])
             db.execute("INSERT INTO Relationship (relationship_id,from_type,from_id,relation_type,to_type,to_id) "
                        "VALUES (?,'TaxRule',?,'USES_METRIC','Metric',?)", (edge_id, record_id, mid))
+        from src.rule_conversion import install
+        install(db, rule, record_id)
     return selected
 
 
 def graph(db, selected=None):
     """Public definitions only. Audit graphs continue using their frozen findings."""
     selected = selected or {}
+    from src.models import Rule
+    from src.rule_conversion import compile_rule
+    converted={}
+    for old in selected:
+        snapshot=get(db,'TaxRule',old).get('execution_json')
+        if snapshot:
+            rid=compile_rule(Rule(**json.loads(snapshot)))['rule_id']
+            if db.execute('SELECT 1 FROM TaxRule WHERE rule_id=?',(rid,)).fetchone():
+                converted[old]=rid
+    selected={**selected,**{rid:selected[old] for old,rid in converted.items()}}
+    active_rules=set(converted.values())|{r['rule_id'] for r in db.execute('SELECT rule_id FROM TaxRule WHERE execution_json IS NULL AND conversion_json IS NULL')}
+    active_metrics={r['to_id'] for r in db.execute("SELECT from_id,to_id FROM Relationship WHERE from_type='TaxRule' AND to_type='Metric' AND relation_type='USES_METRIC'") if r['from_id'] in active_rules}
     nodes, identifiers = [], {}
     for table in KINDS:
         for source in db.execute(f'SELECT * FROM "{table}" ORDER BY {IDS[table]}'):
             row = dict(source)
             record_id = row[IDS[table]]
+            if table=='TaxRule' and record_id in converted:
+                continue
+            if table=='TaxRule' and row.get('conversion_json') and selected and record_id not in selected:
+                continue
+            if table=='Metric' and converted and row.get('metric_code','').startswith('legacy:'):
+                continue
+            if converted and table=='Metric' and row.get('source_schema') in {'BusinessMetric','RuleCalculation'} and record_id not in active_metrics:
+                continue
+            if converted and table in {'Condition','Exception'} and row['rule_id'] not in active_rules:
+                continue
             if table == "TaxRule" and row.get("execution_json") and record_id not in selected:
                 continue
             node = {**row, "id": selected.get(record_id, f"{table}:{record_id}"), "record_id": record_id,
@@ -425,6 +457,11 @@ def graph(db, selected=None):
                 node.update(category=snapshot["category"], scope=snapshot["scope"],
                             suggestion=snapshot["suggestion"], references=snapshot["references"],
                             requirement=snapshot["threshold_basis"], legacy_references_unverified=True)
+            if table=='TaxRule' and row.get('conversion_json'):
+                snapshot=json.loads(row['conversion_json'])['source_rule']
+                node.pop('conversion_json',None)
+                node.update(category=snapshot['category'],scope=snapshot['scope'],suggestion=snapshot['suggestion'],
+                            references=snapshot['references'],requirement=snapshot['threshold_basis'],computation_converted=True)
             identifiers[(table, record_id)] = node["id"]
             nodes.append(node)
     edges = []

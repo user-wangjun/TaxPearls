@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 import re
 from .workbooks import open_workbook
-from . import config
+from . import config, periods, reference_scope
 from .input_errors import InputError
 from .periods import _Period as _Period, _PeriodValue, parse_period as _parse_period, derive_period_metrics as _derive_period_metrics
 from .models import Account, Company, Dataset, Metric
@@ -184,7 +184,8 @@ def _read_company(wb, *, allow_incomplete=False):
     missing = [key for key in config.COMPANY_FIELDS if not data.get(key)]
     if missing and not allow_incomplete:
         raise InputError(f"企业信息缺少字段：{missing}")
-    return Company(*(data.get(k, '') for k in config.COMPANY_FIELDS))
+    return Company(*(data.get(k, '') for k in config.COMPANY_FIELDS),
+                   **{key: data.get(label, '') for label, key in config.COMPANY_SCOPE_FIELDS.items()})
 
 
 def _read_accounts(wb):
@@ -257,11 +258,43 @@ def _read_supplement(wb, company, metrics):
         source, period, detail = [str(v).strip() if v is not None else "" for v in row[2:5]]
         if not source or not detail:
             raise InputError(f"补充指标第 {idx} 行「{key}」必须填写来源和口径说明")
-        if period != company.period:
+        comparative = key.startswith(('历史.', '年度.'))
+        if comparative and company.period:
+            periods.validate_metric_period(key, period, company.period)
+        if not comparative and period != company.period:
             raise InputError(f"补充指标第 {idx} 行「{key}」所属期必须与企业信息一致；历史实际期间写入口径说明")
         if key.startswith("人力.") and key.endswith("人数") and (value < 0 or value != value.to_integral_value()):
             raise InputError(f"补充指标第 {idx} 行「{key}」人数必须为非负整数")
-        metrics[key] = Metric(key, value, f"补充指标!B{idx} ← {source}；核对期 {period}", detail)
+        label = '实际期间' if comparative else '核对期'
+        reference = {'metric_source': source} if any(key in spec[:2] for spec in reference_scope.SPECS.values()) else None
+        metrics[key] = Metric(key, value, f"补充指标!B{idx} ← {source}；{label} {period}", detail, period, reference)
+
+
+def _read_reference(wb, metrics):
+    if config.SHEET_REFERENCE not in wb.sheetnames:
+        return
+    ws = _sheet(wb, config.SHEET_REFERENCE, config.COL_REFERENCE)
+    seen = set()
+    for idx, row in enumerate(ws.iter_rows(min_row=2, max_col=len(config.COL_REFERENCE), values_only=True), 2):
+        if not any(v is not None for v in row):
+            continue
+        kind = str(row[0] or '').strip()
+        if kind not in reference_scope.SPECS or kind in seen:
+            raise InputError(f'参考值适用范围第 {idx} 行：参考类型未知或重复。')
+        seen.add(kind)
+        data = dict(zip(reference_scope.FIELDS,
+            (str(v).strip() if v is not None else '' for v in row[1:])))
+        try:
+            description = reference_scope.description(data)
+        except InputError as exc:
+            # An incomplete benchmark must not make unrelated input unusable.
+            # Preserve the raw metadata; the engine limits this comparison.
+            description = f'参考范围待核对：{exc}'
+        for key in reference_scope.SPECS[kind][:2]:
+            if key in metrics:
+                origin = (metrics[key].reference or {}).get('metric_source', '')
+                metrics[key].reference = {**data, 'metric_source': origin}
+                metrics[key].detail += '；' + description
 
 
 def _read_statement(wb, sheet_name, prefix, metrics):
@@ -298,8 +331,10 @@ def _read_history(wb, company, metrics):
             continue
         if not source or not period or not detail:
             raise InputError(f"历史指标第 {idx} 行「{key}」必须填写来源、实际所属期和口径说明")
-        metric = Metric(key, value, f"历史指标!B{idx} ← {source}；实际期间 {period}", detail)
+        metric = Metric(key, value, f"历史指标!B{idx} ← {source}；实际期间 {period}", detail, period)
         if key.startswith("历史.") or key.startswith("年度."):
+            if company.period:
+                periods.validate_metric_period(key, period, company.period)
             if key in seen or key in metrics:
                 raise InputError(f"历史指标 A{idx}：指标重复「{key}」")
             seen.add(key)
@@ -1496,6 +1531,7 @@ def _from_workbook(wb) -> Dataset:
                 raise InputError(f"指标「{key}」与合同四流勾稽计算值冲突")
             metrics[key] = metric
         _read_supplement(wb, company, metrics)
+        _read_reference(wb, metrics)
         from . import related_graph
         graph = related_graph.read_workbook(wb, company)
         return Dataset(company, accounts, declarations, metrics, graph, sources=list(wb.sheetnames))

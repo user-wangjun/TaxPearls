@@ -22,6 +22,7 @@ TABLES = {
     config.SHEET_CASHFLOW: (config.COL_STATEMENT, (1,)),
     config.SHEET_SUPPLEMENT: (config.COL_SUPPLEMENT, (1,)),
     config.SHEET_HISTORY: (config.COL_HISTORY, (1,)),
+    config.SHEET_REFERENCE: (config.COL_REFERENCE, ()),
 }
 ACCOUNT_FIELDS = {2: 'opening', 3: 'debit', 4: 'credit', 5: 'closing'}
 
@@ -147,6 +148,8 @@ def apply(document, corrections):
     company.title = config.SHEET_COMPANY
     company.append(['项目', '内容'])
     for label, key in zip(config.COMPANY_FIELDS, materials.COMPANY_KEYS):
+        company.append([label, document['company'].get(key, '')])
+    for label, key in config.COMPANY_SCOPE_FIELDS.items():
         company.append([label, document['company'].get(key, '')])
     for name, rows in tables.items():
         sheet = book.create_sheet(name)

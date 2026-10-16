@@ -92,7 +92,7 @@ def reanalysis_required(document):
         return True
     return any(not current.get(name) or saved.get(name) != current[name]
                for name in ('financial_import.py', 'periods.py', 'materials.py', 'loader.py',
-                            'config.py', 'workbooks.py', 'material_review.py', 'legacy_workbooks.py'))
+                            'config.py', 'workbooks.py', 'material_review.py', 'reference_scope.py', 'legacy_workbooks.py'))
 
 
 def options(value, sheets):

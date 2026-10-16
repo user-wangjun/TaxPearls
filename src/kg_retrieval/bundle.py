@@ -64,6 +64,12 @@ def _facts(context, supplied, task, source_catalog):
                        "value": value if known else None, "unit": unit(definition.get("unit")), "period_basis": basis,
                        "period_start": task["period_start"], "period_end": task["period_end"],
                        "source_ids": source_ids if isinstance(source_ids, list) and all(sid in allowed for sid in source_ids) else [], "reason": reason}
+        if supplied.get(mid, {}).get('calculation'):
+            result[mid]['calculation']=supplied[mid]['calculation']
+        for key in ('metric_period','reference','company_scope','simulation'):
+            if key in fact:
+                result[mid][key]=deepcopy(fact[key])
+        result[mid]['is_calculation']=definition.get('source_schema')=='RuleCalculation'
     return result, gaps
 
 
@@ -102,17 +108,34 @@ def split_bundle(bundle, token_budget=6000):
     """Use UTF-8 bytes as a conservative token upper bound; never cut clause originals."""
     if not 256 <= token_budget <= 128000:
         raise ValueError("材料包预算须在 256–128000 之间。")
-    base = {key: deepcopy(bundle[key]) for key in ("task", "check", "facts", "conditions", "exceptions", "gaps", "relationships", "policy_leads")}
-    evidence = bundle["policy_evidence"]
+    base = {key: deepcopy(bundle[key]) for key in ("task", "check", "facts", "conditions", "exceptions", "relationships")}
+    # Full provenance and retrieval scores remain in the exported bundle. Only
+    # decision-relevant policy fields travel to the provider; no original text
+    # is shortened, and the actual transmitted IDs remain available to validation.
+    fields = {"clause_id", "policy_id", "clause_version", "policy_version", "document_no", "title", "issuer",
+              "text", "source_url", "file_sha256", "region_code", "effective_from", "effective_to",
+              "applicability", "reasons", "segments", "required", "review_status"}
+    items = [(kind, {key: deepcopy(value) for key, value in item.items() if key in fields})
+             for kind in ("policy_evidence", "policy_leads") for item in bundle[kind]]
+    required = [(kind, item) for kind, item in items if item.get("required")]
+    optional = [(kind, item) for kind, item in items if not item.get("required")]
+
+    def package(selected):
+        included = required + selected
+        ids = {item["clause_id"] for _, item in included}
+        return {**base,
+                "gaps": [deepcopy(gap) for gap in bundle["gaps"] if not gap.get("clause_id") or gap["clause_id"] in ids],
+                **{kind: [item for route, item in included if route == kind] for kind in ("policy_evidence", "policy_leads")}}
+
     parts, current = [], []
-    for item in evidence:
-        proposed = {**base, "policy_evidence": [*current, item]}
+    for item in optional:
+        proposed = package([*current, item])
         if current and len(canonical(proposed).encode()) > token_budget:
-            parts.append({**base, "policy_evidence": current})
+            parts.append(package(current))
             current = []
         current.append(item)
     if current or not parts:
-        parts.append({**base, "policy_evidence": current})
+        parts.append(package(current))
     for number, part in enumerate(parts, 1):
         part.update(part_number=number, part_count=len(parts), requires_joint_review=len(parts) > 1,
                     bundle_id=bundle["bundle_id"])
@@ -195,7 +218,7 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
             gaps.append({"code": "policy_review", "clause_id": cid, "message": ";".join(decision["reasons"])})
         else:
             evidence.append(record)
-            if cid in required and decision["status"] == "context_only":
+            if cid in required and decision["status"] == "context_only" and decision.get('context_kind')!='supporting_basis':
                 gaps.append({"code": "rule_source_changed", "clause_id": cid, "message": "本规则的原依据已修改，仅保留历史上下文，须复核执行版本。"})
     if not evidence:
         gaps.append({"code": "policy_evidence_missing", "message": "没有可核实的相关政策证据。"})
@@ -204,12 +227,17 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
     except (ValueError, KeyError, TypeError):
         evaluation = "UNKNOWN"
         gaps.append({"code": "rule_logic_pending", "message": "规则条件尚未完成可执行建模。"})
+    fact_evaluation=evaluation if all(f['state']=='known' for f in facts.values()) else 'UNKNOWN'
     if gaps:
         evaluation = "UNKNOWN"
     check = {"topic": topic, "rule_id": rule_id, "rule_code": rule.get("rule_code"), "version": rule.get("version"),
              "rule_type": rule["rule_type"], "review_status": rule["review_status"],
              "condition_logic": json.loads(rule["condition_logic_json"]), "outcome_text": rule["outcome_text"],
              "valid_from": rule.get("valid_from"), "valid_to": rule.get("valid_to"), "evaluation": evaluation}
+    if rule.get('conversion_json'):
+        check['fact_evaluation']=fact_evaluation
+        check['conversion']=json.loads(rule['conversion_json'])['compiler']
+        check['fact_scope']='仅核对原有内部筛查计算；不代表政策有效、适用或违法认定。'
     check["disposition"] = ("excluded" if any(x["trigger_state"] == "TRUE" and x["effect"] == "exclude" for x in exceptions)
                             else "needs_review" if evaluation == "UNKNOWN" else "condition_met" if evaluation == "TRUE" else "condition_not_met")
     safe_task = {key: task.get(key) for key in ("audit_task_id", "tax_type", "region_code", "period_start", "period_end", "data_scope")}

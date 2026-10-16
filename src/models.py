@@ -18,6 +18,9 @@ class Company:
     taxpayer_id: str
     industry: str
     period: str
+    region: str = ""
+    taxpayer_type: str = ""
+    business_scope: str = ""
 
 
 @dataclass
@@ -44,6 +47,8 @@ class Metric:
     value: Decimal | float
     source: str
     detail: str = ""
+    period: str = ""
+    reference: dict[str, Any] | None = None
 
 
 @dataclass
@@ -98,6 +103,7 @@ class Dataset:
     related_graph: RelatedGraph | None = None
     # None denotes legacy snapshots, whose available evidence is described conservatively.
     sources: list[str] | None = None
+    simulation: bool = False
 
     def values(self) -> dict[str, Decimal | float]:
         """供规则引擎求值用的扁平数值表。"""
@@ -138,6 +144,8 @@ class Rule:
     version: str = "1.0"
     effective_from: str | None = None
     effective_to: str | None = None
+    legal_origin: dict[str, Any] | None = None
+    legal_context: dict[str, Any] | None = None
 
 
 @dataclass

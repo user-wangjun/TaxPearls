@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 from src.engine import RuleError, UniqueLoader, evaluate, load_rules  # noqa: E402
 from src.models import Company, Dataset, Metric  # noqa: E402
+from src.periods import metric_period  # noqa: E402
+from src import reference_scope  # noqa: E402
 import yaml  # noqa: E402
 
 CASES = ROOT / "samples" / "规则核对样例.yaml"
@@ -31,12 +33,17 @@ def case_values(group, case):
 
 
 def dataset_for(rule, values):
-    return Dataset(
-        Company("规则回归企业（全部仿真）", "SYNTHETIC-ONLY", "批发和零售业", "2026年度"),
-        [], {},
-        {k: Metric(k, Decimal(str(v)), f"人工仿真底稿—{k}", rule.inputs.get(k, "样例数据"))
-         for k, v in values.items()},
-    )
+    company = Company('规则回归企业（全部仿真）', 'SYNTHETIC-ONLY', '批发和零售业', '2026年度',
+                      '仿真地区', '一般纳税人（仿真）', '商品销售（仿真）')
+    references = reference_scope.synthetic(company)
+    metrics = {}
+    for key, value in values.items():
+        actual = metric_period(key, company.period)
+        reference = next((references[kind] for kind, spec in reference_scope.SPECS.items() if key in spec[:2]), None)
+        source = reference['source'] if reference else f'人工仿真底稿—{key}'
+        metrics[key] = Metric(key, Decimal(str(value)), source, rule.inputs.get(key, '样例数据'),
+                              actual.label if actual else '', reference)
+    return Dataset(company, [], {}, metrics, simulation=True)
 
 
 def check_finding(finding, case):

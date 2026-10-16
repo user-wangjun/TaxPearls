@@ -236,14 +236,34 @@ class AIContractTests(unittest.TestCase):
         self.assertEqual(set(captured[0]['historical_metrics']), {'历史.上年同期收入', '历史.上年同期成本'})
         self.assertEqual(captured[0]['historical_metrics']['历史.上年同期收入'], CATALOG['历史.上年同期收入'])
         self.assertEqual(captured[0]['review_scope'], {'period': COMPANY['period']})
-        data = materials.build_dataset([doc], {'0': {'reviewed': True}}, {}, set(CATALOG))
+        with self.assertRaises(materials.InputError):
+            materials.build_dataset([doc], {'0': {'reviewed': True}}, {}, set(CATALOG))
+        # Model prose alone is not verified period metadata. Explicitly supplied
+        # human periods remain separate from the unchanged original candidates.
+        selected = deepcopy(doc['rows'])
+        next(r for r in selected if r['name'] == '历史.上年同期收入')['period'] = '2025-01'
+        data = materials.build_dataset([doc], {'0': {'reviewed': True, 'rows': selected}}, {}, set(CATALOG))
         self.assertEqual(data.get('利润表.营业收入'), 120)
         self.assertEqual(data.get('历史.上年同期收入'), 100)
+        self.assertIn('人工核对实际期间 2025-01', data.source_of('历史.上年同期收入'))
         self.assertIn('2025-01-01至2025-01-31', data.detail_of('历史.上年同期收入'))
         # A missing history response is never filled from the current column.
         response.rows = response.rows[:1]
         AIExtractor(SETTINGS, CATALOG, transport).enrich(doc, b'')
         self.assertEqual([r['name'] for r in doc['rows']], ['利润表.营业收入'])
+
+    def test_verified_history_period_is_structured_and_not_inferred_from_detail(self):
+        quote = '营业收入 上年同期金额 100'
+        source = '利润表\n金额单位：人民币元\n2025年1月\n' + quote
+        evidence = {'table': '利润表', 'column': '上年同期金额', 'period': '2025-01',
+                    'period_quote': '2025年1月', 'unit_quote': '金额单位：人民币元'}
+        doc = document(source)
+        response = answer([row('100', '元', quote, name='历史.上年同期收入', evidence=evidence)])
+        AIExtractor(SETTINGS, CATALOG, lambda *_: response).enrich(doc, b'')
+        self.assertEqual(doc['rows'][0]['period'], '2025-01-01至2025-01-31')
+        self.assertTrue(doc['rows'][0]['ai_evidence_verified'])
+        data = materials.build_dataset([doc], {'0': {'reviewed': True}}, {}, set(CATALOG))
+        self.assertEqual(data.metrics['历史.上年同期收入'].period, '2025-01-01至2025-01-31')
 
     def test_scan_disagreed_number_blank_and_negative_remain_reviewable(self):
         doc = document('', pages=[{'page': 1, 'text': ''}])

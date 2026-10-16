@@ -52,7 +52,7 @@ def pdf_reanalysis_required(document):
         return True
     current = program('local')
     return any(not current['sources'].get(name) or sources.get(name) != current['sources'][name]
-               for name in ('materials.py', 'loader.py', 'financial_import.py', 'config.py', 'periods.py',
+               for name in ('materials.py', 'loader.py', 'financial_import.py', 'config.py', 'periods.py', 'reference_scope.py',
                             'material_provenance.py', 'material_security.py', 'material_formats.py',
                             'material_format_guard.py', 'material_format_worker.py')) or any(
                not current['dependencies'].get(name) or dependencies.get(name) != current['dependencies'][name]
@@ -73,7 +73,7 @@ def program(kind):
     # Missing source/package information remains unknown, never inferred.
     files = ('ai_extraction.py', 'ai_transport.py', 'settings.py', 'periods.py') if kind == 'ai' else (
         'materials.py', 'loader.py', 'material_review.py', 'financial_import.py', 'workbooks.py',
-        'config.py', 'periods.py', 'models.py', 'related_graph.py', 'legacy_workbooks.py')
+        'config.py', 'periods.py', 'models.py', 'reference_scope.py', 'related_graph.py', 'legacy_workbooks.py')
     packages = ('pydantic', 'pypdfium2', 'Pillow') if kind == 'ai' else (
         'openpyxl', 'pdfplumber', 'pdfminer.six', 'Pillow', 'xlrd', 'olefile')
     sources, dependencies = {}, {}

@@ -38,6 +38,8 @@ def _period_from_month(year: int, month: int, months: int, group: str, label: st
     end_index = year * 12 + month - 1 + months - 1
     end_year, end_month_zero = divmod(end_index, 12)
     end_month = end_month_zero + 1
+    if not 1 <= year <= end_year <= 9999:
+        raise InputError('所属期年份超出有效范围，不能构造本期或历史期间。')
     return _Period(
         date(year, month, 1),
         date(end_year, end_month, monthrange(end_year, end_month)[1]),
@@ -116,6 +118,44 @@ def _shift_period(period: _Period, months: int) -> tuple[int, int]:
     return (period.key[0] + months, period.months)
 
 
+def metric_period(name: str, company_period: str) -> _Period | None:
+    """Expected actual interval for named comparative inputs, never inferred from prose."""
+    names = {spec.get('yoy_alias') for spec in config.PERIOD_SERIES.values()}
+    names.update(name for spec in config.PERIOD_SERIES.values() for name in spec.get('annual_aliases', ()))
+    if name not in names:
+        return None
+    current = parse_period(company_period, '主期间')
+    for spec in config.PERIOD_SERIES.values():
+        if name == spec.get('yoy_alias'):
+            if current.start.year <= 1:
+                raise InputError(f'「{name}」无法形成有效的上年同期期间。')
+            start = date(current.start.year - 1, current.start.month, 1)
+            end = date(current.end.year - 1, current.end.month,
+                       monthrange(current.end.year - 1, current.end.month)[1])
+            return _period_from_month(current.start.year - 1, current.start.month,
+                                      current.months, current.group,
+                                      f'{start.isoformat()}至{end.isoformat()}')
+        aliases = spec.get('annual_aliases', ())
+        if name in aliases:
+            if current.group != 'year':
+                raise InputError(f'「{name}」要求主期间为完整年度，不能用月、季或半年替代。')
+            year = current.start.year - aliases.index(name)
+            return _period_from_month(year, 1, 12, 'year', f'{year}年度')
+    return None
+
+
+def validate_metric_period(name: str, actual: str, company_period: str) -> None:
+    expected = metric_period(name, company_period)
+    if expected is None:
+        return
+    if not actual:
+        raise InputError(f'「{name}」缺少可核验的实际期间，请补充原始期间，不从口径说明猜测。')
+    interval = parse_period(actual, f'「{name}」实际期间')
+    if interval.key != expected.key:
+        raise InputError(f'「{name}」实际期间 {actual} 与主期间要求不符；'
+                         f'应为 {expected.start.isoformat()} 至 {expected.end.isoformat()}。')
+
+
 def _put_derived(metrics: dict[str, Metric], key: str, metric: Metric) -> None:
     current = metrics.get(key)
     if current is not None:
@@ -126,7 +166,8 @@ def _put_derived(metrics: dict[str, Metric], key: str, metric: Metric) -> None:
 
 
 def _comparison_metric(name: str, value: _PeriodValue) -> Metric:
-    return Metric(name, value.metric.value, value.metric.source, value.metric.detail)
+    return Metric(name, value.metric.value, value.metric.source, value.metric.detail,
+                  value.period.label, value.metric.reference)
 
 
 def derive_period_metrics(company: Company, metrics: dict[str, Metric], series: dict[str, dict[tuple[int, int], _PeriodValue]]) -> None:
