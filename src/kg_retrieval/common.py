@@ -15,7 +15,7 @@ def digest(value):
 
 def implementation_fingerprint():
     root = Path(__file__).resolve().parents[2]
-    files = [*Path(__file__).parent.glob("*.py"), root / "src/tax_conditions.py",
+    files = [*Path(__file__).parent.glob("*.py"), root / "src/tax_conditions.py", root / "src/vat_reconciliation.py",
              root / "webapp/policy_graph.py", root / "webapp/knowledge_evidence.py",
              *[root/'src'/name for name in ['rule_conversion.py','rule_bindings.py','policy_corpus.py','engine.py','config.py',
                                            'periods.py','reference_scope.py','models.py','snapshots.py']]]

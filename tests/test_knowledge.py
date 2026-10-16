@@ -83,7 +83,7 @@ class KnowledgeTests(unittest.TestCase):
     def test_rule_region_yaml_validation(self):
         import yaml
         base = asdict(self.rules[0])
-        for key in ('source_file', 'effective_from', 'effective_to'):
+        for key in ('source_file', 'effective_from', 'effective_to', 'legal_origin', 'legal_context'):
             base.pop(key)
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'rule.yaml'

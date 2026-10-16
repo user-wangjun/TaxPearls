@@ -109,6 +109,9 @@ def split_bundle(bundle, token_budget=6000):
     if not 256 <= token_budget <= 128000:
         raise ValueError("材料包预算须在 256–128000 之间。")
     base = {key: deepcopy(bundle[key]) for key in ("task", "check", "facts", "conditions", "exceptions", "relationships")}
+    for key in ("fact_assessment", "risk_assessment"):
+        if key in bundle:
+            base[key] = {k: deepcopy(v) for k, v in bundle[key].items() if k != "mapping_review"}
     # Full provenance and retrieval scores remain in the exported bundle. Only
     # decision-relevant policy fields travel to the provider; no original text
     # is shortened, and the actual transmitted IDs remain available to validation.
@@ -147,12 +150,16 @@ def split_bundle(bundle, token_budget=6000):
 
 
 def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_catalog=(), model_dir=None,
-          candidate_limit=20, review_limit=30, token_budget=6000, offline=True):
+          candidate_limit=20, review_limit=30, token_budget=6000, offline=True, metric_definitions=None, fact_assessment=None):
     started = perf_counter()
     task = checked_task(task)
     if not db.in_transaction:
         db.execute("BEGIN IMMEDIATE")
     context = relation_search.rule_context(db, rule_id)
+    if metric_definitions is not None:
+        if set(metric_definitions) != set(context["metrics"]):
+            raise ValueError("任务指标定义必须对应同一规则的指标集合。")
+        context["metrics"] = deepcopy(metric_definitions)
     rule = context["rule"]
     topic = topic.strip() or rule["name"]
     if not topic or len(topic) > 2000 or not 1 <= review_limit <= 100:
@@ -252,12 +259,40 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
                                   "fused": combined, "required_clause_ids": sorted(required),
                                   "dependency_clause_ids": closure["clause_ids"], "decisions": decisions, "excluded": excluded},
               "execution": {"offline": bool(offline), "external_api_calls": 0}}
-    core = {key: bundle[key] for key in ("task", "check", "facts", "metric_definitions", "conditions", "exceptions", "policy_evidence", "policy_leads", "relationships", "gaps")}
+    if fact_assessment is None:
+        try:
+            main_conditions = tax_conditions.validate_logic(json.loads(rule["condition_logic_json"]), set(truth_values))
+        except (ValueError, KeyError, TypeError):
+            main_conditions = set(truth_values)
+        main_metrics = {mid for c in conditions if c["condition_id"] in main_conditions
+                        for mid in (c["left_metric_id"], c.get("right_metric_id")) if mid}
+        main_facts = {mid:f for mid,f in facts.items() if mid in main_metrics}
+        status = "FACT_INCOMPLETE" if any(f["state"] != "known" for f in main_facts.values()) or not main_facts else (
+            "NOT_COMPARABLE" if any(g["code"] == "comparability_pending" and g["condition_id"] in main_conditions for g in gaps) else "FACT_CONFIRMED")
+        fact_assessment = {"status": status, "amount": None, "unit": None,
+                           "source_ids": sorted({sid for f in facts.values() for sid in f["source_ids"]}), "calculation_trace": []}
+    bundle["fact_assessment"] = deepcopy(fact_assessment)
+    risk_status = "NEEDS_MORE_DATA" if fact_assessment["status"] == "FACT_INCOMPLETE" else "NEEDS_REVIEW"
+    if check["disposition"] == "excluded":
+        risk_status = "NOT_APPLICABLE"
+    elif not gaps:
+        risk_status = "RISK_CANDIDATE" if evaluation == "TRUE" else "NO_RISK_SIGNAL" if evaluation == "FALSE" else "NEEDS_REVIEW"
+    elif rule_id == "VAT-R01" and fact_assessment["status"] == "FACT_CONFIRMED" and fact_assessment["amount"] is not None:
+        from decimal import Decimal
+        if Decimal(fact_assessment["amount"]) == 0:
+            risk_status = "NO_RISK_SIGNAL"
+    bundle["risk_assessment"] = {"status": risk_status, "policy_approval": rule["review_status"],
+                                 "scope": "仅本项数值核对；无差异不代表全面合规。", "missing_evidence": [g["message"] for g in gaps]}
+    bundle["analysis_readiness"] = bundle["bundle_status"]
+    bundle["analysis_mode"] = "evidence_assessment" if bundle["bundle_status"] == "ready" else "review_only"
+    core = {key: bundle[key] for key in ("task", "check", "facts", "metric_definitions", "conditions", "exceptions", "policy_evidence", "policy_leads", "relationships", "gaps", "fact_assessment", "risk_assessment")}
     bundle["bundle_id"] = digest(core)
     bundle["batching"] = split_bundle(bundle, token_budget)
     if bundle["batching"]["unsplittable"]:
         bundle["bundle_status"] = "needs_review"
         bundle["gaps"].append({"code": "budget_unsplittable", "message": "单个完整条款或必要上下文超出预算，保留原文并转复核。"})
     bundle["execution"]["elapsed_ms"] = round((perf_counter() - started) * 1000, 3)
+    bundle["analysis_readiness"] = bundle["bundle_status"]
+    bundle["analysis_mode"] = "evidence_assessment" if bundle["bundle_status"] == "ready" else "review_only"
     bundle["content_hash"] = digest({**core, "token_budget": token_budget})
     return bundle

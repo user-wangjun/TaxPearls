@@ -125,7 +125,9 @@ def validate_mapping(metric):
     filters = json.loads(metric.get("source_filter_json", "{}"))
     if (metric.get("source_field") not in fields or metric.get("period_basis") != period
             or not isinstance(filters, dict) or not set(filters) <= fields
-            or any(not isinstance(v, (str, bool, int)) for v in filters.values())):
+            or any(not isinstance(v, (str, bool, int)) and not (
+                k in {"red_letter_status", "void_status"} and isinstance(v, list) and 1 <= len(v) <= 32
+                and all(isinstance(item, str) and len(item) <= 40 for item in v)) for k, v in filters.items())):
         raise ValueError("指标字段、过滤条件或期间口径无效。")
     if metric.get("aggregation", "direct") not in {"direct", "sum", "count"} or metric.get("calculation_code"):
         raise ValueError("派生指标须先接入审核过的函数注册表；不执行文本公式。")
@@ -164,16 +166,16 @@ def resolve_metric(metric, processing, task):
                 return {**unknown, "reason": "资料企业、机构或任务归属不一致。"}
             if any(record.get(k) is None for k in filters):
                 return {**unknown, "reason": "筛选所需字段未核实。"}
-            if any(record[k] != v for k, v in filters.items()):
+            if any(record[k] not in v if isinstance(v, list) else record[k] != v for k, v in filters.items()):
                 continue
             if record.get("duplicate_of"):
                 continue
-            if not record.get("in_scope"):
-                return {**unknown, "reason": "指标来源期间尚未对齐。"}
             if source_kind == "invoice_detail":
                 day = date.fromisoformat(record["issue_date"])
                 if not start <= day <= end:
-                    return {**unknown, "reason": "开票日期不在本次期间。"}
+                    continue  # Retain other months, but never add them to this metric.
+                if not record.get("in_scope"):
+                    return {**unknown, "reason": "指标来源期间尚未对齐。"}
             elif record.get("period_start") != task["start_date"] or record.get("period_end") != task["end_date"]:
                 return {**unknown, "reason": "暂不自动拼接不同期间的申报或余额。"}
             if (metric.get("aggregation") != "count" and record.get("unit") != metric.get("unit")) or not record.get("id"):

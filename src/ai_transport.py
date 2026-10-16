@@ -16,6 +16,7 @@ _key_failures = {}
 _key_lock = Lock()
 _logger = logging.getLogger(__name__)
 REQUEST_GUARD = ContextVar('material_ai_guard', default=None)
+USAGE_OBSERVER = ContextVar('ai_usage_observer', default=None)
 
 
 def _key_identity(base_url, key):
@@ -93,12 +94,22 @@ def chat_content(settings, messages, timeout, *, temperature=0, max_tokens=None)
 
 
 def _content(opener, request, timeout):
+    started = time.monotonic()
     try:
         with opener.open(request, timeout=timeout) as response:
             raw = response.read(2 * 1024 * 1024 + 1)
         if len(raw) > 2 * 1024 * 1024:
             raise TransportError("oversized")
-        choice = json.loads(raw)["choices"][0]
+        result = json.loads(raw)
+        observer = USAGE_OBSERVER.get()
+        if observer:
+            usage = result.get("usage", {})
+            usage = usage if isinstance(usage, dict) else {}
+            safe = {k: v for k, v in usage.items() if k in {"prompt_tokens", "completion_tokens", "total_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens"}
+                    and type(v) is int and 0 <= v <= 100000000}
+            observer({"model": str(result.get("model", ""))[:200], "usage": safe,
+                      "elapsed_seconds": round(time.monotonic() - started, 3)})
+        choice = result["choices"][0]
         if choice.get("finish_reason") != "stop":
             raise TransportError("incomplete")
         content = choice["message"]["content"]

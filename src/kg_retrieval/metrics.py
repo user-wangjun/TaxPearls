@@ -1,4 +1,5 @@
 """Per-check material readiness and invalidation without blocking unrelated metrics."""
+import json
 from src import core_materials, tax_conditions
 from .common import digest, unit, period_basis
 
@@ -21,7 +22,11 @@ def resolve(definition, processing, task):
             continue
         if code in {"invoice_coverage_gap", "direction_missing"} and kind != "invoice_detail":
             continue
-        if code in {"forms_unconfirmed", "form_coverage_gap", "main_form_gap"} and kind != "vat_declaration":
+        if code == "invoice_coverage_gap" and kind == "invoice_detail":
+            direction = json.loads(definition.get("source_filter_json", "{}")).get("direction")
+            if direction == "output" and issue["message"].startswith("进项") or direction == "input" and issue["message"].startswith("销项"):
+                continue
+        if code in {"forms_unconfirmed", "form_coverage_gap", "main_form_gap", "missing_form"} and kind != "vat_declaration":
             continue
         problems.append(issue)
     parsing = processing.get("status") in {"parsing", "processing"}
@@ -54,11 +59,31 @@ def signature(facts):
                    for mid, fact in facts.items()})
 
 
+def build_task_bundle(db, payload, task, rule_id, **options):
+    from . import bundle, relation_search
+    from src import vat_reconciliation as vat
+    definitions = relation_search.rule_context(db, rule_id)["metrics"]
+    fact_assessment = None
+    task = dict(task)
+    if rule_id == vat.RULE:
+        definitions, facts, checked = vat.resolve(definitions, payload)
+        fact_assessment = vat.assess(facts, checked)
+        if checked:
+            task["comparability"] = {vat.RULE + ":difference": {"reviewed": checked["comparable"], "basis": checked["basis"]}}
+    else:
+        facts = collect(definitions, payload["processing"], payload["task"])
+    catalog = [r["id"] for r in payload["processing"].get("records", [])]
+    catalog += ["file:" + d["id"] for d in payload.get("documents", [])]
+    return bundle.build(db, task, rule_id, facts, source_catalog=catalog, metric_definitions=definitions,
+                        fact_assessment=fact_assessment, **options)
+
+
 def mark_stale(payload):
     for slot in payload.get("tax_checks", {}).values():
         package = slot.get("bundle", {})
         definitions = package.get("metric_definitions", {})
-        current = collect(definitions, payload["processing"], payload["task"])
+        from src import vat_reconciliation as vat
+        current = vat.resolve(definitions, payload)[1] if package.get("check", {}).get("rule_id") == vat.RULE else collect(definitions, payload["processing"], payload["task"])
         previous = {f["metric_id"]: f for f in package.get("facts", [])}
         slot["stale"] = signature(current) != signature(previous)
     return payload

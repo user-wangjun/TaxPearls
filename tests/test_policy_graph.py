@@ -213,11 +213,13 @@ class PolicyGraphTests(unittest.TestCase):
         self.assertEqual(old["snapshot_hash"], pg.fingerprint(old["snapshot"]))
         base = engine.load_rules(ROOT / "rules")[0]
         first = pg.sync_rules(self.db, [base])
-        second = pg.sync_rules(self.db, [replace(base, suggestion="新说明，同版本号")])
+        second = pg.sync_rules(self.db, [replace(base, suggestion="新说明，同版本号",rule_level='provincial',region='浙江省')])
         self.assertNotEqual(set(first), set(second))
         self.assertEqual(json.loads(pg.get(self.db, "TaxRule", next(iter(first)))["execution_json"])["suggestion"], base.suggestion)
         self.assertEqual(pg.graph(self.db, second)["nodes"][-1].get("review_status", "candidate"), "candidate")
         self.assertTrue(any(n["id"] == base.id for n in pg.graph(self.db, second)["nodes"]))
+        selected=next(n for n in pg.graph(self.db,second)['nodes'] if n['id']==base.id)
+        self.assertEqual((selected['rule_level'],selected['region']),('provincial','浙江省'))
         with self.assertRaises(ValueError):
             pg.approve_rule(self.db, next(iter(second)), "human")
 
@@ -357,13 +359,15 @@ class PolicyGraphHTTPTests(unittest.TestCase):
             original.write_text("纯合成测试。", encoding="utf-8")
             store = Store(Path(directory) / "test.db")
             store.create_user("platform", "policy-test-2026", "平台", "platform_admin", "platform")
+            with store.connect() as db:
+                original_rules = db.execute("SELECT count(*) FROM TaxRule").fetchone()[0]
             with patch.object(app_module, "store", store), TestClient(app_module.app) as client:
                 client.post("/api/login", json={"username": "platform", "password": "policy-test-2026"})
                 with patch.object(store, "_log", side_effect=RuntimeError("test log failure")):
                     with self.assertRaises(RuntimeError):
                         client.post("/api/knowledge/candidates", json={"bundle": demonstration(original)})
                 with store.connect() as db:
-                    self.assertEqual(db.execute("SELECT count(*) FROM TaxRule").fetchone()[0], 0)
+                    self.assertEqual(db.execute("SELECT count(*) FROM TaxRule").fetchone()[0], original_rules)
                 self.assertEqual(client.post("/api/knowledge/candidates", json={"bundle": demonstration(original)}).status_code, 200)
                 with patch.object(store, "_log", side_effect=RuntimeError("test log failure")):
                     with self.assertRaises(RuntimeError):

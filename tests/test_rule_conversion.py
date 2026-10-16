@@ -1,6 +1,7 @@
 """All maintained rules, independent annotated cases, actual core-task bindings."""
 from copy import deepcopy
 from dataclasses import replace
+from decimal import Decimal
 from io import BytesIO
 import json
 from pathlib import Path
@@ -298,6 +299,43 @@ class BindingHTTPTests(unittest.TestCase):
         self.assertEqual(self.client.post(url,json={**body,'value':'999'}).status_code,422)
         self.assertEqual(self.client.post(url,json={**body,'expected_revision':task['revision']-1}).status_code,409)
         self.login('other');self.assertEqual(self.client.post(url,json=body).status_code,404)
+
+    def test_converted_rule_and_vat_share_frozen_report_and_selective_recheck(self):
+        from tests.test_vat_reconciliation import invoices
+        from src import vat_reconciliation as vat
+        task=self.upload(self.task(),'invoice_detail',invoices([('COMBINED','L1','1000000','蓝字','正常')]))
+        records=task['processing']['records']
+        task=self.bind(task,'营业收入',[r['id'] for r in records if r['material_type']=='account_balance'],'current_credit')
+        task=self.bind(task,'增值税.销售额',[r['id'] for r in records if r['material_type']=='vat_declaration' and r['item_key']=='1'],'declared_value')
+        base='/api/enterprise/input-tasks/'+task['id']
+        def review(current):
+            row=next(r for r in current['processing']['records'] if r['material_type']=='vat_declaration' and r['item_key']=='1')
+            r=self.client.post(base+'/vat-review',json={'expected_revision':current['revision'],'mapping_record_id':row['id'],
+                'form_revision':'DEMO-2026-A','taxpayer_category':'合成一般纳税人','comparable':True,'basis':'合成同主体同期不含税口径'})
+            self.assertEqual(r.status_code,200,r.text)
+            return self.client.get(base).json()
+        task=review(task)
+        rid=next(r['rule_id'] for r in self.client.get('/api/knowledge/checks').json() if r['rule_code']=='R-001')
+        for rule in [rid,vat.RULE]:
+            response=self.client.post('/api/knowledge/retrieve',json={'task_id':task['id'],'expected_revision':task['revision'],
+                                                                  'rule_id':rule,'region_code':'CN-31'})
+            self.assertEqual(response.status_code,200,response.text)
+            task=self.client.get(base).json()
+        self.assertEqual(task['tax_checks'][rid]['bundle']['check']['fact_evaluation'],'FALSE')
+        self.assertEqual(Decimal(task['tax_checks'][vat.RULE]['bundle']['fact_assessment']['amount']),Decimal(0))
+        report=self.client.post(base+'/reports',json={'expected_revision':task['revision']})
+        self.assertEqual(report.status_code,200,report.text)
+        url=base+'/reports/'+str(report.json()['version']);frozen=self.client.get(url+'?format=html').content
+        self.assertEqual(len(self.client.get(url+'?format=json').json()['checks']),2)
+        task=self.upload(task,'invoice_detail',invoices([('SUPPLEMENT','L1','10000','蓝字','正常')]))
+        task=review(task)
+        with patch('webapp.knowledge._chat_json') as ai:
+            response=self.client.post(base+'/recheck',json={'expected_revision':task['revision']})
+        ai.assert_not_called();self.assertEqual(response.status_code,200,response.text)
+        result=response.json()
+        self.assertEqual(result['changed_rule_ids'],[vat.RULE]);self.assertEqual(result['reused_rule_ids'],[rid])
+        self.assertEqual(Decimal(result['tax_checks'][vat.RULE]['bundle']['fact_assessment']['amount']),Decimal('10000'))
+        self.assertEqual(self.client.get(url+'?format=html').content,frozen)
 
     def test_binding_does_not_bypass_identity_missing_values_or_duplicate_versions(self):
         task=self.task();rows=[r for r in task['processing']['records'] if r['material_type']=='account_balance']

@@ -376,6 +376,18 @@ def parse(raw, name, kind, file_id, mapper, *, ocr=False):
                 if records:
                     result["parts"].append({"name": sheet.title, **meta})
                     result["records"].extend(records)
+                elif kind == "invoice_detail":
+                    # Preserve a genuinely empty, recognizable invoice table as
+                    # source evidence. It is NOT an automatic zero declaration.
+                    anchors = [{label(field), *map(label, ALIASES[kind][field])}
+                               for field in ("invoice_no", "issue_date", "amount_excluding_tax")]
+                    empty = any(all(any(label(v) in names for v in row) for names in anchors)
+                                and not any(text(v).strip() for later in rows[index+1:] for v in later)
+                                for index, row in enumerate(rows))
+                    if empty:
+                        result["parts"].append({"name": sheet.title, **meta, "empty_table": True})
+                    elif any(text(value).strip() for row in rows for value in row):
+                        result["issues"].append(issue("unreadable_sheet", "发票工作簿含未识别的非空工作表，须核对，不能当作零或忽略其金额。", file_id, sheet.title))
         finally:
             book.close()
     elif extension == "pdf":
@@ -452,7 +464,8 @@ def parse(raw, name, kind, file_id, mapper, *, ocr=False):
             record["raw_record"] = [{"tag": t, "value": v, "path": p, "attributes": a} for t, v, p, a in leaves]
         result["records"].extend(found)
         result["parts"].append({"name": root.tag.split("}")[-1], **meta})
-    if not result["records"]:
+    recognized_empty = result["parts"] and all(part.get("empty_table") is True for part in result["parts"])
+    if not result["records"] and not recognized_empty:
         result["issues"].append(
             issue("unreadable_type", "未识别到此业务类型的有效记录，请核对槽位、表头或扫描质量。", file_id)
         )
@@ -720,7 +733,10 @@ def prepare(task, documents):
                 record["in_scope"] = bool(
                     record.get("issue_date") and task["start_date"] <= record["issue_date"] <= task["end_date"]
                 )
-                key = (direction, record.get("invoice_no"))
+                # Explicit detail line identity permits multi-line invoices. Without
+                # it, differing rows of the same invoice remain a conflict.
+                key = (record.get("seller_tax_no"), record.get("buyer_tax_no"), direction,
+                       record.get("invoice_no"), record.get("invoice_line_no") or "")
                 if key in seen:
                     old = seen[key]
                     same = all(

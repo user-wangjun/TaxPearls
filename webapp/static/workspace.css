@@ -1309,3 +1309,12 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 }
 /* Business evidence preview; source text stays intact and wraps within the panel. */
 .kg-evidence{margin:18px 0}.kg-evidence summary{cursor:pointer;font-weight:600}.kg-evidence-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}.kg-evidence fieldset{border:0;padding:0;margin:0}.kg-evidence-actions{display:flex;flex-wrap:wrap;gap:10px;margin-top:14px}.kg-evidence-section{border-top:1px solid var(--line,#dce4ee);padding:12px 0}.kg-clause{padding:10px 0}.kg-original{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}.kg-json{white-space:pre-wrap;overflow-wrap:anywhere;max-height:480px;overflow:auto;font-size:12px}.kg-evidence-result{min-width:0}@media(max-width:760px){.kg-evidence-grid{grid-template-columns:1fr}}
+#kgEvidenceFields{min-width:0}
+#kgVATReview{display:grid;gap:12px;min-width:0;max-width:100%;margin:18px 0;padding:16px;border:1px solid var(--line,#dce4ee);border-radius:12px}
+#kgVATReview[hidden]{display:none}
+#kgVATReview>label{display:grid;gap:6px;min-width:0;overflow-wrap:anywhere}
+#kgVATReview input,#kgVATReview select,#kgVATReview textarea{box-sizing:border-box;width:100%;min-width:0;max-width:100%;padding:9px;border:1px solid var(--line,#dce4ee);border-radius:7px;background:var(--surface,#fff);color:inherit;font:inherit}
+#kgVATReview textarea{min-height:78px;resize:vertical}
+#kgVATReview label:has(input[type=checkbox]){display:flex;align-items:center;gap:10px}
+#kgVATReview input[type=checkbox]{width:18px;flex:0 0 18px}
+#kgVATReview>button{justify-self:start;max-width:100%;white-space:normal}

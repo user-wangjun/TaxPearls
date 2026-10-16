@@ -29,6 +29,7 @@ ALIASES = {
         "declared_value": ["本期数", "本月数", "本期金额", "申报数值", "declared_value"],
     },
     "invoice_detail": {
+        "invoice_line_no": ["发票明细行号", "明细行号", "发票行号", "invoice_line_no"],
         "invoice_no": ["发票号码", "发票号", "数电票号码", "票号", "invoice_no", "InvoiceNumber"],
         "issue_date": ["开票日期", "发票开具日期", "开具日期", "issue_date", "IssueDate"],
         "seller_tax_no": ["销售方纳税人识别号", "销方税号", "销售方税号", "seller_tax_no", "SellerTaxID"],

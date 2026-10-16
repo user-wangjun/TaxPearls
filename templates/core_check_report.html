@@ -3,6 +3,7 @@
 <title>企业税务核查报告 · {{ report.task.company_name }} · V{{ report.version }}</title>
 <style>
 @page{size:A4}*{box-sizing:border-box}body{max-width:1050px;margin:32px auto;padding:0 20px;font:14px/1.8 "Microsoft YaHei",sans-serif;color:#25334a}h1{font-size:26px}h2{font-size:20px;border-bottom:2px solid #dce4ee;padding-bottom:8px}h3{font-size:17px}h1,h2,h3,summary{break-after:avoid}.muted{color:#64748b}.notice{padding:12px 16px;border-left:4px solid #b8860b;background:#fbf7eb}.numbers{display:flex;flex-wrap:wrap;gap:18px;padding:16px 0}.numbers strong{font-size:22px}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{text-align:left;padding:8px;border:1px solid #dce4ee;overflow-wrap:anywhere;vertical-align:top}th{background:#f2f5fa}tr{break-inside:avoid}p,li{overflow-wrap:anywhere}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 "Microsoft YaHei",sans-serif}.original{white-space:pre-wrap}details{border-top:1px solid #e3e8ef;padding:12px 0}summary{font-weight:bold;cursor:pointer}.check{margin:28px 0}.tag{color:#805b13;font-weight:bold}.foot{margin-top:32px;border-top:1px solid #ccc;font-size:12px}@media print{body{max-width:none;margin:0;padding:0;font-size:10.5pt}details>summary{display:none}details::details-content{content-visibility:visible!important}details>*{display:block!important}a{color:inherit;text-decoration:none}.check{margin-top:18px}.numbers{gap:12px}}
+@media print{.technical{display:none!important}.source-evidence{font-size:8.5pt;line-height:1.45}.source-evidence th,.source-evidence td{padding:4px 6px}}
 </style></head><body>
 <p class="muted">税海拾珠 · {{ report.report_no }} · 版本 {{ report.version }}</p>
 <h1>企业税务核查报告</h1>
@@ -15,6 +16,12 @@
 {% for issue in report.processing.issues or [] %}<p>资料缺口：{{ issue.message }}{% if issue.source_position %} · {{ issue.source_position }}{% endif %}</p>{% endfor %}
 {% for rid,slot in report.checks.items() %}{% set b=slot.bundle %}
 <section class="check"><h2>{{ loop.index }}. {{ b.check.topic }}</h2>
+{% if b.fact_assessment %}{% set f=b.fact_assessment %}{% set risk=slot.ai.risk_assessment if slot.ai and slot.ai.risk_assessment else b.risk_assessment %}
+<p><strong>事实核验：{{ {'FACT_CONFIRMED':'事实已核实','FACT_UNVERIFIED':'事实待核实','FACT_INCOMPLETE':'资料不足','NOT_COMPARABLE':'当前不可直接比较'}.get(f.status,f.status) }}</strong></p>
+{% if f.amount is not none %}<p>已核实差额：<strong>{{ f.amount }} {{ f.unit or '' }}</strong>（开票减申报，不是应补税额）</p>{% endif %}
+{% for t in f.calculation_trace %}<p>计算：{{ t.left_value }} − {{ t.right_value }} = {{ t.result }}。{{ t.definition }}</p>{% endfor %}
+<p><strong>风险评估：{{ {'RISK_CANDIDATE':'待核查风险线索','NEEDS_REVIEW':'风险仍待核查','NEEDS_MORE_DATA':'需补充资料','NO_RISK_SIGNAL':'本项未触发风险线索','NOT_APPLICABLE':'本项不适用'}.get(risk.status,risk.status) }}</strong><br>{{ risk.scope }}</p>
+{% if f.mapping_review %}<p class="muted">核对表单版本 {{ f.mapping_review.form_revision }} · 纳税人类型 {{ f.mapping_review.taxpayer_category }} · {{ f.mapping_review.reviewed_at }}<br>核对依据：{{ f.mapping_review.basis }}。仅用于本任务取数，不代表政策批准。</p>{% endif %}{% endif %}
 <p class="tag">{{ {'condition_met':'满足筛查条件，形成待核查线索','condition_not_met':'不满足本规则条件','excluded':'触发排除例外','needs_review':'条件尚不能确定'}.get(b.check.disposition,'待复核') }} · {{ {'ready':'本项目必要材料齐备','needs_review':'存在待复核事项','insufficient':'证据不足'}.get(b.bundle_status,b.bundle_status) }}</p>
 <p class="muted">规则 {{ rid }} / {{ b.check.version }} · {{ b.task.region_code or '地区未核实' }} · 取数输入版本 {{ slot.input_revision }} · {{ slot.analyzed_at }}<br>材料包指纹 {{ b.content_hash }}</p>
 {% if b.check.conversion %}<p class="notice">内部规则事实计算：{{ {"TRUE":"满足原筛查条件","FALSE":"未满足原筛查条件","UNKNOWN":"数据或口径不足"}.get(b.check.fact_evaluation,"待核对") }}。计算已转换，规则审核与政策适用性另行保留。</p>{% endif %}
@@ -22,12 +29,14 @@
 <details open><summary>条件、例外与缺口</summary><h3>程序条件与必要例外</h3>{% for c in b.conditions %}<p>{{ c.condition_id }} · {{ c.evaluation }} · {{ c.reason }}<br>{{ c.left_metric_id }} {{ c.operator }} {{ c.right_metric_id or c.right_literal or '' }} {{ c.unit or '' }} · 依据 {{ c.source_clause_id or '来源待核实' }}</p>{% endfor %}
 {% for e in b.exceptions %}<p>例外：{{ e.name }} · {{ e.trigger_state }} · {{ e.effect }}<br>{{ e.description }} · {{ e.source_clause_ids|join('、') }}</p>{% endfor %}
 {% for g in b.gaps|report_gaps %}<p>待补充/复核：{{ g.message }}{% if g.count>1 %}（涉及 {{ g.count }} 项；逐项定位见同版本 JSON）{% endif %}</p>{% else %}<p>本项目未识别到必要材料缺口。</p>{% endfor %}
-<p class="muted">检索过滤 {{ b.retrieval_trace.excluded|length }} 条；完整过程和扩展线索保留在同版本报告数据 JSON 中。</p>
+<details class="technical"><summary>检索过滤记录（{{ b.retrieval_trace.excluded|length }}，完整轨迹亦见 JSON）</summary>{% for item in b.retrieval_trace.excluded %}<p class="muted">过滤 {{ item.clause_id }}：{{ item.reasons|join('；') }}</p>{% endfor %}</details>
 {% for e in b.relationships %}<p class="muted">关联 {{ e.relationship_id }}：{{ e.from_id }} → {{ e.relation_type }} → {{ e.to_id }} · {{ e.effective_from or '日期待查' }} · {{ e.review_status }}</p>{% endfor %}</details>
 <details open><summary>政策原文与依据</summary>{% for p in slot|report_evidence %}<h3>{{ p.title }} · {{ p.clause_id }}</h3><p class="muted">{{ p.document_no or '' }} · {{ p.issuer }} · 政策版本 {{ p.policy_version }} / 条款版本 {{ p.clause_version }}<br>{{ p.effective_from or '日期待查' }} 至 {{ p.effective_to or '日期待查' }} · {{ p.region_code }} · {{ {'applicable':'本次适用区间已核对','context_only':'历史原文，仅供理解修订','needs_review':'待核实，不能作为确定适用依据'}.get(p.applicability,p.applicability) }}</p><p class="original">{{ p.text }}</p><p>定位：{{ p.source_location|source_location }}<br>来源：{{ p.source_url }}<br>原件 SHA-256：{{ p.file_sha256 }}</p>{% endfor %}</details>
 <h3>AI 辅助说明</h3>{% if slot.ai and slot.ai.validated %}{% for c in slot.ai.assessments %}<p>{{ c.text }}</p><p class="muted">条款 {{ c.clause_ids|join('、') }} · 企业来源 {{ c.source_ids|join('、') or '缺失' }}{% for a in c.amounts %}<br>金额引用 {{ a.metric_id }}：{{ a.value }}{% endfor %}<br>需补充：{{ c.required_materials|join('、') or '请复核原始材料' }}</p>{% endfor %}{% elif slot.ai %}<p>AI 输出未通过校验或尚需复核：{{ slot.ai.reason or slot.ai.status }}。未将无效分析作为结论。</p>{% else %}<p>本次未调用 AI；以上为本地程序与政策证据核对结果。</p>{% endif %}
+{% if slot.ai and slot.ai.usage %}<p class="muted">AI 用量：{% for u in slot.ai.usage %}{{ u.model }}，输入 {{ u.usage.prompt_tokens|default('未返回') }} / 输出 {{ u.usage.completion_tokens|default('未返回') }} Token，{{ u.elapsed_seconds }} 秒{% if not loop.last %}；{% endif %}{% endfor %}。未换算成账单金额。</p>{% endif %}
 </section>{% endfor %}
-<h2>取数定位与版本溯源</h2>{% for s in report.sources %}<p>记录 {{ s.record_id }} · 文件 {{ s.file_id }} · {{ s.source_position }}</p><table><thead><tr><th>原始字段</th><th>原表位置</th><th>原始值</th></tr></thead><tbody>{% for field,source in s.field_sources.items() %}<tr><td>{{ source.source_label or field }}</td><td>{{ source.position }}</td><td>{{ source.raw_value }}</td></tr>{% endfor %}</tbody></table>{% endfor %}
-<p class="muted">内容指纹 {{ report.content_hash }}</p>
+<div class="source-evidence"><h2>取数定位与版本溯源</h2>{% for s in report.sources %}<p>记录 {{ s.record_id }} · 文件 {{ s.file_id }} · {{ s.source_position }}</p><table><thead><tr><th>原始字段</th><th>原表位置</th><th>原始值</th></tr></thead><tbody>{% for field,source in s.field_sources.items() %}<tr><td>{{ source.source_label or field }}</td><td>{{ source.position }}</td><td>{{ source.raw_value }}</td></tr>{% endfor %}</tbody></table>{% endfor %}
+{% for f in report.source_files or [] %}<p>证明原件：{{ f.name }} · {{ f.purpose }}<br>文件 {{ f.file_id }} · SHA-256 {{ f.sha256 }}</p>{% endfor %}
+</div><p class="muted">内容指纹 {{ report.content_hash }}</p>
 <p class="foot">本报告保留生成时的资料、规则、政策和 AI 辅助说明。后续补传不会改写历史版本，最新核查须另行生成新版本。本报告不构成税务鉴证或法律意见，不替代税务机关认定。</p>
 </body></html>

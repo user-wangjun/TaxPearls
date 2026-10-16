@@ -1,0 +1,4 @@
+﻿scenario_id,tenant_id,company_id,period_start,period_end,account_code,account_name,opening_balance,current_debit,current_credit,closing_balance,source_id
+S01,T-A,C-A,2026-03-01,2026-03-31,6001,主营业务收入,0.00,0.00,120000.00,0.00,DEMO-SRC-S01-ACC
+S02,T-A,C-A,2026-03-01,2026-03-31,6001,主营业务收入,0.00,0.00,98000.00,0.00,DEMO-SRC-S02-ACC
+S12,T-A,C-A,2026-03-01,2026-03-31,6001,主营业务收入,0.00,0.00,120000.00,0.00,DEMO-SRC-S12-ACC

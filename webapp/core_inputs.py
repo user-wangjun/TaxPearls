@@ -39,6 +39,8 @@ def latest(view):
 
 def project(view):
     value = deepcopy(latest(view))
+    from src import vat_reconciliation as vat
+    value["vat_review_current"] = bool(vat.review(value))
     return {
         **value,
         "id": view["id"],
