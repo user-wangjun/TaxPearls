@@ -10,7 +10,7 @@ import json
 import tempfile
 import unittest
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from argon2 import PasswordHasher
@@ -19,12 +19,12 @@ from fastapi.testclient import TestClient
 
 from src import settings  # noqa: F401 - 先加载 .env，Store 需要 FIELD_KEY
 from webapp.storage import Store
-from webapp.training_portal import register, today_cst
+from webapp.training_portal import CST, register, today_cst
 
 _passwords = PasswordHasher()
 STUDENT_COOKIE = "test_plan_cookie"
-NOW = "2026-10-10T23:00:00"
-STALE = "2026-09-28T10:00:00"  # 距 NOW 超过 7 天
+# 复习判断使用真实当前时间，测试数据必须相对当前时刻生成，避免硬编码日期过期。
+NOW = datetime.now(CST).isoformat(timespec="seconds")
 
 
 class StudyPlanTests(unittest.TestCase):
