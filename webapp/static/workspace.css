@@ -1285,6 +1285,53 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 #coreInputs .material-company { margin:12px 0; }
 #coreInputs .material-company input:not([type=checkbox]), #coreInputs .material-company select { width:100%; min-width:0; box-sizing:border-box; }
 #coreInputs label { display:block; margin:8px 0; }
+#coreInputs .core-actions { display:flex; flex-wrap:wrap; gap:10px; margin:16px 0; }
+#coreInputs .core-actions .btn { margin:0; }
+#coreInputs .field { display:flex; flex-direction:column; gap:8px; min-width:0; font-size:13px; color:var(--ink-2); }
+#coreInputs .field input, #coreInputs .field select { width:100%; min-width:0; box-sizing:border-box; padding:10px 12px; font:inherit; font-size:14px; }
+#coreInputs .core-check { display:flex; align-items:flex-start; gap:10px; line-height:1.7; font-size:13px; color:var(--ink-2); margin:14px 0; }
+#coreInputs .core-check input[type=checkbox] { flex:0 0 18px; width:18px; height:18px; min-height:0; margin:2px 0 0; padding:0; accent-color:var(--navy); }
+#coreInputs .core-candidate-count { font-weight:600; margin-top:22px; }
+#coreInputs .core-document { border:1px solid var(--line); border-radius:12px; min-width:0; }
+#coreInputs .core-document-heading { padding:16px; cursor:pointer; overflow-wrap:anywhere; }
+#coreInputs .core-file-name { font-size:15px; font-weight:600; }
+#coreInputs .core-file-state { display:block; margin:6px 0 0 17px; font-size:12px; color:var(--ink-2); }
+#coreInputs .core-document-body { min-width:0; padding:0 16px 16px; border-top:1px solid var(--line); }
+#coreInputs .core-document-body > a { display:inline-flex; align-items:center; margin:14px 0 0; text-decoration:none; font-size:13px; }
+#coreInputs .core-metadata, #coreInputs .core-policy { padding:12px; border:1px solid var(--line); border-radius:10px; }
+#coreInputs summary { cursor:pointer; line-height:1.6; }
+#coreInputs .core-checksum { font-size:11px; color:var(--ink-2); overflow-wrap:anywhere; }
+#coreInputs .core-table-scroll { overflow-x:auto; max-width:100%; margin:12px 0; }
+#coreInputs .core-record-table { width:100%; min-width:880px; border-collapse:collapse; table-layout:auto; font-size:13px; }
+#coreInputs .core-record-table th, #coreInputs .core-record-table td { padding:12px 10px; border-bottom:1px solid var(--line); vertical-align:top; text-align:left; }
+#coreInputs .core-record-table th { color:var(--ink-2); font-weight:600; white-space:nowrap; }
+#coreInputs .core-record-table td:first-child { min-width:170px; max-width:240px; overflow-wrap:anywhere; }
+#coreInputs .core-record-table .core-number { text-align:center; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; min-width:90px; }
+#coreInputs .core-record-table td .field { margin:0; }
+#coreInputs .core-record-table select { min-width:92px; }
+#coreInputs .core-record-source { margin:6px 0 0; font-size:11px; }
+#coreInputs .core-record-source p { line-height:1.6; }
+#coreInputs .core-pagination { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; margin:12px 0; font-size:12px; }
+#coreInputs .core-pagination > span { margin-right:auto; }
+#coreInputs .core-pagination button { margin:0; }
+#coreInputs button:disabled { opacity:.5; cursor:not-allowed; }
+#coreInputs input[type=file] { box-sizing:border-box; padding:6px; border:1px solid var(--line); border-radius:12px; color:var(--ink-2); font:inherit; font-size:13px; }
+#coreInputs input[type=file]::file-selector-button { border:0; border-radius:8px; padding:8px 12px; margin-right:8px; background:var(--navy); color:white; font:inherit; cursor:pointer; }
+@media(max-width:700px) {
+  #coreInputs fieldset { padding:12px; }
+  #coreInputs .core-document-heading { padding:12px; }
+  #coreInputs .core-document-body { padding:0 12px 12px; }
+  #coreInputs .core-record-table { min-width:0; display:block; }
+  #coreInputs .core-record-table thead { display:none; }
+  #coreInputs .core-record-table tbody { display:grid; gap:12px; }
+  #coreInputs .core-record-table tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); border:1px solid var(--line); border-radius:10px; padding:10px; gap:12px; }
+  #coreInputs .core-record-table td { display:block; min-width:0; max-width:none; padding:0; border:0; text-align:left; overflow-wrap:anywhere; }
+  #coreInputs .core-record-table td:first-child { grid-column:1/-1; min-width:0; max-width:none; }
+  #coreInputs .core-record-table td[data-label="价税合计"] { grid-column:1/-1; }
+  #coreInputs .core-record-table td::before { content:attr(data-label); display:block; color:var(--ink-2); font-size:11px; margin-bottom:5px; }
+  #coreInputs .core-record-table .core-number { min-width:0; text-align:left; }
+  #coreInputs .core-record-table select { min-width:0; padding:9px 6px; }
+}
 #coreInputs .core-task-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px 32px; }
 #coreInputs .core-task-group { min-width:0; }
 #coreInputs .core-task-group h3 { margin:4px 0 16px; font-size:14px; font-weight:600; }
