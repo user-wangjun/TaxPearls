@@ -617,6 +617,7 @@
       <details class="material-card kg-evidence" id="kgEvidencePanel">
         <summary>政策检索与检查材料包</summary>
         <p class="muted">选择检查项目，查看命中的政策、过滤原因、必要例外和数据缺口。选择企业任务后，从已保存资料取数并保留本次检查版本。</p>
+        <div id="kgKnowledgeStatus" aria-live="polite"></div>
         <form id="kgEvidenceForm"><fieldset id="kgEvidenceFields"><div class="kg-evidence-grid">
           <div class="field"><label for="kgTask">企业检查任务</label><select id="kgTask"><option value="">仅检索政策，不读取企业资料</option></select></div>
           <div class="field"><label for="kgRule">检查项目</label><select id="kgRule" required><option value="">等待载入检查项目</option></select></div>
@@ -952,9 +953,9 @@
 <script src="/console.js?v=20261015-risk-evidence-layout-1"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
-<script src="/graph.js?v=graph-reset-regions-1"></script>
+<script src="/graph.js?v=20261017-11967901ecc2"></script>
 <script src="/rule-bindings.js?v=20261016"></script>
-<script src="/knowledge-retrieval.js?v=20261017-4b5b586b8eb4"></script>
+<script src="/knowledge-retrieval.js?v=20261017-90decf1290ba"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>
 </body>

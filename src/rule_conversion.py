@@ -3,15 +3,38 @@
 Conversion proves the computation, not legal validity or policy applicability.
 Only the existing, validated arithmetic registry is executable.  No text eval.
 """
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from copy import deepcopy
 from decimal import Decimal, localcontext
 import hashlib
 import json
 
 from src import engine
-from src.models import Company, Dataset, Metric
+from src.models import Company, Dataset, Metric, Rule
 
 VERSION = 'yaml-screen-v2'
+
+
+def effective_rules(store, directory):
+    """One current rule definition for enterprise graphs and teaching content."""
+    overrides, histories = store.rule_overrides(), store.rule_versions()
+    result = []
+    def version(value):
+        parts = tuple(int(x) for x in value.split('.'))
+        return parts + (0,) * (3 - len(parts))
+    for base in engine.load_rules(directory):
+        override = overrides.get(base.id)
+        if override and version(override['version']) > version(base.version):
+            saved = next((v for v in histories.get(base.id, []) if v['version'] == override['version']), None)
+            frozen = Rule(**saved['rule']) if saved and saved.get('rule') else base
+            current = replace(frozen, version=override['version'], logic=deepcopy(override['logic']),
+                              threshold_basis=override['threshold_basis'], effective_from=override['effective_from'],
+                              effective_to=override['effective_to'])
+            engine.validate_rule_update(current)
+            result.append(current)
+        else:
+            result.append(base)
+    return result
 
 
 def canonical(value):
