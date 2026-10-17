@@ -804,6 +804,11 @@ def training_portal_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "training-portal.js", media_type="text/javascript")
 
 
+@app.get("/training-dark.css")
+def training_dark_theme() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-dark.css", media_type="text/css")
+
+
 @app.get("/classroom.js")
 def classroom_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "classroom.js", media_type="text/javascript")
