@@ -110,7 +110,7 @@ class CodeJudgePipelineTests(unittest.TestCase):
         with self.store.connect() as db:
             sid = db.execute("SELECT id FROM code_submission ORDER BY submitted_at DESC"
                              ).fetchone()["id"]
-        task_id = code_judge_queue.enqueue(self.store, sid)
+        code_judge_queue.enqueue(self.store, sid)
         code_judge_queue.enqueue(self.store, sid)  # 幂等
         items = code_judge_queue.run_pending(self.store)
         self.assertEqual(len(items), 1)

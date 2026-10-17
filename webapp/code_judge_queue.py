@@ -18,7 +18,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import Any, Callable
 
-from src.settings import flag, integer
+from src.settings import flag
 from webapp.storage import _now
 
 DEFAULT_MAX_ATTEMPTS = 3
