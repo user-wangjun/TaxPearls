@@ -490,6 +490,16 @@ body.workspace-ready #appFooter { background: transparent; color: var(--ink-2); 
 #appMain #uploadScope summary::before { color: #68879f; }
 #appMain #uploadScope summary:hover { background: #e8eef3; }
 #appMain #orgSettingsAdmin > .row { margin-top: 18px; }
+#appMain #inviteAdmin .invite-issue-form { display:grid; grid-template-columns:minmax(150px,.7fr) minmax(220px,1.6fr) minmax(200px,1fr) auto; align-items:end; }
+#appMain #inviteAdmin .invite-issue-form .field { min-width:0; margin:0; }
+#appMain #inviteAdmin .invite-issue-form > button { min-height:48px; }
+#appMain #inviteReveal[hidden] { display:none; }
+@media (max-width:1100px) {
+  #appMain #inviteAdmin .invite-issue-form { grid-template-columns:1fr 1fr; }
+}
+@media (max-width:600px) {
+  #appMain #inviteAdmin .invite-issue-form { grid-template-columns:minmax(0,1fr); }
+}
 #appMain #orgSettingsAdmin .org-logo-editor > div { flex: 1; min-width: 0; }
 
 /* Keep workspace cards comfortable to scan on wide displays. */
@@ -1338,6 +1348,26 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 #coreInputs .core-task-group .field { display:flex; flex-direction:column; gap:8px; margin:0 0 16px; font-size:12px; color:var(--ink-2); }
 #coreInputs .core-task-group .field:last-child { margin-bottom:0; }
 #coreInputs .core-task-group input { width:100%; min-width:0; box-sizing:border-box; padding:10px 12px; font:inherit; font-size:14px; }
+#coreInputs .core-range-field { position:relative; }
+#coreInputs .core-range-trigger { display:flex; align-items:center; justify-content:space-between; gap:12px; width:100%; min-height:48px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; background:var(--control-field-face,var(--card,#fff)); color:var(--ink); font:inherit; font-size:14px; text-align:left; cursor:pointer; }
+#coreInputs .core-range-trigger svg { flex-shrink:0; }
+#coreInputs .core-range-trigger[aria-readonly=true] { cursor:default; }
+#coreInputs .core-range-trigger[aria-invalid=true] { border-color:var(--red,#c53b39); }
+#coreInputs .core-range-calendar { position:absolute; top:100%; right:0; z-index:60; width:100%; max-width:360px; box-sizing:border-box; padding:12px; border:1px solid var(--line); border-radius:12px; background:var(--card,#fff); color:var(--ink); box-shadow:0 8px 28px #18304426; }
+#coreInputs .core-range-calendar[hidden] { display:none; }
+#coreInputs .core-range-calendar p { margin:0 0 10px; font-size:12px; }
+#coreInputs .core-calendar-toolbar { display:flex; align-items:center; gap:6px; margin-bottom:10px; }
+#coreInputs .core-calendar-toolbar input { flex:1; width:0; padding:6px; min-height:36px; }
+#coreInputs .core-range-calendar button { border:0; border-radius:6px; background:transparent; color:inherit; font:inherit; font-size:13px; cursor:pointer; }
+#coreInputs .core-calendar-toolbar button { flex:0 0 30px; min-height:36px; font-size:22px; }
+#coreInputs .core-calendar-week, #coreInputs .core-calendar-days { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:2px; text-align:center; }
+#coreInputs .core-calendar-week { margin-bottom:4px; color:var(--ink-2); font-size:12px; }
+#coreInputs .core-calendar-days button { min-height:32px; padding:4px 0; }
+#coreInputs .core-range-calendar button:hover { background:var(--line,#e4eaf0); }
+#coreInputs .core-calendar-days .in-range { background:#527b9620; border-radius:0; }
+#coreInputs .core-calendar-days .selected, #coreInputs .core-calendar-days .selected:hover { background:var(--blue,#34566d); color:#fff; }
+#coreInputs .core-calendar-actions { display:flex; justify-content:space-between; margin-top:10px; padding-top:8px; border-top:1px solid var(--line); }
+#coreInputs .core-calendar-actions button { padding:6px 10px; }
 #coreInputs .core-task-footer { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; border-top:1px solid var(--line); padding-top:16px; margin-top:24px; }
 #coreInputs .core-task-help { flex:1; min-width:0; font-size:12px; line-height:1.7; }
 #coreInputs .core-task-help p { margin:0; }
