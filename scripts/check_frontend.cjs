@@ -282,7 +282,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
     api:url=>new Promise((resolve,reject)=>graphCalls.push({url,resolve,reject})),
     filterGraph:()=>graphDraws.push(vm.runInContext('graphData.audit_id',graphCtx)),focusGraph(){}};
   vm.createContext(graphCtx);
-  vm.runInContext('let graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
+  vm.runInContext('let graphMatchedCount=0,graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
     graph.slice(graph.indexOf('function graphCurrent('),graph.indexOf('$("graphAudit").addEventListener'))+
     graph.slice(graph.indexOf('function updateGraphRegions('),graph.indexOf('for(const id of ["knowledgeSearch"')),graphCtx);
   const listOld=graphCtx.loadKnowledge(),oldList=graphCalls.shift();
@@ -311,6 +311,12 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   graphCtx.$('knowledgeCategory').value='';graphCtx.$('graphStatus').value='';graphCtx.$('graphRuleLevel').value='national';
   graphCtx.filterGraph();assert.equal(vm.runInContext('graphVisible.has("national")&&graphVisible.has("metric")&&!graphVisible.has("local")',graphCtx),true);
   assert.equal(vm.runInContext('neighbors(graphVisible).has("local")',graphCtx),false);
+  // The full corpus stays searchable while the SVG view has a bounded size.
+  for(const id of ['knowledgeSearch','knowledgeCategory','graphStatus','graphRuleLevel','graphRegion'])graphCtx.$(id).value='';
+  vm.runInContext('graphData={nodes:Array.from({length:1000},(_,i)=>({id:"policy-"+i,kind:"clause",label:"条款"+i})),edges:[]};graphSelected=null;',graphCtx);
+  graphCtx.filterGraph();assert.equal(vm.runInContext('graphVisible.size',graphCtx),240);
+  graphCtx.$('knowledgeSearch').value='policy-999';graphCtx.filterGraph();
+  assert.equal(vm.runInContext('graphVisible.has("policy-999")',graphCtx),true);
   vm.runInContext(graph.slice(graph.indexOf('function layoutGraph('),graph.indexOf('function drawGraph(')),graphCtx);
   vm.runInContext('graphData={nodes:[],edges:[]};graphFocused=true;graphVisible=new Set();',graphCtx);
   graphCtx.innerWidth=390;graphCtx.layoutGraph(); // empty focused mobile view must not dereference undefined

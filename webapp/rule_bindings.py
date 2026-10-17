@@ -48,9 +48,28 @@ def register(app,get_store,get_user,allow,get_rules):
         import hashlib
         path=Path(__file__).resolve().parents[1]/'docs/法规原文/来源清单.json'
         with get_store().connect() as db:
-            counts={table:db.execute(f'SELECT count(*) FROM {table}').fetchone()[0] for table in ['Policy','Clause']}
+            from webapp.policy_graph import IDS
+            counts={table:db.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] for table in IDS}
+            migration={'policy_rules':db.execute("SELECT count(*) FROM TaxRule WHERE rule_id LIKE 'migration:%' AND rule_type='policy_rule'").fetchone()[0],
+                       'guangdong_topics':db.execute("SELECT count(*) FROM TaxRule WHERE rule_id LIKE 'migration:%' AND rule_code IN ('GD-DEED-BASE','GD-PROPERTY-BASE')").fetchone()[0]}
+            rules = get_rules()
+            from src.rule_conversion import compile_rule
+            current_ids = [compile_rule(rule)['rule_id'] for rule in rules]
+            converted = sum(bool(db.execute('SELECT 1 FROM TaxRule WHERE rule_id=?', (rid,)).fetchone()) for rid in current_ids)
+            teaching_count = db.execute('SELECT count(*) FROM knowledge_point WHERE active=1').fetchone()[0]
+            from dataclasses import asdict
+            import json
+            snapshot = json.dumps([asdict(r) for r in sorted(rules, key=lambda r:r.id)],
+                                  ensure_ascii=False, sort_keys=True, separators=(',', ':'), default=str)
+            stale_versions = db.execute("SELECT count(*) FROM training_content_version WHERE status='active' "
+                                        "AND (rules_snapshot_json IS NULL OR rules_snapshot_json<>?)", (snapshot,)).fetchone()[0]
+            context_count = sum(bool(db.execute("SELECT 1 FROM Relationship WHERE to_type='TaxRule' AND to_id=? "
+                                               "AND relation_type='PROVIDES_CONTEXT'", (rid,)).fetchone()) for rid in current_ids)
         return {'manifest_available':path.exists(),'manifest_sha256':hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None,
-                'counts':counts,'approval':'原文整理不等于政策审核；候选只能作为待核实线索。'}
+                'counts':counts, 'knowledge_migration':migration, 'current_rules':len(rules), 'converted_current_rules':converted,
+                'teaching_knowledge_points':teaching_count,
+                'current_rules_with_sources':context_count, 'outdated_teaching_versions':stale_versions,
+                'approval':'原文整理不等于政策审核；候选只能作为待核实线索。'}
 
     @app.post('/api/knowledge/corpus/import')
     def import_corpus(body:CorpusBody,session:str|None=Cookie(default=None,alias='taxpearls_session')):
@@ -58,8 +77,7 @@ def register(app,get_store,get_user,allow,get_rules):
         allow(user,'platform_admin')
         from pathlib import Path
         import hashlib
-        from src import policy_corpus
-        from webapp import policy_graph
+        from src import policy_migration
         root=Path(__file__).resolve().parents[1]
         path=root/'docs/法规原文/来源清单.json'
         if not path.exists():
@@ -67,19 +85,19 @@ def register(app,get_store,get_user,allow,get_rules):
         if hashlib.sha256(path.read_bytes()).hexdigest()!=body.manifest_sha256:
             raise HTTPException(409,'政策来源清单已变化，请重新查看后导入。')
         try:
-            plan=policy_corpus.prepare(path)
+            plan=policy_migration.prepare(path)
             store=get_store()
             from webapp.access import current_actor
             with store.connect() as db:
                 db.execute('BEGIN IMMEDIATE')
                 current_actor(db,user,{'platform_admin'})
-                from src.rule_conversion import compile_rule
                 rules=get_rules()
-                policy_graph.sync_rules(db,rules)
-                ids={rule.id:compile_rule(rule)['rule_id'] for rule in rules}
                 store._log(db,user,'import_candidate_corpus','policy_corpus',body.manifest_sha256)
-                counts=policy_corpus.import_plan(db,plan,root/'instance/policy-originals',rule_ids=ids)
-            return {'counts':counts,'formal_approvals':0,'external_ai_calls':0}
+                from webapp.knowledge_sync import synchronize
+                if plan['manifest_sha256'] != body.manifest_sha256:
+                    raise HTTPException(409,'政策来源清单已变化，请重新查看后导入。')
+                result=synchronize(db,rules,plan,store.path.parent/'policy-originals')
+            return {'counts':result.pop('corpus'),'knowledge_migration':plan['knowledge_migration'],**result}
         except ValueError as exc:
             raise HTTPException(422,str(exc)) from None
 
