@@ -7,18 +7,20 @@ class Node {
   replaceChildren(...nodes){this.children=nodes;}
   setAttribute(key,value){this[key]=value;}
   addEventListener(key,fn){this.listeners[key]=fn;}
+  click(){this.clicked=true;}
   querySelectorAll(selector){const tags=selector.split(",");return all(this).filter(n=>tags.includes(n.tag));}
 }
 function all(root){return [root,...root.children.flatMap(all)];}
 (async()=>{
   const ids=new Map(),$=id=>{if(!ids.has(id))ids.set(id,new Node("div"));return ids.get(id);};
-  const errors=[],calls=[],continued=[];let actor={id:"one",role:"org_admin"},fail=false,failScope=false,delay=null;
+  const errors=[],calls=[],continued=[],downloads=[];let actor={id:"one",role:"org_admin"},fail=false,failScope=false,delay=null;
+  const exported={schema_version:"taxpearls.material-data.v1",task:{},records:[{id:"clean-record",quality:{requires_source_review:true}}],sources:[]};
   const sample={id:"task",revision:1,task:{company_name:"企业",tax_no:"91310000123456789A",start_date:"2026-01-01",end_date:"2026-01-31",applicable_forms:null},
     processing:{status:"needs_completion",issues:[],notices:[],records:[],boundary:"规则核验前"},documents:[],files:[{id:"excluded-file",deleted_at:null}],source_options:{"excluded-file":{excluded:true,original_name:"进项.xlsx"}},versions:[]};
   const api=async(url,options)=>{calls.push({url,options});if(delay)return await delay;
     if(failScope&&url.endsWith("/scope"))throw new Error("测试范围保存失败");
-    if(fail&&url.endsWith("/prepare"))throw new Error("测试保存失败");return url==="/api/clients"?[{id:"existing",name:"历史企业",taxpayer_id:"91310000123456789A"}]:url==="/api/enterprise/input-tasks"&&!options?[]:structuredClone(sample);};
-  const context={document:{createElement:tag=>new Node(tag)},URL,Blob,setTimeout,console,FormData,};vm.createContext(context);vm.runInContext(fs.readFileSync("webapp/static/core-inputs.js","utf8"),context);
+    if(fail&&url.endsWith("/prepare"))throw new Error("测试保存失败");if(url.includes("/data?"))return structuredClone(exported);return url==="/api/clients"?[{id:"existing",name:"历史企业",taxpayer_id:"91310000123456789A"}]:url==="/api/enterprise/input-tasks"&&!options?[]:structuredClone(sample);};
+  const context={document:{createElement:tag=>new Node(tag)},URL:{createObjectURL(blob){downloads.push(blob);return "blob:export";},revokeObjectURL(){}},Blob,setTimeout,console,FormData,};vm.createContext(context);vm.runInContext(fs.readFileSync("webapp/static/core-inputs.js","utf8"),context);
   const controller=context.createCoreInputs({api,el:(tag,cls,text)=>{const n=new Node(tag);n.className=cls||"";n.textContent=text||"";return n;},$,user:()=>actor,showError:msg=>errors.push(msg),continueCheck:id=>continued.push(id)});
   await controller.refresh();assert.equal($("coreClient").children.length,2);
   $("coreClient").value="existing";$("coreClient").onchange();assert.equal($("coreCompanyName").value,"历史企业");assert.equal($("coreTaxNo").value,"91310000123456789A");
@@ -27,6 +29,9 @@ function all(root){return [root,...root.children.flatMap(all)];}
   await $("coreCreateTask").onclick();
   const find=text=>all($("coreTaskResult")).find(n=>n.textContent===text);
   const field=label=>all($("coreTaskResult")).find(n=>n["aria-label"]===label);
+  await find("下载标准数据 JSON").onclick();
+  assert.equal(calls.at(-1).url,"/api/enterprise/input-tasks/task/data?expected_revision=1");
+  assert.deepEqual(JSON.parse(await downloads.at(-1).text()),exported);
   for(const [kind,label] of [["account_balance","科目余额表"],["vat_declaration","增值税申报表"],["invoice_detail","发票明细"]]){
     const pick=field(label+"上传");pick.files=[new Blob(["synthetic material"])];await pick.onchange();
     const upload=calls.findLast(c=>c.url.endsWith("/files")).options.body;
@@ -35,6 +40,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
   }
   const review=find("资料口径核对");const editor=all($("coreTaskResult")).find(n=>n.tag==="fieldset");assert.ok(review);
   const forms=field("本期适用附表名称（以分号分隔）");forms.value="附表一";editor.listeners.input();
+  const downloadsBefore=downloads.length;await find("下载标准数据 JSON").onclick();assert.equal(downloads.length,downloadsBefore);assert.match(errors.at(-1),/先保存/);
   const before=calls.length;await find("重新读取任务").onclick();assert.equal(calls.length,before);assert.match(errors.at(-1),/未保存/);assert.equal(forms.value,"附表一");
   find("开始检查").onclick();assert.equal(continued.length,0);assert.match(errors.at(-1),/先保存/);
   field("已核实本期适用附表清单（如无适用附表，也须明确确认）").checked=true;
@@ -79,7 +85,10 @@ function all(root){return [root,...root.children.flatMap(all)];}
   await find("重新读取任务").onclick();
   for(const text of ["销项","库存现金","期初余额","1,234.5600","0","待识别","-0.01","销售额","1,000.00","标准记录与字段来源（1）"])assert.ok(find(text),text);
   assert.ok(find("票面未证明红蓝字或作废状态，请逐票核实。（2 处）"));
-  let resolve;delay=new Promise(r=>resolve=r);const pending=find("重新读取任务").onclick();actor={id:"two",role:"org_admin"};controller.reset();resolve(structuredClone(sample));await pending;
+  let resolve;delay=new Promise(r=>resolve=r);const exportPending=find("下载标准数据 JSON").onclick();actor={id:"two",role:"org_admin"};controller.reset();resolve(structuredClone(exported));await exportPending;
+  assert.equal(downloads.length,downloadsBefore,"a changed session must not download previous enterprise data");
+  delay=null;await controller.openTask("task");
+  delay=new Promise(r=>resolve=r);const pending=find("重新读取任务").onclick();actor={id:"three",role:"org_admin"};controller.reset();resolve(structuredClone(sample));await pending;
   assert.equal($("coreTaskResult").children.length,0);assert.equal($("coreCompanyName").value,"");
   console.log("Core frontend: scope validation, upload dispatch, unsaved/session guards, candidate/standard record distinction, three material tables, exact decimal display, paginated invoice edits and full save passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});

@@ -205,6 +205,16 @@ def register(app, get_store, get_user, allow, static_dir):
     def detail(task_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         return read(actor(session), task_id)
 
+    @app.get("/api/enterprise/input-tasks/{task_id}/data")
+    def data(task_id: str, expected_revision: int,
+             session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        from src import material_export
+
+        view = batches.read(get_store(), actor(session), task_id)
+        if view["revision"] != expected_revision:
+            raise AccessDenied("任务版本已变化，请重新读取后下载。", 409)
+        return material_export.build(latest(view))
+
     def process(user, task_id, revision, *, ai=False):
         if not PROCESS_SLOTS.acquire(blocking=False):
             raise AccessDenied("资料整理繁忙，原件已保存，请稍后重新整理。", 429)
