@@ -282,16 +282,30 @@ def register(app, get_store, get_user, allow, static_dir):
                         {**promotion, "source_file_id": meta["id"]},
                     )
             override = options.get("confirmed_metadata", {})
+            needs_review = doc.get("ocr_candidate") or doc.get("pdf_candidate")
+            doc["issues"] = [i for i in doc["issues"] if i["code"] != "invoice_status_missing"]
             for record in doc["records"]:
                 record["source_metadata"] = {
                     k: record.get(k) for k in ["unit", "form_type", "period_start", "period_end", "direction"]
                 }
-                if doc.get("ocr_candidate"):
+                if needs_review:
                     record["requires_source_review"] = not options.get("source_reviewed", False)
-            if doc.get("ocr_candidate") and options.get("source_reviewed"):
-                doc["issues"] = [i for i in doc["issues"] if i["code"] != "ocr_review"]
+                if doc["material_type"] == "invoice_detail" and options["original_name"].lower().endswith(".pdf"):
+                    original = record.setdefault("parsed_invoice_statuses", {k: record.get(k) for k in ["red_letter_status", "void_status"]})
+                    record.update(original)
+                    confirmed = options.get("invoice_statuses", {}).get(record["id"], {})
+                    record["confirmed_invoice_statuses"] = confirmed
+                    for key, value in confirmed.items():
+                        if value:
+                            record[key] = value
+                    for key in ["red_letter_status", "void_status"]:
+                        record["value_states"][key] = "present" if record.get(key) else "missing"
+                    if not all(record.get(k) for k in ["red_letter_status", "void_status"]):
+                        doc["issues"].append(core_materials.issue("invoice_status_missing", "票面未证明红蓝字或作废状态，请逐票核实。", meta["id"], record["source_position"]))
+            if needs_review and options.get("source_reviewed"):
+                doc["issues"] = [i for i in doc["issues"] if i["code"] not in {"ocr_review", "pdf_source_review"}]
                 doc["source_reviewed"] = True
-            elif doc.get("ocr_candidate") and not any(i["code"] == "ocr_review" for i in doc["issues"]):
+            elif needs_review and not any(i["code"] in {"ocr_review", "pdf_source_review"} for i in doc["issues"]):
                 doc["issues"].append(core_materials.issue("ocr_review", "OCR候选仍须对照原页核对。", meta["id"]))
                 doc["source_reviewed"] = False
             if override:
@@ -381,8 +395,8 @@ def register(app, get_store, get_user, allow, static_dir):
                     or mode not in {"local", "ai"}
                 ):
                     raise InputError("上传类型、版本或映射方式无效。")
-                if ocr not in {"0", "1"} or ocr == "1" and kind != "vat_declaration":
-                    raise InputError("OCR仅适用于增值税申报PDF，须明确授权。")
+                if ocr not in {"0", "1"}:
+                    raise InputError("OCR授权须为0或1。")
                 uploads = []
                 names = {}
                 for _, file in form.multi_items():
@@ -395,11 +409,7 @@ def register(app, get_store, get_user, allow, static_dir):
                     raise InputError("请选择至少一个文件。")
                 if len(view["files"]) + len(uploads) > 20:
                     raise InputError("一个任务最多保留20份资料，请拆分检查任务。")
-                allowed = {
-                    "account_balance": {"xlsx", "xls"},
-                    "vat_declaration": {"xlsx", "xls", "pdf"},
-                    "invoice_detail": {"xlsx", "xls", "xml"},
-                }
+                allowed = core_materials.ALLOWED_FORMATS
                 if any(name.rsplit(".", 1)[-1].lower() not in allowed[kind] for name in names.values()):
                     raise InputError("该槽位不支持此文件格式。")
                 revision = int(raw_revision)
@@ -444,6 +454,7 @@ def register(app, get_store, get_user, allow, static_dir):
                     "excluded",
                     "source_reviewed",
                     "ocr",
+                    "invoice_statuses",
                 }:
                     raise InputError("资料核对项无效。")
                 meta = change.get("confirmed_metadata", {})
@@ -474,10 +485,25 @@ def register(app, get_store, get_user, allow, static_dir):
                     raise InputError("排除标记须为布尔值。")
                 if any(k in change and type(change[k]) is not bool for k in ["source_reviewed", "ocr"]):
                     raise InputError("来源核对与OCR授权须为布尔值。")
-                if change.get("ocr") and payload["source_options"][file_id]["material_type"] != "vat_declaration":
-                    raise InputError("OCR仅适用于增值税申报PDF。")
+                statuses = change.get("invoice_statuses", {})
+                if not isinstance(statuses, dict):
+                    raise InputError("发票状态核对无效。")
+                document = next((d for d in payload["documents"] if d["id"] == file_id), None)
+                records = {r["id"]: r for r in document["records"]} if document else {}
+                options = payload["source_options"][file_id]
+                if statuses and (options["material_type"] != "invoice_detail" or not options["original_name"].lower().endswith(".pdf") or set(statuses) - set(records)):
+                    raise InputError("只能核对当前文件已识别的PDF发票状态。")
+                for record_id, status in statuses.items():
+                    if not isinstance(status, dict) or set(status) - {"red_letter_status", "void_status"} or any(
+                        not isinstance(v, str) for v in status.values()
+                    ) or status.get("red_letter_status", "") not in {"", "红字", "蓝字"} or status.get("void_status", "") not in {"", "正常", "未作废", "作废", "已作废"}:
+                        raise InputError("发票红蓝字或作废状态无效。")
+                    for key, new_value in status.items():
+                        original = records[record_id].get("parsed_invoice_statuses", records[record_id]).get(key)
+                        if original and new_value and original != new_value:
+                            raise InputError("核对状态与票面识别值冲突，请核对或排除此原件。")
                 if (
-                    meta != payload["source_options"][file_id].get("confirmed_metadata", {})
+                    (meta != options.get("confirmed_metadata", {}) or statuses != options.get("invoice_statuses", {}))
                     and "source_reviewed" not in change
                 ):
                     change["source_reviewed"] = False

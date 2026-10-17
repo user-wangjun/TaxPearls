@@ -31,7 +31,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
     const pick=field(label+"上传");pick.files=[new Blob(["synthetic material"])];await pick.onchange();
     const upload=calls.findLast(c=>c.url.endsWith("/files")).options.body;
     assert.equal(upload.get("material_type"),kind);assert.equal(upload.get("mapping_mode"),"ai");
-    assert.equal(upload.get("ocr"),kind==="vat_declaration"?"1":"0");
+    assert.ok(pick.accept.split(",").includes(".pdf"));assert.equal(upload.get("ocr"),"1");
   }
   const review=find("资料口径核对");const editor=all($("coreTaskResult")).find(n=>n.tag==="fieldset");assert.ok(review);
   const forms=field("本期适用附表名称（以分号分隔）");forms.value="附表一";editor.listeners.input();

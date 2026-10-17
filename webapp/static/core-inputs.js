@@ -57,9 +57,9 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const slots=el("div","core-slots");
     for(const [kind,name] of Object.entries(kinds)) {
       const card=el("section","material-card");card.append(el("h4","",name+"（必传）"));
-      card.append(el("p","muted",kind==="account_balance"?"Excel 科目汇总余额；不是逐笔明细账。":kind==="vat_declaration"?"Excel / PDF 主表及适用附表，可多文件合并期间。":"Excel / 数电 XML，须覆盖进销项；按开具日期统计。"));
-      const pick=el("input");pick.type="file";pick.multiple=true;pick.accept=kind==="account_balance"?".xlsx,.xls":kind==="vat_declaration"?".xlsx,.xls,.pdf":".xlsx,.xls,.xml";pick.setAttribute("aria-label",name+"上传");
-      pick.onchange=()=>{const files=Array.from(pick.files);if(!files.length)return;if(dirty){showError("请先保存资料口径核对，再补传资料。");return;}return action(async()=>{if(scopeDirty)await saveScope();const form=new FormData();form.append("material_type",kind);form.append("expected_revision",current.revision);form.append("mapping_mode","ai");form.append("ocr",kind==="vat_declaration"?"1":"0");files.forEach(f=>form.append("files",f));return api(base+"/"+current.id+"/files",{method:"POST",body:form});},true);};
+      card.append(el("p","muted",kind==="account_balance"?"Excel / PDF 科目汇总余额；不是逐笔明细账。":kind==="vat_declaration"?"Excel / PDF 主表及适用附表，可多文件合并期间。":"Excel / PDF 发票 / 数电 XML，须覆盖进销项；按开具日期统计。"));
+      const pick=el("input");pick.type="file";pick.multiple=true;pick.accept=kind==="invoice_detail"?".xlsx,.xls,.xml,.pdf":".xlsx,.xls,.pdf";pick.setAttribute("aria-label",name+"上传");
+      pick.onchange=()=>{const files=Array.from(pick.files);if(!files.length)return;if(dirty){showError("请先保存资料口径核对，再补传资料。");return;}return action(async()=>{if(scopeDirty)await saveScope();const form=new FormData();form.append("material_type",kind);form.append("expected_revision",current.revision);form.append("mapping_mode","ai");form.append("ocr","1");files.forEach(f=>form.append("files",f));return api(base+"/"+current.id+"/files",{method:"POST",body:form});},true);};
       pick.disabled=busy;card.append(pick,el("p","muted",`已保存 ${current.documents.filter(d=>d.material_type===kind).length} 份。`));slots.append(card);
     }
     root.append(slots);
@@ -83,13 +83,26 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       const direction=select(doc.name+" 确认发票方向",[["","沿用识别值"],["input","进项"],["output","销项"]],meta.direction);
       grid.append(unit.wrap,start.wrap,end.wrap);if(doc.material_type==="vat_declaration")grid.append(form.wrap);if(doc.material_type==="invoice_detail")grid.append(direction.wrap);
       const exclude=field(doc.name+" 排除此资料（原件与历史版本保留）","checkbox","");exclude.input.checked=!!options.excluded;grid.append(exclude.wrap);card.append(grid);
-      const reviewed=field(doc.name+" 已对照原页核实OCR候选的栏次、金额、税号和所属期","checkbox","");reviewed.input.checked=!!options.source_reviewed;
+      const reviewed=field(doc.name+" 已对照原页核实提取候选的字段、金额、购销方和所属期","checkbox","");reviewed.input.checked=!!options.source_reviewed;
       const ocr=field(doc.name+" 允许未识别PDF页交给配置模型OCR（发送页图）","checkbox","");ocr.input.checked=!!options.ocr;
-      if(doc.ocr_candidate)card.append(reviewed.wrap);if(doc.material_type==="vat_declaration"&&doc.name.toLowerCase().endsWith(".pdf"))card.append(ocr.wrap);
+      if(doc.ocr_candidate||doc.pdf_candidate)card.append(reviewed.wrap);if(doc.name.toLowerCase().endsWith(".pdf"))card.append(ocr.wrap);
+      const statuses=[];
+      if(doc.material_type==="invoice_detail"&&doc.name.toLowerCase().endsWith(".pdf")){
+        card.append(el("p","material-note","票面没有记载的红蓝字、作废状态须逐票核实后填写；留空会保留资料缺口。单张发票不能证明整期进销项齐全。"));
+        for(const record of doc.records){
+          const status=el("div","material-company"),prefix=doc.name+" · "+record.source_position+" · "+(record.invoice_no||"票号待核对");
+          status.append(el("p","",prefix));
+          const confirmed=options.invoice_statuses?.[record.id]||{},parsed=record.parsed_invoice_statuses||record;
+          const red=select(prefix+" 红蓝字状态",[["","待核实"],["蓝字","蓝字"],["红字","红字"]],confirmed.red_letter_status||parsed.red_letter_status);
+          const voided=select(prefix+" 作废状态",[["","待核实"],["正常","正常"],["未作废","未作废"],["作废","作废"],["已作废","已作废"]],confirmed.void_status||parsed.void_status);
+          for(const f of [red,voided]){status.append(f.wrap);f.input.addEventListener("change",()=>{reviewed.input.checked=false;});}
+          card.append(status);statuses.push({id:record.id,red,voided});
+        }
+      }
       for(const f of [unit,start,end,form,direction])f.input.addEventListener("change",()=>{reviewed.input.checked=false;});
       const parts=el("details"),summary=el("summary","","识别到的来源口径");parts.append(summary);
       for(const part of doc.parts)parts.append(el("p","muted",`${part.name} · ${part.form_type} · ${part.period?.join(" 至 ")||"期间未识别"} · ${part.unit||"单位未识别"}`));card.append(parts);
-      review.append(card);editors.push({id:doc.id,unit,start,end,form,direction,exclude,reviewed,ocr});
+      review.append(card);editors.push({id:doc.id,unit,start,end,form,direction,exclude,reviewed,ocr,statuses});
     }
     let readPolicy=null;
     if(policyCatalog&&policyUI()){
@@ -98,7 +111,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       panel.append(el("p","muted",`目录来源核对截至 ${policyCatalog.checked_as_of}；政策条件与本任务资料版本绑定，单独复核，不替代知识图谱的规则审核。`));
       if(current.policy_error)panel.append(el("p","material-note",current.policy_error));
     }
-    const save=button("保存核对并重新整理资料",()=>{const policyInput=readPolicy?.();return action(async()=>{if(scopeDirty)await saveScope();const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:e.ocr.input.checked,confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value,direction:e.direction.input.value}};
+    const save=button("保存核对并重新整理资料",()=>{const policyInput=readPolicy?.();return action(async()=>{if(scopeDirty)await saveScope();const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:e.ocr.input.checked,invoice_statuses:Object.fromEntries(e.statuses.map(s=>[s.id,{red_letter_status:s.red.input.value,void_status:s.voided.input.value}])),confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value,direction:e.direction.input.value}};
       return api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,applicable_forms:scopeKnown.input.checked?applicable.input.value.split(/[;；]/).map(s=>s.trim()).filter(Boolean):null,source_options:options,mapping_mode:"ai",...(readPolicy?{policy_input:policyInput}:{})}));},true);});review.append(save);root.append(review);
     const problems=el("section","enterprise-feedback"+(p.issues.length?" blocking":""));problems.append(el("h4","",`资料缺口与冲突（${p.issues.length}）`));
     for(const item of p.issues)problems.append(el("p","",item.message+(item.source_position?" · "+item.source_position:"")));root.append(problems);

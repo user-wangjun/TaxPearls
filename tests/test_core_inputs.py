@@ -79,20 +79,31 @@ def mapper():
     return db, core_mapping.Mapper(db, "org", "task", "sha")
 
 
-def pdf_table():
+def pdf_table(kind="vat_declaration"):
     """Constructed PDF fixture with a ruled table and fixed ASCII field names."""
     contents = ["0.5 w"]
-    for x in [40, 200, 280, 430]:
+    columns = {"vat_declaration":[40, 200, 280, 430], "account_balance":[10, 140, 230, 320, 410, 500],
+               "invoice_detail":[10,180,280,400,490]}[kind]
+    for x in columns:
         contents.append(f"{x} 600 m {x} 690 l S")
     for y in [600, 630, 660, 690]:
-        contents.append(f"40 {y} m 430 {y} l S")
-    for y, cols in [
+        contents.append(f"{columns[0]} {y} m {columns[-1]} {y} l S")
+    rows = [
         (675, ["item_label", "item_key", "declared_value"]),
         (645, ["Sales", "1", "100.0123"]),
         (615, ["Tax", "11", "13.0016"]),
-    ]:
-        for x, value in zip([45, 205, 285], cols):
-            contents.append(f"BT /F1 10 Tf {x} {y} Td ({value}) Tj ET")
+    ] if kind == "vat_declaration" else [
+        (675, ["account_name", "opening_balance", "current_debit", "current_credit", "closing_balance"]),
+        (645, ["Cash", "10", "100", "20", "90"]),
+        (615, ["Bank", "5", "20", "10", "15"]),
+    ] if kind == "account_balance" else [
+        (675, ["invoice_no", "issue_date", "amount_excluding_tax", "tax_amount"]),
+        (645, ["12345678901234567890", "2026-01-15", "100", "13"]),
+        (615, ["22345678901234567890", "2026-01-16", "200", "26"]),
+    ]
+    for y, cols in rows:
+        for x, value in zip([n+5 for n in columns], cols):
+            contents.append(f"BT /F1 8 Tf {x} {y} Td ({value}) Tj ET")
     content = "\n".join(contents).encode()
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -112,6 +123,67 @@ def pdf_table():
         output.extend(f"{n:010} 00000 n \n".encode())
     output.extend(f"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode())
     return bytes(output)
+
+
+def invoice_pdf(*, number="12345678901234567890", total="113.00", other_number=None):
+    """Chinese ticket with side-by-side parties and item amounts unlike totals."""
+    lines = [(40, 710, "电子发票（普通发票）"), (40, 680, "发票号码："+number),
+             (330, 680, "开票日期：2026年01月15日"),
+             (40, 640, "购买方信息"), (330, 640, "销售方信息"),
+             (40, 620, "名称：购方企业"), (330, 620, "名称：销方企业"),
+             (40, 600, "统一社会信用代码："+OTHER), (330, 600, "统一社会信用代码："+TAX),
+             (40, 550, "货物名称 金额 税额"), (40, 530, "商品甲 60.00 7.80"), (40, 510, "商品乙 40.00 5.20"),
+             (40, 470, "合 计 ￥100.00 ￥13.00"), (40, 440, "价税合计（小写）￥"+total)]
+    if other_number:
+        lines.append((40, 400, "发票号码："+other_number))
+    return chinese_pdf(lines)
+
+
+def chinese_pdf(lines, drawing=""):
+    content = (drawing + "\n" + "\n".join(f"BT /F1 10 Tf {x} {y} Td <{value.encode('utf-16-be').hex()}> Tj ET" for x,y,value in lines)).encode()
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+               b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 640 750] /Resources << /Font << /F1 4 0 R >> >> /Contents 6 0 R >>",
+               b"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [5 0 R] >>",
+               b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /FontDescriptor 7 0 R /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> >>",
+               f"<< /Length {len(content)} >>\nstream\n".encode()+content+b"\nendstream",
+               b"<< /Type /FontDescriptor /FontName /STSong-Light /Flags 6 /FontBBox [-250 -250 1200 1000] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 880 /StemV 80 >>"]
+    output=bytearray(b"%PDF-1.4\n");offsets=[0]
+    for i,obj in enumerate(objects,1):
+        offsets.append(len(output));output.extend(f"{i} 0 obj\n".encode()+obj+b"\nendobj\n")
+    xref=len(output);output.extend(f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n".encode())
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010} 00000 n \n".encode())
+    output.extend(f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode())
+    return bytes(output)
+
+
+def grouped_business_pdf(kind, *, unknown=False):
+    """Actual PDF cells with wrapped subheaders, as on native printed forms."""
+    title = "科目余额表" if kind == "account_balance" else "增值税纳税申报表主表"
+    lines = [(40,710,title), (40,690,"纳税人识别号："+TAX), (40,670,"金额单位：元"),
+             (40,650,("会计期间" if kind=="account_balance" else "税款所属期")+"：2026-01-01 至 2026-01-31")]
+    columns = [40,150,220,290,360,430,500,570] if kind=="account_balance" else [40,180,290,400]
+    drawing = "0.5 w\n"+"\n".join(f"{x} 480 m {x} 630 l S" for x in columns)
+    drawing += "\n"+"\n".join(f"40 {y} m {columns[-1]} {y} l S" for y in [480,530,580,630])
+    if kind=="account_balance":
+        parents=["科目名称","期初余额","","本期发生额","","期末余额",""]
+        children=["","借\n方","贷\n方","借\n方","贷\n方","借\n方","贷\n方"]
+        values=["现金","10","0","100","20","90","0"]
+    else:
+        parents=["项目","一般项目",""]
+        children=["","本期\n数","本年\n累计数"]
+        values=["应税销售额","100","900"]
+    if unknown:
+        if kind=="account_balance":
+            parents[3]="发生额来源"
+        else:
+            children=["","申报\n值","累计\n值"]
+    for x,parent,child,value in zip(columns,parents,children,values):
+        if parent:lines.append((x+5,610,parent))
+        for offset,part in enumerate(child.split("\n")):
+            if part:lines.append((x+5,565-offset*13,part))
+        lines.append((x+5,510,value))
+    return chinese_pdf(lines,drawing)
 
 
 def balance_xls():
@@ -412,6 +484,113 @@ class CoreParserTests(unittest.TestCase):
             doc = core_materials.parse(raw, "扫描.pdf", "vat_declaration", "scan", self.mapper, ocr=True)
         self.assertFalse(doc["records"])
         self.assertIn("ocr_failed", {i["code"] for i in doc["issues"]})
+
+    def test_pdf_invoice_ticket_totals_parties_and_unknown_statuses(self):
+        with patch("src.core_materials.chat_content") as model:
+            doc = core_materials.parse(invoice_pdf(), "电子发票.pdf", "invoice_detail", "ticket", self.mapper, ocr=True)
+            model.assert_not_called()
+        self.assertEqual(len(doc["records"]), 1, doc)
+        record = doc["records"][0]
+        self.assertEqual(record["invoice_no"], "12345678901234567890")
+        self.assertEqual(record["issue_date"], "2026-01-15")
+        self.assertEqual((record["seller_tax_no"], record["buyer_tax_no"]), (TAX, OTHER))
+        self.assertEqual((record["amount_excluding_tax"], record["tax_amount"], record["amount_including_tax"]), ("100.00", "13.00", "113.00"))
+        self.assertIsNone(record["red_letter_status"])
+        self.assertIsNone(record["void_status"])
+        self.assertTrue(record["requires_source_review"])
+        self.assertIn("PDF第1页", record["field_sources"]["invoice_no"]["position"])
+        self.assertIn("合计", record["field_sources"]["tax_amount"]["quote"])
+        self.assertEqual(doc["parts"][0]["tax_nos"], [])
+        self.assertIsNone(doc["parts"][0]["period"])
+        self.assertIn("invoice_status_missing", {i["code"] for i in doc["issues"]})
+        checked = core_materials.prepare(self.task, [doc])
+        self.assertEqual(checked["records"][0]["direction"], "output")
+        self.assertIn("invoice_coverage_gap", {i["code"] for i in checked["issues"]})
+
+    def test_pdf_invoice_conflicting_totals_and_multiple_tickets_block(self):
+        doc = core_materials.parse(invoice_pdf(total="114.00"), "票.pdf", "invoice_detail", "bad", self.mapper)
+        self.assertIn("invoice_total_conflict", {i["code"] for i in doc["issues"]})
+        doc = core_materials.parse(invoice_pdf(other_number="22345678901234567890"), "票.pdf", "invoice_detail", "multi", self.mapper)
+        self.assertFalse(doc["records"])
+        self.assertIn("pdf_ambiguous", {i["code"] for i in doc["issues"]})
+
+    def test_multipage_invoice_sources_duplicate_once_and_pdf_listing_status_gap(self):
+        import pypdfium2
+        output=BytesIO()
+        with pypdfium2.PdfDocument.new() as merged, pypdfium2.PdfDocument(invoice_pdf()) as ticket:
+            merged.import_pages(ticket)
+            merged.import_pages(ticket)
+            merged.save(output)
+        doc=core_materials.parse(output.getvalue(),"两页.pdf","invoice_detail","multi",self.mapper)
+        self.assertEqual(len(doc["records"]),2)
+        self.assertIn("PDF第2页",doc["records"][1]["source_position"])
+        result=core_materials.prepare(self.task,[doc])
+        self.assertIn("duplicate_invoice",{i["code"] for i in result["notices"]})
+        self.assertEqual(result["invoice_summaries"][0]["count"],1)
+        doc=core_materials.parse(pdf_table("invoice_detail"),"发票清单.pdf","invoice_detail","grid",self.mapper)
+        self.assertEqual(len(doc["records"]),2,doc)
+        self.assertNotIn("record_fields",{i["code"] for i in doc["issues"]})
+        self.assertNotIn("missing_columns",{i["code"] for i in doc["issues"]})
+        self.assertIn("invoice_status_missing",{i["code"] for i in doc["issues"]})
+
+    def test_balance_pdf_table_and_scanned_business_candidates(self):
+        doc = core_materials.parse(pdf_table("account_balance"), "余额.pdf", "account_balance", "balance", self.mapper)
+        self.assertEqual(len(doc["records"]), 2, doc)
+        self.assertEqual(doc["records"][0]["closing_balance"], "90")
+        raw = (Path(__file__).parent / "fixtures" / "materials-scanned.pdf").read_bytes()
+        for kind, row in [("account_balance", {"account_name":"现金", "opening_balance":"10", "current_debit":"100", "current_credit":"20", "closing_balance":"90"}),
+                          ("invoice_detail", {"invoice_no":"12345678901234567890", "issue_date":"2026-01-15", "seller_tax_no":TAX,"buyer_tax_no":OTHER,"amount_excluding_tax":"100", "tax_amount":"13"})]:
+            answer={"unit":"元", "rows":[{"fields":row,"quotes":{key:value for key,value in row.items()}}]}
+            with self.subTest(kind=kind), patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED":"1", "TAXPEARLS_AI_API_KEY":"synthetic"}), patch("src.core_materials.chat_content",return_value=json.dumps(answer)):
+                doc=core_materials.parse(raw,"扫描.pdf",kind,"scan-"+kind,self.mapper,ocr=True)
+            self.assertEqual(len(doc["records"]),1,doc)
+            self.assertTrue(doc["records"][0]["requires_source_review"])
+            self.assertIn("ocr_review",{i["code"] for i in doc["issues"]})
+        answer["rows"][0]["quotes"]["tax_amount"]="其他金额 99"
+        with patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED":"1", "TAXPEARLS_AI_API_KEY":"synthetic"}), patch("src.core_materials.chat_content",return_value=json.dumps(answer)):
+            doc=core_materials.parse(raw,"扫描.pdf","invoice_detail","bad",self.mapper,ocr=True)
+        self.assertFalse(doc["records"])
+        self.assertIn("ocr_failed",{i["code"] for i in doc["issues"]})
+
+    def test_other_two_pdf_uploads_preserve_wrapped_group_headers(self):
+        for kind in ["account_balance", "vat_declaration"]:
+            with self.subTest(kind=kind), patch("src.core_materials.chat_content") as model:
+                doc=core_materials.parse(grouped_business_pdf(kind),kind+".pdf",kind,kind,self.mapper,ocr=True)
+                model.assert_not_called()
+                self.assertEqual(doc["issues"],[],doc)
+                if kind=="account_balance":
+                    self.assertEqual(len(doc["records"]),1)
+                    self.assertEqual(doc["records"][0]["opening_balance"],{"debit":"10","credit":"0"})
+                    self.assertEqual(doc["records"][0]["closing_balance"],{"debit":"90","credit":"0"})
+                else:
+                    self.assertEqual({r["column_scope"]:r["declared_value"] for r in doc["records"]},
+                                     {"一般项目本期数":"100","一般项目本年累计数":"900"})
+
+    def test_other_two_partial_pdf_tables_use_ocr_and_keep_gaps_when_unavailable(self):
+        balance={"account_name":"现金","opening_balance":"10","current_debit":"100","current_credit":"20","closing_balance":"90"}
+        for kind in ["account_balance", "vat_declaration"]:
+            raw=grouped_business_pdf(kind,unknown=True)
+            answer={"tax_no":TAX,"period_start":"2026-01-01","period_end":"2026-01-31","unit":"元","quote":"来源表头"}
+            if kind=="account_balance":
+                answer["rows"]=[{"fields":balance,"quotes":balance}]
+                field="current_debit"
+            else:
+                answer.update(form_name="增值税纳税申报表主表",form_type="main",rows=[{"item_label":"应税销售额","declared_value":"100","column_scope":"一般项目本期数","quote":"应税销售额 100"}])
+                field="declared_value"
+            with self.subTest(kind=kind), patch.dict(os.environ,{"TAXPEARLS_AI_ENABLED":"1","TAXPEARLS_AI_API_KEY":"synthetic"}),patch("src.core_materials.chat_content",return_value=json.dumps(answer)) as model:
+                doc=core_materials.parse(raw,"非标准.pdf",kind,"partial-"+kind,self.mapper,ocr=True)
+                self.assertEqual(model.call_count,1)
+                self.assertTrue(doc["ocr_candidate"],doc)
+                self.assertEqual(doc["records"][0][field],"100")
+                self.assertEqual({i["code"] for i in doc["issues"]},{"ocr_review"})
+                self.assertTrue(doc["records"][0]["requires_source_review"])
+            with patch.dict(os.environ,{"TAXPEARLS_AI_ENABLED":"0"}),patch("src.core_materials.chat_content") as model:
+                doc=core_materials.parse(raw,"非标准.pdf",kind,"no-model-"+kind,self.mapper,ocr=True)
+                model.assert_not_called()
+                self.assertNotIn("ocr_candidate",doc)
+                self.assertTrue(doc["records"])
+                self.assertIsNone(doc["records"][0].get(field))
+                self.assertTrue({"missing_columns","ocr_unavailable"}<={i["code"] for i in doc["issues"]})
 
 
 class MappingTests(unittest.TestCase):
@@ -896,7 +1075,7 @@ class CoreAPITests(unittest.TestCase):
         task = self.create()
         url = "/api/enterprise/input-tasks/" + task["id"]
         for kind, name, raw in [
-            ("account_balance", "申报.pdf", pdf_table()),
+            ("account_balance", "票.xml", b"<Invoice/>"),
             ("invoice_detail", "恶意.xml", b'<!DOCTYPE x [<!ENTITY e "boom">]><Invoice/>'),
         ]:
             response = self.client.post(
@@ -908,6 +1087,89 @@ class CoreAPITests(unittest.TestCase):
         fresh = self.client.get(url).json()
         self.assertEqual(fresh["revision"], task["revision"])
         self.assertEqual(fresh["files"], [])
+
+    def test_all_pdf_slots_preserve_original_and_invoice_review_roundtrip(self):
+        task = self.create()
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        for kind, raw in [("account_balance", pdf_table("account_balance")), ("vat_declaration", pdf_table()), ("invoice_detail", invoice_pdf())]:
+            response = self.client.post(url+"/files", data={"expected_revision":str(task["revision"]),"material_type":kind,"ocr":"1"}, files={"files":(kind+".pdf",raw)})
+            self.assertEqual(response.status_code, 200, response.text)
+            task=response.json()
+            doc=next(d for d in task["documents"] if d["material_type"]==kind)
+            self.assertTrue(doc["records"],doc)
+            original=self.client.get(url+"/originals/"+doc["id"])
+            self.assertEqual(original.status_code,200)
+            self.assertEqual(original.content,raw)
+        doc=next(d for d in task["documents"] if d["material_type"]=="invoice_detail")
+        file_id,record_id=doc["id"],doc["records"][0]["id"]
+        status={record_id:{"red_letter_status":"蓝字","void_status":"正常"}}
+        def save(change):
+            return self.client.post(url+"/prepare",json={"expected_revision":task["revision"],"source_options":{file_id:change}})
+        response=save({"invoice_statuses":status,"source_reviewed":True})
+        self.assertEqual(response.status_code,200,response.text)
+        task=response.json()
+        doc=next(d for d in task["documents"] if d["id"]==file_id)
+        self.assertFalse({"pdf_source_review","ocr_review","invoice_status_missing"}&{i["code"] for i in doc["issues"]})
+        self.assertEqual(doc["records"][0]["red_letter_status"],"蓝字")
+        self.assertIsNone(doc["records"][0]["parsed_invoice_statuses"]["red_letter_status"])
+        self.assertFalse(doc["records"][0]["requires_source_review"])
+        self.assertIn("invoice_coverage_gap",{i["code"] for i in task["processing"]["issues"]})
+        self.assertEqual(self.client.get(url).json()["source_options"][file_id]["invoice_statuses"],status)
+        # Clearing a prior confirmation restores the missing-state blocker.
+        response=save({"invoice_statuses":{record_id:{"red_letter_status":"","void_status":""}}})
+        self.assertEqual(response.status_code,200,response.text)
+        task=response.json()
+        doc=next(d for d in task["documents"] if d["id"]==file_id)
+        self.assertIn("invoice_status_missing",{i["code"] for i in doc["issues"]})
+        self.assertTrue(doc["records"][0]["requires_source_review"])
+        response=save({"invoice_statuses":{"foreign-record":{"void_status":"正常"}}})
+        self.assertEqual(response.status_code,422)
+
+    def test_other_two_scanned_pdf_upload_review_reopen_and_revoke(self):
+        raw=(Path(__file__).parent/"fixtures"/"materials-scanned.pdf").read_bytes()
+        balance={"account_name":"现金","opening_balance":"10","current_debit":"100","current_credit":"20","closing_balance":"90"}
+        for kind in ["account_balance","vat_declaration"]:
+            task=self.create()
+            url="/api/enterprise/input-tasks/"+task["id"]
+            answer={"tax_no":TAX,"period_start":"2026-01-01","period_end":"2026-01-31","unit":"元","quote":"来源表头"}
+            if kind=="account_balance":
+                answer["rows"]=[{"fields":balance,"quotes":balance}]
+            else:
+                answer.update(form_name="增值税纳税申报表主表",form_type="main",rows=[{"item_label":"应税销售额","declared_value":"100","column_scope":"本期数","quote":"应税销售额 100"}])
+            with self.subTest(kind=kind),patch.dict(os.environ,{"TAXPEARLS_AI_ENABLED":"1","TAXPEARLS_AI_API_KEY":"synthetic"}),patch("src.core_materials.chat_content",return_value=json.dumps(answer)) as model:
+                response=self.client.post(url+"/files",data={"expected_revision":str(task["revision"]),"material_type":kind,"ocr":"1"},files={"files":(kind+".pdf",raw)})
+                self.assertEqual(response.status_code,200,response.text)
+                task=response.json();doc=task["documents"][0];fid=doc["id"]
+                self.assertEqual(self.client.get(url+"/originals/"+fid).content,raw)
+                self.assertTrue(doc["records"][0]["requires_source_review"])
+                for reviewed in [True,False]:
+                    response=self.client.post(url+"/prepare",json={"expected_revision":task["revision"],"source_options":{fid:{"source_reviewed":reviewed}}})
+                    self.assertEqual(response.status_code,200,response.text)
+                    task=response.json();doc=task["documents"][0]
+                    self.assertEqual(doc["records"][0]["requires_source_review"],not reviewed)
+                    self.assertEqual("ocr_review" in {i["code"] for i in doc["issues"]},not reviewed)
+                    self.assertEqual(self.client.get(url).json()["documents"][0]["records"],doc["records"])
+                self.assertEqual(model.call_count,1)
+
+    def test_scanned_invoice_review_uses_cache_and_revokes_without_model(self):
+        task=self.create()
+        url="/api/enterprise/input-tasks/"+task["id"]
+        fields={"invoice_no":"12345678901234567890","issue_date":"2026-01-15","buyer_tax_no":OTHER,"seller_tax_no":TAX,"amount_excluding_tax":"100","tax_amount":"13"}
+        answer={"unit":"元","rows":[{"fields":fields,"quotes":fields}]}
+        raw=(Path(__file__).parent/"fixtures"/"materials-scanned.pdf").read_bytes()
+        with patch.dict(os.environ,{"TAXPEARLS_AI_ENABLED":"1","TAXPEARLS_AI_API_KEY":"synthetic"}),patch("src.core_materials.chat_content",return_value=json.dumps(answer)) as model:
+            response=self.client.post(url+"/files",data={"expected_revision":str(task["revision"]),"material_type":"invoice_detail","ocr":"1"},files={"files":("扫描票.pdf",raw)})
+            self.assertEqual(response.status_code,200,response.text)
+            task=response.json();doc=task["documents"][0]
+            self.assertTrue(doc["ocr_candidate"])
+            rid=doc["records"][0]["id"]
+            for status,reviewed in [({"red_letter_status":"蓝字","void_status":"正常"},True),({"red_letter_status":"","void_status":""},False)]:
+                response=self.client.post(url+"/prepare",json={"expected_revision":task["revision"],"source_options":{doc["id"]:{"invoice_statuses":{rid:status},"source_reviewed":reviewed}}})
+                self.assertEqual(response.status_code,200,response.text)
+                task=response.json();doc=task["documents"][0]
+                self.assertEqual(doc["records"][0]["requires_source_review"],not reviewed)
+                self.assertEqual("invoice_status_missing" in {i["code"] for i in doc["issues"]},not reviewed)
+            self.assertEqual(model.call_count,1)
 
     def test_ocr_review_cache_revoke_and_metadata_restore_without_more_calls(self):
         task = self.ready_task()
