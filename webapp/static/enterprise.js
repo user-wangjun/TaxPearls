@@ -303,7 +303,7 @@ function createEnterpriseMaterials({api, el, $, user, clear, showError, showResu
       for(const key of allowed()) {
         if(!visible(key))continue;
         const spec=catalog.fields[key];if(!spec)continue;
-        const label=el("label","",spec.label),control=el(spec.type==="choice"?"select":"input"),source=el("input");
+        const label=el("label","field",spec.label),control=el(spec.type==="choice"?"select":"input"),source=el("input");
         control.setAttribute("aria-label","政策 "+spec.label);source.setAttribute("aria-label","政策依据 "+spec.label);
         if(spec.type==="choice") {
           const blank=el("option","","未知/待核对");blank.value="";control.append(blank);
