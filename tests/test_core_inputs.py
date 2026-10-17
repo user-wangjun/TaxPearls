@@ -532,6 +532,119 @@ class CoreAPITests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
 
+    def scope(self, task, **changes):
+        fields = {key: task["task"][key] for key in core_materials.SCOPE_FIELDS}
+        return self.client.post(f"/api/enterprise/input-tasks/{task['id']}/scope",
+                                json={**fields, "expected_revision": task["revision"], **changes})
+
+    def test_blank_draft_upload_autofill_and_explicit_confirmation(self):
+        task = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        self.assertFalse(task["task"]["scope_confirmed"])
+        self.assertIsNone(task["task"]["company_id"])
+        self.assertEqual(self.store.list_clients(self.admin), [])
+        task = self.upload(task, "account_balance")
+        self.assertEqual(task["task"]["tax_no"], TAX)
+        self.assertEqual(task["task"]["start_date"], "2026-01-01")
+        self.assertEqual(task["task"]["end_date"], "2026-01-31")
+        self.assertEqual(task["task"]["scope_origins"]["tax_no"]["sources"][0]["file_id"], task["documents"][0]["id"])
+        from webapp.core_inputs import require_scope
+        with self.assertRaises(ValueError):
+            require_scope(task)
+        result = self.scope(task, company_name="文件读取测试企业", confirm=True)
+        self.assertEqual(result.status_code, 200, result.text)
+        confirmed = result.json()
+        require_scope(confirmed)
+        self.assertTrue(confirmed["task"]["scope_confirmed"])
+        self.assertEqual(len(self.store.list_clients(self.admin)), 1)
+        self.assertTrue(confirmed["processing"]["records"])
+        with self.store.connect() as db:
+            batch = material_batches._authorize(db, self.admin, task["id"])
+            self.assertEqual(batch["client_id"], confirmed["task"]["company_id"])
+        self.assertEqual(self.scope(task, confirm=True).status_code, 409)
+
+    def test_autofill_uses_source_period_instead_of_manual_file_override(self):
+        task = {key: "" for key in core_materials.SCOPE_FIELDS}
+        doc = {"id": "source", "material_type": "account_balance", "parts": [{"name": "Sheet1", "tax_nos": [TAX],
+            "period": ["2026-02-01", "2026-02-28"], "parsed_metadata": {"period": ["2026-01-01", "2026-01-31"]}}]}
+        core_materials.autofill_scope(task, [doc])
+        self.assertEqual(task["start_date"], "2026-01-01")
+        self.assertEqual(task["scope_origins"]["start_date"]["kind"], "file")
+
+    def test_draft_name_is_read_from_explicit_file_metadata(self):
+        from openpyxl import load_workbook
+        task = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        wb = load_workbook(BytesIO(book("account_balance")))
+        wb.active.insert_rows(2)
+        wb.active.cell(2, 1, "企业名称：自动读取有限公司")
+        raw = BytesIO()
+        wb.save(raw)
+        wb.close()
+        r = self.client.post(f"/api/enterprise/input-tasks/{task['id']}/files",
+            data={"material_type": "account_balance", "expected_revision": str(task["revision"])},
+            files={"files": ("余额.xlsx", raw.getvalue())})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["task"]["company_name"], "自动读取有限公司")
+        self.assertFalse(r.json()["task"]["scope_confirmed"])
+
+    def test_manual_values_preserved_and_conflict_blocks_confirmation(self):
+        task = self.create()
+        task = self.upload(task, "account_balance", tax=OTHER)
+        self.assertEqual(task["task"]["tax_no"], TAX)
+        self.assertIn("tax_no", task["scope_errors"])
+        r = self.scope(task, confirm=True)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["task"]["scope_confirmed"])
+        from webapp.core_inputs import require_scope
+        with self.assertRaises(ValueError):
+            require_scope(r.json())
+
+    def test_multiple_source_periods_are_not_combined_and_exclusion_rederives_candidates(self):
+        task = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        task = self.upload(task, "account_balance")
+        task = self.upload(task, "vat_declaration", start="2026-02-01", end="2026-02-28")
+        self.assertEqual(task["task"]["start_date"], "")
+        self.assertEqual(len(task["task"]["scope_candidates"]["start_date"]), 2)
+        file_id = task["documents"][-1]["id"]
+        r = self.client.post(f"/api/enterprise/input-tasks/{task['id']}/prepare",
+                             json={"expected_revision": task["revision"], "source_options": {file_id: {"excluded": True}}})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["task"]["start_date"], "2026-01-01")
+
+    def test_existing_company_selection_and_cross_tenant_rejection(self):
+        existing = self.store.upsert_client(self.admin, "已有企业", TAX)
+        value = {"client_id": existing["id"], "company_name": existing["name"], "tax_no": TAX}
+        r = self.client.post("/api/enterprise/input-tasks", json=value)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["task"]["company_id"], existing["id"])
+        self.login(self.foreign)
+        self.assertEqual(self.client.post("/api/enterprise/input-tasks", json=value).status_code, 404)
+        self.assertEqual(self.scope(r.json(), confirm=True).status_code, 404)
+        self.login(self.admin)
+        task = r.json()
+        bad = self.scope(task, client_id=existing["id"], tax_no=OTHER, confirm=True)
+        self.assertEqual(bad.status_code, 422, bad.text)
+        self.assertEqual(self.client.get(f"/api/enterprise/input-tasks/{task['id']}").json()["revision"], task["revision"])
+
+    def test_invalid_scope_keeps_existing_client_authorization(self):
+        task = self.create()
+        r = self.scope(task, tax_no="bad", confirm=True)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["task"]["scope_confirmed"])
+        self.assertIn("tax_no", r.json()["scope_errors"])
+        self.assertEqual(r.json()["task"]["company_id"], task["task"]["company_id"])
+        with self.store.connect() as db:
+            batch = material_batches._authorize(db, self.admin, task["id"])
+            self.assertEqual(batch["client_id"], task["task"]["company_id"])
+
+    def test_direct_ai_request_cannot_bypass_missing_scope(self):
+        task = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        with patch("webapp.knowledge_evidence.analyze") as model:
+            r = self.client.post("/api/knowledge/retrieve", json={"task_id": task["id"],
+                "expected_revision": task["revision"], "rule_id": "VAT-R01", "use_ai": True})
+            self.assertEqual(r.status_code, 422, r.text)
+            self.assertIn("企业与检查区间", r.text)
+            model.assert_not_called()
+
     def test_mapping_and_ocr_use_admin_extraction_keys_instead_of_other_purposes(self):
         root = self.store.create_user("core-root", "Core-test-2026!", "平台", "platform_admin", "platform")
         self.login(root)
@@ -636,7 +749,8 @@ class CoreAPITests(unittest.TestCase):
             "/api/enterprise/input-tasks",
             json={"company_name": "x", "tax_no": TAX, "start_date": "2026-02-01", "end_date": "2026-01-01"},
         )
-        self.assertEqual(r.status_code, 422)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("end_date", r.json()["scope_errors"])
         r = self.client.post(
             "/api/enterprise/input-tasks/" + task["id"] + "/files",
             data={"expected_revision": str(task["revision"]), "material_type": "account_balance"},

@@ -638,18 +638,19 @@
     <section class="panel" id="uploadPanel">
     <div class="sheet" id="coreInputs" hidden>
       <h2>基础审查资料准备</h2>
-      <p class="muted">先指定企业与检查区间，再上传科目余额表、增值税申报表和进销项发票明细，核对保存后点击“继续核查”，查看检查结果与报告。</p>
-      <fieldset id="coreTaskForm"><legend>创建资料处理任务</legend>
+      <p class="muted">可选择历史企业，也可先上传资料，由文件读取企业与所属期。核对自动填入的信息后，点击“开始检查”校验并进入核查。</p>
+      <fieldset id="coreTaskForm"><legend>企业与检查区间（可先留空）</legend>
+        <label class="field core-client-field">选择历史企业<select id="coreClient"><option value="">新企业 / 从文件读取</option></select></label>
         <div class="core-task-fields">
           <div class="core-task-group">
             <h3>企业信息</h3>
-            <label class="field">企业名称<input id="coreCompanyName" maxlength="200" placeholder="填写企业全称" required></label>
-            <label class="field">税号<input id="coreTaxNo" maxlength="20" placeholder="填写纳税人识别号" required></label>
+            <label class="field">企业名称<input id="coreCompanyName" maxlength="200" placeholder="填写企业全称"></label>
+            <label class="field">税号<input id="coreTaxNo" maxlength="20" placeholder="填写纳税人识别号"></label>
           </div>
           <div class="core-task-group">
             <h3>检查区间</h3>
-            <label class="field">检查起始日<input id="coreStart" type="date" required></label>
-            <label class="field">检查终止日<input id="coreEnd" type="date" required></label>
+            <label class="field">检查起始日<input id="coreStart" type="date"></label>
+            <label class="field">检查终止日<input id="coreEnd" type="date"></label>
           </div>
         </div>
         <div class="core-task-footer">
@@ -660,7 +661,7 @@
               <p class="muted">原件加密留存，不把空白当作零。单份上限 10MB，每任务最多 20 份。</p>
             </details>
           </div>
-          <button id="coreCreateTask" class="btn pdf" type="button">创建任务并上传资料</button>
+          <button id="coreCreateTask" class="btn pdf" type="button">创建草稿并上传资料</button>
         </div>
       </fieldset>
       <div id="coreTaskResult" aria-live="polite"></div><div id="coreTaskHistory"></div>
