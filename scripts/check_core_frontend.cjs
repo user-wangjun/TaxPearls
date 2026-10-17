@@ -18,8 +18,9 @@ function all(root){return [root,...root.children.flatMap(all)];}
   const ids=new Map(),$=id=>{if(!ids.has(id))ids.set(id,new Node("div"));return ids.get(id);};
   const errors=[],calls=[],continued=[],downloads=[];let actor={id:"one",role:"org_admin"},fail=false,failScope=false,delay=null,failDelete=false;
   const exported={schema_version:"taxpearls.material-data.v1",task:{},records:[{id:"clean-record",quality:{requires_source_review:true}}],sources:[]};
-  const sample={id:"task",revision:1,task:{company_name:"企业",tax_no:"91310000123456789A",start_date:"2026-01-01",end_date:"2026-01-31",applicable_forms:null},
-    processing:{status:"needs_completion",issues:[],notices:[],records:[],boundary:"规则核验前"},
+  const sample={id:"task",revision:1,task:{company_name:"企业",tax_no:"91310000123456789A",start_date:"2026-01-01",end_date:"2026-01-31",range_kind:"month",
+      scope_origins:{},scope_candidates:{start_date:[{value:"2026-01-01",sources:[{file_id:"f",position:"Sheet1"}]}],end_date:[{value:"2026-01-31",sources:[{file_id:"f",position:"Sheet1"}]}]},applicable_forms:null},
+    processing:{status:"needs_completion",issues:[],notices:[],records:[],scope:{kind:"month",start_date:"2026-01-01",end_date:"2026-01-31",confirmed:false,outside_records:0,unknown_date_records:0},boundary:"规则核验前"},
     documents:[{id:"review-pdf",name:"进项.pdf",material_type:"invoice_detail",records:[],parts:[],sha256:"synthetic-pdf",pdf_candidate:true},
       {id:"review-sheet",name:"余额.xlsx",material_type:"account_balance",records:[],parts:[],sha256:"synthetic-sheet"}],
     files:[{id:"excluded-file",deleted_at:null}],source_options:{"excluded-file":{excluded:true,original_name:"进项.xlsx"},
@@ -33,8 +34,47 @@ function all(root){return [root,...root.children.flatMap(all)];}
   await controller.refresh();assert.equal($("coreClient").children.length,2);
   $("coreClient").value="existing";$("coreClient").onchange();assert.equal($("coreCompanyName").value,"历史企业");assert.equal($("coreTaxNo").value,"91310000123456789A");
   $("coreClient").value="";$("coreClient").onchange();assert.equal($("coreTaxNo").value,"");assert.equal($("coreTaxNo")["aria-invalid"],"false");
+  const chooseKind=kind=>{$("coreRangeKind").value=kind;$("coreRangeKind").listeners.change();};
+  chooseKind("month");$("coreRangeMonth").value="2028-02";$("coreRangeMonth").listeners.change?.();
+  assert.equal($("coreStart").value,"2028-02-01");assert.equal($("coreEnd").value,"2028-02-29");
+  assert.equal($("coreRangeMonthField").hidden,false);assert.equal($("coreRangeYearField").hidden,true);
+  assert.equal($("coreStart").readOnly,true);
+  chooseKind("quarter");$("coreRangeYear").value="2026";$("coreRangeQuarter").value="4";$("coreRangeQuarter").listeners.change?.();
+  assert.equal($("coreStart").value,"2026-10-01");assert.equal($("coreEnd").value,"2026-12-31");
+  assert.equal($("coreRangeMonthField").hidden,true);assert.equal($("coreRangeQuarterField").hidden,false);
+  chooseKind("year");$("coreRangeYear").value="2027";$("coreRangeYear").listeners.change?.();
+  assert.equal($("coreStart").value,"2027-01-01");assert.equal($("coreEnd").value,"2027-12-31");
+  assert.equal($("coreRangeQuarterField").hidden,true);
+  $("coreRangeYear").value="";$("coreRangeYear").listeners.change?.();
+  assert.equal($("coreStart").value,"");assert.equal($("coreEnd").value,"");
+  $("coreRangeKind").value="custom";$("coreRangeKind").listeners.change();
+  assert.equal($("coreStart").readOnly,false);assert.equal($("coreRangeYearField").hidden,true);
+  assert.equal(typeof $("coreDateRange").onclick,"function","custom range opens one shared calendar");
+  const day=value=>all($("coreCalendarDays")).find(n=>n["data-date"]===value);
+  const viewMonth=value=>{$("coreCalendarMonth").value=value;$("coreCalendarMonth").listeners.change();};
+  $("coreDateRange").onclick();assert.equal($("coreRangeCalendar").hidden,false);
+  viewMonth("2026-12");day("2026-12-28").onclick();
+  assert.equal($("coreStart").value,""); // One click remains an uncommitted draft.
+  viewMonth("2027-01");day("2027-01-04").onclick();
+  assert.equal($("coreStart").value,"2026-12-28");assert.equal($("coreEnd").value,"2027-01-04");
+  assert.equal($("coreRangeCalendar").hidden,false,"completed range stays open until dismissed");assert.equal($("coreDateRange")["aria-expanded"],"true");assert.match($("coreDateRangeText").textContent,/2026-12-28.*2027-01-04/);
+  assert.equal(day("2027-01-04")["aria-pressed"],"true");
+  viewMonth("2026-12");day("2026-12-20").onclick();$("coreCalendarCancel").onclick();
+  assert.equal($("coreStart").value,"2026-12-28");assert.equal($("coreEnd").value,"2027-01-04");
+  $("coreDateRange").onclick();viewMonth("2027-01");day("2027-01-20").onclick();day("2027-01-15").onclick();
+  assert.equal($("coreStart").value,"2027-01-15");assert.equal($("coreEnd").value,"2027-01-20");
+  $("coreCalendarPrev").onclick();assert.equal($("coreCalendarMonth").value,"2026-12");
+  $("coreCalendarNext").onclick();assert.equal($("coreCalendarMonth").value,"2027-01");
+  day("2027-01-15").onclick();day("2027-01-15").onclick();
+  assert.equal($("coreStart").value,"2027-01-15");assert.equal($("coreEnd").value,"2027-01-15");
+  assert.equal($("coreRangeCalendar").hidden,false);
+  $("coreRangeCalendar").listeners.keydown({key:"Escape",preventDefault(){}});assert.equal($("coreRangeCalendar").hidden,true);
+  $("coreDateRange").onclick();$("coreCalendarClear").onclick();
+  assert.equal($("coreStart").value,"");assert.equal($("coreEnd").value,"");
   for(const [id,value] of [["coreCompanyName","企业"],["coreTaxNo","91310000123456789A"],["coreStart","2026-01-01"],["coreEnd","2026-01-31"]])$(id).value=value;
   await $("coreCreateTask").onclick();
+  assert.equal($("coreRangeMonth").value,"2026-01");
+  assert.match($("coreDateRangeText").textContent,/2026-01-01.*2026-01-31/);
   const find=text=>all($("coreTaskResult")).find(n=>n.textContent===text);
   const field=label=>all($("coreTaskResult")).find(n=>n["aria-label"]===label);
   assert.equal(field("进项.pdf 允许未识别PDF页交给配置模型OCR（发送页图）"),undefined,"OCR fallback does not require a per-file checkbox");
@@ -42,6 +82,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
   await find("下载标准数据 JSON").onclick();
   assert.equal(calls.at(-1).url,"/api/enterprise/input-tasks/task/data?expected_revision=1");
   assert.deepEqual(JSON.parse(await downloads.at(-1).text()),exported);
+  assert.ok(find("采用此期间"));assert.equal($("coreStart").value,"2026-01-01");assert.equal($("coreEnd").value,"2026-01-31");
   for(const [kind,label] of [["account_balance","科目余额表"],["vat_declaration","增值税申报表"],["invoice_detail","发票明细"]]){
     const pick=field(label+"上传");pick.files=[new Blob(["synthetic material"])];await pick.onchange();
     const upload=calls.findLast(c=>c.url.endsWith("/files")).options.body;
@@ -67,6 +108,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
   failScope=true;await find("开始检查").onclick();assert.equal(continued.length,0);assert.match(errors.at(-1),/范围保存失败/);
   failScope=false;await find("开始检查").onclick();assert.deepEqual(continued,["task"]);
   assert.equal(JSON.parse(calls.findLast(c=>c.url.endsWith("/scope")).options.body).confirm,true);
+  assert.equal(JSON.parse(calls.findLast(c=>c.url.endsWith("/scope")).options.body).range_kind,"month");
   // Parsed candidates remain visible before the enterprise/check period is complete.
   sample.scope_errors={start_date:"请填写检查起始日"};
   sample.documents=[{id:"pdf",name:"销项发票_每页一张.pdf",material_type:"invoice_detail",sha256:"synthetic",pdf_candidate:true,parts:[],records:Array.from({length:12},(_,i)=>({id:"r"+i,invoice_no:"262609010000000000"+String(i).padStart(2,"0"),issue_date:"2026-01-15",source_position:`PDF第${i+1}页/发票票面`,amount_excluding_tax:i?"100.00":"12345678901234567890.0123",tax_amount:"13.00",seller_tax_no:sample.task.tax_no,buyer_tax_no:"OTHER"}))}];

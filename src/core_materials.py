@@ -824,6 +824,79 @@ def gaps(intervals, start, end):
 
 
 SCOPE_FIELDS = ("company_name", "tax_no", "start_date", "end_date")
+RANGE_KINDS = {"month": "月份", "quarter": "季度", "year": "年度", "custom": "明确起止日期"}
+
+
+def _full_month(start, end):
+    return (
+        start.day == 1
+        and start.year == end.year
+        and start.month == end.month
+        and end.day == calendar.monthrange(end.year, end.month)[1]
+    )
+
+
+def _full_quarter(start, end):
+    return (
+        start.day == 1
+        and start.month in {1, 4, 7, 10}
+        and end.year == start.year
+        and end.month == start.month + 2
+        and end.day == calendar.monthrange(end.year, end.month)[1]
+    )
+
+
+def _full_year(start, end):
+    return (
+        start.year == end.year
+        and (start.month, start.day) == (1, 1)
+        and (end.month, end.day) == (12, 31)
+    )
+
+
+def effective_range_kind(task):
+    """Return the declared mode, or a descriptive mode when older drafts omit it.
+
+    Inference never changes start_date/end_date and never decides the range; the
+    two dates remain the user's selection.
+    """
+    kind = task.get("range_kind")
+    if kind:
+        return kind
+    try:
+        start = date.fromisoformat(task.get("start_date") or "")
+        end = date.fromisoformat(task.get("end_date") or "")
+    except (ValueError, TypeError):
+        return "custom"
+    if _full_month(start, end):
+        return "month"
+    if _full_quarter(start, end):
+        return "quarter"
+    if _full_year(start, end):
+        return "year"
+    return "custom"
+
+
+def range_error(task):
+    """Validate that an explicit month/quarter/year mode covers the whole interval."""
+    kind = task.get("range_kind")
+    if not kind:
+        return ""
+    if kind not in RANGE_KINDS:
+        return "检查范围方式无效，请选择月份、季度、年度或明确起止日期。"
+    if not task.get("start_date") or not task.get("end_date"):
+        return ""
+    try:
+        start = date.fromisoformat(task["start_date"])
+        end = date.fromisoformat(task["end_date"])
+    except (ValueError, TypeError):
+        return ""
+    if start > end:
+        return ""
+    aligned = {"month": _full_month, "quarter": _full_quarter, "year": _full_year}.get(kind)
+    if aligned is not None and not aligned(start, end):
+        return f"按{RANGE_KINDS[kind]}检查时，起止日期须覆盖完整自然{RANGE_KINDS[kind]}。"
+    return ""
 
 
 def scope_errors(task):
@@ -844,11 +917,18 @@ def scope_errors(task):
                 errors[key] = "请填写有效日期。"
     if not any(key in errors for key in ("start_date", "end_date")) and task["start_date"] > task["end_date"]:
         errors["end_date"] = "检查终止日不能早于起始日。"
+    mismatch = range_error(task)
+    if mismatch:
+        errors["range_kind"] = mismatch
     return errors
 
 
 def autofill_scope(task, documents):
-    """Only unanimous explicit source metadata becomes a candidate, never date extrema."""
+    """Unanimous source identity may prefill; inspection dates are candidates only.
+
+    The user owns the inspection range. Materials are read to check that range,
+    never to choose it from their earliest/latest date or from a scan result.
+    """
     before = {key: task.get(key) for key in SCOPE_FIELDS}
     candidates = {key: {} for key in SCOPE_FIELDS}
     origins = task.setdefault("scope_origins", {})
@@ -872,15 +952,37 @@ def autofill_scope(task, documents):
             for key, value in values.items():
                 candidates[key].setdefault(value, []).append(source)
     for key, choices in candidates.items():
+        # start_date/end_date stay user decisions. They are exposed below as
+        # candidates for an explicit selection, never applied automatically.
+        if key in {"start_date", "end_date"}:
+            continue
         if not task.get(key) or origins.get(key, {}).get("kind") == "file":
             task[key] = next(iter(choices)) if len(choices) == 1 else ""
             origins.pop(key, None)
             if len(choices) == 1:
                 origins[key] = {"kind": "file", "sources": next(iter(choices.values()))}
+    # Drafts created before this rule may carry a range chosen from file
+    # metadata. Clear that origin so the user must select and confirm again;
+    # the old values remain available in scope_candidates.
+    for key in ("start_date", "end_date"):
+        if origins.get(key, {}).get("kind") == "file":
+            task[key] = ""
+            origins.pop(key, None)
     if any(task.get(key) != value for key, value in before.items()):
         task["scope_confirmed"] = False
     task["scope_candidates"] = {key: [{"value": value, "sources": sources} for value, sources in choices.items()]
                                 for key, choices in candidates.items()}
+
+
+def scope_summary(task, records):
+    return {
+        "kind": effective_range_kind(task),
+        "start_date": task.get("start_date") or "",
+        "end_date": task.get("end_date") or "",
+        "confirmed": bool(task.get("scope_confirmed")),
+        "outside_records": sum(1 for record in records if record.get("scope_status") == "outside_scope"),
+        "unknown_date_records": sum(1 for record in records if record.get("scope_status") == "unknown_date"),
+    }
 
 
 def prepare(task, documents):
@@ -891,6 +993,7 @@ def prepare(task, documents):
                 "invoice_summaries": [], "coverage": {kind: [] for kind in KINDS},
                 "evidence_links": {"company_id": task.get("company_id"), "period": [task.get("start_date"), task.get("end_date")],
                                    "source_record_ids": [], "comparison_status": "requires_confirmed_rules"},
+                "scope": scope_summary(task, []),
                 "boundary": "资料已保存；开始检查前请核对企业与检查区间。"}
     problems, notices, records = [], [], []
     coverage = {kind: [] for kind in KINDS}
@@ -989,9 +1092,17 @@ def prepare(task, documents):
                     )
                 if direction:
                     direction_coverage[direction].extend(part["period"] for part in doc["parts"] if part["period"])
-                record["in_scope"] = bool(
-                    record.get("issue_date") and task["start_date"] <= record["issue_date"] <= task["end_date"]
-                )
+                # Invoices are checked by issue date, a business date from the
+                # source. Filing/upload dates never establish the inspection range.
+                record["date_basis"] = "issue_date"
+                record["date_source"] = "source"
+                if not record.get("issue_date"):
+                    record["scope_status"] = "unknown_date"
+                elif task["start_date"] <= record["issue_date"] <= task["end_date"]:
+                    record["scope_status"] = "in_scope"
+                else:
+                    record["scope_status"] = "outside_scope"
+                record["in_scope"] = record["scope_status"] == "in_scope"
                 # Explicit detail line identity permits multi-line invoices. Without
                 # it, differing rows of the same invoice remain a conflict.
                 key = (record.get("seller_tax_no"), record.get("buyer_tax_no"), direction,
@@ -1031,13 +1142,26 @@ def prepare(task, documents):
                 else:
                     seen[key] = record
             else:
-                record["in_scope"] = bool(
-                    record["period_start"]
-                    and record["period_end"]
-                    and task["start_date"] <= record["period_start"]
-                    and record["period_end"] <= task["end_date"]
+                # Ledgers and declarations are checked by the source-stated
+                # period. A user-confirmed period is labelled separately from
+                # the original metadata; the whole interval must fit.
+                record["date_basis"] = "source_period"
+                record["date_source"] = (
+                    "user_confirmed"
+                    if (record.get("confirmed_metadata") or {}).get("period_start")
+                    else "source"
                 )
-                if record["period_start"] and not record["in_scope"]:
+                if not record.get("period_start") or not record.get("period_end"):
+                    record["scope_status"] = "unknown_date"
+                elif (
+                    task["start_date"] <= record["period_start"]
+                    and record["period_end"] <= task["end_date"]
+                ):
+                    record["scope_status"] = "in_scope"
+                else:
+                    record["scope_status"] = "outside_scope"
+                record["in_scope"] = record["scope_status"] == "in_scope"
+                if record["scope_status"] == "outside_scope":
                     problems.append(
                         issue(
                             "period_alignment",
@@ -1047,6 +1171,39 @@ def prepare(task, documents):
                         )
                     )
             records.append(record)
+        # A file is never silently filtered. Mixed or out-of-range evidence is
+        # kept with its original position and blocks readiness until handled.
+        file_records = [record for record in records if record["source_file_id"] == file_id]
+        outside = [record for record in file_records if record.get("scope_status") == "outside_scope"]
+        unknown = [record for record in file_records if record.get("scope_status") == "unknown_date"]
+        if outside:
+            problems.append(
+                issue(
+                    "record_outside_scope",
+                    f"{len(outside)} 条记录不在检查区间内，已保留原值但不纳入本次检查；"
+                    "请调整检查区间或重新提供区间内材料。",
+                    file_id,
+                    outside[0]["source_position"],
+                )
+            )
+        if unknown:
+            problems.append(
+                issue(
+                    "record_date_unknown",
+                    f"{len(unknown)} 条记录的业务日期无法识别，须核对后才能纳入正式检查。",
+                    file_id,
+                    unknown[0]["source_position"],
+                )
+            )
+        if outside and len(outside) < len(file_records):
+            problems.append(
+                issue(
+                    "mixed_scope_file",
+                    "同一文件同时含检查区间内和区间外的记录，不能静默过滤；"
+                    "请拆分或重新提供符合检查区间的材料。",
+                    file_id,
+                )
+            )
     for kind in KINDS:
         if not any(d["material_type"] == kind for d in documents):
             problems.append(issue("missing_material", "缺少" + KINDS[kind]))
@@ -1124,5 +1281,6 @@ def prepare(task, documents):
             "source_record_ids": [r["id"] for r in records if r["in_scope"]],
             "comparison_status": "requires_confirmed_rules",
         },
+        "scope": scope_summary(task, records),
         "boundary": "资料处理完成后停在规则核验之前；不生成风险结论或报告。",
     }
