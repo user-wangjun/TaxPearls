@@ -10,8 +10,9 @@ import json
 import tempfile
 import unittest
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from argon2 import PasswordHasher
 from fastapi import FastAPI
@@ -19,7 +20,7 @@ from fastapi.testclient import TestClient
 
 from src import settings  # noqa: F401 - 先加载 .env，Store 需要 FIELD_KEY
 from webapp.storage import Store
-from webapp.training_portal import register, today_cst
+from webapp.training_portal import CST, register, today_cst
 
 _passwords = PasswordHasher()
 STUDENT_COOKIE = "test_plan_cookie"
@@ -102,9 +103,18 @@ class StudyPlanTests(unittest.TestCase):
                                             "result_json", attempt_id),
                         mode, NOW, scored_at))
 
-    def _dashboard(self):
+    def _dashboard(self, *, at: datetime | None = None):
         self._login()
-        res = self.client.get("/api/training/my/dashboard")
+        current = at or datetime.fromisoformat(NOW).replace(tzinfo=CST)
+
+        class FixedDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return current.astimezone(tz) if tz else current.replace(tzinfo=None)
+
+        # 只固定工作台计算时间；登录使用真实时间，避免测试会话被判为过期。
+        with patch("webapp.training_portal.datetime", FixedDateTime):
+            res = self.client.get("/api/training/my/dashboard")
         self.assertEqual(res.status_code, 200, res.text)
         return res.json()["goals"][0]
 
@@ -174,6 +184,18 @@ class StudyPlanTests(unittest.TestCase):
             self._attempt(self.kps["KP-01"], perfect=True)  # scored_at=NOW
         plan = self._dashboard()["plan"]
         self.assertEqual([t for t in plan if t["kind"] == "review"], [])
+
+    def test_review_starts_at_seven_day_boundary(self):
+        for _ in range(3):
+            self._attempt(self.kps["KP-01"], perfect=True)
+        boundary = datetime.fromisoformat(NOW).replace(tzinfo=CST) + timedelta(days=7)
+        for at, expected in ((boundary - timedelta(seconds=1), []),
+                             (boundary, [self.kps["KP-01"]]),
+                             (boundary + timedelta(days=30), [self.kps["KP-01"]])):
+            with self.subTest(at=at.isoformat()):
+                plan = self._dashboard(at=at)["plan"]
+                self.assertEqual([t["knowledge_point_id"] for t in plan
+                                  if t["kind"] == "review"], expected)
 
     # ---- 节奏提示、缺口与边界 -------------------------------------------------
 
