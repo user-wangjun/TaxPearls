@@ -223,6 +223,40 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 const graph = fs.readFileSync("webapp/static/graph.js", "utf8");
 const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), graph.indexOf("async function loadGraph()"));
 (async () => {
+  // Empty/hidden founder results must never overwrite the clipboard or claim success.
+  {
+    const source = fs.readFileSync("webapp/static/console.js", "utf8");
+    const code = source.slice(source.indexOf("function inviteOrgTypeLabel("), source.indexOf('$("btnCreateClient").addEventListener'));
+    const nodes = new Map(), handlers = new Map(), writes = [], errors = [], toasts = [];
+    const node = id => {
+      if(!nodes.has(id))nodes.set(id,{value:"",textContent:"",hidden:false,disabled:false,
+        addEventListener:(_event,handler)=>handlers.set(id,handler)});
+      return nodes.get(id);
+    };
+    const context = {$:node, showError:message=>errors.push(message),showToast:message=>toasts.push(message),
+      navigator:{clipboard:{writeText:async value=>{writes.push(value);}}},
+      api:async()=>({code:"ABCD2345EFGH",org_name:"测试高校",org_type:"university",seats:20}),loadAdmin:async()=>{}};
+    vm.createContext(context);vm.runInContext(code,context);
+    for(const [hidden,value] of [[false,""],[false,"   "],[true,"ABCD2345EFGH"]]){
+      node("inviteReveal").hidden=hidden;node("inviteRevealCode").textContent=value;
+      await handlers.get("btnCopyInvite")();
+      assert.equal(writes.length,0);assert.equal(toasts.length,0);
+    }
+    node("inviteOrgName").value="测试高校";node("inviteOrgType").value="university";node("inviteSeats").value="20";
+    node("btnCopyInvite").disabled=true;
+    await handlers.get("btnCreateInvite")();
+    assert.equal(node("btnCopyInvite").disabled,false);
+    await handlers.get("btnCopyInvite")();
+    assert.deepEqual(writes,["ABCD2345EFGH"]);assert.equal(toasts.length,1);
+    context.navigator.clipboard.writeText=async()=>{throw new Error("denied");};
+    await handlers.get("btnCopyInvite")();
+    assert.equal(toasts.length,1);assert.ok(errors.length>=4);
+    handlers.get("btnHideInvite")();
+    assert.equal(node("inviteReveal").hidden,true);assert.equal(node("btnCopyInvite").disabled,true);
+    assert.equal(node("inviteRevealCode").textContent,"");
+    await handlers.get("btnCopyInvite")();
+    assert.deepEqual(writes,["ABCD2345EFGH"]);assert.equal(toasts.length,1);
+  }
   for (const role of ["platform_admin", "student", "org_admin", "accountant", "teacher"]) {
     const calls = [], errors = [], choices = [], nodes = new Map();
     const context = {currentUser:{id:'user',role}, graphRequest:0, graphScopes:new Map(), graphCurrent:()=>true, clearGraph(){},

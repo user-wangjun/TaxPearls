@@ -60,7 +60,7 @@ class MemberTests(unittest.TestCase):
         with self.assertRaises(AccessDenied):
             self.store.create_user('bypass',self.password,'禁止平台建号','accountant','alpha',actor=self.root)
         self.assertEqual(self.client.get('/api/users').status_code,200)
-        self.assertEqual(self.client.post('/api/invites',json={'org_name':'新机构','seats':5}).status_code,200)
+        self.assertEqual(self.client.post('/api/invites',json={'org_name':'新机构','org_type':'enterprise','seats':5}).status_code,200)
         self.login(self.owner)
         for fields in [{'role':'teacher'},{'role':'org_admin'},{'org_id':'beta'}]:
             self.assertEqual(self.client.post('/api/users',json={**body,**fields}).status_code,403)
@@ -200,7 +200,7 @@ class MemberTests(unittest.TestCase):
         self.assertIsNone(self.store.user_for_token(token))
 
     def test_founder_provenance_quota_and_legacy_upgrade_preserve_data(self):
-        invite=self.store.create_invite_code(self.root,'开户机构',5)
+        invite=self.store.create_invite_code(self.root,'开户机构',5, org_type="enterprise")
         code=auth_support.register_code(self.store,'founder@example.test')
         owner,token=self.store.register_with_code('founder@example.test',code,invite['code'],self.password, browser_session=auth_support.BROWSER)
         state=members.overview(self.store,owner,owner['org_id'])
@@ -251,7 +251,7 @@ class MemberTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.create('log-rollback-member')
             with self.assertRaises(RuntimeError):
-                self.store.create_invite_code(self.root, '回滚机构', 5)
+                self.store.create_invite_code(self.root, '回滚机构', 5, org_type="enterprise")
         self.assertEqual(self.store.list_users(), before_users)
         self.assertEqual(self.store.list_invite_codes(), before_invites)
         self.assertEqual(members.overview(self.store,self.owner,'alpha')['quota']['used'], 2)
@@ -260,7 +260,7 @@ class MemberTests(unittest.TestCase):
             'display_name':'新成员','role':'accountant'})
         self.assertEqual(response.status_code, 200, response.text)
         self.login(self.root)
-        response = self.client.post('/api/invites', json={'org_name':'已记录机构','seats':5})
+        response = self.client.post('/api/invites', json={'org_name':'已记录机构','org_type':'enterprise','seats':5})
         self.assertEqual(response.status_code, 200, response.text)
         with self.store.connect() as db:
             for action in ('create_user', 'invite_created'):

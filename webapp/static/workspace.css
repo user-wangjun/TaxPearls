@@ -490,6 +490,16 @@ body.workspace-ready #appFooter { background: transparent; color: var(--ink-2); 
 #appMain #uploadScope summary::before { color: #68879f; }
 #appMain #uploadScope summary:hover { background: #e8eef3; }
 #appMain #orgSettingsAdmin > .row { margin-top: 18px; }
+#appMain #inviteAdmin .invite-issue-form { display:grid; grid-template-columns:minmax(150px,.7fr) minmax(220px,1.6fr) minmax(200px,1fr) auto; align-items:end; }
+#appMain #inviteAdmin .invite-issue-form .field { min-width:0; margin:0; }
+#appMain #inviteAdmin .invite-issue-form > button { min-height:48px; }
+#appMain #inviteReveal[hidden] { display:none; }
+@media (max-width:1100px) {
+  #appMain #inviteAdmin .invite-issue-form { grid-template-columns:1fr 1fr; }
+}
+@media (max-width:600px) {
+  #appMain #inviteAdmin .invite-issue-form { grid-template-columns:minmax(0,1fr); }
+}
 #appMain #orgSettingsAdmin .org-logo-editor > div { flex: 1; min-width: 0; }
 
 /* Keep workspace cards comfortable to scan on wide displays. */

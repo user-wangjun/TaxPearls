@@ -233,7 +233,7 @@ class PasswordPolicyTests(unittest.TestCase):
 
     def test_registration_rejection_keeps_code_invite_quota_and_sessions_unchanged(self):
         platform = self._platform()
-        invite = self.store.create_invite_code(platform, "机构", 2)
+        invite = self.store.create_invite_code(platform, "机构", 2, org_type="enterprise")
         code = auth_support.register_code(self.store,"owner@example.com")
         with self.store.connect() as db:
             before = [tuple(row) for row in db.execute("SELECT * FROM email_tokens")]

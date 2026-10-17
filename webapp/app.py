@@ -421,8 +421,9 @@ class RegisterCompleteBody(BaseModel):
 
 
 class InviteBody(BaseModel):
-    """创始码只捆机构名称：一码一位、私聊交付，邮箱不绑定（注册侧有邮箱验证码兜底）。"""
+    """创始码捆绑机构名称和类别：一码一位、私聊交付，注册时验证邮箱。"""
     org_name: str = Field(min_length=1, max_length=120)
+    org_type: Literal['enterprise', 'university']
     seats: int = Field(default=5, ge=1, le=200)
     bound_email: str = ""
     expires_days: int = Field(default=7, ge=1, le=30)
@@ -1313,7 +1314,7 @@ def create_invite(body: InviteBody, session: str | None = Cookie(default=None, a
     _allow(actor, "platform_admin")
     try:
         invite = store.create_invite_code(actor, body.org_name, body.seats,
-                                          body.bound_email, body.expires_days)
+                                          body.bound_email, body.expires_days, org_type=body.org_type)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return invite
