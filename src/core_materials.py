@@ -59,6 +59,20 @@ def identity(value):
     return re.sub(r"\s+", "", str(value or "")).upper()
 
 
+def invoice_direction(record, tax_no):
+    direction = label(record.get("direction"))
+    if direction in {"进项", "input", "进项发票"}:
+        return "input"
+    if direction in {"销项", "output", "销项发票"}:
+        return "output"
+    seller, buyer, tax_no = identity(record.get("seller_tax_no")), identity(record.get("buyer_tax_no")), identity(tax_no)
+    if tax_no and seller == tax_no and buyer != tax_no:
+        return "output"
+    if tax_no and buyer == tax_no and seller != tax_no:
+        return "input"
+    return None
+
+
 def text(value):
     return value.isoformat() if isinstance(value, (date, datetime)) else "" if value is None else str(value)
 
@@ -1053,19 +1067,8 @@ def prepare(task, documents):
         for source in doc["records"]:
             record = {**source, "company_id": task["company_id"], "task_id": task["id"], "tenant_id": task["tenant_id"]}
             if kind == "invoice_detail":
-                direction = label(record.get("direction"))
-                direction = (
-                    "input"
-                    if direction in {"进项", "input", "进项发票"}
-                    else "output"
-                    if direction in {"销项", "output", "销项发票"}
-                    else None
-                )
+                direction = invoice_direction(record, task["tax_no"])
                 seller, buyer = identity(record.get("seller_tax_no")), identity(record.get("buyer_tax_no"))
-                if direction is None and seller == task["tax_no"] and buyer != task["tax_no"]:
-                    direction = "output"
-                elif direction is None and buyer == task["tax_no"] and seller != task["tax_no"]:
-                    direction = "input"
                 record["direction"] = direction
                 enterprise_id = seller if direction == "output" else buyer if direction == "input" else None
                 if direction is None:

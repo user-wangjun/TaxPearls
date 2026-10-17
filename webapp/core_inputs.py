@@ -346,9 +346,16 @@ def register(app, get_store, get_user, allow, static_dir):
                         {**promotion, "source_file_id": meta["id"]},
                     )
             override = options.get("confirmed_metadata", {})
+            if "direction" in override:
+                # Old file-wide overrides must not replace per-invoice evidence on reprocessing.
+                if override["direction"]:
+                    options["source_reviewed"] = False
+                override = {key: value for key, value in override.items() if key != "direction"}
+                options["confirmed_metadata"] = override
             needs_review = doc.get("ocr_candidate") or doc.get("pdf_candidate")
             doc["issues"] = [i for i in doc["issues"] if i["code"] != "invoice_status_missing"]
             for record in doc["records"]:
+                record.pop("confirmed_metadata", None)
                 record["source_metadata"] = {
                     k: record.get(k) for k in ["unit", "form_type", "period_start", "period_end", "direction"]
                 }
@@ -411,16 +418,24 @@ def register(app, get_store, get_user, allow, static_dir):
                     if override.get("form_type"):
                         part["form_type"] = override["form_type"]
                 for record in doc["records"]:
-                    record["confirmed_metadata"] = override
+                    record["confirmed_metadata"] = dict(override)
                     for key in ["unit", "form_type"]:
                         if override.get(key):
                             record[key] = override[key]
                     if override.get("period_start") and override.get("period_end"):
                         record["period_start"], record["period_end"] = override["period_start"], override["period_end"]
-                    if override.get("direction"):
-                        record["direction"] = override["direction"]
+            for record in doc["records"]:
+                direction = options.get("invoice_directions", {}).get(record["id"])
+                if direction and doc["material_type"] == "invoice_detail":
+                    record.setdefault("confirmed_metadata", {})["direction"] = direction
+                    record["direction"] = direction
             documents.append(doc)
         core_materials.autofill_scope(payload["task"], documents)
+        for doc in documents:
+            if doc["material_type"] == "invoice_detail":
+                for record in doc["records"]:
+                    extracted = {**record, "direction": record["source_metadata"].get("direction")}
+                    record["automatic_direction"] = core_materials.invoice_direction(extracted, payload["task"].get("tax_no"))
         payload["documents"] = documents
         payload["processing"] = core_materials.prepare(payload["task"], documents)
         if payload.get('policy_input'):
@@ -519,6 +534,7 @@ def register(app, get_store, get_user, allow, static_dir):
                     "source_reviewed",
                     "ocr",
                     "invoice_statuses",
+                    "invoice_directions",
                 }:
                     raise InputError("资料核对项无效。")
                 meta = change.get("confirmed_metadata", {})
@@ -535,9 +551,13 @@ def register(app, get_store, get_user, allow, static_dir):
                 if (
                     meta.get("unit") not in {None, "", "元", "千元", "万元", "亿元"}
                     or meta.get("form_type") not in {None, "", "main", "supplement"}
-                    or meta.get("direction") not in {None, "", "input", "output"}
                 ):
-                    raise InputError("核对单位、表单或方向无效。")
+                    raise InputError("核对单位或表单无效。")
+                if meta.get("direction"):
+                    raise InputError("发票进销项方向由系统逐票判断，不支持整份文件统一设置。")
+                if "direction" in meta:
+                    meta = {key: item for key, item in meta.items() if key != "direction"}
+                    change["confirmed_metadata"] = meta
                 if meta.get("period_start") or meta.get("period_end"):
                     if not all(isinstance(meta.get(k), str) for k in ["period_start", "period_end"]):
                         raise InputError("核对期间须为起止日期文本。")
@@ -555,6 +575,11 @@ def register(app, get_store, get_user, allow, static_dir):
                 document = next((d for d in payload["documents"] if d["id"] == file_id), None)
                 records = {r["id"]: r for r in document["records"]} if document else {}
                 options = payload["source_options"][file_id]
+                directions = change.get("invoice_directions", options.get("invoice_directions", {}))
+                if "invoice_directions" in change and (not isinstance(directions, dict) or (directions and options["material_type"] != "invoice_detail") or set(directions) - set(records)):
+                    raise InputError("只能核对当前文件已识别的逐票进销项方向。")
+                if any(not isinstance(item, str) or item not in {"", "input", "output"} for item in directions.values()):
+                    raise InputError("逐票进销项方向无效。")
                 if statuses and (options["material_type"] != "invoice_detail" or not options["original_name"].lower().endswith(".pdf") or set(statuses) - set(records)):
                     raise InputError("只能核对当前文件已识别的PDF发票状态。")
                 for record_id, status in statuses.items():
@@ -567,7 +592,8 @@ def register(app, get_store, get_user, allow, static_dir):
                         if original and new_value and original != new_value:
                             raise InputError("核对状态与票面识别值冲突，请核对或排除此原件。")
                 if (
-                    (meta != options.get("confirmed_metadata", {}) or statuses != options.get("invoice_statuses", {}))
+                    (meta != options.get("confirmed_metadata", {}) or statuses != options.get("invoice_statuses", {})
+                     or directions != options.get("invoice_directions", {}))
                     and "source_reviewed" not in change
                 ):
                     change["source_reviewed"] = False

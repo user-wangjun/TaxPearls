@@ -118,11 +118,11 @@ class MaterialExportTests(unittest.TestCase):
     def test_confirmed_values_keep_original_context_and_ocr_evidence(self):
         payload = self.payload()
         row = payload["processing"]["records"][0]
-        row.update(unit="万元", confirmed_metadata={"unit": "万元", "private": "internal"},
+        row.update(unit="万元", confirmed_metadata={"unit": "万元", "direction": "input", "private": "internal"},
                    confirmed_invoice_statuses={"void_status": "正常"})
         row["field_sources"]["amount_excluding_tax"].update(origin="ocr_candidate", quote="合计100.012300")
         result = material_export.build(payload)["records"][0]
         self.assertEqual(result["context"]["unit"], "万元")
         self.assertEqual(result["source"]["context"], {"extracted": {"unit": "元"}, "confirmed": {"unit": "万元"}})
         self.assertEqual(result["source"]["fields"]["amount_excluding_tax"]["quote"], "合计100.012300")
-        self.assertEqual(result["source"]["confirmed_fields"], {"void_status": "正常"})
+        self.assertEqual(result["source"]["confirmed_fields"], {"void_status": "正常", "direction": "input"})
