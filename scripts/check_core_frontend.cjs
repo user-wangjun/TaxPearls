@@ -8,18 +8,25 @@ class Node {
   setAttribute(key,value){this[key]=value;}
   addEventListener(key,fn){this.listeners[key]=fn;}
   click(){this.clicked=true;}
+  focus(){this.focused=true;}
+  showModal(){this.open=true;}
+  close(value=""){this.returnValue=value;this.open=false;this.listeners.close?.();}
   querySelectorAll(selector){const tags=selector.split(",");return all(this).filter(n=>tags.includes(n.tag));}
 }
 function all(root){return [root,...root.children.flatMap(all)];}
 (async()=>{
   const ids=new Map(),$=id=>{if(!ids.has(id))ids.set(id,new Node("div"));return ids.get(id);};
-  const errors=[],calls=[],continued=[],downloads=[];let actor={id:"one",role:"org_admin"},fail=false,failScope=false,delay=null;
+  const errors=[],calls=[],continued=[],downloads=[];let actor={id:"one",role:"org_admin"},fail=false,failScope=false,delay=null,failDelete=false;
   const exported={schema_version:"taxpearls.material-data.v1",task:{},records:[{id:"clean-record",quality:{requires_source_review:true}}],sources:[]};
   const sample={id:"task",revision:1,task:{company_name:"企业",tax_no:"91310000123456789A",start_date:"2026-01-01",end_date:"2026-01-31",range_kind:"month",
       scope_origins:{},scope_candidates:{start_date:[{value:"2026-01-01",sources:[{file_id:"f",position:"Sheet1"}]}],end_date:[{value:"2026-01-31",sources:[{file_id:"f",position:"Sheet1"}]}]},applicable_forms:null},
     processing:{status:"needs_completion",issues:[],notices:[],records:[],scope:{kind:"month",start_date:"2026-01-01",end_date:"2026-01-31",confirmed:false,outside_records:0,unknown_date_records:0},boundary:"规则核验前"},
-    documents:[],files:[{id:"excluded-file",deleted_at:null}],source_options:{"excluded-file":{excluded:true,original_name:"进项.xlsx"}},versions:[]};
+    documents:[{id:"review-pdf",name:"进项.pdf",material_type:"invoice_detail",records:[],parts:[],sha256:"synthetic-pdf",pdf_candidate:true},
+      {id:"review-sheet",name:"余额.xlsx",material_type:"account_balance",records:[],parts:[],sha256:"synthetic-sheet"}],
+    files:[{id:"excluded-file",deleted_at:null}],source_options:{"excluded-file":{excluded:true,original_name:"进项.xlsx"},
+      "review-pdf":{original_name:"进项.pdf",ocr:false,source_reviewed:false},"review-sheet":{original_name:"余额.xlsx",ocr:false}},versions:[]};
   const api=async(url,options)=>{calls.push({url,options});if(delay)return await delay;
+    if(options?.method==="DELETE"){if(failDelete)throw new Error("测试删除失败");return {id:"task",deleted:true};}
     if(failScope&&url.endsWith("/scope"))throw new Error("测试范围保存失败");
     if(fail&&url.endsWith("/prepare"))throw new Error("测试保存失败");if(url.includes("/data?"))return structuredClone(exported);return url==="/api/clients"?[{id:"existing",name:"历史企业",taxpayer_id:"91310000123456789A"}]:url==="/api/enterprise/input-tasks"&&!options?[]:structuredClone(sample);};
   const context={document:{createElement:tag=>new Node(tag)},URL:{createObjectURL(blob){downloads.push(blob);return "blob:export";},revokeObjectURL(){}},Blob,setTimeout,console,FormData,};vm.createContext(context);vm.runInContext(fs.readFileSync("webapp/static/core-inputs.js","utf8"),context);
@@ -70,6 +77,8 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.match($("coreDateRangeText").textContent,/2026-01-01.*2026-01-31/);
   const find=text=>all($("coreTaskResult")).find(n=>n.textContent===text);
   const field=label=>all($("coreTaskResult")).find(n=>n["aria-label"]===label);
+  assert.equal(field("进项.pdf 允许未识别PDF页交给配置模型OCR（发送页图）"),undefined,"OCR fallback does not require a per-file checkbox");
+  assert.equal(field("进项.pdf 已对照原页核实提取候选的字段、金额、购销方和所属期").checked,false);
   await find("下载标准数据 JSON").onclick();
   assert.equal(calls.at(-1).url,"/api/enterprise/input-tasks/task/data?expected_revision=1");
   assert.deepEqual(JSON.parse(await downloads.at(-1).text()),exported);
@@ -89,7 +98,9 @@ function all(root){return [root,...root.children.flatMap(all)];}
   fail=true;await find("保存核对并重新整理资料").onclick();assert.match(errors.at(-1),/保存失败/);assert.equal(forms.value,"附表一");assert.equal(forms.disabled,false);
   fail=false;await find("保存核对并重新整理资料").onclick();const write=calls.findLast(c=>c.url.endsWith("/prepare"));assert.deepEqual(JSON.parse(write.options.body).applicable_forms,["附表一"]);
   assert.equal(JSON.parse(write.options.body).mapping_mode,"ai");
-  await find("恢复资料：进项.xlsx").onclick();const restored=calls.findLast(c=>c.url.endsWith("/prepare"));assert.deepEqual(JSON.parse(restored.options.body).source_options,{"excluded-file":{excluded:false}});
+  assert.equal(JSON.parse(write.options.body).source_options["review-pdf"].ocr,true,"review save keeps PDF OCR fallback enabled for older tasks");
+  assert.equal(JSON.parse(write.options.body).source_options["review-pdf"].source_reviewed,false,"automatic OCR does not confirm source review");
+  await find("恢复资料：进项.xlsx").onclick();const restored=calls.findLast(c=>c.url.endsWith("/prepare"));assert.deepEqual(JSON.parse(restored.options.body).source_options,{"excluded-file":{excluded:false,ocr:true}});
   assert.equal(JSON.parse(restored.options.body).mapping_mode,"ai");
   $("coreTaxNo").value="bad";$("coreTaxNo").listeners.input();assert.equal($("coreTaxNo")["aria-invalid"],"true");
   const beforeScope=calls.length;await find("开始检查").onclick();assert.equal(calls.length,beforeScope);assert.equal(continued.length,0);
@@ -133,5 +144,21 @@ function all(root){return [root,...root.children.flatMap(all)];}
   delay=null;await controller.openTask("task");
   delay=new Promise(r=>resolve=r);const pending=find("重新读取任务").onclick();actor={id:"three",role:"org_admin"};controller.reset();resolve(structuredClone(sample));await pending;
   assert.equal($("coreTaskResult").children.length,0);assert.equal($("coreCompanyName").value,"");
+  delay=null;await controller.openTask("task");
+  assert.equal(typeof find("删除本次任务")?.onclick,"function","task has an explicit deletion action");
+  const beforeDelete=calls.length,cancelDelete=find("删除本次任务").onclick();assert.equal($("coreDeleteDialog").open,true,"confirmation is an in-page modal");assert.equal($("coreDeleteTaskName").textContent,"企业");
+  assert.equal(typeof $("coreDeleteDialog").listeners.keydown,"function");$("coreDeleteDialog").listeners.keydown({key:"Tab",target:$("coreDeleteConfirm"),preventDefault(){}});assert.equal($("coreDeleteCancel").focused,true);
+  $("coreDeleteCancel").onclick();await cancelDelete;assert.equal(calls.length,beforeDelete,"cancel does not send DELETE");
+  failDelete=true;const failedDelete=find("删除本次任务").onclick();$("coreDeleteConfirm").onclick();await failedDelete;assert.match(errors.at(-1),/删除失败/);assert.ok(find("删除本次任务"));assert.equal($("coreCompanyName").value,"企业");
+  failDelete=false;const confirmedDelete=find("删除本次任务").onclick();$("coreDeleteConfirm").onclick();await confirmedDelete;
+  const deletion=calls.findLast(c=>c.options?.method==="DELETE");assert.equal(deletion.url,"/api/enterprise/input-tasks/task");assert.deepEqual(JSON.parse(deletion.options.body),{expected_revision:1,confirm:true});
+  assert.equal($("coreTaskResult").children.length,0);assert.equal($("coreCompanyName").value,"");assert.equal($("coreStart").value,"");
+  await controller.openTask("task");let finishDelete;delay=new Promise(resolve=>finishDelete=resolve);
+  const pendingDelete=find("删除本次任务").onclick();$("coreDeleteConfirm").onclick();await Promise.resolve();
+  actor={id:"four",role:"org_admin"};controller.reset();delay=null;await controller.openTask("task");
+  finishDelete({id:"task",deleted:true});await pendingDelete;
+  assert.ok(find("删除本次任务"),"late deletion result cannot clear a new session's task");assert.equal($("coreCompanyName").value,"企业");
+  const beforeReset=calls.length,resetDialog=find("删除本次任务").onclick();controller.reset();await resetDialog;assert.equal($("coreDeleteDialog").open,false);assert.equal(calls.length,beforeReset,"session reset cancels an open confirmation");
+  actor={id:"four",role:"accountant"};controller.reset();await controller.openTask("task");assert.equal(find("删除本次任务"),undefined,"task deletion follows administrator-only material deletion permissions");
   console.log("Core frontend: scope validation, upload dispatch, unsaved/session guards, candidate/standard record distinction, three material tables, exact decimal display, paginated invoice edits and full save passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});
