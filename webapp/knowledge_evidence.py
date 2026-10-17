@@ -251,7 +251,8 @@ def register(app, get_store, get_user, allow):
                     else:
                         changed.append(rid)
                         payload["tax_checks"][rid] = {"bundle": fresh, "ai": None, "stale": False,
-                                                      "analyzed_at": members.now(), "input_revision": view["revision"], "cached": False}
+                                                      "analyzed_at": members.now(), "input_revision": view["revision"], "cached": False,
+                                                      "input_scope": {key: payload["task"][key] for key in core_inputs.core_materials.SCOPE_FIELDS}}
             from webapp.core_reports import summary
             payload["tax_check_summary"] = summary(payload["tax_checks"])
             revision = batches.append_revision(store, user, task_id, view["revision"], "analysis", payload) if changed or policy_changed else view["revision"]
@@ -300,6 +301,10 @@ def register(app, get_store, get_user, allow):
             if body.expected_revision != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
             payload = deepcopy(core_inputs.latest(view))
+            try:
+                core_inputs.require_scope(payload)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
             source_task = payload["task"]
             synthetic = any(marker in source_task["company_name"] for marker in ("纯合成测试", "仿真"))
             task = {"audit_task_id": body.task_id, "tax_type": "VAT", "period_start": source_task["start_date"],
@@ -324,7 +329,7 @@ def register(app, get_store, get_user, allow):
             if not payload:
                 return {"bundle": package, "saved": False, "ai": None}
             old = payload.get("tax_checks", {}).get(body.rule_id)
-            if old and old["bundle"]["content_hash"] == package["content_hash"] and (not body.use_ai or (old.get("ai") or {}).get("validation_version") == AI_VALIDATION_VERSION):
+            if old and not old.get("stale") and old["bundle"]["content_hash"] == package["content_hash"] and (not body.use_ai or (old.get("ai") or {}).get("validation_version") == AI_VALIDATION_VERSION):
                 return {**old, "revision": view["revision"], "cached": True, "saved": True}
             key = (user["org_id"], body.task_id, package["content_hash"])
             with _LOCK:
@@ -339,7 +344,8 @@ def register(app, get_store, get_user, allow):
                         raise AccessDenied("资料已变化，请重新核对后再分析。", 409)
                 result = analyze(package) if body.use_ai else None
                 slot = {"bundle": package, "ai": result, "stale": False, "analyzed_at": members.now(),
-                        "input_revision": view["revision"], "cached": False}
+                        "input_revision": view["revision"], "cached": False,
+                        "input_scope": {key: payload["task"][key] for key in core_inputs.core_materials.SCOPE_FIELDS}}
                 payload.setdefault("tax_checks", {})[body.rule_id] = slot
                 from webapp.core_reports import summary
                 payload["tax_check_summary"] = summary(payload["tax_checks"])

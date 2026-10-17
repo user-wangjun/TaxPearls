@@ -45,6 +45,7 @@ def project(view):
     core_policies.project(value)
     return {
         **value,
+        "scope_errors": scope_errors(value),
         "id": view["id"],
         "revision": view["revision"],
         "files": view["files"],
@@ -53,6 +54,49 @@ def project(view):
             {"revision": v["revision"], "kind": v["kind"], "created_at": v["created_at"]} for v in view["versions"]
         ],
     }
+
+
+def scope_errors(payload):
+    errors = core_materials.scope_errors(payload["task"])
+    for item in payload.get("processing", {}).get("issues", []):
+        if item["code"] == "company_conflict":
+            errors["tax_no"] = "文件税号与任务企业冲突，请核对原件或排除不属于本企业的材料。"
+    return errors
+
+
+def require_scope(payload):
+    errors = scope_errors(payload)
+    if errors or not payload["task"].get("scope_confirmed", True):
+        raise ValueError("请先核对企业与检查区间：" + "；".join(list(errors.values()) or ["文件读取的字段须确认后才能开始检查。 "]))
+
+
+def scope_values(value):
+    result = {}
+    for key in core_materials.SCOPE_FIELDS:
+        raw = value.get(key, "")
+        if not isinstance(raw, str) or len(raw) > 200:
+            raise InputError("企业与检查区间须为不超过200字的文本。")
+        result[key] = core_materials.identity(raw) if key == "tax_no" else raw.strip()
+    return result
+
+
+def company_for(db, store, user, task, client_id=None, *, create=False):
+    if client_id is not None and (not isinstance(client_id, str) or len(client_id) > 100):
+        raise InputError("企业选择无效。")
+    company = db.execute("SELECT * FROM clients WHERE org_id=? AND id=?", (user["org_id"], client_id)).fetchone() if client_id else None
+    if client_id:
+        if not company or (user["role"] == "accountant" and company["accountant_id"] != user["id"]):
+            raise AccessDenied("选定企业不存在或无权访问。", 404)
+        if core_materials.identity(company["taxpayer_id"]) != task["tax_no"]:
+            raise InputError("所选企业与填写税号不一致，请重新选择或改为新企业。")
+    if not company and task["tax_no"]:
+        company = next((c for c in db.execute("SELECT * FROM clients WHERE org_id=?", (user["org_id"],))
+                        if core_materials.identity(c["taxpayer_id"]) == task["tax_no"]), None)
+        if company and user["role"] == "accountant" and company["accountant_id"] != user["id"]:
+            raise AccessDenied()
+    if company is None and create:
+        company = store._upsert_client(db, user, task["company_name"], task["tax_no"])
+    return company
 
 
 def forms(value):
@@ -118,48 +162,24 @@ def register(app, get_store, get_user, allow, static_dir):
         if set(value) - {"company_name", "tax_no", "start_date", "end_date", "client_id", "applicable_forms"}:
             raise HTTPException(422, "任务包含未知字段。")
         try:
-            required = ["company_name", "tax_no", "start_date", "end_date"]
-            if any(not isinstance(value.get(k), str) or not 0 < len(value[k].strip()) <= 200 for k in required):
-                raise InputError("请先填写企业名称、税号和检查起止日期。")
-            start, end = value["start_date"], value["end_date"]
-            if date.fromisoformat(start).isoformat() != start or date.fromisoformat(end).isoformat() != end:
-                raise InputError("检查日期须为YYYY-MM-DD格式。")
-            if date.fromisoformat(start) > date.fromisoformat(end):
-                raise InputError("检查起始日期不能晚于终止日期。")
-            tax_no = core_materials.identity(value["tax_no"])
-            if not tax_no.isalnum() or not 8 <= len(tax_no) <= 20 or not tax_no.isascii():
-                raise InputError("税号须为8至20位字母或数字。")
+            fields = scope_values(value)
             applicable = forms(value.get("applicable_forms"))
             store = get_store()
-            batches._key()  # Fail before creating a company when encrypted retention is unavailable.
+            batches._key()
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 current_actor(db, user, batches.ROLES)
-                client_id = value.get("client_id")
-                company = next(
-                    (
-                        c
-                        for c in db.execute("SELECT * FROM clients WHERE org_id=?", (user["org_id"],))
-                        if core_materials.identity(c["taxpayer_id"]) == tax_no
-                    ),
-                    None,
-                )
-                if client_id and (not company or client_id != company["id"]):
-                    raise AccessDenied("选定企业不存在、无权访问或税号不一致。", 404)
-                if company and user["role"] == "accountant" and company["accountant_id"] != user["id"]:
-                    raise AccessDenied()
-                if company is None:
-                    company = store._upsert_client(db, user, value["company_name"].strip(), tax_no)
-                client_id = company["id"]
+                company = company_for(db, store, user, fields, value.get("client_id"),
+                                      create=not core_materials.scope_errors(fields))
+                client_id = company["id"] if company else None
                 task_id = secrets.token_hex(16)
                 task = {
                     "id": task_id,
                     "company_id": client_id,
                     "tenant_id": user["org_id"],
-                    "company_name": value["company_name"].strip(),
-                    "tax_no": tax_no,
-                    "start_date": start,
-                    "end_date": end,
+                    **fields,
+                    "scope_confirmed": not core_materials.scope_errors(fields),
+                    "scope_origins": {key: {"kind": "manual"} for key, val in fields.items() if val},
                     "applicable_forms": applicable,
                 }
                 payload = {
@@ -322,6 +342,7 @@ def register(app, get_store, get_user, allow, static_dir):
                     if override.get("direction"):
                         record["direction"] = override["direction"]
             documents.append(doc)
+        core_materials.autofill_scope(payload["task"], documents)
         payload["documents"] = documents
         payload["processing"] = core_materials.prepare(payload["task"], documents)
         if payload.get('policy_input'):
@@ -466,6 +487,50 @@ def register(app, get_store, get_user, allow, static_dir):
                 raise InputError("映射方式无效。")
             revision = batches.append_revision(get_store(), user, task_id, revision, "edit", payload)
             return await run_in_threadpool(process, user, task_id, revision, ai=mode == "ai")
+        except (InputError, ValueError, batches.MaterialStorageError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/enterprise/input-tasks/{task_id}/scope")
+    async def update_scope(task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, store = actor(session), get_store()
+        value = await body(request)
+        try:
+            if set(value) - {*core_materials.SCOPE_FIELDS, "client_id", "expected_revision", "confirm"}:
+                raise InputError("请求包含未知字段。")
+            if "confirm" in value and type(value["confirm"]) is not bool:
+                raise InputError("确认标记须为布尔值。")
+            view = batches.read(store, user, task_id)
+            if value.get("expected_revision") != view["revision"]:
+                raise AccessDenied("任务版本已变化，请重新读取。", 409)
+            payload = deepcopy(latest(view))
+            with store.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                batch = batches._authorize(db, user, task_id)
+                if type(value.get("expected_revision")) is not int or value["expected_revision"] != batch["revision"]:
+                    raise AccessDenied("任务版本已变化，请重新读取。", 409)
+                task = payload["task"]
+                previous_task = deepcopy(task)
+                fields = scope_values(value)
+                for key, val in fields.items():
+                    if val != task[key]:
+                        task.setdefault("scope_origins", {})[key] = {"kind": "manual"}
+                task.update(fields)
+                task["scope_confirmed"] = False
+                payload["processing"] = core_materials.prepare(task, payload["documents"])
+                errors = scope_errors(payload)
+                confirm = value.get("confirm", False) and not errors
+                company = company_for(db, store, user, task, value.get("client_id"), create=confirm)
+                task["company_id"] = company["id"] if company else batch["client_id"]
+                task["scope_confirmed"] = confirm
+                payload["processing"] = core_materials.prepare(task, payload["documents"])
+                if any(previous_task[key] != task[key] for key in core_materials.SCOPE_FIELDS):
+                    for slot in payload.get("tax_checks", {}).values():
+                        slot.setdefault("input_scope", {key: previous_task[key] for key in core_materials.SCOPE_FIELDS})
+                        slot["stale"] = True
+                if task != previous_task:
+                    db.execute("UPDATE material_batches SET client_id=? WHERE id=?", (task["company_id"], task_id))
+                    batches._append(db, batch, user, "edit", payload)
+            return read(user, task_id)
         except (InputError, ValueError, batches.MaterialStorageError) as exc:
             raise HTTPException(422, str(exc)) from None
 
