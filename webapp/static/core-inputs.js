@@ -150,7 +150,19 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     if(p.notices.length){const notes=el("details");notes.append(el("summary","",`来源说明（${p.notices.length}）`));for(const n of p.notices)notes.append(el("p","muted",n.message+(n.source_position?" · "+n.source_position:"")));root.append(notes);}
     const evidence=el("details");evidence.append(el("summary","",recordsPending?`标准记录与字段来源（待整理；已解析候选 ${parsedCount} 条）`:`标准记录与字段来源（${p.records.length}）`));if(recordsPending)evidence.append(el("p","muted","解析候选已按文件展示在上方；补全范围并重新整理后，此处显示标准记录及字段来源。"));
     for(const r of p.records.slice(0,100)){const card=el("section","material-card");card.append(el("p","",`${kinds[r.material_type]} · ${r.source_position} · ${r.in_scope?"检查区间内":"区间外保留"}${r.duplicate_of?" · 重复来源":""}`));const raw=el("pre","",JSON.stringify(r,null,2));raw.style.whiteSpace="pre-wrap";raw.style.overflowWrap="anywhere";card.append(raw);evidence.append(card);}if(p.records.length>100)evidence.append(el("p","muted","页面预览前100条；下载整理结果包含全部记录。"));root.append(evidence);
-    const exportButton=button("下载整理结果 JSON",()=>{const blob=new Blob([JSON.stringify(current,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download="基础资料整理-"+current.id+".json";link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});root.append(exportButton);
+    const exportButton=button("下载标准数据 JSON",async()=>{
+      if(busy||!enabled())return;
+      if(dirty||scopeDirty){showError("请先保存资料与检查范围，再下载标准数据。");return;}
+      const owner=user()?.id,ticket=generation,id=current.id,revision=current.revision;
+      busy=true;exportButton.disabled=true;
+      try{
+        const data=await api(base+"/"+encodeURIComponent(id)+"/data?expected_revision="+revision);
+        if(owner!==user()?.id||ticket!==generation||!enabled()||current?.id!==id||current.revision!==revision)return;
+        const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),link=document.createElement("a");
+        link.href=url;link.download="标准材料数据-"+id+".json";link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+      }catch(error){if(owner===user()?.id&&ticket===generation)showError(error.message);}
+      finally{if(ticket===generation){busy=false;exportButton.disabled=false;}}
+    });root.append(exportButton);
     const trace=el("details");trace.append(el("summary","","版本与操作记录"));for(const v of current.versions)trace.append(el("p","muted",`版本 ${v.revision} · ${v.kind} · ${v.created_at}`));root.append(trace);
   }
   async function history(){const owner=user()?.id,ticket=generation,rows=await api(base);if(owner!==user()?.id||ticket!==generation||!enabled())return;const root=$("coreTaskHistory");root.replaceChildren(el("h3","","继续资料处理任务"));for(const row of rows)root.append(button(`${row.task.company_name||"待识别企业"} · ${row.task.start_date||"待确认"} 至 ${row.task.end_date||"待确认"} · ${states[row.status]||row.status}`,()=>action(()=>api(base+"/"+row.id))));}

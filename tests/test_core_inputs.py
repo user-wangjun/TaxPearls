@@ -716,6 +716,34 @@ class CoreAPITests(unittest.TestCase):
         return self.client.post(f"/api/enterprise/input-tasks/{task['id']}/scope",
                                 json={**fields, "expected_revision": task["revision"], **changes})
 
+    def test_material_export_contains_normalized_facts_and_enforces_acl_and_revision(self):
+        task = self.upload(self.create(), "invoice_detail")
+        url = f"/api/enterprise/input-tasks/{task['id']}"
+        export_url = url + f"/data?expected_revision={task['revision']}"
+        before = self.client.get(url).json()
+        response = self.client.get(export_url)
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(result["schema_version"], "taxpearls.material-data.v1")
+        self.assertEqual(result["records"][0]["fields"]["invoice_no"], "12345678901234567890")
+        self.assertEqual(result["records"][0]["fields"]["amount_excluding_tax"], "100.0123")
+        self.assertNotIn("documents", result)
+        self.assertNotIn("events", result)
+        self.assertNotIn("versions", result)
+        self.assertEqual(set(result), {"schema_version", "task", "records", "sources"})
+        self.assertNotIn("quality", result)
+        self.assertTrue(before["processing"]["issues"])
+        after = self.client.get(url).json()
+        # Authorized reads append access audit events; the material snapshot stays unchanged.
+        self.assertEqual({k: v for k, v in after.items() if k != "events"},
+                         {k: v for k, v in before.items() if k != "events"})
+        self.assertEqual(after["processing"]["issues"], before["processing"]["issues"])
+        self.assertEqual(self.client.get(url + "/data?expected_revision=0").status_code, 409)
+        self.login(self.foreign)
+        self.assertEqual(self.client.get(export_url).status_code, 404)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get(export_url).status_code, 401)
+
     def test_blank_draft_upload_autofill_and_explicit_confirmation(self):
         task = self.client.post("/api/enterprise/input-tasks", json={}).json()
         self.assertFalse(task["task"]["scope_confirmed"])
