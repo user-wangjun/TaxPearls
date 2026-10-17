@@ -173,7 +173,8 @@ def initialize(store) -> None:
         # Existing P1 databases predate configurable organization logos.
         columns = {row["name"] for row in db.execute("PRAGMA table_info(org_settings)")}
         for name, sql_type in (
-            ("logo_mime", "TEXT"), ("logo_bytes", "BLOB"), ("logo_updated_at", "TEXT")
+            ("logo_mime", "TEXT"), ("logo_bytes", "BLOB"), ("logo_updated_at", "TEXT"),
+            ("org_type", "TEXT CHECK (org_type IN ('enterprise','university'))")
         ):
             if name not in columns:
                 db.execute(f"ALTER TABLE org_settings ADD COLUMN {name} {sql_type}")
@@ -212,6 +213,10 @@ def initialize(store) -> None:
                 created_at TEXT NOT NULL,
                 CHECK (redeemed_by IS NULL OR redeemed_at IS NOT NULL)
             )""")
+        # Old invitations have no reliable type; keep NULL instead of guessing.
+        if "org_type" not in {row["name"] for row in db.execute("PRAGMA table_info(invite_codes)")}:
+            db.execute("ALTER TABLE invite_codes ADD COLUMN org_type TEXT "
+                       "CHECK (org_type IN ('enterprise','university'))")
         db.execute("""CREATE TABLE IF NOT EXISTS org_quota (
                 org_id TEXT PRIMARY KEY,
                 seats INTEGER NOT NULL,

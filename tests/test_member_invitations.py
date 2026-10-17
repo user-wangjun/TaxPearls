@@ -93,7 +93,7 @@ class MemberInvitationTests(unittest.TestCase):
         user,_ = self.redeem({'code':' aI-o1-2345 6789 '})
         self.assertEqual(user['role'],'accountant')
         with self.assertRaises(ValueError): self.redeem({'code':link['code'][:8]},'another@example.com')
-        founder = self.store.create_invite_code(self.root,'另一个机构',5)
+        founder = self.store.create_invite_code(self.root,'另一个机构',5, org_type="enterprise")
         with self.store.connect() as db:
             db.execute('UPDATE invite_codes SET token_hash=? WHERE token_hash=?',(_hash_token(unusual),_hash_token(founder['code'])))
         with self.assertRaisesRegex(ValueError,'无效'): self.redeem({'code':unusual},'ambiguous@example.com')
@@ -251,7 +251,7 @@ class MemberInvitationTests(unittest.TestCase):
         with self.store.connect() as db:
             db.execute("UPDATE member_invitations SET created_at='2000-01-01T00:00:00+00:00',updated_at=created_at")
         self.redeem(link)  # No implicit expiry even on old invitation rows.
-        founder=self.store.create_invite_code(self.root,'长凭证兼容',5)
+        founder=self.store.create_invite_code(self.root,'长凭证兼容',5, org_type="enterprise")
         long_code='Z'*32
         with self.store.connect() as db:
             db.execute('UPDATE invite_codes SET token_hash=? WHERE token_hash=?',(_hash_token(long_code),_hash_token(founder['code'])))

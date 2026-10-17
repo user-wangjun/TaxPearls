@@ -241,14 +241,14 @@ class Store:
 
     def _org_settings(self, db, org_id):
         row = db.execute(
-            """SELECT org_id,display_name,report_title,footer_text,logo_mime,logo_updated_at
+            """SELECT org_id,org_type,display_name,report_title,footer_text,logo_mime,logo_updated_at
                FROM org_settings WHERE org_id=?""", (org_id,),
         ).fetchone()
         if row:
             result = dict(row)
             result["has_logo"] = bool(result["logo_mime"])
             return result
-        return {**self.ORG_DEFAULTS, "org_id": org_id}
+        return {**self.ORG_DEFAULTS, "org_id": org_id, "org_type": None}
 
     def get_org_settings(self, org_id: str, *, actor=None) -> dict[str, Any]:
         with self.connect() as db:
@@ -428,10 +428,11 @@ class Store:
         return self._with_email(dict(row)) if row else None
 
     def create_invite_code(self, creator: dict[str, Any], org_name: str, seats: int,
-                           bound_email: str = "", expires_days: int = INVITE_CODE_DAYS) -> dict[str, Any]:
+                           bound_email: str = "", expires_days: int = INVITE_CODE_DAYS,
+                           *, org_type: str) -> dict[str, Any]:
         """平台管理员签发一次性创始码。明文只在此刻返回一次。
 
-        创始码只与机构名称捆绑（不绑邮箱）：一码一位、私聊交付；注册时
+        创始码与机构名称、类别捆绑（不绑邮箱）：一码一位、私聊交付；注册时
         仍须通过邮箱验证码核验，构成「码 + 邮箱验证」双因子。bound_email
         留空即不绑定（保留参数以兼容旧码）。
         """
@@ -440,6 +441,8 @@ class Store:
         org_name = (org_name or "").strip()
         if not org_name:
             raise ValueError("机构名称不能为空")
+        if org_type not in ("enterprise", "university"):
+            raise ValueError("请选择机构类别：企业或高校")
         if not isinstance(seats, int) or not 1 <= seats <= 200:
             raise ValueError("席位须为 1–200 的整数")
         address = _validate_email(bound_email) if (bound_email or "").strip() else ""
@@ -450,14 +453,14 @@ class Store:
             current_actor(db, creator, {'platform_admin'})
             db.execute(
                 """INSERT INTO invite_codes
-                       (token_hash,org_name,seats,bound_email,expires_at,revoked,created_by,created_at)
-                   VALUES (?,?,?,?,?,0,?,?)""",
-                (_hash_token(_normalize_invite_code(code)), org_name, seats, address, expires,
+                       (token_hash,org_name,org_type,seats,bound_email,expires_at,revoked,created_by,created_at)
+                   VALUES (?,?,?,?,?,?,0,?,?)""",
+                (_hash_token(_normalize_invite_code(code)), org_name, org_type, seats, address, expires,
                  creator["id"], _now()),
             )
             self._log(db, creator, 'invite_created', 'invite', _hash_token(_normalize_invite_code(code)),
-                      f'org={org_name};seats={seats}')
-        return {"code": code, "org_name": org_name, "seats": seats,
+                      f'org={org_name};org_type={org_type};seats={seats}')
+        return {"code": code, "org_name": org_name, "org_type": org_type, "seats": seats,
                 "bound_email": address, "expires_at": expires}
 
     def list_invite_codes(self, *, actor=None) -> list[dict[str, Any]]:
@@ -467,7 +470,7 @@ class Store:
             if actor is not None:
                 current_actor(db, actor, {'platform_admin'})
             rows = db.execute(
-                """SELECT i.token_hash,i.org_name,i.seats,i.bound_email,i.expires_at,i.redeemed_by,
+                """SELECT i.token_hash,i.org_name,i.org_type,i.seats,i.bound_email,i.expires_at,i.redeemed_by,
                           i.redeemed_at,i.revoked,i.created_at,u.email AS redeemed_email
                    FROM invite_codes i LEFT JOIN users u ON u.id=i.redeemed_by
                    ORDER BY i.created_at DESC"""
@@ -511,7 +514,7 @@ class Store:
                     # Both tables are searched by the FULL hash. Never dispatch
                     # by length/prefix, even for legacy or deliberately crafted rows.
                     invite = db.execute(
-                        """SELECT org_name,seats,bound_email,expires_at,revoked,redeemed_by
+                        """SELECT org_name,org_type,seats,bound_email,expires_at,revoked,redeemed_by
                            FROM invite_codes WHERE token_hash=?""",
                         (invite_hash,),
                     ).fetchone()
@@ -549,6 +552,12 @@ class Store:
                         db.execute('INSERT INTO member_origins VALUES (?,?,?,?,?)',
                                    (user_id,'member_invitation',member_invite['id'],member_invite['created_by'],now))
                     else:
+                        db.execute(
+                            "INSERT INTO org_settings "
+                            "(org_id,org_type,display_name,report_title,footer_text,updated_at) VALUES (?,?,?,?,?,?)",
+                            (org_id, invite["org_type"], invite["org_name"],
+                             self.ORG_DEFAULTS["report_title"], self.ORG_DEFAULTS["footer_text"], now),
+                        )
                         db.execute(
                             "INSERT INTO org_quota (org_id,seats,updated_at) VALUES (?,?,?)",
                             (org_id, invite["seats"], now),
