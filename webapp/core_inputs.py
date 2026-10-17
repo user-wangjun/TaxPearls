@@ -39,6 +39,10 @@ def latest(view):
 
 def project(view):
     value = deepcopy(latest(view))
+    # Older drafts may predate range modes. Expose a descriptive kind at the
+    # projection level without mutating the signed task payload; the range
+    # itself remains the user's selection.
+    value["range_kind"] = value["task"].get("range_kind") or core_materials.effective_range_kind(value["task"])
     from src import vat_reconciliation as vat
     value["vat_review_current"] = bool(vat.review(value))
     from webapp import core_policies
@@ -77,6 +81,11 @@ def scope_values(value):
         if not isinstance(raw, str) or len(raw) > 200:
             raise InputError("企业与检查区间须为不超过200字的文本。")
         result[key] = core_materials.identity(raw) if key == "tax_no" else raw.strip()
+    if "range_kind" in value:
+        kind = value.get("range_kind")
+        if not isinstance(kind, str) or len(kind) > 20:
+            raise InputError("检查范围方式无效。")
+        result["range_kind"] = kind.strip()
     return result
 
 
@@ -159,7 +168,15 @@ def register(app, get_store, get_user, allow, static_dir):
     async def create(request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         user = actor(session)
         value = await body(request)
-        if set(value) - {"company_name", "tax_no", "start_date", "end_date", "client_id", "applicable_forms"}:
+        if set(value) - {
+            "company_name",
+            "tax_no",
+            "start_date",
+            "end_date",
+            "range_kind",
+            "client_id",
+            "applicable_forms",
+        }:
             raise HTTPException(422, "任务包含未知字段。")
         try:
             fields = scope_values(value)
@@ -179,7 +196,10 @@ def register(app, get_store, get_user, allow, static_dir):
                     "tenant_id": user["org_id"],
                     **fields,
                     "scope_confirmed": not core_materials.scope_errors(fields),
-                    "scope_origins": {key: {"kind": "manual"} for key, val in fields.items() if val},
+                    "scope_origins": {key: {"kind": "manual"} for key, val in fields.items()
+                                      if val and key != "range_kind"},
+                    "scope_history": [],
+                    "scope_revision": 0,
                     "applicable_forms": applicable,
                 }
                 payload = {
@@ -521,7 +541,13 @@ def register(app, get_store, get_user, allow, static_dir):
         user, store = actor(session), get_store()
         value = await body(request)
         try:
-            if set(value) - {*core_materials.SCOPE_FIELDS, "client_id", "expected_revision", "confirm"}:
+            if set(value) - {
+                *core_materials.SCOPE_FIELDS,
+                "range_kind",
+                "client_id",
+                "expected_revision",
+                "confirm",
+            }:
                 raise InputError("请求包含未知字段。")
             if "confirm" in value and type(value["confirm"]) is not bool:
                 raise InputError("确认标记须为布尔值。")
@@ -538,9 +564,28 @@ def register(app, get_store, get_user, allow, static_dir):
                 previous_task = deepcopy(task)
                 fields = scope_values(value)
                 for key, val in fields.items():
-                    if val != task[key]:
+                    if key != "range_kind" and val != task.get(key):
                         task.setdefault("scope_origins", {})[key] = {"kind": "manual"}
                 task.update(fields)
+                range_changed = (
+                    previous_task.get("start_date") != task.get("start_date")
+                    or previous_task.get("end_date") != task.get("end_date")
+                    or core_materials.effective_range_kind(previous_task)
+                    != core_materials.effective_range_kind(task)
+                )
+                if range_changed:
+                    # Keep a bounded user-visible trail. The previous revisions
+                    # (originals, old processing and frozen reports) are retained
+                    # separately and are not used to confirm the new range.
+                    history = task.setdefault("scope_history", [])
+                    history.append({
+                        "start_date": previous_task.get("start_date", ""),
+                        "end_date": previous_task.get("end_date", ""),
+                        "range_kind": core_materials.effective_range_kind(previous_task),
+                        "recorded_at": members.now(),
+                    })
+                    del history[:-20]
+                    task["scope_revision"] = int(task.get("scope_revision") or 0) + 1
                 task["scope_confirmed"] = False
                 payload["processing"] = core_materials.prepare(task, payload["documents"])
                 errors = scope_errors(payload)

@@ -943,9 +943,12 @@
       "required_exception_ids": [],
       "forbidden_as_applicable_clause_ids": [],
       "march_amount": "3000.00",
-      "april_amount": "7000.00"
+      "april_amount": "7000.00",
+      "formal_metric": null,
+      "fact_status": "FACT_INCOMPLETE",
+      "mixed_scope_blocked": true
     },
-    "expectation_note": "纯虚构的可编程预期；各测试须由实际被测模块运行后比对。"
+    "expectation_note": "纯虚构的可编程预期；两个月发票分别保留，但混合区间文件阻断正式取数，须拆分或重新提供区间内材料。"
   },
   {
     "case_id": "K38",

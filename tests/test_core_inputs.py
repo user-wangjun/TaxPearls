@@ -286,6 +286,69 @@ class CoreParserTests(unittest.TestCase):
         self.assertNotIn("invoice_company_conflict", {i["code"] for i in result["issues"]})
         self.assertFalse(result["records"][-1]["in_scope"])
 
+    def test_range_modes_require_complete_calendar_intervals(self):
+        base = {"company_name": "企业", "tax_no": TAX}
+        self.assertEqual(core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-01-31", "range_kind": "month"}), {})
+        self.assertIn("range_kind", core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-02-28", "range_kind": "month"}))
+        self.assertEqual(core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-03-31", "range_kind": "quarter"}), {})
+        self.assertIn("range_kind", core_materials.scope_errors(
+            {**base, "start_date": "2026-02-01", "end_date": "2026-04-30", "range_kind": "quarter"}))
+        self.assertEqual(core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-12-31", "range_kind": "year"}), {})
+        self.assertIn("range_kind", core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-01-31", "range_kind": "year"}))
+        self.assertEqual(core_materials.scope_errors(
+            {**base, "start_date": "2026-01-15", "end_date": "2026-02-20", "range_kind": "custom"}), {})
+        self.assertIn("range_kind", core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-01-31", "range_kind": "week"}))
+
+    def test_mixed_invoice_file_blocks_and_keeps_out_of_scope_record(self):
+        docs = self.complete()
+        invoice = docs[2]
+        original_id = invoice["records"][0]["id"]
+        outside = deepcopy(invoice["records"][0])
+        outside.update(id="outside-record", invoice_no="OUTSIDE-2026-02",
+                       issue_date="2026-02-15", source_position="Sheet1!A9")
+        invoice["records"].append(outside)
+        result = core_materials.prepare(self.task, docs)
+        codes = {i["code"] for i in result["issues"]}
+        self.assertIn("record_outside_scope", codes)
+        self.assertIn("mixed_scope_file", codes)
+        statuses = {r["id"]: r["scope_status"] for r in result["records"]
+                    if r["material_type"] == "invoice_detail"}
+        self.assertEqual(statuses[original_id], "in_scope")
+        self.assertEqual(statuses["outside-record"], "outside_scope")
+        kept = next(r for r in result["records"] if r["id"] == "outside-record")
+        self.assertEqual(kept["source_position"], "Sheet1!A9")
+        self.assertEqual(kept["date_basis"], "issue_date")
+        self.assertFalse(kept["in_scope"])
+        self.assertNotIn("outside-record", {rid for group in result["invoice_summaries"]
+                                            for rid in group["source_record_ids"]})
+
+    def test_unknown_invoice_date_blocks_and_is_not_in_scope(self):
+        docs = self.complete()
+        record = docs[2]["records"][0]
+        record["issue_date"] = None
+        result = core_materials.prepare(self.task, docs)
+        self.assertIn("record_date_unknown", {i["code"] for i in result["issues"]})
+        kept = next(r for r in result["records"] if r["id"] == record["id"])
+        self.assertEqual(kept["scope_status"], "unknown_date")
+        self.assertEqual(kept["date_basis"], "issue_date")
+        self.assertFalse(kept["in_scope"])
+
+    def test_user_confirmed_period_is_labelled_separately(self):
+        docs = self.complete()
+        expected = {}
+        for record in docs[0]["records"]:
+            record["confirmed_metadata"] = {"period_start": "2026-01-01", "period_end": "2026-01-31"}
+            expected[record["id"]] = "user_confirmed"
+        result = core_materials.prepare(self.task, docs)
+        labels = {r["id"]: r["date_source"] for r in result["records"] if r["id"] in expected}
+        self.assertEqual(labels, expected)
+
     def test_months_merge_quarter_and_gap_remains(self):
         self.task["end_date"] = "2026-03-31"
         docs = []
@@ -723,13 +786,19 @@ class CoreAPITests(unittest.TestCase):
         self.assertEqual(self.store.list_clients(self.admin), [])
         task = self.upload(task, "account_balance")
         self.assertEqual(task["task"]["tax_no"], TAX)
-        self.assertEqual(task["task"]["start_date"], "2026-01-01")
-        self.assertEqual(task["task"]["end_date"], "2026-01-31")
+        # The source period is a candidate only; the program never selects the
+        # inspection range from material dates.
+        self.assertEqual(task["task"]["start_date"], "")
+        self.assertEqual(task["task"]["end_date"], "")
+        self.assertEqual(task["task"]["scope_candidates"]["start_date"][0]["value"], "2026-01-01")
+        self.assertEqual(task["task"]["scope_candidates"]["end_date"][0]["value"], "2026-01-31")
+        self.assertNotIn("start_date", task["task"]["scope_origins"])
         self.assertEqual(task["task"]["scope_origins"]["tax_no"]["sources"][0]["file_id"], task["documents"][0]["id"])
         from webapp.core_inputs import require_scope
         with self.assertRaises(ValueError):
             require_scope(task)
-        result = self.scope(task, company_name="文件读取测试企业", confirm=True)
+        result = self.scope(task, company_name="文件读取测试企业",
+                            start_date="2026-01-01", end_date="2026-01-31", confirm=True)
         self.assertEqual(result.status_code, 200, result.text)
         confirmed = result.json()
         require_scope(confirmed)
@@ -741,13 +810,35 @@ class CoreAPITests(unittest.TestCase):
             self.assertEqual(batch["client_id"], confirmed["task"]["company_id"])
         self.assertEqual(self.scope(task, confirm=True).status_code, 409)
 
-    def test_autofill_uses_source_period_instead_of_manual_file_override(self):
+    def test_source_period_is_candidate_and_never_overrides_user_range(self):
         task = {key: "" for key in core_materials.SCOPE_FIELDS}
         doc = {"id": "source", "material_type": "account_balance", "parts": [{"name": "Sheet1", "tax_nos": [TAX],
             "period": ["2026-02-01", "2026-02-28"], "parsed_metadata": {"period": ["2026-01-01", "2026-01-31"]}}]}
         core_materials.autofill_scope(task, [doc])
-        self.assertEqual(task["start_date"], "2026-01-01")
-        self.assertEqual(task["scope_origins"]["start_date"]["kind"], "file")
+        self.assertEqual(task["start_date"], "")
+        self.assertEqual(task["end_date"], "")
+        self.assertEqual(task["scope_candidates"]["start_date"][0]["value"], "2026-01-01")
+        self.assertEqual(task["scope_candidates"]["end_date"][0]["value"], "2026-01-31")
+        self.assertNotIn("start_date", task["scope_origins"])
+        # A user-selected range survives later parses even when the source differs.
+        task.update(start_date="2026-01-15", end_date="2026-01-20")
+        core_materials.autofill_scope(task, [doc])
+        self.assertEqual((task["start_date"], task["end_date"]), ("2026-01-15", "2026-01-20"))
+
+    def test_legacy_file_selected_range_is_cleared_for_reconfirmation(self):
+        task = {
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-31",
+            "scope_confirmed": True,
+            "scope_origins": {"start_date": {"kind": "file"}, "end_date": {"kind": "file"}},
+        }
+        doc = {"id": "source", "material_type": "account_balance", "parts": [{"name": "Sheet1", "tax_nos": [TAX],
+            "period": ["2026-01-01", "2026-01-31"], "parsed_metadata": {"period": ["2026-01-01", "2026-01-31"]}}]}
+        core_materials.autofill_scope(task, [doc])
+        self.assertEqual(task["start_date"], "")
+        self.assertEqual(task["end_date"], "")
+        self.assertFalse(task["scope_confirmed"])
+        self.assertEqual(task["scope_candidates"]["start_date"][0]["value"], "2026-01-01")
 
     def test_draft_name_is_read_from_explicit_file_metadata(self):
         from openpyxl import load_workbook
@@ -787,7 +878,41 @@ class CoreAPITests(unittest.TestCase):
         r = self.client.post(f"/api/enterprise/input-tasks/{task['id']}/prepare",
                              json={"expected_revision": task["revision"], "source_options": {file_id: {"excluded": True}}})
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(r.json()["task"]["start_date"], "2026-01-01")
+        # Excluding a source updates the candidates but still does not choose
+        # the inspection range for the user.
+        self.assertEqual(r.json()["task"]["start_date"], "")
+        self.assertEqual(len(r.json()["task"]["scope_candidates"]["start_date"]), 1)
+
+    def test_invalid_range_mode_blocks_confirmation(self):
+        task = self.create()
+        r = self.scope(task, start_date="2026-01-01", end_date="2026-02-28",
+                       range_kind="quarter", confirm=True)
+        self.assertEqual(r.status_code, 200, r.text)
+        value = r.json()
+        self.assertIn("range_kind", value["scope_errors"])
+        self.assertFalse(value["task"]["scope_confirmed"])
+
+    def test_range_change_reruns_checks_and_retains_history(self):
+        task = self.create()
+        task = self.upload(task, "account_balance")
+        confirmed = self.scope(task, range_kind="month", confirm=True)
+        self.assertEqual(confirmed.status_code, 200, confirmed.text)
+        confirmed = confirmed.json()
+        self.assertTrue(confirmed["task"]["scope_confirmed"])
+        self.assertEqual(confirmed["task"]["range_kind"], "month")
+
+        changed = self.scope(confirmed, start_date="2026-02-01", end_date="2026-02-28",
+                             range_kind="month")
+        self.assertEqual(changed.status_code, 200, changed.text)
+        changed = changed.json()
+        self.assertFalse(changed["task"]["scope_confirmed"])
+        self.assertEqual(changed["task"]["scope_revision"], 1)
+        self.assertEqual(changed["task"]["scope_history"][-1]["start_date"], "2026-01-01")
+        self.assertEqual(changed["task"]["scope_history"][-1]["end_date"], "2026-01-31")
+        self.assertGreater(changed["processing"]["scope"]["outside_records"], 0)
+        codes = {i["code"] for i in changed["processing"]["issues"]}
+        self.assertTrue({"period_alignment", "record_outside_scope"} <= codes)
+        self.assertEqual(changed["versions"][-1]["revision"], changed["revision"])
 
     def test_existing_company_selection_and_cross_tenant_rejection(self):
         existing = self.store.upsert_client(self.admin, "已有企业", TAX)
