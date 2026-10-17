@@ -705,6 +705,28 @@ const authViewLabels = {
   reset: ["设置新密码", "设置新密码", ""],
   signup: ["受邀入驻", "创建账号", "使用平台或机构管理员提供的邀请码完成注册。"],
 };
+function updateSignupPasswordValidation() {
+  const password = $("signupPass"), confirmation = $("signupPass2");
+  const hint = $("signupPasswordHint"), match = $("signupPasswordMatch");
+  const active = $("authForm").dataset.view === "signup";
+  const value = password.value, canonical = value.normalize("NFKC");
+  const length = [...value].length;
+  const classes = [/\p{Lowercase}/u, /\p{Uppercase}/u, /\p{Decimal_Number}/u, /[^\p{L}\p{N}\p{White_Space}\u001c-\u001f]/u]
+    .filter(pattern => pattern.test(canonical)).length;
+  const error = !active || !value ? "" : length < 10 || length > 128
+    ? "密码长度须为 10–128 位。"
+    : classes < 3 ? "大小写字母、数字、符号至少包含三类（空白不算符号）。" : "";
+  const mismatch = active && confirmation.value && confirmation.value !== value
+    ? "两次输入的密码不一致。" : "";
+  password.setCustomValidity(error);
+  confirmation.setCustomValidity(mismatch);
+  password.setAttribute("aria-invalid", String(!!error));
+  confirmation.setAttribute("aria-invalid", String(!!mismatch));
+  hint.textContent = error || (active && value ? "✓ 长度和字符类型符合要求。" : "10–128 位，大小写字母、数字、符号至少包含三类（空白不算符号）。");
+  hint.dataset.state = error ? "error" : active && value ? "valid" : "";
+  match.textContent = mismatch || (active && confirmation.value ? "✓ 两次输入的密码一致。" : "");
+  match.dataset.state = mismatch ? "error" : active && confirmation.value ? "valid" : "";
+}
 function showAuthView(view) {
   authViewVersion++;
   const form = $("authForm");
@@ -748,7 +770,12 @@ function showAuthView(view) {
       :"邮箱已验证，请填写邀请码并设置密码。刷新或关闭此页后需重新申请验证。";
     if(emailRegistrationProof.has_invite)$("signupCode").value="";
   }
+  updateSignupPasswordValidation();
   if(view==="emailLogin"||(view==="signup"&&!verified))loadCaptcha();
+}
+for (const id of ["signupPass", "signupPass2"]) {
+  $(id).addEventListener("input", updateSignupPasswordValidation);
+  $(id).addEventListener("change", updateSignupPasswordValidation);
 }
 $("forgotLink").addEventListener("click", () => showAuthView("forgot"));
 $("signupEntryLink").addEventListener("click", () => {emailRegistrationProof=null;showAuthView("signup");});
@@ -834,6 +861,7 @@ $("authForm").addEventListener("submit", async (e) => {
   if(authSubmitBusy)return;
   const form = e.currentTarget;
   const view = form.dataset.view || "login";
+  updateSignupPasswordValidation();
   if (!form.reportValidity()) return;
   const version=authViewVersion;
   const submitLabel=$("authSubmit").textContent;
