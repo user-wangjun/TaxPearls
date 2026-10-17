@@ -119,6 +119,8 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
 th, td { border: 1px solid rgba(255,255,255,.14); padding: 4px 8px; text-align: left; }
 th { background: rgba(255,255,255,.09); font-weight: 500; color: #dfe9f2; }
+.table-scroll { max-width: 100%; overflow-x: auto; }
+.table-scroll table { white-space: nowrap; }
 .num { text-align: right; }
 .detail { border-left: 3px solid var(--line); padding: 4px 8px; margin: 6px 0; font-size: 13px;
           background: rgba(255,255,255,.04); }

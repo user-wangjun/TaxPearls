@@ -47,11 +47,12 @@
       <div class="ok" id="goal-msg"></div>
     </div>
     <div class="card" id="pr-card">
-      <h2>自主练习</h2>
+      <h2>税务案例训练</h2>
+      <p class="muted">选择证书和知识点，阅读模拟企业的账务、申报数据与指标，识别涉税风险。提交后查看得分与逐项解析，再通过错题重练巩固薄弱点。</p>
       <div class="row">
         <div><label>证书范围</label><select id="pr-cert"></select></div>
         <div><label>知识点（选填，不选则整证随机）</label><select id="pr-kp"></select></div>
-        <div style="flex:0 0 auto;"><button class="primary" id="start-practice">开始出题</button></div>
+        <div style="flex:0 0 auto;"><button class="primary" id="start-practice">开始训练</button></div>
       </div>
       <div class="muted" id="pr-hint" style="margin-top:6px;"></div>
       <div class="muted" id="pr-stats" style="margin-top:4px;"></div>
@@ -79,18 +80,6 @@
       <div id="pf-list"></div>
     </div>
 
-    <div class="card" id="code-card">
-      <h2>编程练习</h2>
-      <p class="muted" style="margin-top:-6px;">提交 Python 代码，教学演示级沙箱逐用例运行并加权计分（python -I 隔离 + 超时硬杀 + 输出截断；非容器级边界）。同题每 30 秒限一次提交，结果在判题后即时返回。</p>
-      <div class="row">
-        <div><label>编程题</label><select id="cc-problem"></select></div>
-        <div style="flex:0 0 auto;"><button class="primary" id="cc-submit">提交判题</button></div>
-      </div>
-      <div class="muted" id="cc-problem-info" style="margin-top:6px;"></div>
-      <textarea id="cc-code" style="min-height:160px;font-family:ui-monospace,monospace;margin-top:8px;" placeholder="# 在此粘贴或编写 Python 代码&#10;a, b = map(int, input().split())&#10;print(a + b)"></textarea>
-      <div id="cc-result" style="margin-top:8px;"></div>
-      <div class="muted" id="cc-history" style="margin-top:8px;"></div>
-    </div>
   </section>
 </main>
 <div id="pass-modal" hidden style="position:fixed;inset:0;background:rgba(4,10,20,.6);display:flex;align-items:center;justify-content:center;z-index:50;">
