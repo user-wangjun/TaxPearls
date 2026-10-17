@@ -83,11 +83,13 @@ function createAIKeyProbes({api, el, $, user}) {
         forbidden:"权限不足",rate_limited:"限流",timeout:"超时",network:"连接失败"};
       summary.textContent = result ? labels[result.status] || "检测失败" : "待检测";
     } else {
-      summary.append(el("span", "muted", result?.scope === "key_limit" ? "密钥额度" : "余额 / 额度"));
+      summary.append(el("span", "muted", result?.scope === "key_limit" ? "密钥额度" : result?.scope === "account" ? "账户余额" : "余额 / 额度"));
       summary.append(el("strong", "probe-balance-value", result?.status === "ok" && result.balances
         ? result.balances.map(item => item.total === null ? "未设额度上限" : `${item.currency} ${item.total}`).join(" / ")
-        : result ? "暂无法查询" : "尚未查询"));
-      if (result) summary.append(el("span", "muted probe-checked", new Date(result.checked_at).toLocaleString("zh-CN", {hour12:false})));
+        : result ? "余额查询失败" : "尚未查询"));
+      if (result?.status !== "ok" && result?.message) summary.append(el("span", "probe-failed", result.message));
+      if (result?.checked_at) summary.append(el("span", "muted probe-checked",
+        (result.status === "ok" ? "查询于 " : "失败于 ") + new Date(result.checked_at).toLocaleString("zh-CN", {hour12:false})));
     }
     if (result) {
       summary.title = result.message;
@@ -132,8 +134,12 @@ function createAIKeyProbes({api, el, $, user}) {
       if (current(token, owner)) display(box, result, operation, summary);
     } catch (err) {
       if (current(token, owner)) {
-        box.replaceChildren(el("p", "probe-failed", err.message));
-        if (summary) { summary.textContent = "检测失败"; summary.classList.add("probe-failed"); }
+        const message = err.message || "请求失败，请重试。";
+        box.replaceChildren(el("p", "probe-failed", (operation === "balance" ? "余额查询失败：" : "检测失败：") + message));
+        if (summary) {
+          summary.textContent = (operation === "balance" ? "余额查询失败：" + message : "检测失败");
+          summary.classList.add("probe-failed");
+        }
       }
     } finally { if (current(token, owner)) button.disabled = false; }
   }
@@ -148,6 +154,7 @@ function createAIKeyProbes({api, el, $, user}) {
       defaults = data;
       $("aiKeyStatus").textContent = `${data.keys.length} 把密钥 · 业务 AI ${data.enabled ? "已启用" : "未启用，可手动检测"}`;
       if (!data.keys.length) $("aiKeyCards").append(el("p", "muted", "服务端尚未配置密钥，可使用下面的临时密钥检测。"));
+      const balanceQueries = [];
       for (const key of data.keys) {
         const card = el("article", "sheet probe-card");
         const identity = el("div", "probe-identity"), icon = el("span", "probe-service-icon", "AI");
@@ -165,7 +172,7 @@ function createAIKeyProbes({api, el, $, user}) {
         const test = el("button", "btn", "测活"), money = el("button", "btn pdf", "查询金额"),
           edit = el("button", "btn pdf", "编辑"), drop = el("button", "btn probe-delete", "删除");
         test.type = money.type = edit.type = drop.type = "button";
-        test.disabled = money.disabled = !!key.problem;
+        test.disabled = !!key.problem;
         test.addEventListener("click", () => probe({key_id:key.id, operation:"health"}, health, test, "health", badge));
         money.addEventListener("click", () => probe({key_id:key.id, operation:"balance"}, balance, money, "balance", brief));
         edit.addEventListener("click", () => openEditor(key));
@@ -213,8 +220,13 @@ function createAIKeyProbes({api, el, $, user}) {
         details.append(el("summary", null, "检测详情")); detailBody.append(health, balance); details.append(detailBody);
         card.append(identity, brief, purpose, actions, details);
         if (key.problem) { card.append(el("p", "probe-failed probe-config-problem", key.problem)); details.open = true; }
-        display(health, key.health, "health", badge); display(balance, key.balance, "balance", brief); $("aiKeyCards").append(card);
+        display(health, key.health, "health", badge);
+        $("aiKeyCards").append(card);
+        // Saved balances are historical snapshots. Always query this exact key
+        // on entry/refresh, and let probe clear amounts before showing progress.
+        balanceQueries.push(probe({key_id:key.id, operation:"balance"}, balance, money, "balance", brief));
       }
+      await Promise.all(balanceQueries);
     } catch (err) { if (current(token, owner)) $("aiKeyStatus").textContent = err.message; }
   }
   $("btnRefreshAIKeys").addEventListener("click", load);
