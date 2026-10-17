@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from src import core_materials, core_mapping
 from src.input_errors import InputError
@@ -993,6 +993,84 @@ class CoreAPITests(unittest.TestCase):
         self.assertEqual(r.status_code, 409, r.text)
         r = self.client.post(url + "/prepare", json={"expected_revision": incomplete["revision"]})
         self.assertEqual(r.status_code, 409)
+
+    def test_invoice_direction_is_automatic_per_record_and_legacy_override_is_retired(self):
+        task = self.create()
+        wb = load_workbook(BytesIO(book("invoice_detail")))
+        sheet = wb.active
+        sheet.title = "发票明细"
+        sheet.delete_cols(9)  # No explicit direction: infer each invoice from its parties.
+        sheet.append(["12345678901234567891", "2026-01-02", OTHER, TAX, "200", "26", "蓝字", "正常"])
+        sheet.append(["12345678901234567892", "2026-01-03", OTHER, OTHER, "300", "39", "蓝字", "正常"])
+        raw = BytesIO()
+        wb.save(raw)
+        wb.close()
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        response = self.client.post(
+            url + "/files",
+            data={"expected_revision": str(task["revision"]), "material_type": "invoice_detail"},
+            files=[("files", ("混合发票.xlsx", raw.getvalue()))],
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        task = response.json()
+        self.assertEqual([r["direction"] for r in task["processing"]["records"]], ["output", "input", None])
+        self.assertIn("direction_missing", {i["code"] for i in task["processing"]["issues"]})
+        fid = task["documents"][0]["id"]
+        for direction in ["input", "output"]:
+            response = self.client.post(url + "/prepare", json={
+                "expected_revision": task["revision"],
+                "source_options": {fid: {"confirmed_metadata": {"direction": direction}}},
+            })
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertIn("逐票判断", response.json()["detail"])
+        self.assertEqual(self.client.get(url).json()["revision"], task["revision"])
+
+        # Simulate an existing task saved by the old file-wide selector.
+        legacy = deepcopy(material_batches.read(self.store, self.admin, task["id"])["versions"][-1]["payload"])
+        legacy["source_options"][fid].update(confirmed_metadata={"unit": "元", "direction": "output"}, source_reviewed=True)
+        old_revision = material_batches.append_revision(self.store, self.admin, task["id"], task["revision"], "edit", legacy)
+        response = self.client.post(url + "/prepare", json={"expected_revision": old_revision})
+        self.assertEqual(response.status_code, 200, response.text)
+        refreshed = response.json()
+        self.assertEqual([r["direction"] for r in refreshed["processing"]["records"]], ["output", "input", None])
+        self.assertIn("direction_missing", {i["code"] for i in refreshed["processing"]["issues"]})
+        self.assertEqual(refreshed["source_options"][fid]["confirmed_metadata"], {"unit": "元"})
+        self.assertFalse(refreshed["source_options"][fid]["source_reviewed"])
+        for record in refreshed["documents"][0]["records"]:
+            self.assertNotIn("direction", record["confirmed_metadata"])
+        history = material_batches.read(self.store, self.admin, task["id"])["versions"]
+        self.assertEqual(next(v["payload"] for v in history if v["revision"] == old_revision), legacy)
+
+        ids = [row["id"] for row in refreshed["documents"][0]["records"]]
+        for directions in [{"another-file-record": "input"}, {ids[0]: "both"}, {ids[0]: True}, []]:
+            response = self.client.post(url + "/prepare", json={
+                "expected_revision": refreshed["revision"], "source_options": {fid: {"invoice_directions": directions}},
+            })
+            self.assertEqual(response.status_code, 422, response.text)
+        response = self.client.post(url + "/prepare", json={
+            "expected_revision": refreshed["revision"],
+            "source_options": {fid: {"invoice_directions": {ids[0]: "input", ids[2]: "output"}}},
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        selected = response.json()
+        self.assertEqual([r["direction"] for r in selected["processing"]["records"]], ["input", "input", "output"])
+        self.assertEqual([r["automatic_direction"] for r in selected["documents"][0]["records"]], ["output", "input", None])
+        self.assertIn("invoice_company_conflict", {i["code"] for i in selected["processing"]["issues"]})
+        self.assertEqual(selected["documents"][0]["records"][0]["source_metadata"]["direction"],
+                         refreshed["documents"][0]["records"][0]["source_metadata"]["direction"])
+        exported = self.client.get(url + "/data", params={"expected_revision": selected["revision"]}).json()
+        self.assertEqual(exported["records"][0]["source"]["confirmed_fields"]["direction"], "input")
+        self.assertEqual(self.client.get(url).json()["source_options"][fid]["invoice_directions"],
+                         {ids[0]: "input", ids[2]: "output"})
+        response = self.client.post(url + "/prepare", json={
+            "expected_revision": selected["revision"], "source_options": {fid: {"invoice_directions": {}}},
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        restored = response.json()
+        self.assertEqual([r["direction"] for r in restored["processing"]["records"]], ["output", "input", None])
+        self.assertIn("direction_missing", {i["code"] for i in restored["processing"]["issues"]})
+        self.assertNotIn("invoice_company_conflict", {i["code"] for i in restored["processing"]["issues"]})
+        self.assertNotIn("direction", restored["documents"][0]["records"][0]["confirmed_metadata"])
 
     def test_conflicting_manual_metadata_is_not_ready_and_malformed_json_is_rejected(self):
         task = self.upload(self.create(), "account_balance")

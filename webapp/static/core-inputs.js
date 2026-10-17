@@ -73,7 +73,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   function field(label, type, value, caption=label) {const wrap=el("label",type==="checkbox"?"core-check":"field"),input=el("input");input.type=type;input.value=value||"";input.setAttribute("aria-label",label);if(type==="checkbox")wrap.append(input,el("span","",caption));else{wrap.append(el("span","",caption),input);}return {wrap,input};}
   // Format decimal strings without passing through Number (invoice identifiers and amounts can be long).
   function amount(value) {if(value===null||value===undefined||value==="")return "待识别";return String(value).replace(/^([-+]?\d+)(\.\d+)?$/,(_,whole,fraction)=>whole.replace(/\B(?=(\d{3})+(?!\d))/g,",")+(fraction||""));}
-  function recordTable(doc, options, reviewed, statuses, prepared) {
+  function recordTable(doc, options, reviewed, statuses, directions, prepared) {
     const wrap=el("div","core-records"),scroll=el("div","core-table-scroll"),table=el("table","core-record-table"),head=el("thead"),header=el("tr"),body=el("tbody");
     const invoice=doc.material_type==="invoice_detail",editable=invoice&&doc.name.toLowerCase().endsWith(".pdf");
     const columns=invoice?[["票号 / 来源","invoice_no"],["开票日期","issue_date"],["购销方向","direction"],["不含税金额","amount_excluding_tax"],["税额","tax_amount"],["价税合计","amount_including_tax"]]:doc.material_type==="account_balance"?[["科目 / 来源","account_name"],["期初余额","opening_balance"],["本期借方","current_debit"],["本期贷方","current_credit"],["期末余额","closing_balance"]]:[["项目 / 来源","item_label"],["申报金额","declared_value"]];
@@ -84,9 +84,15 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const rows=doc.records.map(record=>{
       const row=el("tr");
       for(const [index,[name,key]] of columns.entries()){
-        let value=key==="direction"?(prepared.get(record.id)?.direction??record.direction):record[key];
-        if(key==="direction")value=({input:"进项",output:"销项","进项":"进项","销项":"销项"})[value]||"待核对";
-        const cell=el("td",numeric.has(key)?"core-number":"");cell.setAttribute("data-label",name);cell.append(el("span","",numeric.has(key)?amount(value):value===null||value===undefined||value===""?"待识别":String(value)));
+        const value=record[key],cell=el("td",numeric.has(key)?"core-number":"");cell.setAttribute("data-label",name);
+        if(key==="direction"){
+          const automatic=Object.hasOwn(record,"automatic_direction")?record.automatic_direction:prepared.get(record.id)?.direction??record.direction;
+          const label=({input:"进项",output:"销项","进项":"进项","销项":"销项"})[automatic]||"待核对";
+          const choice=select(doc.name+" · "+record.source_position+" · "+(record.invoice_no||"票号待核对")+" 购销方向",[["","自动 · "+label],["input","进项"],["output","销项"]],options.invoice_directions?.[record.id],"");
+          choice.input.className="core-direction-select";choice.input.title="默认自动判断；可仅核对本条发票，保存后生效。";
+          choice.input.addEventListener("change",()=>{dirty=true;reviewed.input.checked=false;reviewed.updateState();});
+          cell.append(choice.wrap);directions.push({id:record.id,input:choice.input});
+        }else cell.append(el("span","",numeric.has(key)?amount(value):value===null||value===undefined||value===""?"待识别":String(value)));
         if(index===0){const source=el("details","core-record-source");source.append(el("summary","","查看来源"),el("p","muted",record.source_position||"来源位置待识别"));if(invoice)source.append(el("p","muted",`销售方税号：${record.seller_tax_no||"待识别"}`),el("p","muted",`购买方税号：${record.buyer_tax_no||"待识别"}`));cell.append(source);}row.append(cell);
       }
       if(editable){
@@ -138,26 +144,25 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       card.open=editors.length===0;const heading=el("summary","core-document-heading");heading.append(el("span","core-file-name",doc.name),el("span","core-file-state",`${kinds[doc.material_type]} · ${doc.records.length} 条候选 · ${options.source_reviewed?"已人工核对":"待核对"}`));card.append(heading);
       const content=el("div","core-document-body"),download=el("a","btn re","下载原件");download.href=base+"/"+current.id+"/originals/"+doc.id;content.append(download);card.append(content);
       const metadata=el("details","core-metadata");metadata.append(el("summary","","文件口径与排除设置（选填）"),el("p","muted","留空沿用识别值；统一口径应用到本文件所有记录，混合期间请保留原识别值。"));
-      const grid=el("div","material-company");
+      const grid=el("div","material-company"+(doc.material_type==="invoice_detail"?" core-invoice-metadata":""));
       const unit=select(doc.name+" 确认单位",[["","沿用识别值"],["元","元"],["千元","千元"],["万元","万元"],["亿元","亿元"]],meta.unit,"金额单位");
       const start=field(doc.name+" 确认覆盖起始日","date",meta.period_start,"覆盖起始日"),end=field(doc.name+" 确认覆盖终止日","date",meta.period_end,"覆盖终止日");
       const form=select(doc.name+" 确认表单类型",[["","沿用识别值"],["main","主表"],["supplement","附表"]],meta.form_type,"表单类型");
-      const direction=select(doc.name+" 确认发票方向",[["","沿用识别值"],["input","进项"],["output","销项"]],meta.direction,"发票方向");
-      grid.append(unit.wrap,start.wrap,end.wrap);if(doc.material_type==="vat_declaration")grid.append(form.wrap);if(doc.material_type==="invoice_detail")grid.append(direction.wrap);
+      grid.append(unit.wrap,start.wrap,end.wrap);if(doc.material_type==="vat_declaration")grid.append(form.wrap);
       const exclude=field(doc.name+" 排除此资料（原件与历史版本保留）","checkbox","","排除此资料（原件与历史版本保留）");exclude.input.checked=!!options.excluded;metadata.append(grid,exclude.wrap);content.append(metadata);
       const reviewed=field(doc.name+" 已对照原页核实提取候选的字段、金额、购销方和所属期","checkbox","","已对照原页核实字段、金额、购销方和所属期");reviewed.input.checked=!!options.source_reviewed;
       reviewed.updateState=()=>{heading.children[1].textContent=`${kinds[doc.material_type]} · ${doc.records.length} 条候选 · ${reviewed.input.checked?"已人工核对":"待核对"}`;};reviewed.input.addEventListener("change",reviewed.updateState);
-      const statuses=[];
+      const statuses=[],directions=[];
       if(doc.material_type==="invoice_detail"&&doc.name.toLowerCase().endsWith(".pdf")){
         content.append(el("p","material-note","票面未记载的红蓝字、作废状态须逐票核实；留空会保留资料缺口。单张发票不能证明整期进销项齐全。"));
       }
-      content.append(el("p","muted","金额按解析候选的原单位展示，不在此处换算或汇总；单位及来源口径见下方详情。"),recordTable(doc,options,reviewed,statuses,prepared));
+      content.append(el("p","muted","金额按解析候选的原单位展示，不在此处换算或汇总；单位及来源口径见下方详情。"),recordTable(doc,options,reviewed,statuses,directions,prepared));
       if(doc.ocr_candidate||doc.pdf_candidate)content.append(reviewed.wrap);
-      for(const f of [unit,start,end,form,direction])f.input.addEventListener("change",()=>{reviewed.input.checked=false;reviewed.updateState();});
+      for(const f of [unit,start,end,form])f.input.addEventListener("change",()=>{reviewed.input.checked=false;reviewed.updateState();});
       const parts=el("details"),summary=el("summary","","识别到的来源口径");parts.append(summary);
       parts.append(el("p","core-checksum",`SHA-256 ${doc.sha256}`));
       for(const part of doc.parts)parts.append(el("p","muted",`${part.name} · ${{main:"主表",supplement:"附表"}[part.form_type]||"表单类型待核对"} · ${part.period?.join(" 至 ")||"期间未识别"} · ${part.unit||"单位未识别"}`));content.append(parts);
-      review.append(card);editors.push({id:doc.id,unit,start,end,form,direction,exclude,reviewed,statuses});
+      review.append(card);editors.push({id:doc.id,unit,start,end,form,exclude,reviewed,statuses,directions});
     }
     review.append(formScope);
     let readPolicy=null;
@@ -167,7 +172,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       panel.append(el("p","muted",`目录来源核对截至 ${policyCatalog.checked_as_of}；政策条件与本任务资料版本绑定，单独复核，不替代知识图谱的规则审核。`));
       if(current.policy_error)panel.append(el("p","material-note",current.policy_error));
     }
-    const save=button("保存核对并重新整理资料",()=>{const policyInput=readPolicy?.();return action(async()=>{if(scopeDirty)await saveScope();const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:true,invoice_statuses:Object.fromEntries(e.statuses.map(s=>[s.id,{red_letter_status:s.red.input.value,void_status:s.voided.input.value}])),confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value,direction:e.direction.input.value}};
+    const save=button("保存核对并重新整理资料",()=>{const policyInput=readPolicy?.();return action(async()=>{if(scopeDirty)await saveScope();const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:true,invoice_directions:Object.fromEntries(e.directions.filter(d=>d.input.value).map(d=>[d.id,d.input.value])),invoice_statuses:Object.fromEntries(e.statuses.map(s=>[s.id,{red_letter_status:s.red.input.value,void_status:s.voided.input.value}])),confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value}};
       return api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,applicable_forms:scopeKnown.input.checked?applicable.input.value.split(/[;；]/).map(s=>s.trim()).filter(Boolean):null,source_options:options,mapping_mode:"ai",...(readPolicy?{policy_input:policyInput}:{})}));},true);});review.append(save);root.append(review);
     const problems=el("section","enterprise-feedback"+(p.issues.length?" blocking":""));problems.append(el("h4","",scopePending?"资料缺口与冲突（待核对检查范围）":`资料缺口与冲突（${p.issues.length}）`));if(scopePending)problems.append(el("p","","企业或检查区间尚未完整，资料完整性与区间冲突检查尚未完成；请先补全并保存范围。"));
     const issueGroups=new Map();for(const item of p.issues){const key=JSON.stringify([item.code,item.message]);if(!issueGroups.has(key))issueGroups.set(key,[]);issueGroups.get(key).push(item);}

@@ -23,7 +23,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
     documents:[{id:"review-pdf",name:"进项.pdf",material_type:"invoice_detail",records:[],parts:[],sha256:"synthetic-pdf",pdf_candidate:true},
       {id:"review-sheet",name:"余额.xlsx",material_type:"account_balance",records:[],parts:[],sha256:"synthetic-sheet"}],
     files:[{id:"excluded-file",deleted_at:null}],source_options:{"excluded-file":{excluded:true,original_name:"进项.xlsx"},
-      "review-pdf":{original_name:"进项.pdf",ocr:false,source_reviewed:false},"review-sheet":{original_name:"余额.xlsx",ocr:false}},versions:[]};
+      "review-pdf":{original_name:"进项.pdf",ocr:false,source_reviewed:false,confirmed_metadata:{direction:"output"}},"review-sheet":{original_name:"余额.xlsx",ocr:false}},versions:[]};
   const api=async(url,options)=>{calls.push({url,options});if(delay)return await delay;
     if(options?.method==="DELETE"){if(failDelete)throw new Error("测试删除失败");return {id:"task",deleted:true};}
     if(failScope&&url.endsWith("/scope"))throw new Error("测试范围保存失败");
@@ -39,6 +39,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
   const field=label=>all($("coreTaskResult")).find(n=>n["aria-label"]===label);
   assert.equal(field("进项.pdf 允许未识别PDF页交给配置模型OCR（发送页图）"),undefined,"OCR fallback does not require a per-file checkbox");
   assert.equal(field("进项.pdf 已对照原页核实提取候选的字段、金额、购销方和所属期").checked,false);
+  assert.equal(field("进项.pdf 确认发票方向"),undefined,"invoice direction is automatic, with no file-wide selector");
   await find("下载标准数据 JSON").onclick();
   assert.equal(calls.at(-1).url,"/api/enterprise/input-tasks/task/data?expected_revision=1");
   assert.deepEqual(JSON.parse(await downloads.at(-1).text()),exported);
@@ -59,6 +60,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.equal(JSON.parse(write.options.body).mapping_mode,"ai");
   assert.equal(JSON.parse(write.options.body).source_options["review-pdf"].ocr,true,"review save keeps PDF OCR fallback enabled for older tasks");
   assert.equal(JSON.parse(write.options.body).source_options["review-pdf"].source_reviewed,false,"automatic OCR does not confirm source review");
+  for(const options of Object.values(JSON.parse(write.options.body).source_options))assert.equal(Object.hasOwn(options.confirmed_metadata,"direction"),false,"review save does not resend old file-wide directions");
   await find("恢复资料：进项.xlsx").onclick();const restored=calls.findLast(c=>c.url.endsWith("/prepare"));assert.deepEqual(JSON.parse(restored.options.body).source_options,{"excluded-file":{excluded:false,ocr:true}});
   assert.equal(JSON.parse(restored.options.body).mapping_mode,"ai");
   $("coreTaxNo").value="bad";$("coreTaxNo").listeners.input();assert.equal($("coreTaxNo")["aria-invalid"],"true");
@@ -82,13 +84,20 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.equal(rows().length,10);assert.ok(find("26260901000000000000"));assert.equal(find("上一页").disabled,true);
   const firstLabel="销项发票_每页一张.pdf · PDF第1页/发票票面 · 26260901000000000000 红蓝字状态";
   field(firstLabel).value="红字";field(firstLabel).listeners.change();
+  const firstDirection=firstLabel.replace(" 红蓝字状态"," 购销方向");
+  assert.equal(field(firstDirection).value,"");
+  field(firstDirection).value="input";field(firstDirection).listeners.change();
   assert.equal(field("销项发票_每页一张.pdf 已对照原页核实提取候选的字段、金额、购销方和所属期").checked,false);
   assert.ok(find("发票明细 · 12 条候选 · 待核对"));
   find("下一页").onclick();assert.equal(rows().length,2);assert.ok(find("26260901000000000011"));assert.equal(find("下一页").disabled,true);
+  const lastDirection="销项发票_每页一张.pdf · PDF第12页/发票票面 · 26260901000000000011 购销方向";
+  field(lastDirection).value="output";field(lastDirection).listeners.change();
   find("上一页").onclick();assert.equal(field(firstLabel).value,"红字");
+  assert.equal(field(firstDirection).value,"input","paging retains per-invoice direction edits");
   await find("保存核对并重新整理资料").onclick();
   const statuses=JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).source_options.pdf.invoice_statuses;
   assert.equal(Object.keys(statuses).length,12);assert.equal(statuses.r0.red_letter_status,"红字");assert.equal(statuses.r10.red_letter_status,"");assert.equal(statuses.r11.red_letter_status,"蓝字");
+  assert.deepEqual(JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).source_options.pdf.invoice_directions,{r0:"input",r11:"output"});
   assert.equal(find("上一页").disabled,true);
   sample.scope_errors={};sample.processing.records=[{...sample.documents[0].records[0],direction:"output"}];
   sample.processing.issues=[1,2].map(i=>({code:"invoice_status_missing",message:"票面未证明红蓝字或作废状态，请逐票核实。",source_file_id:"pdf",source_position:`PDF第${i}页/发票票面`}));
