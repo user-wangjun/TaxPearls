@@ -2,6 +2,50 @@
 const fs = require("node:fs");
 const vm = require("node:vm");
 const assert = require("node:assert/strict");
+// Registration gives feedback before submission and rechecks both fields after edits.
+{
+  const source = fs.readFileSync('webapp/static/console.js', 'utf8');
+  const start = source.indexOf('function updateSignupPasswordValidation(');
+  assert.ok(start >= 0, 'Registration needs live password validation');
+  const nodes = Object.fromEntries(['signupPass', 'signupPass2', 'signupPasswordHint', 'signupPasswordMatch', 'authForm'].map(id => [id, {
+    value:'', dataset:{view:'signup'}, attributes:{}, textContent:'',
+    setCustomValidity(message){this.validationMessage=message;},
+    setAttribute(name,value){this.attributes[name]=String(value);}
+  }]));
+  const ctx = {$:id=>nodes[id]};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(start, source.indexOf('\nfunction showAuthView(', start)), ctx);
+  const check = (password, confirm=password) => {
+    nodes.signupPass.value=password;nodes.signupPass2.value=confirm;
+    ctx.updateSignupPasswordValidation();
+    return nodes.signupPass.validationMessage;
+  };
+  assert.match(check('short12!'), /10–128/);
+  assert.match(check('abcdef1234'), /三类/);
+  assert.match(check('abcdef123 '), /三类/, 'Whitespace is not a symbol');
+  assert.equal(check('ZebraForest92'), '');
+  assert.equal(check('éééééééé9!'), '', 'Unicode letters follow the server policy');
+  assert.equal(check('ａｂｃｄｅｆ１２３！'), '', 'Check character classes after NFKC normalization');
+  assert.equal(check('Ab9'+'😀'.repeat(7)), '');
+  assert.match(check('Ab9'+'😀'.repeat(6)), /10–128/, 'Length counts Unicode code points');
+  assert.equal(check('Ab9!'+'x'.repeat(124)), '');
+  assert.match(check('Ab9!'+'x'.repeat(125)), /10–128/);
+  check('ZebraForest92', 'ZebraForest93');
+  assert.match(nodes.signupPass2.validationMessage, /不一致/);
+  assert.equal(nodes.signupPass2.attributes['aria-invalid'], 'true');
+  check('ZebraForest93');
+  assert.equal(nodes.signupPass2.validationMessage, '');
+  assert.match(nodes.signupPasswordMatch.textContent, /一致/);
+  check('ZebraForest94', 'ZebraForest93');
+  assert.match(nodes.signupPass2.validationMessage, /不一致/, 'Changing the first field rechecks confirmation');
+  check('', '');
+  assert.equal(nodes.signupPass.validationMessage, '');
+  assert.equal(nodes.signupPasswordMatch.textContent, '');
+  check('short12!', 'different');
+  nodes.authForm.dataset.view='login';ctx.updateSignupPasswordValidation();
+  assert.equal(nodes.signupPass.validationMessage, '', 'Hidden registration fields must not block login');
+  assert.equal(nodes.signupPass2.validationMessage, '');
+}
 // Skipped can mean evidence, period, denominator or applicability limits.
 // The shared UI must not translate every skipped result into missing files.
 const indexMarkup = fs.readFileSync("webapp/static/index.html", "utf8");
