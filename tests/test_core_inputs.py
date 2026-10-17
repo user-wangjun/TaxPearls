@@ -657,6 +657,79 @@ class MappingTests(unittest.TestCase):
 
 
 class CoreAPITests(unittest.TestCase):
+    def test_delete_task_purges_its_materials_and_keeps_other_tasks(self):
+        task = self.upload(self.create(), "account_balance")
+        other = self.create()
+        task_id, file_id = task["id"], task["documents"][0]["id"]
+        with self.store.connect() as db:
+            db.execute("INSERT INTO core_tax_reports VALUES (?,1,?,'hash','now',?,X'01',X'02')",
+                       (task_id, task["revision"], self.admin["id"]))
+            db.execute("INSERT INTO core_mapping_observations VALUES (?,?,?,?,?,?,?,'now','candidate')",
+                       (self.admin["org_id"], "account_balance", "main", "column", "value", "sha", task_id))
+            db.execute("INSERT INTO material_operations(id,org_id,actor_id,action,batch_id,state,started_at) VALUES ('delete-op',?,?,'extract',?,'committed','now')",
+                       (self.admin["org_id"], self.admin["id"], task_id))
+            db.execute("INSERT INTO material_jobs(id,org_id,batch_id,input_revision,actor_id,actor_role,operation_id,state,available_at,created_at,input_cipher) VALUES ('delete-job',?,?,?,?,?,'delete-op','running',0,'now',X'01')",
+                       (self.admin["org_id"], task_id, task["revision"], self.admin["id"], self.admin["role"]))
+            db.execute("INSERT INTO material_ai_slots VALUES ('delete-slot','delete-job',0)")
+        url = "/api/enterprise/input-tasks/" + task_id
+        body = {"expected_revision": task["revision"], "confirm": True}
+        self.assertEqual(self.client.request("DELETE", url, json=body).status_code, 409)
+        with self.store.connect() as db:
+            db.execute("UPDATE material_jobs SET state='queued' WHERE id='delete-job'")
+        result = self.client.request("DELETE", url, json=body)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json(), {"id": task_id, "deleted": True})
+        for path in [url, url + "/originals/" + file_id, url + "/data?expected_revision=" + str(task["revision"]), url + "/reports"]:
+            self.assertEqual(self.client.get(path).status_code, 404, path)
+        self.assertNotIn(task_id, [row["id"] for row in self.client.get("/api/enterprise/input-tasks").json()])
+        self.assertEqual(self.client.get("/api/enterprise/input-tasks/" + other["id"]).status_code, 200)
+        with self.store.connect() as db:
+            for table in ["material_originals", "material_revisions", "material_events", "material_executions", "material_jobs", "material_operations", "core_tax_reports"]:
+                self.assertEqual(db.execute(f"SELECT COUNT(*) FROM {table} WHERE batch_id=?", (task_id,)).fetchone()[0], 0, table)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM core_mapping_observations WHERE task_id=?", (task_id,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM material_ai_slots WHERE job_id='delete-job'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM material_batches WHERE id=?", (task_id,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM core_input_tasks WHERE id=?", (task_id,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertEqual(len(self.store.list_clients(self.admin)), 1)
+        from webapp.access import AccessDenied
+        with self.assertRaises(AccessDenied) as late:
+            material_batches.append_revision(self.store, self.admin, task_id, task["revision"], "edit", {"core_task": True})
+        self.assertEqual(late.exception.status, 404)
+
+    def test_delete_task_checks_confirmation_revision_and_tenant_permissions(self):
+        task = self.create()
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        valid = {"expected_revision": task["revision"], "confirm": True}
+        for body in [{"expected_revision": task["revision"]}, {**valid, "confirm": False}, {**valid, "expected_revision": True}]:
+            self.assertEqual(self.client.request("DELETE", url, json=body).status_code, 422)
+        self.assertEqual(self.client.request("DELETE", url, json={**valid, "expected_revision": 0}).status_code, 409)
+        self.login(self.foreign)
+        self.assertEqual(self.client.request("DELETE", url, json=valid).status_code, 404)
+        accountant = self.store.create_user("delete-accountant", "Core-test-2026!", "会计", "accountant", self.admin["org_id"])
+        self.login(accountant)
+        owned = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        self.assertEqual(self.client.request("DELETE", "/api/enterprise/input-tasks/" + owned["id"], json={"expected_revision": owned["revision"], "confirm": True}).status_code, 403)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.request("DELETE", url, json=valid).status_code, 401)
+        self.login(self.admin)
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.assertEqual(self.client.request("DELETE", url, json=valid).status_code, 200)
+        legacy = material_batches.create(self.store, self.admin, [("legacy.xlsx", book("account_balance"))])
+        self.assertEqual(self.client.request("DELETE", "/api/enterprise/input-tasks/" + legacy["id"], json={"expected_revision": legacy["revision"], "confirm": True}).status_code, 404)
+        self.assertEqual(material_batches.read(self.store, self.admin, legacy["id"])["id"], legacy["id"])
+
+    def test_delete_task_rolls_back_if_audit_logging_fails(self):
+        task = self.upload(self.create(), "account_balance")
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        original_url = url + "/originals/" + task["documents"][0]["id"]
+        original = self.client.get(original_url).content
+        with patch("webapp.core_inputs.members.log", side_effect=RuntimeError("synthetic audit failure")):
+            result = self.client.request("DELETE", url, json={"expected_revision": task["revision"], "confirm": True})
+        self.assertEqual(result.status_code, 500)
+        self.assertEqual(self.client.get(url).json()["revision"], task["revision"])
+        self.assertEqual(self.client.get(original_url).content, original)
+
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)

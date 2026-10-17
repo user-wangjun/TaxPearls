@@ -37,6 +37,29 @@ def latest(view):
     return view["versions"][-1]["payload"]
 
 
+def delete_task(store, user, task_id, expected_revision):
+    """Purge one core task atomically; enterprise/client and independent audits remain."""
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        batch = batches._authorize(db, user, task_id)
+        current_actor(db, user, {"org_admin"})
+        if not db.execute("SELECT 1 FROM core_input_tasks WHERE id=?", (task_id,)).fetchone():
+            raise AccessDenied()
+        if batch["revision"] != expected_revision:
+            raise AccessDenied("任务版本已变化，请重新读取后再删除。", 409)
+        if db.execute("SELECT 1 FROM material_jobs WHERE batch_id=? AND state='running'", (task_id,)).fetchone():
+            raise AccessDenied("任务正在处理，请处理结束后再删除。", 409)
+        db.execute("DELETE FROM material_ai_slots WHERE job_id IN (SELECT id FROM material_jobs WHERE batch_id=?)", (task_id,))
+        for table in ("material_jobs", "material_operations", "core_tax_reports", "material_executions",
+                      "material_revisions", "material_events", "material_originals"):
+            db.execute(f"DELETE FROM {table} WHERE batch_id=?", (task_id,))
+        db.execute("DELETE FROM core_mapping_observations WHERE org_id=? AND task_id=?", (user["org_id"], task_id))
+        db.execute("DELETE FROM core_input_tasks WHERE id=?", (task_id,))
+        db.execute("DELETE FROM material_batches WHERE id=?", (task_id,))
+        members.log(db, user, "core_task_delete", "material_batch", task_id, "permanent")
+    return {"id": task_id, "deleted": True}
+
+
 def project(view):
     value = deepcopy(latest(view))
     from src import vat_reconciliation as vat
@@ -204,6 +227,17 @@ def register(app, get_store, get_user, allow, static_dir):
     @app.get("/api/enterprise/input-tasks/{task_id}")
     def detail(task_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         return read(actor(session), task_id)
+
+    @app.delete("/api/enterprise/input-tasks/{task_id}")
+    async def remove(task_id: str, request: Request,
+                     session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user = actor(session)
+        value = await body(request)
+        if (set(value) != {"expected_revision", "confirm"}
+                or type(value.get("expected_revision")) is not int or value["expected_revision"] < 0
+                or value.get("confirm") is not True):
+            raise HTTPException(422, "请明确确认删除，并提供当前任务版本。")
+        return await run_in_threadpool(delete_task, get_store(), user, task_id, value["expected_revision"])
 
     @app.get("/api/enterprise/input-tasks/{task_id}/data")
     def data(task_id: str, expected_revision: int,
