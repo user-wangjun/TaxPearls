@@ -4,6 +4,21 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   let current = null, busy = false, dirty = false, generation = 0, policyCatalog=null;
   let formOwner = user()?.id, clients=[], scopeDirty=false, attempted=false;
   const scopeIds={company_name:"coreCompanyName",tax_no:"coreTaxNo",start_date:"coreStart",end_date:"coreEnd"};
+  const deleteDialog=$("coreDeleteDialog");let deleteDecision=null;
+  deleteDialog.addEventListener("close",()=>{const resolve=deleteDecision;deleteDecision=null;resolve?.(deleteDialog.returnValue==="delete");});
+  $("coreDeleteCancel").onclick=()=>deleteDialog.close("cancel");
+  $("coreDeleteConfirm").onclick=()=>deleteDialog.close("delete");
+  deleteDialog.addEventListener("keydown",event=>{
+    if(event.key!=="Tab")return;
+    const cancel=$("coreDeleteCancel"),confirm=$("coreDeleteConfirm");
+    if(event.shiftKey&&event.target===cancel){event.preventDefault();confirm.focus();}
+    else if(!event.shiftKey&&event.target===confirm){event.preventDefault();cancel.focus();}
+  });
+  function confirmDelete(name){
+    if(deleteDecision)return Promise.resolve(false);
+    $("coreDeleteTaskName").textContent=name;deleteDialog.returnValue="";
+    return new Promise(resolve=>{deleteDecision=resolve;deleteDialog.showModal();});
+  }
   const scopeRead=()=>Object.fromEntries(Object.entries(scopeIds).map(([key,id])=>[key,$(id).value.trim()]));
   const scopeWrite=()=>{for(const [key,id] of Object.entries(scopeIds))$(id).value=current.task[key]||"";$("coreClient").value=clients.some(c=>c.id===current.task.company_id)?current.task.company_id:"";scopeDirty=false;};
   const fieldErrors={};
@@ -26,7 +41,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   const json = value => ({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
   const button = (text, fn) => {const n=el("button","btn re",text);n.type="button";n.onclick=fn;return n;};
   function clearScope(){for(const id of Object.values(scopeIds))$(id).value="";$("coreClient").value="";scopeDirty=attempted=false;displayErrors({});}
-  function reset() {generation++;current=null;busy=dirty=scopeDirty=attempted=false;displayErrors({});clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
+  function reset() {generation++;current=null;busy=dirty=scopeDirty=attempted=false;if(deleteDialog.open)deleteDialog.close("cancel");displayErrors({});clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
   async function action(fn, saving=false) {
     if(busy||!enabled())return;
     if((dirty||scopeDirty&&current)&&!saving){showError("存在未保存的资料口径核对，请先保存后再补传、创建或读取任务。");return;}
@@ -34,6 +49,20 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const owner=user()?.id, ticket=generation, previousId=current?.id;
     try {const result=await fn();if(owner===user()?.id&&ticket===generation&&enabled()){if(previousId!==result.id)attempted=false;current=result;dirty=false;scopeWrite();render();await history();return true;}}
     catch(error){if(owner===user()?.id&&ticket===generation)showError(error.message);}
+    finally{if(ticket===generation){busy=false;$("coreTaskForm").disabled=false;$("coreTaskResult").querySelectorAll("fieldset,button,input,select").forEach(n=>n.disabled=!!n.corePageDisabled);}}
+  }
+  async function removeCurrent(){
+    if(busy||!current||user()?.role!=="org_admin")return;
+    const owner=user()?.id,ticket=generation,id=current.id,revision=current.revision;
+    const approved=await confirmDelete(current.task.company_name||"待识别企业");
+    if(!approved||busy||ticket!==generation||owner!==user()?.id||user()?.role!=="org_admin"||current?.id!==id)return;
+    busy=true;$("coreTaskForm").disabled=true;$("coreTaskResult").querySelectorAll("button,input,select").forEach(n=>n.disabled=true);
+    try{
+      const result=await api(base+"/"+encodeURIComponent(id),{...json({expected_revision:revision,confirm:true}),method:"DELETE"});
+      if(ticket!==generation||owner!==user()?.id||current?.id!==id)return;
+      if(result.deleted!==true||result.id!==id)throw new Error("任务删除未完成，请重新读取后核对。");
+      current=null;dirty=false;clearScope();render();$("coreTaskHistory").replaceChildren();await history();
+    }catch(error){if(ticket===generation&&owner===user()?.id)showError(error.message);}
     finally{if(ticket===generation){busy=false;$("coreTaskForm").disabled=false;$("coreTaskResult").querySelectorAll("fieldset,button,input,select").forEach(n=>n.disabled=!!n.corePageDisabled);}}
   }
   $("coreCreateTask").onclick=()=>{if(dirty){showError("请先保存资料口径核对。");return;}attempted=false;displayErrors({});return action(()=>api(base,json({...scopeRead(),client_id:$("coreClient").value||null})),true);};
@@ -80,6 +109,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const actions=el("div","core-actions");actions.append(button("重新读取任务",()=>action(()=>api(base+"/"+current.id))));
     actions.append(button("保存企业与检查区间",()=>{if(dirty){showError("请先保存资料口径核对，再保存企业与检查区间。");return;}return action(()=>saveScope(),true);}));
     const next=button("开始检查",startCheck);actions.append(next);root.append(actions,el("p","muted","先核对企业与检查区间；字段错误会阻止开始检查和 AI 审查。"));
+    if(user()?.role==="org_admin"){const remove=button("删除本次任务",removeCurrent);remove.style.color="var(--red,#b42318)";actions.append(remove);}
     const origins=task.scope_origins||{};for(const [key,origin] of Object.entries(origins))if(origin.kind==="file")root.append(el("p","muted",`${{company_name:"企业名称",tax_no:"税号",start_date:"起始日",end_date:"终止日"}[key]}已从文件读取：${(origin.sources||[]).map(s=>`${current.documents.find(d=>d.id===s.file_id)?.name||s.file_id} · ${s.position}`).join("；")}，请核对后开始检查。`));
     displayErrors(attempted?current.scope_errors||{}:Object.fromEntries(Object.entries(current.scope_errors||{}).filter(([key])=>scopeRead()[key])));
     const saved=Object.values(current.tax_checks||{});
@@ -94,7 +124,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     }
     root.append(slots);
     const excluded=(current.files||[]).filter(file=>current.source_options[file.id]?.excluded&&!file.deleted_at);
-    if(excluded.length){const box=el("section","material-card");box.append(el("h4","","已排除的资料（原件保留，可恢复）"));for(const file of excluded){const options=current.source_options[file.id];box.append(el("p","muted",options.original_name),button("恢复资料："+options.original_name,()=>action(()=>api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,source_options:{[file.id]:{excluded:false}},mapping_mode:"ai"})))));}root.append(box);}
+    if(excluded.length){const box=el("section","material-card");box.append(el("h4","","已排除的资料（原件保留，可恢复）"));for(const file of excluded){const options=current.source_options[file.id];box.append(el("p","muted",options.original_name),button("恢复资料："+options.original_name,()=>action(()=>api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,source_options:{[file.id]:{excluded:false,ocr:true}},mapping_mode:"ai"})))));}root.append(box);}
     const review=el("fieldset");review.disabled=busy;
     review.addEventListener("input",()=>{dirty=true;});review.addEventListener("change",()=>{dirty=true;});
     review.append(el("legend","","资料口径核对"),el("p","muted","仅填写已核实的信息，留空沿用文件识别值。填写的是人工确认信息，不会改写原件或声称文件已经证明。一个文件的统一口径会应用到其所有工作表；混合期间请保留原识别值。"));
@@ -117,18 +147,17 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       const exclude=field(doc.name+" 排除此资料（原件与历史版本保留）","checkbox","","排除此资料（原件与历史版本保留）");exclude.input.checked=!!options.excluded;metadata.append(grid,exclude.wrap);content.append(metadata);
       const reviewed=field(doc.name+" 已对照原页核实提取候选的字段、金额、购销方和所属期","checkbox","","已对照原页核实字段、金额、购销方和所属期");reviewed.input.checked=!!options.source_reviewed;
       reviewed.updateState=()=>{heading.children[1].textContent=`${kinds[doc.material_type]} · ${doc.records.length} 条候选 · ${reviewed.input.checked?"已人工核对":"待核对"}`;};reviewed.input.addEventListener("change",reviewed.updateState);
-      const ocr=field(doc.name+" 允许未识别PDF页交给配置模型OCR（发送页图）","checkbox","","允许未识别的 PDF 页交给已配置模型 OCR（发送页图）");ocr.input.checked=!!options.ocr;
       const statuses=[];
       if(doc.material_type==="invoice_detail"&&doc.name.toLowerCase().endsWith(".pdf")){
         content.append(el("p","material-note","票面未记载的红蓝字、作废状态须逐票核实；留空会保留资料缺口。单张发票不能证明整期进销项齐全。"));
       }
       content.append(el("p","muted","金额按解析候选的原单位展示，不在此处换算或汇总；单位及来源口径见下方详情。"),recordTable(doc,options,reviewed,statuses,prepared));
-      if(doc.ocr_candidate||doc.pdf_candidate)content.append(reviewed.wrap);if(doc.name.toLowerCase().endsWith(".pdf"))content.append(ocr.wrap);
+      if(doc.ocr_candidate||doc.pdf_candidate)content.append(reviewed.wrap);
       for(const f of [unit,start,end,form,direction])f.input.addEventListener("change",()=>{reviewed.input.checked=false;reviewed.updateState();});
       const parts=el("details"),summary=el("summary","","识别到的来源口径");parts.append(summary);
       parts.append(el("p","core-checksum",`SHA-256 ${doc.sha256}`));
       for(const part of doc.parts)parts.append(el("p","muted",`${part.name} · ${{main:"主表",supplement:"附表"}[part.form_type]||"表单类型待核对"} · ${part.period?.join(" 至 ")||"期间未识别"} · ${part.unit||"单位未识别"}`));content.append(parts);
-      review.append(card);editors.push({id:doc.id,unit,start,end,form,direction,exclude,reviewed,ocr,statuses});
+      review.append(card);editors.push({id:doc.id,unit,start,end,form,direction,exclude,reviewed,statuses});
     }
     review.append(formScope);
     let readPolicy=null;
@@ -138,7 +167,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       panel.append(el("p","muted",`目录来源核对截至 ${policyCatalog.checked_as_of}；政策条件与本任务资料版本绑定，单独复核，不替代知识图谱的规则审核。`));
       if(current.policy_error)panel.append(el("p","material-note",current.policy_error));
     }
-    const save=button("保存核对并重新整理资料",()=>{const policyInput=readPolicy?.();return action(async()=>{if(scopeDirty)await saveScope();const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:e.ocr.input.checked,invoice_statuses:Object.fromEntries(e.statuses.map(s=>[s.id,{red_letter_status:s.red.input.value,void_status:s.voided.input.value}])),confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value,direction:e.direction.input.value}};
+    const save=button("保存核对并重新整理资料",()=>{const policyInput=readPolicy?.();return action(async()=>{if(scopeDirty)await saveScope();const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:true,invoice_statuses:Object.fromEntries(e.statuses.map(s=>[s.id,{red_letter_status:s.red.input.value,void_status:s.voided.input.value}])),confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value,direction:e.direction.input.value}};
       return api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,applicable_forms:scopeKnown.input.checked?applicable.input.value.split(/[;；]/).map(s=>s.trim()).filter(Boolean):null,source_options:options,mapping_mode:"ai",...(readPolicy?{policy_input:policyInput}:{})}));},true);});review.append(save);root.append(review);
     const problems=el("section","enterprise-feedback"+(p.issues.length?" blocking":""));problems.append(el("h4","",scopePending?"资料缺口与冲突（待核对检查范围）":`资料缺口与冲突（${p.issues.length}）`));if(scopePending)problems.append(el("p","","企业或检查区间尚未完整，资料完整性与区间冲突检查尚未完成；请先补全并保存范围。"));
     const issueGroups=new Map();for(const item of p.issues){const key=JSON.stringify([item.code,item.message]);if(!issueGroups.has(key))issueGroups.set(key,[]);issueGroups.get(key).push(item);}

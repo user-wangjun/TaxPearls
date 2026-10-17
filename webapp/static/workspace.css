@@ -1228,6 +1228,14 @@ html[data-theme=dark] .probe-failed { color:#ff9b9b; }
 html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 .probe-add-dialog { width:min(800px,calc(100vw - 40px)); max-height:calc(100dvh - 40px); box-sizing:border-box; margin:auto; padding:0; border:1px solid var(--line); border-radius:20px; background:var(--card,#fff); color:var(--ink,#253340); overflow:hidden; }
 .probe-add-dialog::backdrop { background:#0008; }
+.core-delete-dialog { width:min(520px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); box-sizing:border-box; margin:auto; padding:0; border:1px solid var(--line); border-radius:18px; background:var(--card,#fff); color:var(--ink,#253340); box-shadow:0 18px 64px #0004; overflow:auto; }
+.core-delete-dialog::backdrop { background:#14243180; backdrop-filter:blur(3px); }
+.core-delete-body { padding:26px 26px 12px; }
+#coreInputs .core-delete-body h2 { margin:0 0 18px; font-size:22px; }
+#coreInputs .core-delete-body p { margin:0 0 12px; font-size:14px; line-height:1.8; overflow-wrap:anywhere; }
+.core-delete-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:12px; padding:18px 26px 24px; }
+#appMain #coreDeleteDialog .core-delete-confirm { background:#b73535; color:#fff; border:1px solid #b73535; }
+#appMain #coreDeleteDialog .core-delete-confirm:hover { background:#9b2929; border-color:#9b2929; }
 #aiKeyAddForm { display:flex; flex-direction:column; max-height:calc(100dvh - 42px); }
 .probe-editor-heading { padding:26px 32px 20px; border-bottom:1px solid var(--line); flex:none; }
 .probe-editor-heading h2 { margin:0; font-size:24px; }
