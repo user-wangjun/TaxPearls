@@ -77,7 +77,7 @@
   <section id="app-view" hidden>
     <div class="toolbar">
       <select id="cert-select"></select>
-      <button class="primary" id="new-cert-btn">＋ 新建证书</button>
+      <button class="primary" id="new-cert-btn" data-act="new-cert-btn">＋ 新建证书</button>
     </div>
 
     <div id="pass-form" class="card" hidden>
@@ -221,7 +221,7 @@
       <p class="muted" style="margin-top:-6px;">学生以「学号 + 密码」登录学生页；停用后立即无法登录且会话失效。批量导入支持粘贴文本（每行：学号,姓名,班级）或直接上传 Excel 名册（.xlsx）。重置密码会立即踢下线。</p>
       <div id="student-form" class="inline-form" hidden>
         <div class="row">
-          <div><label>院校（必填）</label><input id="sf-college" value="演示财经职业学院"></div>
+          <div><label>院校</label><input id="sf-college" readonly></div>
           <div><label>学号</label><input id="sf-no"></div>
           <div><label>姓名</label><input id="sf-name"></div>
           <div><label>班级（选填）</label><input id="sf-class"></div>
@@ -234,7 +234,7 @@
       </div>
       <div id="student-import-form" class="inline-form" hidden>
         <div class="row">
-          <div><label>院校（必填）</label><input id="si-college" value="演示财经职业学院"></div>
+          <div><label>院校</label><input id="si-college" readonly></div>
           <div><label>默认班级（选填，行内可覆盖）</label><input id="si-class"></div>
           <div><label>统一初始密码（至少 8 位）</label><input id="si-pass" placeholder="如 Class2026!"></div>
         </div>
@@ -266,7 +266,7 @@
         </div>
         <div class="row">
           <div><label>绑定班级（逗号分隔，可多个）</label><input id="cf2-classes" placeholder="会计2601,会计2602"></div>
-          <div><label>院校（必填）</label><input id="cf2-college" value="演示财经职业学院"></div>
+          <div><label>院校</label><input id="cf2-college" readonly></div>
         </div>
         <label>课程说明（选填）</label>
         <input id="cf2-desc">
@@ -282,28 +282,6 @@
       <div id="overview-body" class="muted">加载中…</div>
     </div>
     <div class="card">
-      <h2>编程题库（判题线）
-        <button class="small" data-act="show-code-form">＋ 新建编程题</button>
-        <button class="small" data-act="refresh-code-problems">刷新</button>
-      </h2>
-      <p class="muted" style="margin-top:-6px;">编程题与测试用例管理（v1 仅 python）。判题为教学演示级沙箱（python -I 隔离 + 超时 + 输出截断），非容器级安全边界；生产判题须容器沙箱专项。</p>
-      <div id="code-form" class="inline-form" hidden>
-        <div class="row">
-          <div><label>题目标题（必填）</label><input id="cp-title" placeholder="如 两数之和"></div>
-          <div><label>时间限制（毫秒，500~60000）</label><input id="cp-time" value="5000"></div>
-        </div>
-        <label>题面描述</label>
-        <input id="cp-statement" placeholder="读入两个整数，输出它们的和">
-        <label>测试用例（每行一组：输入||期望输出；勾选样例=学生可见）</label>
-        <textarea id="cp-cases" style="min-height:90px;font-family:ui-monospace,monospace;" placeholder="1 2||3 [样例]&#10;5 7||12"></textarea>
-        <div class="actions">
-          <button class="primary small" data-act="create-code-problem">创建题目</button>
-          <button class="small" data-act="cancel-code-form">收起</button>
-        </div>
-      </div>
-      <div id="code-problems" class="muted">加载中…</div>
-    </div>
-    <div class="card">
       <h2>班级与教师名册
         <button class="small" data-act="refresh-roster">刷新</button>
         <button class="small" id="teacher-import-btn" data-act="show-teacher-import" hidden>⇪ 教师批量导入（管理员）</button>
@@ -311,7 +289,7 @@
       <p class="muted" style="margin-top:-6px;">班级为名册「班级」字段的聚合。学期初整建制迁移：把一个班级的全部在读学生整体改入新班级，逐生写入归属追溯（可审计、不改写历史）；停用学生保持原班级。教师批量导入仅限管理员，只建教师角色账号，每行：登录名,姓名,邮箱可选（空行忽略，重复/错误行带原因反馈）。</p>
       <div id="class-migrate-form" class="inline-form">
         <div class="row">
-          <div><label>院校（必填）</label><input id="cm-college" value="演示财经职业学院"></div>
+          <div><label>院校</label><input id="cm-college" readonly></div>
           <div><label>原班级</label><input id="cm-from" list="class-names" placeholder="如 会计2601"></div>
           <datalist id="class-names"></datalist>
           <div><label>新班级</label><input id="cm-to" placeholder="如 会计2602"></div>
@@ -321,7 +299,7 @@
       </div>
       <div id="teacher-import-form" class="inline-form" hidden>
         <div class="row">
-          <div><label>院校（必填）</label><input id="ti-college" value="演示财经职业学院"></div>
+          <div><label>院校</label><input id="ti-college" readonly></div>
           <div><label>统一初始密码（至少 8 位）</label><input id="ti-pass" placeholder="如 Staff2026!"></div>
         </div>
         <label>教师名单（每行：登录名,姓名,邮箱可选）</label>
