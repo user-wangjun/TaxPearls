@@ -98,7 +98,7 @@ def metadata(rows, kind):
     tax = re.findall(r"(?:纳税人识别号|统一社会信用代码|税号)\s*[:：]?\s*([A-Za-z0-9]{8,20})", content)
     period = None
     # VAT must explicitly refer to tax period; submission date is never used.
-    marker = r"税款所属(?:期|期间)" if kind == "vat_declaration" else r"(?:会计期间|本期范围|所属期间|统计期间|期间)"
+    marker = r"税(?:\s*[（(]费[）)])?款所属(?:时间|期|期间)|税[（(]费[）)]款所属时间" if kind == "vat_declaration" else r"(?:会计期间|本期范围|所属期间|统计期间|期间)"
     for line in content.splitlines():
         if not re.search(marker, line):
             continue
@@ -146,16 +146,68 @@ def issue(code, message, file_id=None, position=None):
     return {"code": code, "message": message, "source_file_id": file_id, "source_position": position}
 
 
-def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_name, *, pdf_invoice=False):
+VAT_VALUE_HEADER = r"本期|本月|本年累计|申报数值|declared_value|销售额|税额|余额|扣除额|发生额|含税收入|减征额|税费额|税费率|税\(费\)率|份数|价税合计"
+VAT_CHILD_HEADER = r"本期数|本月数|本年累计数?|货物及劳务|服务、不动产和无形资产|销售额|销项税额|税额|减免性质代码|减免税.*额|减征比例.*|减征额|增值税税额"
+
+
+def vat_matrix_records(rows, positions, meta, file_id, sheet_name, issues):
+    """Horizontal deduction schedules: preserve each labelled source cell.
+
+    Printed column-number/formula guidance is not a reported amount. Empty
+    amount rows remain missing candidates, never a zero-business assertion.
+    """
+    records = []
+    for index, header in enumerate(rows[:-1]):
+        columns = [c for c,v in enumerate(header) if re.search(VAT_VALUE_HEADER, label(v))]
+        if len(columns) < 2 or any(v is not None and not isinstance(v, str) for v in header):
+            continue
+        if any(label(v) in {'项目', '项目名称', '申报项目', '税费种', '税费种类'} for v in header):
+            continue
+        section_row, section_col, section = next(((r,c,text(v).strip())
+                        for r in range(index-1,-1,-1) if sum(bool(text(v).strip()) for v in rows[r]) == 1
+                        for c,v in enumerate(rows[r]) if text(v).strip()), (None,None,sheet_name))
+        # A form title or prose row mentioning amounts is not a matrix header.
+        if len([v for v in header if text(v).strip()]) != len(columns):
+            continue
+        data_index = index + 1
+        following = rows[data_index]
+        if any(re.match(r'^\d+[=＝（(≤≥]', text(v).strip()) for v in following):
+            data_index += 1
+        if data_index >= len(rows):
+            continue
+        data = rows[data_index]
+        if any(text(v).strip() and not re.match(r'^[-+\d（(—－]', text(v).strip()) for v in data):
+            continue
+        scopes = [label(v) for v in header]
+        records.extend(vat_grid(rows, positions, meta, file_id, data_index-1, 0, columns,
+                                sheet_name, issues, scopes, key_column=None, row_end=data_index+1,
+                                label_override=(section, positions(section_row,section_col) if section_row is not None else sheet_name)))
+    return records
+
+
+def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_name, *, pdf_invoice=False, split_sections=True):
     required = [k for k in REQUIRED[kind] if not pdf_invoice or k not in {"red_letter_status", "void_status"}]
     known = {label(alias) for names in ALIASES[kind].values() for alias in names} | {label(k) for k in ALIASES[kind]}
     anchor = {"account_balance": "account_name", "vat_declaration": "item_label", "invoice_detail": "invoice_no"}[kind]
     anchors = set(map(label, [anchor, *ALIASES[kind][anchor]]))
+    if kind == "vat_declaration" and split_sections:
+        starts = [i for i,row in enumerate(rows) if any(label(v) in anchors for v in row)
+                  and sum(bool(text(v).strip()) for v in row) >= 2]
+        if len(starts) > 1:
+            result = []
+            for start,end in zip(starts, [*starts[1:],len(rows)]):
+                result.extend(table_records(rows[start:end],lambda r,c,s=start:positions(r+s,c),meta,
+                    kind,file_id,mapper,issues,sheet_name,split_sections=False))
+            return result
     candidates = [
         (sum(label(v) in known for v in row) + 100 * any(label(v) in anchors for v in row), i)
         for i, row in enumerate(rows[:40])
     ]
     score, header_index = max(candidates, default=(0, 0))
+    if kind == "vat_declaration" and not any(any(label(v) in anchors for v in row) for row in rows[:40]):
+        matrix = vat_matrix_records(rows, positions, meta, file_id, sheet_name, issues)
+        if matrix:
+            return matrix
     if score < 1:
         if not mapper.ai:
             return []
@@ -173,7 +225,8 @@ def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_na
     headers = list(rows[header_index])
     if header_index + 1 < len(rows):
         child = rows[header_index + 1]
-        if sum(bool(re.fullmatch(r"借方|贷方|本期数|本月数|本年累计|本年累计数", re.sub(r"\s+", "", text(v)))) for v in child) >= 2:
+        child_pattern = VAT_CHILD_HEADER if kind == "vat_declaration" else r"借方|贷方|本期数|本月数|本年累计|本年累计数"
+        if sum(bool(re.fullmatch(child_pattern, label(v))) for v in child) >= 2:
             parent = ""
             combined = []
             for c in range(max(len(headers), len(child))):
@@ -207,9 +260,19 @@ def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_na
     if kind == "vat_declaration":
         label_columns = [i for i, m in mapping.items() if m["target_field"] == "item_label"]
         value_columns = [
-            i for i, h in enumerate(headers) if re.search(r"本期|本月|本年累计|申报数值|declared_value", text(h))
+            i for i, h in enumerate(headers) if re.search(VAT_VALUE_HEADER, label(h))
+            and i not in label_columns and mapping.get(i, {}).get("target_field") != "item_key"
+            and not re.search(r"性质代码|项目代码", label(h))
         ]
         if label_columns and len(value_columns) > 1:
+            key_column=next((i for i,m in mapping.items() if m["target_field"]=="item_key"), None)
+            if key_column is None:
+                scores=[]
+                for c in range(label_columns[0]+1,min(value_columns)):
+                    values=[text(row[c]).strip() for row in rows[header_index+1:header_index+16] if c<len(row) and text(row[c]).strip()]
+                    if values and all(re.match(r'^\d+(?:\.0)?(?:[（(=＝≤≥]|$)',v) for v in values):
+                        scores.append((len(values),c))
+                key_column=max(scores)[1] if scores else None
             records = vat_grid(
                 rows,
                 positions,
@@ -221,6 +284,8 @@ def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_na
                 sheet_name,
                 issues,
                 headers,
+                key_column=key_column,
+                label_end=key_column if key_column is not None else min(value_columns),
             )
             if records:
                 # Multiple value columns are valid when their scopes remain separate.
@@ -304,12 +369,20 @@ def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_na
     return records
 
 
-def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_columns, form_name, issues, headers):
+def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_columns, form_name, issues, headers,
+             *, key_column=None, label_end=None, row_end=None, label_override=None):
     records = []
-    for r, row in enumerate(rows[header_index + 1 :], header_index + 1):
-        name = text(row[label_column] if label_column < len(row) else None).strip()
+    for r, row in enumerate(rows[header_index + 1 : row_end], header_index + 1):
+        available = [(i,text(row[i]).strip()) for i in range(label_column, min(label_end or label_column+1,len(row)))
+                     if text(row[i]).strip()]
+        name_column, name = available[-1] if available else (label_column, "")
+        name_position = positions(r, name_column)
+        if label_override:
+            name, name_position = label_override
         if not name or name in {"项目", "项目名称", "合计", "总计"}:
             continue
+        if key_column is not None and not text(row[key_column] if key_column < len(row) else None).strip():
+            continue  # Footers and section titles are not declared rows.
         for c in value_columns:
             raw = row[c] if c < len(row) else None
             value, state = number(raw)
@@ -325,13 +398,12 @@ def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_c
                     "source_position": position,
                     "raw_record": {str(i): text(v) for i, v in enumerate(row)},
                     "item_label": name,
-                    "item_key": text(row[label_column + 1])
-                    if label_column + 1 < len(row) and label_column + 1 not in value_columns
-                    else None,
+                    "item_key": (str(int(row[key_column])) if isinstance(row[key_column],float) and row[key_column].is_integer()
+                                 else text(row[key_column])) if key_column is not None and key_column < len(row) else None,
                     "declared_value": value,
                     "column_scope": context,
                     "field_sources": {
-                        "item_label": {"position": positions(r, label_column), "raw_value": name},
+                        "item_label": {"position": name_position, "raw_value": name},
                         "declared_value": {
                             "position": position,
                             "raw_value": text(raw),
@@ -342,7 +414,7 @@ def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_c
                         },
                     },
                     "value_states": {"declared_value": state, "item_label": "present"},
-                    "unit": meta["unit"],
+                    "unit": "%" if re.search(r"率.*[%％]|比例.*[%％]",text(headers[c])) else "份" if "份数" in text(headers[c]) else meta["unit"],
                     "period_start": meta["period"][0] if meta["period"] else None,
                     "period_end": meta["period"][1] if meta["period"] else None,
                     "form_type": meta["form_type"],
@@ -389,6 +461,9 @@ def parse(raw, name, kind, file_id, mapper, *, ocr=False):
                         result["parts"].append({"name": sheet.title, **meta, "empty_table": True})
                     elif any(text(value).strip() for row in rows for value in row):
                         result["issues"].append(issue("unreadable_sheet", "发票工作簿含未识别的非空工作表，须核对，不能当作零或忽略其金额。", file_id, sheet.title))
+                elif kind == "vat_declaration" and any(text(value).strip() for row in rows for value in row):
+                    result["parts"].append({"name":sheet.title, **meta, "unparsed":True})
+                    result["issues"].append(issue("unreadable_sheet", "申报工作簿中此表尚未提取到可核对记录，请核对适用性与原表；未视为零申报。", file_id, sheet.title))
         finally:
             book.close()
     elif extension == "pdf":
