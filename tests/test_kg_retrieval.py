@@ -399,6 +399,31 @@ class CoreReportTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return task["id"], response.json()
 
+    def test_scope_changes_invalidate_results_and_recheck_uses_current_period(self):
+        tid, checked = self.checked()
+        base = "/api/enterprise/input-tasks/" + tid
+        current = self.client.get(base).json()
+        scope = {key: current["task"][key] for key in ("company_name", "tax_no", "start_date", "end_date")}
+        changed = self.client.post(base + "/scope", json={**scope, "company_name": "纯合成测试企业更名",
+                                   "expected_revision": current["revision"], "confirm": True})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertTrue(changed.json()["tax_checks"]["R01"]["stale"])
+        self.assertEqual(self.client.post(base + "/reports", json={"expected_revision": changed.json()["revision"]}).status_code, 409)
+        fresh = self.client.post("/api/knowledge/retrieve", json={"rule_id": "R01", "task_id": tid,
+                                 "expected_revision": changed.json()["revision"], "region_code": "CN-33"})
+        self.assertEqual(fresh.status_code, 200, fresh.text)
+        self.assertFalse(fresh.json()["cached"])
+        changed = self.client.post(base + "/scope", json={**scope, "end_date": "2026-02-28",
+                                   "expected_revision": fresh.json()["revision"], "confirm": True})
+        self.assertEqual(changed.status_code, 200, changed.text)
+        self.assertTrue(changed.json()["tax_checks"]["R01"]["stale"])
+        with patch("webapp.knowledge_evidence.analyze") as ai:
+            rechecked = self.client.post(base + "/recheck", json={"expected_revision": changed.json()["revision"]})
+            self.assertEqual(rechecked.status_code, 200, rechecked.text)
+            self.assertEqual(rechecked.json()["tax_checks"]["R01"]["bundle"]["task"]["period_end"], "2026-02-28")
+            self.assertFalse(rechecked.json()["tax_checks"]["R01"]["stale"])
+            ai.assert_not_called()
+
     def test_frozen_report_html_json_pdf_cache_encryption_and_tenant_permissions(self):
         tid, result = self.checked()
         base = "/api/enterprise/input-tasks/" + tid + "/reports"
@@ -481,7 +506,10 @@ class CoreReportTests(unittest.TestCase):
         payload = deepcopy(core_inputs.latest(view))
         payload["task"]["company_name"] = '<script>alert("unsafe")</script>'
         revision = material_batches.append_revision(self.store, actor, tid, result["revision"], "edit", payload)
-        archived = self.client.post(base + "/reports", json={"expected_revision": revision})
+        self.assertEqual(self.client.post(base + "/reports", json={"expected_revision": revision}).status_code, 409)
+        rechecked = self.client.post(base + "/recheck", json={"expected_revision": revision})
+        self.assertEqual(rechecked.status_code, 200, rechecked.text)
+        archived = self.client.post(base + "/reports", json={"expected_revision": rechecked.json()["revision"]})
         self.assertEqual(archived.status_code, 200, archived.text)
         html = self.client.get(base + "/reports/1").text
         self.assertNotIn('<script>alert("unsafe")</script>', html)

@@ -61,10 +61,13 @@ def signature(facts):
 
 def build_task_bundle(db, payload, task, rule_id, **options):
     from . import bundle, relation_search
+    from webapp.core_inputs import require_scope
+    require_scope(payload)
     from src import vat_reconciliation as vat
     definitions = relation_search.rule_context(db, rule_id)["metrics"]
     fact_assessment = None
-    task = dict(task)
+    task = {**task, "period_start": payload["task"]["start_date"], "period_end": payload["task"]["end_date"],
+            "data_scope": "synthetic" if any(marker in payload["task"]["company_name"] for marker in ("纯合成测试", "仿真")) else "enterprise"}
     if rule_id == vat.RULE:
         definitions, facts, checked = vat.resolve(definitions, payload)
         fact_assessment = vat.assess(facts, checked)
@@ -85,5 +88,9 @@ def mark_stale(payload):
         from src import vat_reconciliation as vat
         current = vat.resolve(definitions, payload)[1] if package.get("check", {}).get("rule_id") == vat.RULE else collect(definitions, payload["processing"], payload["task"])
         previous = {f["metric_id"]: f for f in package.get("facts", [])}
-        slot["stale"] = signature(current) != signature(previous)
+        scope = {key: payload["task"].get(key) for key in core_materials.SCOPE_FIELDS}
+        scope_changed = slot.get("input_scope", scope) != scope
+        period_changed = any(package.get("task", {}).get(key, payload["task"][source]) != payload["task"][source]
+                             for key, source in (("period_start", "start_date"), ("period_end", "end_date")))
+        slot["stale"] = scope_changed or period_changed or signature(current) != signature(previous)
     return payload

@@ -631,8 +631,75 @@ def gaps(intervals, start, end):
     return result
 
 
+SCOPE_FIELDS = ("company_name", "tax_no", "start_date", "end_date")
+
+
+def scope_errors(task):
+    """Validate inspection scope only when requested; draft storage accepts blanks."""
+    errors = {}
+    for key, field_label in zip(SCOPE_FIELDS, ("企业名称", "税号", "检查起始日", "检查终止日")):
+        if not task.get(key):
+            errors[key] = "请填写" + field_label + "，或从材料读取后核对。"
+    tax = identity(task.get("tax_no"))
+    if tax and (not tax.isascii() or not tax.isalnum() or not 8 <= len(tax) <= 20):
+        errors["tax_no"] = "税号须为8至20位字母或数字。"
+    for key in ("start_date", "end_date"):
+        if task.get(key):
+            try:
+                if date.fromisoformat(task[key]).isoformat() != task[key]:
+                    raise ValueError()
+            except (ValueError, TypeError):
+                errors[key] = "请填写有效日期。"
+    if not any(key in errors for key in ("start_date", "end_date")) and task["start_date"] > task["end_date"]:
+        errors["end_date"] = "检查终止日不能早于起始日。"
+    return errors
+
+
+def autofill_scope(task, documents):
+    """Only unanimous explicit source metadata becomes a candidate, never date extrema."""
+    before = {key: task.get(key) for key in SCOPE_FIELDS}
+    candidates = {key: {} for key in SCOPE_FIELDS}
+    origins = task.setdefault("scope_origins", {})
+    for doc in documents:
+        for part in doc.get("parts", []):
+            if doc.get("ocr_candidate") and not doc.get("source_reviewed"):
+                continue
+            source = {"file_id": doc["id"], "position": part["name"]}
+            values = {}
+            # Invoice counterparties never identify the inspected enterprise.
+            if doc["material_type"] != "invoice_detail":
+                taxes = part.get("tax_nos", [])
+                if len(taxes) == 1:
+                    values["tax_no"] = taxes[0]
+                names = re.findall(r"(?:企业名称|纳税人名称|单位名称)\s*[:：]\s*([^\n]+)", part.get("quote", ""))
+                if len(set(names)) == 1:
+                    values["company_name"] = names[0].strip()
+                period = part.get("parsed_metadata", part).get("period")
+                if period:
+                    values["start_date"], values["end_date"] = period
+            for key, value in values.items():
+                candidates[key].setdefault(value, []).append(source)
+    for key, choices in candidates.items():
+        if not task.get(key) or origins.get(key, {}).get("kind") == "file":
+            task[key] = next(iter(choices)) if len(choices) == 1 else ""
+            origins.pop(key, None)
+            if len(choices) == 1:
+                origins[key] = {"kind": "file", "sources": next(iter(choices.values()))}
+    if any(task.get(key) != value for key, value in before.items()):
+        task["scope_confirmed"] = False
+    task["scope_candidates"] = {key: [{"value": value, "sources": sources} for value, sources in choices.items()]
+                                for key, choices in candidates.items()}
+
+
 def prepare(task, documents):
     """Data readiness only. No tax comparison, risk rule, AI analysis or report."""
+    errors = {key: value for key, value in scope_errors(task).items() if key != "company_name"}
+    if errors:
+        return {"status": "needs_completion", "issues": [], "notices": [], "records": [],
+                "invoice_summaries": [], "coverage": {kind: [] for kind in KINDS},
+                "evidence_links": {"company_id": task.get("company_id"), "period": [task.get("start_date"), task.get("end_date")],
+                                   "source_record_ids": [], "comparison_status": "requires_confirmed_rules"},
+                "boundary": "资料已保存；开始检查前请核对企业与检查区间。"}
     problems, notices, records = [], [], []
     coverage = {kind: [] for kind in KINDS}
     direction_coverage = {"input": [], "output": []}
