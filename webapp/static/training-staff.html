@@ -348,6 +348,34 @@
       </div>
       <div id="org-quota-history" class="muted" style="margin-top:10px;"></div>
     </div>
+    <div class="card">
+      <h2>判题管理 <span class="muted" style="font-weight:400;">（编程题 · FR-J05～J08）</span></h2>
+      <div class="row">
+        <div><label>编程题</label><select id="judge-problem"></select></div>
+        <div style="flex:0 0 auto;"><button class="primary small" id="judge-load-subs">加载提交</button></div>
+      </div>
+      <div id="judge-submissions" class="muted" style="margin-top:10px;">选择题目后加载提交列表。</div>
+
+      <h3 style="margin-top:16px;">代码查重</h3>
+      <div class="row">
+        <div><label>相似度阈值（0~1，默认 0.85）</label><input id="judge-plag-threshold" type="number" min="0" max="1" step="0.05" value="0.85"></div>
+        <div style="flex:0 0 auto;"><button class="small" id="judge-plag-scan" style="margin-bottom:2px;">扫描查重</button></div>
+      </div>
+      <div id="judge-plag-flags" class="muted" style="margin-top:8px;">未扫描。</div>
+
+      <h3 style="margin-top:16px;">判题队列</h3>
+      <div class="row">
+        <div><label>状态过滤</label>
+          <select id="judge-task-state">
+            <option value="">全部</option><option value="queued">排队中</option>
+            <option value="running">运行中</option><option value="done">已完成</option>
+            <option value="failed">失败</option>
+          </select></div>
+        <div style="flex:0 0 auto;"><button class="small" id="judge-tasks-refresh" style="margin-bottom:2px;">刷新队列</button></div>
+      </div>
+      <div id="judge-tasks" class="muted" style="margin-top:8px;">未加载。</div>
+      <p class="muted" style="margin-top:8px;">质量分与判题明细可在提交列表展开；查重结果仅作参考提示，不自动定性抄袭。队列默认关闭（提交即时判题），设 TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1 后启用。</p>
+    </div>
     <div class="error" id="app-error"></div>
   </section>
 </main>
