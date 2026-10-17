@@ -581,24 +581,8 @@ def _version_tuple(value: str) -> tuple[int, ...]:
 
 
 def _effective_rules() -> list[Any]:
-    overrides = store.rule_overrides()
-    histories = store.rule_versions()
-    effective = []
-    for base in engine.load_rules(RULES_DIR):
-        override = overrides.get(base.id)
-        if override and _version_tuple(override["version"]) > _version_tuple(base.version):
-            record = next((item for item in histories.get(base.id, []) if item["version"] == override["version"]), None)
-            frozen = Rule(**record["rule"]) if record and record.get("rule") else base
-            candidate = replace(
-                frozen, version=override["version"], logic=deepcopy(override["logic"]),
-                threshold_basis=override["threshold_basis"],
-                effective_from=override["effective_from"], effective_to=override["effective_to"],
-            )
-            engine.validate_rule_update(candidate)
-            effective.append(candidate)
-        else:
-            effective.append(base)
-    return effective
+    from src.rule_conversion import effective_rules
+    return effective_rules(store, RULES_DIR)
 
 
 def _audit_rules(dataset: Dataset, enabled: set[str] | None = None) -> list[Any]:

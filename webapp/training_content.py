@@ -48,7 +48,10 @@ def _today_cst():
     return today_cst()
 
 
-def load_rules() -> list[Any]:
+def load_rules(store=None) -> list[Any]:
+    if store is not None:
+        from src.rule_conversion import effective_rules
+        return effective_rules(store, RULES_DIR)
     from src import engine
     return engine.load_rules(RULES_DIR)
 
@@ -68,7 +71,7 @@ def linked_rule_ids(db, cert_id: str) -> list[str]:
     rows = db.execute(
         """SELECT DISTINCT l.target_id FROM knowledge_point_link l
            JOIN knowledge_point k ON k.id = l.knowledge_point_id
-           WHERE l.target_type='rule' AND k.certificate_id=? AND k.active=1""",
+           WHERE l.target_type='rule' AND l.active=1 AND k.certificate_id=? AND k.active=1""",
         (cert_id,)).fetchall()
     return sorted({r["target_id"] for r in rows})
 
@@ -130,9 +133,20 @@ def _baseline_label(db, cert_id: str, year: int) -> str:
 def ensure_active_version(db, cert_id: str, rules: list[Any]) -> Any:
     """返回当前 active 版本；没有则建立仿真基线版本（须在 BEGIN IMMEDIATE 事务内调用）。"""
     active = resolve_active_version(db, cert_id)
-    if active:
-        return active
     rule_ids = linked_rule_ids(db, cert_id)
+    snapshot = json.dumps([asdict(r) for r in sorted(rules, key=lambda r: r.id)],
+                          ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+    if active:
+        covered = json.loads(active['rule_ids_json'] or '[]')
+        snapshot_matches = active['rules_snapshot_json'] == snapshot
+        if (active['rules_digest'] == _pack_digest(covered, rules)
+                and set(rule_ids) <= set(covered) and snapshot_matches):
+            return active
+        # Never retrofit an old content version with today's rules. New work
+        # receives a new version; existing attempts keep their original version.
+        db.execute("UPDATE training_content_version SET status='retired', updated_at=? WHERE id=?",
+                   (_now(), active['id']))
+        rule_ids = sorted((set(rule_ids) | set(covered)) & {r.id for r in rules})
     year = _today_cst().year
     now = _now()
     version_id = str(uuid.uuid4())
@@ -142,7 +156,20 @@ def ensure_active_version(db, cert_id: str, rules: list[Any]) -> Any:
            VALUES (?,?,?,'simulated',?,?,?,'active','','',NULL,?,?)""",
         (version_id, cert_id, _baseline_label(db, cert_id, year), year,
          _pack_digest(rule_ids, rules), json.dumps(rule_ids, ensure_ascii=False), now, now))
+    db.execute('UPDATE training_content_version SET rules_snapshot_json=? WHERE id=?', (snapshot, version_id))
     return db.execute("SELECT * FROM training_content_version WHERE id=?", (version_id,)).fetchone()
+
+
+def attempt_rules(db, row, fallback):
+    """Use a saved teaching version, never silently regenerate old work with new rules."""
+    from src.models import Rule
+    version = db.execute('SELECT rules_snapshot_json FROM training_content_version WHERE id=?',
+                         (row['content_version_id'],)).fetchone()
+    if version and version['rules_snapshot_json']:
+        return [Rule(**item) for item in json.loads(version['rules_snapshot_json'])]
+    # Older records have no recoverable snapshot; their existing digest guard
+    # still rejects a changed exercise instead of presenting it as the old one.
+    return fallback
 
 
 def _payload(db, row) -> dict[str, Any]:
@@ -194,7 +221,8 @@ def create_version(store, staff: dict, cert_id: str, *, label: str, source_type:
             final_ids = linked_rule_ids(db, cert_id)
         else:
             final_ids = sorted({str(r).strip() for r in rule_ids if str(r).strip()})
-        known = {r.id for r in load_rules()}
+        rules = load_rules(store)
+        known = {r.id for r in rules}
         unknown = [rid for rid in final_ids if rid not in known]
         if unknown:
             raise _portal_error(f"规则不存在或未启用：{', '.join(unknown)}。")
@@ -208,8 +236,12 @@ def create_version(store, staff: dict, cert_id: str, *, label: str, source_type:
             """INSERT INTO training_content_version (id, certificate_id, label, source_type, year,
                rules_digest, rule_ids_json, status, source_ref, note, created_by, created_at, updated_at)
                VALUES (?,?,?,?,?,?,?,'active',?,?,?,?,?)""",
-            (version_id, cert_id, label, source_type, year, _pack_digest(final_ids, load_rules()),
+            (version_id, cert_id, label, source_type, year, _pack_digest(final_ids, rules),
              json.dumps(final_ids, ensure_ascii=False), source_ref, note, staff["id"], now, now))
+        row = db.execute("SELECT * FROM training_content_version WHERE id=?", (version_id,)).fetchone()
+        db.execute('UPDATE training_content_version SET rules_snapshot_json=? WHERE id=?',
+                   (json.dumps([asdict(r) for r in sorted(rules, key=lambda r: r.id)],
+                               ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str), version_id))
         row = db.execute("SELECT * FROM training_content_version WHERE id=?", (version_id,)).fetchone()
         return _payload(db, row)
 

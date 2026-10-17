@@ -24,7 +24,7 @@
   for(const [code,name]of Object.entries(regions))option($kg("kgRegion"),"CN-"+code,name);
   function current(ticket,identity){return generation===ticket&&currentUser?.id===identity&&$kg("knowledgePanel").classList.contains("active");}
   function message(text){$kg("kgRetrievalStatus").textContent=text;}
-  function reset(){reviewDirty=false;$kg("kgVATReview").replaceChildren();$kg("kgVATReview").hidden=true;window.RuleBindings?.reset();generation++;owner=null;tasks=[];config=null;last=null;requested=null;detail=null;reports=[];busy=false;$kg("kgEvidenceFields").disabled=false;for(const id of ["kgEvidenceResult","kgTaskChecks","kgReportVersions"])$kg(id).replaceChildren();$kg("kgReportStatus").textContent="";$kg("kgTask").replaceChildren();option($kg("kgTask"),"","仅检索政策，不读取企业资料");$kg("kgRule").replaceChildren();$kg("kgStart").value="";$kg("kgEnd").value="";$kg("kgTopic").value="";$kg("kgRegion").value="";$kg("kgTokenBudget").value="6000";message("");buttons();}
+  function reset(){$kg("kgKnowledgeStatus").replaceChildren();reviewDirty=false;$kg("kgVATReview").replaceChildren();$kg("kgVATReview").hidden=true;window.RuleBindings?.reset();generation++;owner=null;tasks=[];config=null;last=null;requested=null;detail=null;reports=[];busy=false;$kg("kgEvidenceFields").disabled=false;for(const id of ["kgEvidenceResult","kgTaskChecks","kgReportVersions"])$kg(id).replaceChildren();$kg("kgReportStatus").textContent="";$kg("kgTask").replaceChildren();option($kg("kgTask"),"","仅检索政策，不读取企业资料");$kg("kgRule").replaceChildren();$kg("kgStart").value="";$kg("kgEnd").value="";$kg("kgTopic").value="";$kg("kgRegion").value="";$kg("kgTokenBudget").value="6000";message("");buttons();}
   function buttons(){const task=$kg("kgTask").value;$kg("kgAnalyze").disabled=busy||!task||!detail||!config?.acceptance?.passed||!config?.ai_configured;for(const id of ["kgArchiveReport","kgRecheck"])$kg(id).disabled=busy||!detail||!Object.keys(detail.tax_checks||{}).length;$kg("kgBackToInputs").hidden=!task;$kg("kgBackToInputs").disabled=busy;}
   function reportList(){const root=$kg("kgReportVersions");root.replaceChildren();for(const row of reports){const line=el("p","kv",`报告 V${row.version} · 输入任务版本 ${row.input_revision} · ${row.created_at} `);for(const [format,label]of [["html","查看报告"],["pdf","下载 PDF"],["json","下载报告数据"]]){const a=el("a","kv",label);a.href=`/api/enterprise/input-tasks/${encodeURIComponent(detail.id)}/reports/${row.version}?format=${format}`;a.target="_blank";a.rel="noopener";line.append(a,document.createTextNode("　"));}root.append(line);}}
   function savedChecks(){const root=$kg("kgTaskChecks");root.replaceChildren();for(const [rid,slot]of Object.entries(detail?.tax_checks||{})){const b=el("button",null,slot.bundle.check.topic+(slot.stale?" · 资料更新待重检":" · 已保存"));b.type="button";b.onclick=()=>{if(busy)return;$kg("kgRule").value=rid;restore();};root.append(b);}buttons();}
@@ -39,9 +39,19 @@
     const ticket=++generation;owner=identity;message("正在载入本地检索状态…");
     const selected=$kg("kgRule").value,taskId=requested?.owner===identity?requested.id:$kg("kgTask").value;requested=null;
     try{
-      const values=await Promise.all([api("/api/knowledge/checks"),api("/api/knowledge/retrieval/status"),["org_admin","accountant"].includes(currentUser.role)?api("/api/enterprise/input-tasks"):Promise.resolve([])]);
+      const values=await Promise.all([api("/api/knowledge/checks"),api("/api/knowledge/retrieval/status"),["org_admin","accountant"].includes(currentUser.role)?api("/api/enterprise/input-tasks"):Promise.resolve([]),api("/api/knowledge/corpus/status")]);
       if(!current(ticket,identity))return;
-      const [rules,status,list]=values;tasks=list;config=status;
+      const [rules,status,list,corpus]=values;tasks=list;config=status;
+      const knowledgeStatus=$kg("kgKnowledgeStatus");knowledgeStatus.replaceChildren();
+      knowledgeStatus.append(el("p","muted",`知识库：政策 ${corpus.counts.Policy} 份 · 条款 ${corpus.counts.Clause} 条 · 当前规则 ${corpus.converted_current_rules}/${corpus.current_rules} 已同步 · 高校知识点 ${corpus.teaching_knowledge_points} 个 · 待更新教学版本 ${corpus.outdated_teaching_versions} 个。原文导入不等于政策适用审核。`));
+      if(currentUser.role==="platform_admin"&&corpus.manifest_available){
+        const sync=el("button",null,"同步规则、原文与高校知识点");sync.type="button";
+        sync.onclick=async()=>{if(busy||!current(ticket,identity))return;busy=true;sync.disabled=true;buttons();
+          try{await api("/api/knowledge/corpus/import",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({manifest_sha256:corpus.manifest_sha256})});if(current(ticket,identity)){busy=false;await loadKnowledge();}}
+          catch(error){if(current(ticket,identity))message(error.message);}
+          finally{if(current(ticket,identity)){busy=false;sync.disabled=false;buttons();}}
+        };knowledgeStatus.append(sync);
+      }
       $kg("kgRule").replaceChildren();for(const rule of rules)option($kg("kgRule"),rule.rule_id,rule.name+(rule.computation_converted?" · 计算已转换，政策待核实":rule.review_status==="approved"?"":" · 待审核"));
       if(rules.some(r=>r.rule_id===selected))$kg("kgRule").value=selected;
       else if(rules.some(r=>r.review_status==="approved"))$kg("kgRule").value=rules.find(r=>r.review_status==="approved").rule_id;

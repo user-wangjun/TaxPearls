@@ -21,6 +21,8 @@ KINDS = {"Policy": "policy", "Clause": "clause", "TaxRule": "rule", "Entity": "c
          "Metric": "metric", "Condition": "condition", "Exception": "exception"}
 RELATIONS = {
     "HAS_CLAUSE": {("Policy", "Clause")},
+    "HAS_SUBCLAUSE": {("Clause", "Clause")},
+    "SAME_SOURCE_URL": {("Policy", "Policy")},
     "DERIVES_RULE": {("Clause", "TaxRule")},
     "PROVIDES_CONTEXT": {("Clause", "TaxRule")},
     "APPLIES_TO": {("TaxRule", "Entity")},
@@ -33,7 +35,7 @@ RELATIONS = {
     "SUPPLEMENTS": {("Policy", "Policy"), ("Clause", "Clause")},
 }
 JSON_FIELDS = {"condition_logic_json", "trigger_logic_json", "source_filter_json", "execution_json"}
-RELATION_LABELS = {"HAS_CLAUSE": "包含条款", "DERIVES_RULE": "规定依据", "PROVIDES_CONTEXT": "政策背景",
+RELATION_LABELS = {"HAS_CLAUSE": "包含条款", "HAS_SUBCLAUSE": "下级条款", "SAME_SOURCE_URL": "同来源的独立快照", "DERIVES_RULE": "规定依据", "PROVIDES_CONTEXT": "政策背景",
                    "APPLIES_TO": "适用主体", "USES_METRIC": "使用指标", "HAS_CONDITION": "判断条件",
                    "HAS_EXCEPTION": "例外情形", "SOURCE_CLAUSE": "原文来源", "AMENDS": "修订",
                    "REPEALS": "废止", "INTERPRETS": "解释", "SUPPLEMENTS": "补充"}
@@ -115,6 +117,11 @@ def _check_relationship(db, row):
     source, target = get(db, pair[0], row["from_id"]), get(db, pair[1], row["to_id"])
     if row["relation_type"] == "HAS_CLAUSE" and target["policy_id"] != row["from_id"]:
         raise ValueError("条款不属于关系中的政策。")
+    if row['relation_type'] == 'HAS_SUBCLAUSE' and (target['parent_clause_id'] != row['from_id']
+                                                   or source['policy_id'] != target['policy_id']):
+        raise ValueError('下级条款须指向同一政策中的实际父条款。')
+    if row['relation_type'] == 'SAME_SOURCE_URL' and source['source_url'] != target['source_url']:
+        raise ValueError('独立快照须保留同一个官方来源地址。')
     if row["relation_type"] in {"HAS_CONDITION", "HAS_EXCEPTION"} and target["rule_id"] != row["from_id"]:
         raise ValueError("条件或例外不属于关系中的规则。")
     if row.get("evidence_clause_id"):
@@ -190,7 +197,7 @@ def _verified_source(db, clause_id):
         raise ValueError("政策原件哈希发生变化，请新增版本复核。")
 
 
-def import_bundle(db, bundle):
+def import_bundle(db, bundle, *, _defer_rule_validation=False):
     """All-or-nothing candidate import. IDs are immutable version IDs, never upserts."""
     if not isinstance(bundle, dict) or not bundle or not set(bundle) <= IDS.keys():
         raise ValueError("导入须按八类 Schema 分组。")
@@ -249,8 +256,9 @@ def import_bundle(db, bundle):
                         touched.add(owner)
                 if table == "TaxRule":
                     touched.add(row["rule_id"])
-        for rule_id in touched:
-            validate_rule(db, rule_id)
+        if not _defer_rule_validation:
+            for rule_id in touched:
+                validate_rule(db, rule_id)
         db.execute("RELEASE policy_bundle")
     except (ValueError, sqlite3.Error, TypeError, KeyError) as exc:
         db.execute("ROLLBACK TO policy_bundle")
@@ -451,6 +459,15 @@ def graph(db, selected=None):
                 node["requirement"] = f'{row["left_metric_id"]} {row["operator"]} {row.get("right_literal") or row.get("right_metric_id")}'
                 left = get(db, "Metric", row["left_metric_id"])
                 node["label"] = f'{left["name"]} {row["operator"]} {row.get("right_literal") or row.get("right_metric_id")} {row.get("unit") or ""}'.strip()
+                if left.get('source_schema') == 'PolicyInterpretation':
+                    expression = json.loads(row['notes'])
+                    node.update(label=expression['expression'].strip()[:120], requirement=expression['expression'],
+                                scope='条款解释候选，须核对主体、条件及例外；尚未配置自动判断。')
+            if table == 'TaxRule' and row['rule_type'] == 'policy_rule':
+                local = row['applicable_region'].startswith('CN-')
+                node.update(rule_level='provincial' if local else 'national',
+                            region='广东省' if row['applicable_region']=='CN-GD' else row['applicable_region'],
+                            category='政策条款', scope=row['outcome_text'])
             if table == "TaxRule" and row.get("execution_json"):
                 snapshot = json.loads(row.pop("execution_json"))
                 node.pop("execution_json", None)
