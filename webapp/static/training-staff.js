@@ -278,7 +278,7 @@ function renderImportResult(data) {
     </div>
     ${s.total ? `<div style="max-height:360px;overflow:auto;border:1px solid var(--line);border-radius:8px;">
       <table style="width:100%;border-collapse:collapse;font-size:13px;">
-        <thead><tr style="text-align:left;background:#f5f6f4;">
+        <thead><tr>
           <th style="padding:6px 8px;">编码</th><th style="padding:6px 8px;">名称</th>
           <th style="padding:6px 8px;">动作</th><th style="padding:6px 8px;">上级编码</th>
           <th style="padding:6px 8px;">提示</th></tr></thead>

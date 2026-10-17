@@ -4127,6 +4127,10 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def training_portal_script() -> FileResponse:
         return FileResponse(STATIC_DIR / "training-portal.js", media_type="text/javascript")
 
+    @app.get("/training-dark.css")
+    def training_dark_theme() -> FileResponse:
+        return FileResponse(STATIC_DIR / "training-dark.css", media_type="text/css")
+
     @app.get("/training-staff")
     def training_staff_page() -> FileResponse:
         return FileResponse(STATIC_DIR / "training-staff.html", media_type="text/html")
