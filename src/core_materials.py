@@ -9,6 +9,7 @@ from io import BytesIO
 import json
 from pathlib import Path
 import re
+import unicodedata
 
 import pdfplumber
 import pypdfium2
@@ -988,15 +989,28 @@ def range_error(task):
     return ""
 
 
+def identity_field_errors(task):
+    """Use the same identity field rules for draft adoption and final checks."""
+    errors = {}
+    name = str(task.get("company_name") or "").strip()
+    if not name:
+        errors["company_name"] = "请填写企业名称，或从材料读取后核对。"
+    elif len(name) > 200:
+        errors["company_name"] = "企业名称不得超过200字。"
+    tax = identity(task.get("tax_no"))
+    if not tax:
+        errors["tax_no"] = "请填写税号，或从材料读取后核对。"
+    elif not tax.isascii() or not tax.isalnum() or not 8 <= len(tax) <= 20:
+        errors["tax_no"] = "税号须为8至20位字母或数字。"
+    return errors
+
+
 def scope_errors(task):
     """Validate inspection scope only when requested; draft storage accepts blanks."""
-    errors = {}
+    errors = identity_field_errors(task)
     for key, field_label in zip(SCOPE_FIELDS, ("企业名称", "税号", "检查起始日", "检查终止日")):
         if not task.get(key):
             errors[key] = "请填写" + field_label + "，或从材料读取后核对。"
-    tax = identity(task.get("tax_no"))
-    if tax and (not tax.isascii() or not tax.isalnum() or not 8 <= len(tax) <= 20):
-        errors["tax_no"] = "税号须为8至20位字母或数字。"
     for key in ("start_date", "end_date"):
         if task.get(key):
             try:
@@ -1009,6 +1023,112 @@ def scope_errors(task):
     mismatch = range_error(task)
     if mismatch:
         errors["range_kind"] = mismatch
+    return errors
+
+
+def scope_period_candidates(task):
+    """Pair source start/end dates without spanning unrelated periods."""
+    candidates = task.get("scope_candidates", {})
+    grouped = {}
+    for start in candidates.get("start_date", []):
+        for end in candidates.get("end_date", []):
+            try:
+                first, last = date.fromisoformat(start["value"]), date.fromisoformat(end["value"])
+                if first > last or first.isoformat() != start["value"] or last.isoformat() != end["value"]:
+                    continue
+            except (ValueError, TypeError, KeyError):
+                continue
+            ends = {(s.get("file_id"), s.get("position")) for s in end.get("sources", [])}
+            sources = [s for s in start.get("sources", []) if s.get("file_id")
+                       and (s.get("file_id"), s.get("position")) in ends]
+            if not sources:
+                continue
+            item = grouped.setdefault((first, last), {"start_date": start["value"], "end_date": end["value"], "sources": []})
+            for source in sources:
+                if source not in item["sources"]:
+                    item["sources"].append(source)
+    return list(grouped.values())
+
+
+def identity_token(key, value):
+    value = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or "")))
+    return value.upper() if key == "tax_no" else value
+
+
+def entity_names(quote):
+    # PDF text may put entity name and taxpayer ID on the same physical line.
+    labels = r"纳税人识别号|统一社会信用代码|纳税识别号|税号|税款所属期|统计期间|金额单位|地址|电话|开户银行|银行账号|编制日期"
+    pattern = (r"(?:企业名称|纳税人名称|单位名称)\s*[:：]\s*(.*?)"
+               r"(?=\s*(?:" + labels + r")\s*[:：]|[\r\n\t|]|$)")
+    values = {}
+    for match in re.finditer(pattern, quote or ""):
+        value = match.group(1).strip()
+        if value and len(value) <= 200:
+            values.setdefault(identity_token("company_name", value), value)
+    return list(values.values())
+
+
+def scope_identity_candidates(documents):
+    """Deduplicate entity values while retaining every physical source.
+
+    Invoice counterparties without a known enterprise side are membership
+    checks only, never selectable enterprise identity candidates.
+    """
+    grouped = {"company_name": {}, "tax_no": {}}
+
+    def add(key, values, source, *, selectable=True):
+        unique = {identity_token(key, v): str(v).strip() for v in values if identity_token(key, v)}
+        if not unique:
+            return
+        token = (tuple(sorted(unique)), selectable)
+        entry = grouped[key].setdefault(token, {
+            "value": " / ".join(unique.values()), "alternatives": list(unique.values()),
+            "selectable": selectable, "sources": []})
+        if source not in entry["sources"]:
+            entry["sources"].append(source)
+
+    for doc in documents:
+        if doc.get("material_type") == "invoice_detail":
+            continue
+        for part in doc.get("parts", []):
+            source = {"file_id": doc["id"], "file_name": doc.get("name") or doc["id"],
+                      "position": part.get("name", "来源位置待核对"),
+                      "needs_review": bool(doc.get("ocr_candidate") and not doc.get("source_reviewed"))}
+            for value in entity_names(part.get("quote", "")):
+                add("company_name", [value], source)
+            for value in part.get("tax_nos", []):
+                add("tax_no", [value], source)
+    primary = {identity_token("tax_no", e["value"]) for e in grouped["tax_no"].values()}
+    for doc in documents:
+        if doc.get("material_type") != "invoice_detail":
+            continue
+        for record in doc.get("records", []):
+            seller, buyer = identity(record.get("seller_tax_no")), identity(record.get("buyer_tax_no"))
+            direction = invoice_direction(record, "")
+            values = ([seller] if direction == "output" else [buyer] if direction == "input"
+                      else [seller, buyer] if seller and buyer else [])
+            if not values or not all(values):
+                continue
+            matched = [v for v in values if identity_token("tax_no", v) in primary]
+            selectable = bool(direction or len(matched) == 1)
+            if len(matched) == 1 and not direction:
+                values = matched
+            source = {"file_id": doc["id"], "file_name": doc.get("name") or doc["id"],
+                      "position": record.get("source_position", "发票票面"),
+                      "needs_review": bool(not doc.get("source_reviewed"))}
+            add("tax_no", values, source, selectable=selectable)
+    return {key: list(groups.values()) for key, groups in grouped.items()}
+
+
+def scope_identity_errors(task, documents):
+    errors = {}
+    for key, choices in scope_identity_candidates(documents).items():
+        if task.get(key) and any(
+            identity_token(key, task[key]) not in [identity_token(key, v) for v in c["alternatives"]]
+            for c in choices
+        ):
+            label = "企业名称" if key == "company_name" else "税号"
+            errors[key] = label + "与材料识别结果不同，请查看差异并对照原件确认。"
     return errors
 
 
@@ -1032,7 +1152,7 @@ def autofill_scope(task, documents):
                 taxes = part.get("tax_nos", [])
                 if len(taxes) == 1:
                     values["tax_no"] = taxes[0]
-                names = re.findall(r"(?:企业名称|纳税人名称|单位名称)\s*[:：]\s*([^\n]+)", part.get("quote", ""))
+                names = entity_names(part.get("quote", ""))
                 if len(set(names)) == 1:
                     values["company_name"] = names[0].strip()
                 period = part.get("parsed_metadata", part).get("period")
@@ -1041,6 +1161,14 @@ def autofill_scope(task, documents):
             for key, value in values.items():
                 candidates[key].setdefault(value, []).append(source)
     for key, choices in candidates.items():
+        if key in {"company_name", "tax_no"}:
+            grouped = {}
+            for value, sources in choices.items():
+                item = grouped.setdefault(identity_token(key, value), {"value": value, "sources": []})
+                for source in sources:
+                    if source not in item["sources"]:
+                        item["sources"].append(source)
+            choices = candidates[key] = {item["value"]: item["sources"] for item in grouped.values()}
         # start_date/end_date stay user decisions. They are exposed below as
         # candidates for an explicit selection, never applied automatically.
         if key in {"start_date", "end_date"}:
@@ -1084,7 +1212,9 @@ def prepare(task, documents):
                                    "source_record_ids": [], "comparison_status": "requires_confirmed_rules"},
                 "scope": scope_summary(task, []),
                 "boundary": "资料已保存；开始检查前请核对企业与检查区间。"}
-    problems, notices, records = [], [], []
+    problems = [issue("company_name_conflict" if key == "company_name" else "company_conflict", message)
+                for key, message in scope_identity_errors(task, documents).items()]
+    notices, records = [], []
     coverage = {kind: [] for kind in KINDS}
     direction_coverage = {"input": [], "output": []}
     seen = {}
