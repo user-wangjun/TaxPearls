@@ -415,7 +415,9 @@ def _run_case_direct(code: str, input_text: str, workdir: str,
             return {"status": STATUS_RUNTIME_ERROR,
                     "runtime_ms": int((time.monotonic() - start) * 1000),
                     "output": f"沙箱启动失败: {exc}"[:MAX_OUTPUT_BYTES]}
-        job.assign(int(proc._handle))  # 紧随创建指派 Job（窗口极小，教学级可接受）
+        if sys.platform == "win32":
+            # _handle 是 Windows 独有属性；POSIX 走 rlimit，无 Job Object
+            job.assign(int(proc._handle))  # 紧随创建指派 Job（窗口极小，教学级可接受）
         try:
             output, _ = proc.communicate(input=input_text, timeout=time_limit_s)
             runtime_ms = int((time.monotonic() - start) * 1000)
