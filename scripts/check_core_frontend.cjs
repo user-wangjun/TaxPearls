@@ -17,7 +17,7 @@ class Node {
 function all(root){return [root,...root.children.flatMap(all)];}
 (async()=>{
   const ids=new Map(),$=id=>{if(!ids.has(id))ids.set(id,new Node("div"));return ids.get(id);};
-  const errors=[],calls=[],continued=[];let actor={id:"one",role:"org_admin"},fail=false,failScope=false,delay=null,failDelete=false,failAI=false,aiReady=true,acceptance=true,holdHistory=null,aiDelay=null,failAIRule=null,timeoutAI=false;
+  const errors=[],calls=[],continued=[];let actor={id:"one",role:"org_admin"},fail=false,failScope=false,delay=null,failDelete=false,failAI=false,aiReady=true,acceptance=true,holdHistory=null,aiDelay=null,failAIRule=null,timeoutAI=false,expectedRegion="CN-33";
   const sample={id:"task",revision:1,task:{company_name:"企业",tax_no:"91310000123456789A",start_date:"2026-01-01",end_date:"2026-01-31",range_kind:"month",
       scope_origins:{},scope_candidates:{start_date:[{value:"2026-01-01",sources:[{file_id:"f",position:"Sheet1"}]}],end_date:[{value:"2026-01-31",sources:[{file_id:"f",position:"Sheet1"}]}]},applicable_forms:null},
     processing:{status:"needs_completion",issues:[],notices:[],records:[],scope:{kind:"month",start_date:"2026-01-01",end_date:"2026-01-31",confirmed:false,outside_records:0,unknown_date_records:0},boundary:"规则核验前"},
@@ -31,8 +31,8 @@ function all(root){return [root,...root.children.flatMap(all)];}
     if(url==="/api/knowledge/retrieve"){
       if(failAI)throw new Error("测试AI连接失败");
       if(timeoutAI)return await new Promise((resolve,reject)=>options.signal.addEventListener("abort",()=>reject(new Error("aborted"))));
-      const body=JSON.parse(options.body);if(aiDelay)await aiDelay;if(failAIRule===body.rule_id)throw Object.assign(new Error("测试任务版本已变化，请重新读取"),{status:409});assert.equal(body.expected_revision,sample.revision);assert.equal(body.use_ai,true);
-      const slot={revision:++sample.revision,bundle:{check:{rule_id:body.rule_id,topic:body.rule_id},facts:[],policy_evidence:[],policy_leads:[],gaps:[]},ai:{validated:true,status:"needs_review",assessments:[{text:"证据待核实",required_materials:["原始申报表"]}]}};
+      const body=JSON.parse(options.body);if(aiDelay)await aiDelay;if(failAIRule===body.rule_id)throw Object.assign(new Error("测试任务版本已变化，请重新读取"),{status:409});assert.equal(body.expected_revision,sample.revision);assert.equal(body.use_ai,true);assert.equal(body.region_code,expectedRegion);
+      const slot={revision:++sample.revision,bundle:{task:{region_code:body.region_code},check:{rule_id:body.rule_id,topic:body.rule_id},facts:[],policy_evidence:[],policy_leads:[],gaps:[]},ai:{validated:true,status:"needs_review",assessments:[{text:"证据待核实",required_materials:["原始申报表"]}]}};
       (sample.tax_checks??={})[body.rule_id]=slot;return structuredClone(slot);
     }
     if(options?.method==="DELETE"){if(failDelete)throw new Error("测试删除失败");return {id:"task",deleted:true};}
@@ -172,9 +172,15 @@ function all(root){return [root,...root.children.flatMap(all)];}
   $("coreTaxNo").value="bad";$("coreTaxNo").listeners.input();assert.equal($("coreTaxNo")["aria-invalid"],"true");
   const beforeScope=calls.length;await find("开始检查").onclick();assert.equal(calls.length,beforeScope);assert.equal(continued.length,0);
   $("coreTaxNo").value="91310000123456789A";$("coreTaxNo").listeners.input();assert.equal($("coreTaxNo")["aria-invalid"],"false");
+  $("coreRegion").value="";expectedRegion="CN";await find("开始检查").onclick();
+  assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,2,"no region defaults to national checks");
+  assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="检查结果"));
+  assert.equal($("coreRegion").value,"","default national scope does not invent an enterprise province");
+  expectedRegion="CN-33";
+  $("coreRegion").value="CN-33";$("coreRegion").listeners.change();assert.equal($("coreRegion")["aria-invalid"],"false");
   failScope=true;await find("开始检查").onclick();assert.equal(continued.length,0);assert.match(errors.at(-1),/范围保存失败/);
   failScope=false;await find("开始检查").onclick();assert.deepEqual(continued,[],"start check must not navigate to the graph");
-  assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,2);
+  assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,4);
   assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="检查结果"));
   assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="需补充或核实：原始申报表"));
   assert.equal($("coreTaskForm").disabled,false);
@@ -244,6 +250,10 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.ok(find("删除本次任务"),"late deletion result cannot clear a new session's task");assert.equal($("coreCompanyName").value,"企业");
   const beforeReset=calls.length,resetDialog=find("删除本次任务").onclick();controller.reset();await resetDialog;assert.equal($("coreDeleteDialog").open,false);assert.equal(calls.length,beforeReset,"session reset cancels an open confirmation");
   actor={id:"four",role:"accountant"};controller.reset();await controller.openTask("task");assert.equal(find("删除本次任务"),undefined,"task deletion follows administrator-only material deletion permissions");
+  assert.equal($("coreRegion").value,"CN-33","reopening restores region from saved checks");
+  const savedRegionChecks=sample.tax_checks;sample.id="other-task";sample.tax_checks={};await controller.openTask("other-task");
+  assert.equal($("coreRegion").value,"","a new task must not inherit the previous enterprise's region");
+  sample.id="task";sample.tax_checks=savedRegionChecks;await controller.openTask("task");assert.equal($("coreRegion").value,"CN-33");
   failAIRule="R-001";const beforePartial=calls.filter(c=>c.url==="/api/knowledge/retrieve").length;
   await find("开始检查").onclick();assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,beforePartial+2);
   assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="本轮已完成 1/2 项。未完成不等于通过。"));
@@ -255,7 +265,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.ok(calls.at(-1).url.endsWith("/retrieve"));const beforeSessionChange=calls.length;
   actor={id:"changed-during-ai",role:"org_admin"};controller.reset();releaseAI();await aiPending;aiDelay=null;
   assert.equal(calls.length,beforeSessionChange,"a changed identity stops the remaining AI requests");
-  assert.equal($("coreCheckResult").children.length,0);assert.equal($("coreTaskResult").children.length,0);
+  assert.equal($("coreCheckResult").children.length,0);assert.equal($("coreTaskResult").children.length,0);assert.equal($("coreRegion").value,"");
   assert.equal($("coreTaskForm").disabled,false);
   console.log("Core frontend: scope validation, continuous upload/progress, serial revisions, pause/resume/cancel, automatic AI workflow, revision chaining, partial failures, session isolation, unsaved/session guards, no internal JSON, material tables, exact decimals, paginated invoice edits and review saves passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});

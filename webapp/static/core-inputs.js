@@ -94,6 +94,10 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     });
   }
   let checkProgress=null;
+  let regionTaskId=null;
+  const regions={"CN-11":"北京市","CN-12":"天津市","CN-13":"河北省","CN-14":"山西省","CN-15":"内蒙古自治区","CN-21":"辽宁省","CN-22":"吉林省","CN-23":"黑龙江省","CN-31":"上海市","CN-32":"江苏省","CN-33":"浙江省","CN-34":"安徽省","CN-35":"福建省","CN-36":"江西省","CN-37":"山东省","CN-41":"河南省","CN-42":"湖北省","CN-43":"湖南省","CN-44":"广东省","CN-45":"广西壮族自治区","CN-46":"海南省","CN-50":"重庆市","CN-51":"四川省","CN-52":"贵州省","CN-53":"云南省","CN-54":"西藏自治区","CN-61":"陕西省","CN-62":"甘肃省","CN-63":"青海省","CN-64":"宁夏回族自治区","CN-65":"新疆维吾尔自治区"};
+  for(const [value,name] of Object.entries(regions)){const option=el("option","",name);option.value=value;$("coreRegion").append(option);}
+  $("coreRegion").addEventListener("change",()=>{$("coreRegion").setAttribute("aria-invalid","false");});
   const scopeIds={company_name:"coreCompanyName",tax_no:"coreTaxNo",start_date:"coreStart",end_date:"coreEnd"};
   const rangeKind=$("coreRangeKind"),rangeMonth=$("coreRangeMonth"),rangeYear=$("coreRangeYear"),rangeQuarter=$("coreRangeQuarter");
   const rangeTrigger=$("coreDateRange"),calendar=$("coreRangeCalendar"),calendarMonth=$("coreCalendarMonth");
@@ -148,7 +152,9 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const range=selectedRange(kind);
     $("coreStart").value=range?.[0]||"";$("coreEnd").value=range?.[1]||"";updateRangeDisplay();}
   const scopeRead=()=>({...Object.fromEntries(Object.entries(scopeIds).map(([key,id])=>[key,$(id).value.trim()])),range_kind:rangeKind.value||"custom"});
-  const scopeWrite=()=>{for(const [key,id] of Object.entries(scopeIds))$(id).value=current.task[key]||"";const kind=current.task.range_kind||current.range_kind;rangeKind.value=["month","quarter","year","custom"].includes(kind)?kind:"custom";writePeriodInputs(current.task.start_date||"");syncRange();$("coreClient").value=clients.some(c=>c.id===current.task.company_id)?current.task.company_id:"";scopeDirty=false;};
+  const scopeWrite=()=>{for(const [key,id] of Object.entries(scopeIds))$(id).value=current.task[key]||"";const kind=current.task.range_kind||current.range_kind;rangeKind.value=["month","quarter","year","custom"].includes(kind)?kind:"custom";writePeriodInputs(current.task.start_date||"");syncRange();$("coreClient").value=clients.some(c=>c.id===current.task.company_id)?current.task.company_id:"";scopeDirty=false;
+    if(regionTaskId!==current.id){const saved=[...new Set(Object.values(current.tax_checks||{}).map(s=>s.bundle?.task?.region_code).filter(code=>code==="CN"||regions[code]))];$("coreRegion").value=saved.length===1&&saved[0]!=="CN"?saved[0]:"";regionTaskId=current.id;}
+  };
   const deleteDialog=$("coreDeleteDialog");let deleteDecision=null;
   deleteDialog.addEventListener("close",()=>{const resolve=deleteDecision;deleteDecision=null;resolve?.(deleteDialog.returnValue==="delete");});
   $("coreDeleteCancel").onclick=()=>deleteDialog.close("cancel");
@@ -197,6 +203,8 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     if(busy)return;if(dirty){showError("请先保存资料口径核对，再开始检查。");return;}
     attempted=true;const errors=validateScope();displayErrors(errors);
     if(Object.keys(errors).length){inputFor(Object.keys(errors)[0]).focus?.();return;}
+    const region=$("coreRegion").value||"CN";
+    if(region!=="CN"&&!regions[region]){const message="企业所在地选项无效，请重新选择；也可留空，先匹配国家级政策。";$("coreRegion").setAttribute("aria-invalid","true");$("coreActionStatus").textContent=message;showError(message);$("coreRegion").focus?.();return;}
     const owner=user()?.id,ticket=generation,id=current.id;
     const valid=()=>owner===user()?.id&&ticket===generation&&enabled()&&current?.id===id;
     const stage=message=>{checkProgress.message=message;renderChecks();};
@@ -219,7 +227,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
         const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),300000);
         let result;
         try{result=await api("/api/knowledge/retrieve",{...json({task_id:id,expected_revision:current.revision,
-          rule_id:rule.rule_id,region_code:"",token_budget:6000,use_ai:true}),signal:controller.signal});}
+          rule_id:rule.rule_id,region_code:region,token_budget:6000,use_ai:true}),signal:controller.signal});}
         catch(error){if(controller.signal.aborted)throw new Error("AI 分析等待超时，服务端可能仍在处理。请重新读取最新任务确认结果，避免重复发起检查。");throw error;}
         finally{clearTimeout(timer);}
         if(!valid())return current;
@@ -270,7 +278,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       }
       card.append(basis);root.append(card);
     }
-    root.append(el("p","muted","AI 分析为待复核线索；资料或政策依据不足的项目保留待核实状态。地方政策适用地区未确认时，不作适用结论。"));
+    root.append(el("p","muted","AI 分析为待复核线索；资料或政策依据不足的项目保留待核实状态。未选择企业所在地时先匹配国家级政策；地方政策须确认地区后再核查。"));
     if(checks.length){const evidence=button("查看知识依据图谱",()=>continueCheck(current.id));evidence.disabled=busy;root.append(evidence);}
   }
 
@@ -279,7 +287,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   const kinds = {account_balance:"科目余额表",vat_declaration:"增值税申报表",invoice_detail:"发票明细"};
   const json = value => ({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
   const button = (text, fn) => {const n=el("button","btn re",text);n.type="button";n.onclick=fn;return n;};
-  function clearScope(){for(const id of Object.values(scopeIds))$(id).value="";rangeKind.value="custom";writePeriodInputs("");syncRange();$("coreClient").value="";scopeDirty=attempted=false;displayErrors({});}
+  function clearScope(){regionTaskId=null;$("coreRegion").value="";$("coreRegion").setAttribute("aria-invalid","false");for(const id of Object.values(scopeIds))$(id).value="";rangeKind.value="custom";writePeriodInputs("");syncRange();$("coreClient").value="";scopeDirty=attempted=false;displayErrors({});}
   function reset() {checkProgress=null;$("coreCheckResult").replaceChildren();$("coreCheckResult").hidden=true;$("coreActionStatus").replaceChildren();generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");displayErrors({});clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
   async function action(fn, saving=false, uploading=false) {
     if(busy||!enabled())return;
@@ -351,7 +359,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   function render() {
     uploadViews.clear();
     const root=$("coreTaskResult");root.replaceChildren();renderChecks();if(!current)return;
-    const task=current.task,p=current.processing,prepared=new Map(p.records.map(r=>[r.id,r])),parsedCount=current.documents.reduce((sum,d)=>sum+d.records.length,0),scopePending=Object.keys(current.scope_errors||{}).length>0,recordsPending=scopePending&&p.records.length===0;
+    const task=current.task,p=current.processing,prepared=new Map(p.records.map(r=>[r.id,r])),parsedCount=current.documents.reduce((sum,d)=>sum+d.records.length,0),scopePending=Object.keys(current.scope_errors||{}).length>0;
     const rangeLabels={month:"按月",quarter:"按季度",year:"按年度",custom:"自定义起止日"};
     root.append(el("h3","",`${task.company_name||"待识别企业"} · ${task.tax_no||"税号待填写"}`),el("p","muted",`${task.start_date||"起始日待确认"} 至 ${task.end_date||"终止日待确认"} · ${rangeLabels[task.range_kind||current.range_kind]||""} · 版本 ${current.revision}`),
       el("p",p.status==="ready_for_analysis"?"":"material-note",states[p.status]||p.status),el("p","muted",Object.keys(current.tax_checks||{}).length?"检查结果见上方；资料更新后需重新检查。":"资料已保存。核对后点击开始检查，自动检索依据并进行 AI 辅助分析。"));
