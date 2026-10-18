@@ -344,6 +344,40 @@ class CoreParserTests(unittest.TestCase):
         record.update(direction=None, buyer_tax_no=None)
         self.assertNotIn("tax_no", scope_errors(payload))
 
+    def test_invoice_side_votes_prefill_enterprise_when_no_header_identity(self):
+        second, third = "91310000111111111C", "91310000222222222D"
+
+        def record(direction, seller, buyer, position="票面"):
+            return {"direction": direction, "seller_tax_no": seller, "buyer_tax_no": buyer,
+                    "source_position": position}
+
+        def invoice(*records):
+            return {"id": "inv", "name": "发票.pdf", "material_type": "invoice_detail",
+                    "parts": [], "records": list(records)}
+
+        # A decisive majority of input sides prefills the buyer, and the user still confirms.
+        task = {"company_name": "", "tax_no": ""}
+        core_materials.autofill_scope(task, [invoice(record("input", OTHER, TAX), record("input", second, TAX))])
+        self.assertEqual(task["tax_no"], TAX)
+        self.assertFalse(task["scope_confirmed"])
+
+        # A tie never guesses; the user picks from the candidates.
+        task = {"company_name": "", "tax_no": ""}
+        core_materials.autofill_scope(task, [invoice(record("input", OTHER, TAX), record("output", second, third))])
+        self.assertEqual(task["tax_no"], "")
+
+        # Unknown direction casts no vote at all.
+        task = {"company_name": "", "tax_no": ""}
+        core_materials.autofill_scope(task, [invoice(record(None, OTHER, TAX))])
+        self.assertEqual(task["tax_no"], "")
+
+        # A header identity always wins over invoice votes.
+        task = {"company_name": "", "tax_no": ""}
+        header = {"id": "decl", "name": "申报表.xlsx", "material_type": "vat_declaration",
+                  "parts": [{"name": "主表", "tax_nos": [third], "quote": ""}]}
+        core_materials.autofill_scope(task, [header, invoice(record("input", OTHER, TAX), record("input", second, TAX))])
+        self.assertEqual(task["tax_no"], third)
+
     def test_period_candidates_pair_by_source_and_never_span_unrelated_periods(self):
         a = {"file_id": "a", "position": "主表"}
         b = {"file_id": "b", "position": "主表"}

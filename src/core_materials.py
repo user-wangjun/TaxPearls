@@ -1144,6 +1144,49 @@ def scope_identity_errors(task, documents, *, invoices=True):
     return errors
 
 
+def invoice_identity_votes(documents):
+    """Vote for the inspected enterprise from invoice sides only.
+
+    A counterparty appears far more often than the enterprise itself, so raw
+    frequency is biased. Only the side that belongs to the enterprise counts:
+    output invoices vote for the seller, input invoices for the buyer. Invoices
+    without a known direction do not vote at all.
+    """
+    votes = {}
+    for doc in documents:
+        if doc.get("material_type") != "invoice_detail":
+            continue
+        for record in doc.get("records", []):
+            seller, buyer = identity(record.get("seller_tax_no")), identity(record.get("buyer_tax_no"))
+            direction = invoice_direction(record, "")
+            value = seller if direction == "output" else buyer if direction == "input" else ""
+            if not value:
+                continue
+            item = votes.setdefault(identity_token("tax_no", value),
+                                    {"value": value, "count": 0, "sources": []})
+            item["count"] += 1
+            source = {"file_id": doc["id"], "position": record.get("source_position", "发票票面")}
+            if source not in item["sources"]:
+                item["sources"].append(source)
+    return votes
+
+
+def invoice_identity_majority(documents):
+    """Return the clear voting winner, or None when the result is not decisive."""
+    votes = list(invoice_identity_votes(documents).values())
+    total = sum(item["count"] for item in votes)
+    if total < 2:
+        return None
+    ranked = sorted(votes, key=lambda item: item["count"], reverse=True)
+    best = ranked[0]
+    runner_up = ranked[1]["count"] if len(ranked) > 1 else 0
+    if best["count"] < 2 or best["count"] <= runner_up:
+        return None
+    if best["count"] / total < 0.6:
+        return None
+    return best
+
+
 def autofill_scope(task, documents):
     """Unanimous source identity may prefill; inspection dates are candidates only.
 
@@ -1186,10 +1229,19 @@ def autofill_scope(task, documents):
         if key in {"start_date", "end_date"}:
             continue
         if not task.get(key) or origins.get(key, {}).get("kind") == "file":
-            task[key] = next(iter(choices)) if len(choices) == 1 else ""
+            value = next(iter(choices)) if len(choices) == 1 else ""
+            sources = next(iter(choices.values())) if value else []
+            if not value and key == "tax_no" and not choices:
+                # No header identity at all: a decisive majority of invoice sides
+                # may still prefill. Headers always win, and the user confirms.
+                winner = invoice_identity_majority(documents)
+                if winner:
+                    value, sources = winner["value"], winner["sources"]
+                    choices[value] = sources
+            task[key] = value
             origins.pop(key, None)
-            if len(choices) == 1:
-                origins[key] = {"kind": "file", "sources": next(iter(choices.values()))}
+            if value:
+                origins[key] = {"kind": "file", "sources": sources}
     # Drafts created before this rule may carry a range chosen from file
     # metadata. Clear that origin so the user must select and confirm again;
     # the old values remain available in scope_candidates.
