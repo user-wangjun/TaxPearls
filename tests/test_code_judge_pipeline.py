@@ -176,12 +176,13 @@ class CodeJudgePipelineTests(unittest.TestCase):
         self.assertEqual(scan["pairs_checked"], 3)
         self.assertGreaterEqual(scan["flagged"], 1)
         flags = code_plagiarism.list_flags(self.store, pid)
-        pair = {(f["student_no_a"], f["student_no_b"]) for f in flags}
-        self.assertIn(("2026001", "2026002"), pair)
+        # 学生对顺序取决于提交 id 字典序（无向对），断言按集合比较不依赖顺序
+        pairs = {frozenset((f["student_no_a"], f["student_no_b"])) for f in flags}
+        self.assertIn(frozenset(("2026001", "2026002")), pairs)
         for f in flags:
             if {f["student_no_a"], f["student_no_b"]} == {"2026001", "2026002"}:
                 self.assertEqual(f["same_class"], 1)
-        self.assertNotIn(("2026001", "2026003"), pair)  # 写法不同不落标记
+        self.assertNotIn(frozenset(("2026001", "2026003")), pairs)  # 写法不同不落标记
 
     # ---- J07 质量分 ----
 

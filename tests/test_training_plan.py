@@ -10,7 +10,7 @@ import json
 import tempfile
 import unittest
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from argon2 import PasswordHasher
@@ -170,8 +170,11 @@ class StudyPlanTests(unittest.TestCase):
         self.assertIn("7 天", review[0]["reason"])
 
     def test_fresh_proficient_not_recommended_for_review(self):
+        # 复习规则的"新鲜"以真实当前时间为基准（REVIEW_STALE_DAYS=7）：
+        # 用真实 now 回退 1 小时作答，任何日期运行都保持新鲜，不再钉死日历日。
+        fresh = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
         for _ in range(3):
-            self._attempt(self.kps["KP-01"], perfect=True)  # scored_at=NOW
+            self._attempt(self.kps["KP-01"], perfect=True, scored_at=fresh)  # 刚答完
         plan = self._dashboard()["plan"]
         self.assertEqual([t for t in plan if t["kind"] == "review"], [])
 
