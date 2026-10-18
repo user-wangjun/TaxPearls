@@ -526,6 +526,9 @@ def initialize(store) -> None:
                 ON training_content_version(certificate_id, status);
         """)
         # 既有库的作答表补挂内容版本列（additive 迁移；旧行为 NULL=未版本化，按材料指纹回溯）。
+        content_columns = {row['name'] for row in db.execute('PRAGMA table_info(training_content_version)')}
+        if 'rules_snapshot_json' not in content_columns:
+            db.execute("ALTER TABLE training_content_version ADD COLUMN rules_snapshot_json TEXT")
         attempt_columns = {row["name"] for row in db.execute(
             "PRAGMA table_info(training_self_practice_attempts)")}
         if "content_version_id" not in attempt_columns:

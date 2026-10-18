@@ -39,6 +39,11 @@ def write(path, payload):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    sync = commands.add_parser('sync-knowledge', help='同步业务库中的规则、候选原文和高校仿真知识点')
+    sync.add_argument('--db', type=Path, required=True)
+    sync.add_argument('--manifest', type=Path, required=True)
+    sync.add_argument('--originals', type=Path, required=True)
+    sync.add_argument('--output', type=Path)
     for name in ("seed-demo", "build-index", "retrieve", "evaluate", "import-corpus"):
         command = commands.add_parser(name)
         command.add_argument("--db", type=Path, required=True)
@@ -56,6 +61,24 @@ def main(argv=None):
             command.add_argument("--manifest", type=Path, required=True)
             command.add_argument("--document-id", action="append", required=True)
     args = parser.parse_args(argv)
+    if args.command == 'sync-knowledge':
+        from src import settings  # noqa: F401 - load the configured local field key, never print it
+        from src import policy_migration
+        from src.rule_conversion import effective_rules
+        from webapp.storage import Store
+        from webapp.knowledge_sync import synchronize
+        if not args.db.is_file():
+            raise ValueError('业务库不存在；请显式选择已有业务库并先备份。')
+        plan = policy_migration.prepare(args.manifest)
+        store = Store(args.db)
+        rules = effective_rules(store, Path(__file__).resolve().parents[2] / 'rules')
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            result = synchronize(db, rules, plan, args.originals)
+        if args.output:
+            write(args.output, result)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
     from webapp import policy_graph
     with connect(args.db, create=args.command == "seed-demo" or args.command == "import-corpus" and not args.db.exists()) as db:
         if args.command == "seed-demo":

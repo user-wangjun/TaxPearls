@@ -295,6 +295,22 @@ def import_plan(db, plan, originals_dir, *, rule_ids=None):
         db.execute("BEGIN IMMEDIATE")
     db.execute("SAVEPOINT prepared_corpus")
     try:
+        prior_paths, prior_locations = {}, {}
+        for clause in rows['Clause']:
+            old = db.execute('SELECT source_location FROM Clause WHERE clause_id=?', (clause['clause_id'],)).fetchone()
+            if not old:
+                continue
+            saved, expected = json.loads(old['source_location']), json.loads(clause['source_location'])
+            coordinates = {key:value for key,value in saved.items() if not key.startswith('retained_')}
+            if coordinates != expected:
+                raise ValueError('已有原文版本的定位不一致，不能覆盖。')
+            for kind in ('raw', 'text'):
+                relative, retained_path = saved[kind + '_path'], saved['retained_' + kind + '_path']
+                expected_hash = plan['files'][relative]['sha256']
+                if sha(Path(retained_path).read_bytes()) != expected_hash:
+                    raise ValueError('既有留存原文哈希不一致，不能沿用。')
+                prior_paths[relative] = retained_path
+            prior_locations[clause['clause_id']] = old['source_location']
         # Recheck all inputs immediately before any writes; even source aliases
         # and deferred attachments must pass hash validation.
         contents = {}
@@ -306,6 +322,9 @@ def import_plan(db, plan, originals_dir, *, rule_ids=None):
         destination.mkdir(parents=True, exist_ok=True)
         for relative, data in contents.items():
             info = plan["files"][relative]
+            if relative in prior_paths:
+                retained[relative] = prior_paths[relative]
+                continue
             target = destination / (info["sha256"] + info["suffix"])
             if target.exists():
                 if target.read_bytes() != data:
@@ -317,10 +336,16 @@ def import_plan(db, plan, originals_dir, *, rule_ids=None):
             retained[relative] = str(target)
         for row in rows["Policy"]:
             suffix = Path(row["raw_file_path"]).suffix.lower()
-            row["raw_file_path"] = str(destination / (row["file_sha256"] + suffix))
+            old = db.execute('SELECT raw_file_path FROM Policy WHERE policy_id=?', (row['policy_id'],)).fetchone()
+            row["raw_file_path"] = old['raw_file_path'] if old else str(destination / (row["file_sha256"] + suffix))
+            if sha(Path(row['raw_file_path']).read_bytes()) != row['file_sha256']:
+                raise ValueError('既有政策原文哈希不一致，不能沿用。')
         # source_location records include both original relative coordinates and
         # retained paths, so they remain traceable if the collection moves.
         for row in rows["Clause"]:
+            if row['clause_id'] in prior_locations:
+                row['source_location'] = prior_locations[row['clause_id']]
+                continue
             location = json.loads(row["source_location"])
             location["retained_raw_path"] = retained[location["raw_path"]]
             location["retained_text_path"] = retained[location["text_path"]]
@@ -338,9 +363,30 @@ def import_plan(db, plan, originals_dir, *, rule_ids=None):
                                 "evidence_clause_id": clause["clause_id"], "review_status": "candidate"}
                         edge["relationship_id"] = "corpus:" + sha(canonical(edge).encode())[:32]
                         rows["Relationship"].append(edge)
-        for table, items in rows.items():
-            for start in range(0, len(items), 1500):
-                pg.import_bundle(db, {table: items[start:start + 1500]})
+        for table in pg.IDS:
+            items = rows.get(table, [])
+            # Re-synchronizing an unchanged retained source must preserve an
+            # explicit review. Only the review workflow may change these fields;
+            # content, hashes and source coordinates still have to match exactly.
+            pending = []
+            review_fields = {
+                'Policy': {'issuer', 'validity_status', 'effective_from', 'effective_to'},
+                'Clause': {'extraction_status'},
+                'Relationship': {'review_status'},
+            }.get(table, set())
+            for item in items:
+                existing = db.execute(f'SELECT * FROM "{table}" WHERE {pg.IDS[table]}=?',
+                                      (item[pg.IDS[table]],)).fetchone()
+                if existing:
+                    if any(existing[key] != value for key, value in item.items() if key not in review_fields):
+                        raise ValueError('已有原文版本内容或定位不一致，不能覆盖。')
+                    continue
+                pending.append(item)
+            for start in range(0, len(pending), 1500):
+                options = {'_defer_rule_validation': True} if rows.get('TaxRule') else {}
+                pg.import_bundle(db, {table: pending[start:start + 1500]}, **options)
+        for rule in rows.get('TaxRule', []):
+            pg.validate_rule(db, rule['rule_id'])
         db.execute("RELEASE prepared_corpus")
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error) as exc:
         db.execute("ROLLBACK TO prepared_corpus")

@@ -60,15 +60,22 @@ def _rule_brief(rule_id: str, rules: list[Any]) -> dict[str, Any] | None:
     for r in rules:
         if r.id == rule_id:
             return {"id": f"rule:{r.id}", "kind": "rule", "label": r.name,
-                    "details": {"category": r.category, "legal_basis": r.legal_basis,
+                    "details": {"category": r.category, "legal_basis": r.legal_basis, "version": r.version,
                                 "suggestion": r.suggestion, "threshold_basis": r.threshold_basis}}
     return None
 
 
 def _build_context(db, student_id: str, certificate_id: str,
-                   knowledge_point_id: str | None, attempt_id: str | None):
+                   knowledge_point_id: str | None, attempt_id: str | None, rules=None):
     """组装答疑上下文节点；作答必须属于本人且已判分。"""
     nodes: list[dict[str, Any]] = []
+    rules = rules if rules is not None else _load_rules()
+    if attempt_id:
+        old = db.execute('SELECT * FROM training_self_practice_attempts WHERE id=? AND student_id=?',
+                         (attempt_id, student_id)).fetchone()
+        if old and old['certificate_id'] == certificate_id:
+            from webapp.training_content import attempt_rules
+            rules = attempt_rules(db, old, rules)
     if knowledge_point_id:
         kp = db.execute(
             "SELECT * FROM knowledge_point WHERE id=? AND certificate_id=?",
@@ -90,13 +97,23 @@ def _build_context(db, student_id: str, certificate_id: str,
             for t in rel.get(kind, []):
                 nodes.append({"id": f"rel:{kind}:{t['id']}", "kind": "relation",
                               "label": f"{label}：{t['code']} {t['name']}", "details": {}})
-        rules = _load_rules()
         for l in db.execute(
-                "SELECT target_id FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule'",
+                "SELECT target_id FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule' AND active=1",
                 (kp["id"],)).fetchall():
             brief = _rule_brief(l["target_id"], rules)
             if brief:
                 nodes.append(brief)
+        from webapp.knowledge_sync import rule_knowledge
+        seen = set()
+        for reference in rule_knowledge(db, kp['id'], rules):
+            for source in reference['sources']:
+                if source['clause_id'] in seen or len(seen) >= 12:
+                    continue
+                seen.add(source['clause_id'])
+                nodes.append({'id': 'clause:' + source['clause_id'], 'kind': 'policy_clause',
+                              'label': source['title'] + ' · ' + source['clause_label'],
+                              'details': {**source, 'rule_version': reference['rule_version'],
+                                          'applicability': '原文背景依据；政策适用性仍须复核，不能据此新增税务结论。'}})
     attempt_data = None
     if attempt_id:
         row = db.execute(
@@ -111,7 +128,7 @@ def _build_context(db, student_id: str, certificate_id: str,
         result = json.loads(row["result_json"] or "{}")
         version = version_brief(db, row["content_version_id"])
         rule_name = row["rule_id"]
-        for r in _load_rules():
+        for r in rules:
             if r.id == row["rule_id"]:
                 rule_name = r.name
                 break
@@ -126,7 +143,9 @@ def _build_context(db, student_id: str, certificate_id: str,
                         "standard_answer": result.get("standard_answer"),
                         "score": result.get("score"), "perfect": result.get("perfect"),
                         "content_version": version}
-    return nodes[:MAX_NODES], attempt_data
+    # Preserve the scored attempt's evidence even for a broad knowledge point.
+    analyses = [n for n in nodes if n['kind'] == 'attempt_analysis']
+    return (analyses + [n for n in nodes if n['kind'] != 'attempt_analysis'])[:MAX_NODES], attempt_data
 
 
 def _degraded_answer(degraded: str, nodes: list[dict[str, Any]]) -> str:
@@ -153,8 +172,9 @@ def ask_tutor(store, student_id: str, *, certificate_id: str, question: str,
     with store.connect() as db:
         if not db.execute("SELECT 1 FROM certificate WHERE id=?", (certificate_id,)).fetchone():
             raise _portal_error("证书不存在。", 404)
+        from webapp.training_content import load_rules
         nodes, attempt_data = _build_context(db, student_id, certificate_id,
-                                             knowledge_point_id, attempt_id)
+                                             knowledge_point_id, attempt_id, load_rules(store))
         if not nodes:
             raise _portal_error("请先选择知识点或题目，答疑需要依据上下文。")
         allowed = {n["id"] for n in nodes}
