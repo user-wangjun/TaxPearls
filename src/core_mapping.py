@@ -26,7 +26,7 @@ ALIASES = {
     },
     "vat_declaration": {
         "item_key": ["栏次", "行次", "项目编号"],
-        "item_label": ["项目", "项目名称", "申报项目"],
+        "item_label": ["项目", "项目名称", "项目及栏次", "申报项目", "税费种", "税（费）种", "抵减项目", "减税性质代码及名称", "免税性质代码及名称"],
         "declared_value": ["本期数", "本月数", "本期金额", "申报数值", "declared_value"],
     },
     "invoice_detail": {

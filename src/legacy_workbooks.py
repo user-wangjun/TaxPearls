@@ -1,4 +1,4 @@
-"""Bounded, fixed-value BIFF5/7 reader. Never activate OLE or evaluate formulas.
+"""Bounded, fixed-value BIFF5/7/8 reader. Never activate OLE or evaluate formulas.
 
 This deliberately does not promise general XLS support. Reject formulas before
 xlrd can silently substitute their caches, and reject unknown records/objects.
@@ -15,7 +15,7 @@ import xlrd
 from .input_errors import InputError
 
 MAGIC = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
-VERSION = 'fixed-biff57-v1'
+VERSION = 'fixed-biff578-v2'
 MAX_FILE = 10 * 1024 * 1024
 MAX_CELLS = 500_000
 # Calculation/view/print/style metadata are inert: no OS print driver, toolbar,
@@ -34,6 +34,19 @@ RECORDS = {
     0x0892,
 }
 CELL_RECORDS = {0x00BD, 0x00BE, 0x00D6, 0x0201, 0x0203, 0x0204, 0x0205, 0x027E}
+# BIFF8 style/view/protection and static drawing/comment records are retained in
+# the original only. xlrd decodes cells; no Office object handler is invoked.
+BIFF8_METADATA = {
+    0x001A, 0x001B, 0x0041, 0x0063, 0x00DD,
+    0x0099, 0x00A0, 0x00E5, 0x00EB, 0x00EC, 0x00EF, 0x00FF,
+    0x013D, 0x0160, 0x0161, 0x01AF, 0x01BC, 0x01C0, 0x01C1,
+    0x0862, 0x0863, 0x0866, 0x0867, 0x087C, 0x087D, 0x088B,
+    0x088C, 0x088E, 0x0896, 0x089A, 0x089B, 0x089C, 0x08A3,
+    0x005D, 0x001C, 0x01B6,
+}
+BIFF8_RECORDS = BIFF8_METADATA | {0x00FC, 0x00FD}
+EXCEL_SHEET_CLSID = bytes.fromhex('2008020000000000c000000000000046')
+INERT_STREAMS = {'ETExtData', '\x01CompObj', '\x01Ole', '\x03ObjInfo'}
 
 
 def _records(raw):
@@ -80,27 +93,36 @@ def _names(names, externals, sheets):
 def _stream(raw):
     if not isinstance(raw, bytes) or not 0 < len(raw) <= MAX_FILE or not raw.startswith(MAGIC):
         raise InputError('XLS 内容与扩展名不符、为空或超过 10MB。')
+    notes = []
+    source = raw
+    if raw[8:24] == EXCEL_SHEET_CLSID:
+        # Some Excel/WPS exports put the worksheet CLSID in the reserved header.
+        # Normalize that known field in a private read view, never the source.
+        source = raw[:8] + bytes(16) + raw[24:]
+        notes.append('按已知 Excel 类标识兼容读取文件头；原件字节未改写。')
     try:
-        with olefile.OleFileIO(BytesIO(raw), raise_defects=olefile.DEFECT_INCORRECT) as ole:
+        with olefile.OleFileIO(BytesIO(source), raise_defects=olefile.DEFECT_INCORRECT) as ole:
             paths = ole.listdir(streams=True, storages=True)
-            allowed = {'Book', 'Workbook', '\x05SummaryInformation', '\x05DocumentSummaryInformation'}
+            allowed = {'Book', 'Workbook', '\x05SummaryInformation', '\x05DocumentSummaryInformation'} | INERT_STREAMS
             if (any(len(path) != 1 or path[0] not in allowed or
                     ole.get_type(path) != olefile.STGTY_STREAM for path in paths) or
                     sum(path[0] in {'Book', 'Workbook'} for path in paths) != 1):
-                raise InputError('XLS 含宏、嵌入对象或未支持的容器部件。')
+                raise InputError('XLS 含尚未支持的容器部件或活动对象；请导出不含宏和嵌入对象的工作簿。')
             # Read all accepted streams so broken/shared allocation chains are checked,
             # but never parse property sets or dispatch their embedded metadata.
             streams = {}
             for path in paths:
                 size = ole.get_size(path)
-                if size > MAX_FILE or (path[0].startswith('\x05') and size > 65536):
+                if size > MAX_FILE or ((path[0].startswith('\x05') or path[0] in INERT_STREAMS) and size > 65536):
                     raise InputError('XLS 容器流大小超限。')
                 streams[path[0]] = ole.openstream(path).read()
                 if len(streams[path[0]]) != size:
                     raise InputError('XLS 容器流截断。')
+                if path[0] in INERT_STREAMS:
+                    notes.append(f'保留但不执行或取数的扩展信息：{path[0].lstrip(chr(1)+chr(3))}。')
             if ole.parsing_issues:
                 raise InputError('XLS 容器存在结构歧义。')
-            return streams.get('Book', streams.get('Workbook'))
+            return streams.get('Book', streams.get('Workbook')), notes
     except InputError:
         raise
     except (OSError, ValueError, struct.error, IndexError):
@@ -109,25 +131,29 @@ def _stream(raw):
 
 def read(raw):
     """Preflight the entire BIFF stream before decoding any cached cell results."""
-    stream = _stream(raw)
+    stream, notes = _stream(raw)
     names, externals, bounds, sheet_starts = [], [], [], []
     external_count = None
     active, globals_done, previous = None, False, None
     codepage, cell_count, grid_size = None, 0, 0
     positions = set()
+    book_version, shared_strings = None, None
     extent = [0, 0]
     for offset, code, body in _records(stream):
+        if code == 0 and not body and book_version == 0x600 and active is None and not any(stream[offset:]):
+            break  # Excel 97–2003 writers may zero-pad the logical Workbook stream.
         if code in {0x0006, 0x0206, 0x0406, 0x0221, 0x04BC, 0x0021}:
             raise InputError('旧版 XLS 公式尚不能完整溯源；请从可信来源导出固定值或提供原始 XLSX。')
-        if code not in RECORDS:
+        if code not in RECORDS and not (book_version == 0x600 and code in BIFF8_RECORDS):
             raise InputError(f'XLS 含未支持或高风险记录 0x{code:04X}，不忽略后继续取数。')
         if code == 0x0809:
             if active is not None or len(body) < 8:
                 raise InputError('XLS 子流结构无效。')
             version, kind = struct.unpack_from('<HH', body)
             if offset == 0:
-                if version != 0x0500 or kind != 5:
-                    raise InputError('目前仅受控读取无公式的 BIFF5/7 XLS；其他版本须提供原始 XLSX。')
+                if version not in {0x0500, 0x0600} or kind != 5:
+                    raise InputError('支持固定值 BIFF5/7/8（Excel 5–2003）XLS；更早版本请另存为 XLSX。')
+                book_version = version
                 active = 'globals'
             else:
                 if not globals_done or kind != 0x10 or version not in {0x0500, 0x0600}:
@@ -155,12 +181,23 @@ def read(raw):
         elif code == 0x0085:
             if active != 'globals' or len(body) < 8 or body[5] != 0 or body[4] not in {0, 1, 2}:
                 raise InputError('XLS 含宏表、图表或无效工作表描述。')
-            if len(body) != 7 + body[6] or not body[6] or len(bounds) >= 40:
+            if book_version == 0x600:
+                if len(body) < 8 or body[7] not in {0, 1} or len(body) != 8 + body[6] * (2 if body[7] else 1):
+                    raise InputError('XLS 中文工作表名称记录无效。')
+                try:
+                    name = body[8:].decode('utf-16-le' if body[7] else 'latin1')
+                except UnicodeError:
+                    raise InputError('XLS 工作表名称编码无效。') from None
+            else:
+                name = body[7:]
+            if (book_version != 0x600 and len(body) != 7 + body[6]) or not body[6] or len(bounds) >= 40:
                 raise InputError('XLS 工作表名称或数量无效。')
-            bounds.append((struct.unpack_from('<I', body)[0], body[7:]))
+            bounds.append((struct.unpack_from('<I', body)[0], name))
         elif code in {0x0017, 0x0018, 0x0016}:
             if active != 'globals':
                 raise InputError('XLS 工作表内存在不支持的引用定义。')
+            if book_version == 0x600:
+                raise InputError('BIFF8 命名区域或引用定义尚需单独核对，请提供无外链的固定值副本。')
             if code == 0x0017:
                 if len(body) < 3 or body[1] != 3 or len(body) != body[0] + 2:
                     raise InputError('XLS 含外部引用、DDE 或插件链接。')
@@ -171,17 +208,52 @@ def read(raw):
                 if len(body) != 2 or external_count is not None:
                     raise InputError('XLS 引用计数无效或重复。')
                 external_count = struct.unpack('<H', body)[0]
-        elif code == 0x003C and previous not in {0x004D, 0x003C}:
+        elif code == 0x00E5 and book_version == 0x600:
+            if active != 'sheet' or len(body) < 2:
+                raise InputError('XLS 合并单元格记录无效。')
+            count = struct.unpack_from('<H', body)[0]
+            if len(body) != 2 + count*8:
+                raise InputError('XLS 合并单元格数量或长度无效。')
+            for pos in range(2,len(body),8):
+                r1,r2,c1,c2 = struct.unpack_from('<4H', body,pos)
+                if r1>r2 or c1>c2 or r2>=30000 or c2>=100:
+                    raise InputError('XLS 合并单元格位置无效或超限。')
+                extent[0],extent[1] = max(extent[0],r2+1), max(extent[1],c2+1)
+                if grid_size + extent[0]*extent[1] > MAX_CELLS:
+                    raise InputError('XLS 全部工作表展开范围超限。')
+        elif code == 0x00FC:
+            if active != 'globals' or shared_strings is not None or len(body) < 8:
+                raise InputError('XLS 共享字符串表无效。')
+            count, shared_strings = struct.unpack_from('<II', body)
+            if shared_strings > count or count > MAX_CELLS:
+                raise InputError('XLS 共享字符串数量超限或无效。')
+        elif code == 0x005D and book_version == 0x600:
+            # Accept only static cell comments, not controls, OLE or macro objects.
+            pos, first = 0, True
+            while pos < len(body):
+                if pos + 4 > len(body):
+                    raise InputError('XLS 批注对象记录截断。')
+                ft, size = struct.unpack_from('<HH', body, pos)
+                part = body[pos+4:pos+4+size]
+                if len(part) != size or ft not in {0x15, 0x0D, 0}:
+                    raise InputError('XLS 含未支持的活动对象或对象宏。')
+                if first and (ft != 0x15 or size != 18 or struct.unpack_from('<H', part)[0] != 0x19):
+                    raise InputError('XLS 仅支持忽略静态单元格批注，不支持控件或嵌入对象。')
+                first = False
+                pos += 4 + size
+            if first:
+                raise InputError('XLS 批注对象为空。')
+        elif code == 0x003C and previous not in ({0x004D, 0x003C, 0x00FC, 0x00EB, 0x00EC, 0x01B6} if book_version == 0x600 else {0x004D, 0x003C}):
             raise InputError('XLS 含未支持的延续记录。')
-        elif code in CELL_RECORDS | {0x0200, 0x0208}:
+        elif code in CELL_RECORDS | {0x0200, 0x0208, 0x00FD}:
             if active != 'sheet' or len(body) < 6:
                 raise InputError('XLS 单元格或范围记录无效。')
             row, column = struct.unpack_from('<HH', body)
             first_column = column
             if code == 0x0200:
-                if len(body) != 10:
+                if len(body) != (14 if book_version == 0x600 else 10):
                     raise InputError('XLS 工作表维度记录无效。')
-                first_row, row, first_column, column = struct.unpack_from('<4H', body)
+                first_row, row, first_column, column = struct.unpack_from('<IIHH' if book_version == 0x600 else '<4H', body)
                 if first_row > row or first_column > column:
                     raise InputError('XLS 工作表维度倒置。')
             elif code == 0x0208:
@@ -195,27 +267,30 @@ def read(raw):
                     raise InputError('XLS 多单元格长度无效。')
                 cell_count += last - column
                 column = last
-            if row > 30000 or column > 100 or (code in CELL_RECORDS and (row >= 30000 or column >= 100)):
+            is_cell = code in CELL_RECORDS or code == 0x00FD
+            if row > 30000 or column > 100 or (is_cell and (row >= 30000 or column >= 100)):
                 raise InputError('每张 Excel 工作表最多 30000 行、100 列。')
             # DIMENSIONS may understate the real sparse-cell bounds. Bound the
             # rectangular allocation that xlrd can derive from every cell/ROW,
             # not only the declared dimensions or the count of populated cells.
-            extent[0] = max(extent[0], row + (code in CELL_RECORDS))
-            extent[1] = max(extent[1], column + (code in CELL_RECORDS))
+            extent[0] = max(extent[0], row + is_cell)
+            extent[1] = max(extent[1], column + is_cell)
             if grid_size + extent[0] * extent[1] > MAX_CELLS:
                 raise InputError('XLS 全部工作表展开范围超限。')
-            if code in CELL_RECORDS:
+            if is_cell:
                 for c in range(first_column, column + 1):
                     if (row, c) in positions:
                         raise InputError('XLS 单元格位置重复，不能静默覆盖。')
                     positions.add((row, c))
             if code == 0x0203 and (len(body) != 14 or not math.isfinite(struct.unpack_from('<d', body, 6)[0])):
                 raise InputError('XLS 数值记录无效或含非有限数值。')
+            if code == 0x00FD and (len(body) != 10 or shared_strings is None or struct.unpack_from('<I', body, 6)[0] >= shared_strings):
+                raise InputError('XLS 共享字符串单元格索引无效。')
             cell_count += 1
             if cell_count > MAX_CELLS:
                 raise InputError('XLS 单元格数量超限。')
         previous = code
-    if active is not None or not globals_done or not bounds or len(bounds) != len(sheet_starts) or codepage is None:
+    if active is not None or not globals_done or not bounds or len(bounds) != len(sheet_starts) or (codepage is None and book_version != 0x600):
         raise InputError('XLS 子流不完整或工作表数量不一致。')
     if len({b[1] for b in bounds}) != len(bounds) or sorted(b[0] for b in bounds) != sheet_starts:
         raise InputError('XLS 工作表位置重复或与子流不一致。')
@@ -225,8 +300,9 @@ def read(raw):
     try:
         book = xlrd.open_workbook(file_contents=stream, formatting_info=True,
                                   logfile=StringIO(), ignore_workbook_corruption=False)
-        if book.biff_version not in {50, 70} or book.nsheets != len(bounds):
+        if book.biff_version not in {50, 70, 80} or book.nsheets != len(bounds):
             raise InputError('XLS 解码版本或工作表数量与容器检查不一致。')
+        book.compatibility_notes = notes
         return book
     except InputError:
         raise
@@ -243,6 +319,8 @@ def open_legacy_workbook(raw):
             if source.nrows > 30000 or source.ncols > 100:
                 raise InputError('每张 Excel 工作表最多 30000 行、100 列。')
             target = result.create_sheet(source.name)
+            if source.nrows and source.ncols:
+                target.cell(source.nrows,source.ncols)  # Retain formatted empty input rows and header spans.
             target.sheet_state = ('visible', 'hidden', 'veryHidden')[source.visibility]
             for r in range(source.nrows):
                 for c in range(source.ncols):
@@ -250,6 +328,8 @@ def open_legacy_workbook(raw):
                     if cell.ctype in {xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK}:
                         continue
                     value = cell.value
+                    if isinstance(value, str) and len(value) > 32000:
+                        raise InputError('XLS 单元格文本超过 32000 字符。')
                     if cell.ctype == xlrd.XL_CELL_DATE:
                         value = xlrd.xldate_as_datetime(value, book.datemode)
                     if isinstance(value, float) and not math.isfinite(value):
