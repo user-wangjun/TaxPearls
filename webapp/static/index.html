@@ -196,6 +196,7 @@
   footer { border-top: 1px solid var(--line); padding: 22px 0 40px; color: var(--ink-3); font-size: 12px; line-height: 1.9; }
 
   .field { margin:12px 0; }
+  #coreInputs .core-task-group .field[hidden] { display:none; }
   .field label { display:block; font-size:12px; color:var(--ink-2); margin-bottom:6px; }
   .field input,.field select,.field textarea { width:100%; border:1px solid var(--line); border-radius:6px; padding:10px 12px; font:inherit; background:#fff; transition:border-color .16s,box-shadow .16s,background .16s; }
   /* 自绘下拉组件：原生 select 弹层无法控制可见条数，改用按钮 + 列表面板 */
@@ -442,7 +443,7 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=20261018-1f27dacb6c09">
+<link rel="stylesheet" href="/workspace.css?v=20261018-acb6b80f7241">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -644,7 +645,7 @@
     <section class="panel" id="uploadPanel">
     <div class="sheet" id="coreInputs" hidden>
       <h2>基础审查资料准备</h2>
-      <p class="muted">可选择历史企业，也可先上传资料，由文件读取企业与所属期。核对自动填入的信息后，点击“开始检查”校验并进入核查。</p>
+      <p class="muted">检查区间由你选择：按月、按季度、按年度或自定义起止日。程序读取材料期间只用于核对，不会自动改变你选择的区间；材料期间候选须明确采用。核对后点击“开始检查”校验并进入核查。</p>
       <fieldset id="coreTaskForm"><legend>企业与检查区间（可先留空）</legend>
         <label class="field core-client-field">选择历史企业<select id="coreClient"><option value="">新企业 / 从文件读取</option></select></label>
         <div class="core-task-fields">
@@ -655,8 +656,22 @@
           </div>
           <div class="core-task-group">
             <h3>检查区间</h3>
-            <label class="field">检查起始日<input id="coreStart" type="date"></label>
-            <label class="field">检查终止日<input id="coreEnd" type="date"></label>
+            <label class="field">范围方式<select id="coreRangeKind"><option value="month">按月</option><option value="quarter">按季度</option><option value="year">按年度</option><option value="custom">自定义起止日</option></select></label>
+            <label class="field" id="coreRangeMonthField" hidden>检查月份<input id="coreRangeMonth" type="month" min="0001-01" max="9999-12"></label>
+            <label class="field" id="coreRangeYearField" hidden>检查年份<input id="coreRangeYear" type="number" min="1" max="9999" step="1" placeholder="如 2026"></label>
+            <label class="field" id="coreRangeQuarterField" hidden>检查季度<select id="coreRangeQuarter"><option value="1">第一季度</option><option value="2">第二季度</option><option value="3">第三季度</option><option value="4">第四季度</option></select></label>
+            <div class="field core-range-field" id="coreDateRangeField">
+              <span id="coreDateRangeLabel">检查起止日期</span>
+              <button id="coreDateRange" class="core-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="coreRangeCalendar" aria-labelledby="coreDateRangeLabel coreDateRangeText"><span id="coreDateRangeText">选择起始和终止日期</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg></button>
+              <input id="coreStart" type="hidden"><input id="coreEnd" type="hidden">
+              <div id="coreRangeCalendar" class="core-range-calendar" role="dialog" aria-label="选择检查起止日期" hidden>
+                <p id="coreCalendarHint" role="status">请选择起始日期</p>
+                <div class="core-calendar-toolbar"><button id="coreCalendarPrev" type="button" aria-label="上个月">‹</button><input id="coreCalendarMonth" type="month" min="0001-01" max="9999-12" aria-label="日历显示月份"><button id="coreCalendarNext" type="button" aria-label="下个月">›</button></div>
+                <div class="core-calendar-week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+                <div id="coreCalendarDays" class="core-calendar-days" role="group" aria-label="日期"></div>
+                <div class="core-calendar-actions"><button id="coreCalendarClear" type="button">清空</button><button id="coreCalendarCancel" type="button">取消</button></div>
+              </div>
+            </div>
           </div>
         </div>
         <div class="core-task-footer">
@@ -961,9 +976,9 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
-<script src="/core-inputs.js?v=20261018-21b139fdb3cf"></script>
+<script src="/core-inputs.js?v=20261018-37b3d8b7f7de"></script>
 <script src="/enterprise.js?v=20261017-62c89aee0e75"></script>
-<script src="/ai-keys.js?v=20261012-model-combobox-11"></script>
+<script src="/ai-keys.js?v=20261017-live-balance-1"></script>
 <script src="/console.js?v=20261017-password-validation"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
