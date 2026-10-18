@@ -158,6 +158,7 @@ tr{break-inside:avoid}
 <div class="check-body">
 <div class="detail-row"><h3>{{ '问题说明' if item.status in ['issue','needs_review'] else '检查结果' }}</h3><div class="detail-content">
 <p>{{ {'condition_met':'满足筛查条件，形成待核查线索','condition_not_met':'不满足本规则条件','excluded':'触发排除例外','needs_review':'条件尚不能确定'}.get(b.check.disposition,'待复核') }}。</p>
+{% if b.check.conversion %}<p class="assessment">数据计算结果：{{ {'TRUE':'满足筛查条件','FALSE':'未满足筛查条件','UNKNOWN':'数据或口径不足'}.get(b.check.fact_evaluation,'待核对') }}。规则审核与法规适用性仍需单独核实。</p>{% endif %}
 {% if b.fact_assessment %}{% set f=b.fact_assessment %}{% set risk=slot.ai.risk_assessment if slot.ai and slot.ai.risk_assessment else b.risk_assessment %}
 {% if f.amount is not none and f.status=='FACT_CONFIRMED' %}<p class="amount">已核实差额：{{ f.amount }} {{ f.unit or '' }}<span class="assessment">（开票减申报，不是应补税额）</span></p>{% endif %}
 {% for t in f.calculation_trace %}<p>计算：{{ t.left_value }} − {{ t.right_value }} = {{ t.result }}。{{ t.definition }}</p>{% endfor %}
