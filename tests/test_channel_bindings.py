@@ -2,7 +2,9 @@
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import UTC, datetime
+import base64
 import json
+import os
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
@@ -23,10 +25,15 @@ class ChannelBindingTests(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory(prefix='taxpearls-binding-')
         self.addCleanup(self.tmp.cleanup)
-        env = patch.dict('os.environ',{'TAXPEARLS_AI_ENABLED':'0','TAXPEARLS_NOTIFICATION_EMAIL_ENABLED':'0'})
+        env = patch.dict('os.environ',{'TAXPEARLS_AI_ENABLED':'0','TAXPEARLS_NOTIFICATION_EMAIL_ENABLED':'0',
+            'TAXPEARLS_FIELD_KEY':base64.b64encode(os.urandom(32)).decode()})
         env.start()
         self.addCleanup(env.stop)
-        self.store = Store(Path(self.tmp.name)/'bindings.db')
+        # 主 Store 开哨兵：保住 WAL 的 -shm/-wal 常驻，消除 Windows 上
+        # "最后一个连接关闭即删建"与并发连接重叠时的 SQLITE_READONLY 抖动；
+        # 测试方法内的临时 Store(self.store.path) 指向同一库文件，均被覆盖。
+        self.store = Store(Path(self.tmp.name)/'bindings.db', keepalive=True)
+        self.addCleanup(self.store.close)
         self.password = 'Binding-safe-2026!'
         self.owner = self.person('chief','org_admin','org-a')
         self.user = self.person('worker','accountant','org-a')
