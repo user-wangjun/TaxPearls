@@ -7,6 +7,8 @@
 - 相似度：k-gram（默认 6）token shingle 集合的 Jaccard 系数，0~1。
 - 比对范围：同一道题下每个学生**最新一次**提交两两比对（含跨班），
   同班/跨班落 same_class 标记；阈值默认 0.85（教师可调）。
+- 配对方向按学号升序固定（student_no_a ≤ student_no_b），
+  与提交 UUID 无关，重扫方向稳定。
 - 结果幂等：重扫覆盖同题旧标记（只删本problem 的标记后重插），
   历史不累积噪声。
 """
@@ -82,7 +84,7 @@ def scan_problem(store, problem_id: str, *, threshold: float = DEFAULT_THRESHOLD
                WHERE s.problem_id=? AND s.status='judged'
                  AND s.submitted_at=(SELECT MAX(x.submitted_at) FROM code_submission x
                                      WHERE x.problem_id=s.problem_id AND x.student_id=s.student_id)
-               ORDER BY s.submitted_at""", (problem_id,)).fetchall()
+               ORDER BY st.student_no, s.submitted_at, s.id""", (problem_id,)).fetchall()
         subs = [(r["id"], r["code_text"], r["class_name"]) for r in rows]
     shingle_map = {sid: shingles(code, k) for sid, code, _ in subs}
     class_map = {sid: cls for sid, _, cls in subs}
@@ -98,9 +100,10 @@ def scan_problem(store, problem_id: str, *, threshold: float = DEFAULT_THRESHOLD
             else:
                 sim = len(a & b) / len(a | b)
             if sim >= threshold:
+                # i<j 且 subs 按学号升序 → 方向固定为学号小的学生在前
                 flags.append({
-                    "submission_a": min(id_a, id_b),
-                    "submission_b": max(id_a, id_b),
+                    "submission_a": id_a,
+                    "submission_b": id_b,
                     "similarity": round(sim, 4),
                     "same_class": 1 if class_map[id_a] == class_map[id_b] else 0,
                     "shared": len(a & b) if a and b else 0,
