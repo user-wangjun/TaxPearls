@@ -33,8 +33,10 @@ def build(payload):
                                   for key, source in row.get("field_sources", {}).items() if key in fields},
                        "context": {"extracted": {key: deepcopy(value) for key, value in row.get("source_metadata", {}).items() if key in CONTEXT_FIELDS},
                                    "confirmed": {key: deepcopy(value) for key, value in row.get("confirmed_metadata", {}).items() if key in CONTEXT_FIELDS}},
-                       "confirmed_fields": {key: value for key, value in row.get("confirmed_invoice_statuses", {}).items()
-                                            if key in {"red_letter_status", "void_status"} and value}},
+                       "confirmed_fields": {**{key: value for key, value in row.get("confirmed_invoice_statuses", {}).items()
+                                            if key in {"red_letter_status", "void_status"} and value},
+                                            **({"direction": row["confirmed_metadata"]["direction"]}
+                                               if row.get("confirmed_metadata", {}).get("direction") in {"input", "output"} else {})}},
             "quality": {"field_states": states,
                         "requires_source_review": needs_review, "in_scope": row.get("in_scope"),
                         "duplicate_of": row.get("duplicate_of")},
