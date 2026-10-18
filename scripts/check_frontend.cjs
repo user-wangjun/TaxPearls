@@ -493,3 +493,27 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
 // Core inputs must be loaded before the shared console creates its controller.
 assert.ok(indexMarkup.indexOf('/core-inputs.js') < indexMarkup.indexOf('/console.js'));
 assert.ok(indexMarkup.includes('id="coreInputs"'));
+
+// Material history stays in management and is fetched only after an explicit query.
+(async()=>{
+  const source=fs.readFileSync("webapp/static/console.js","utf8"),start=source.indexOf("function renderAdminLogs("),end=source.indexOf("\nasync function loadAdmin()",start);
+  const node=(tag,cls="",text="")=>({tag,className:cls,textContent:text,children:[],hidden:false,disabled:false,append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
+  const root=node("div"),calls=[];let pending=null,fail=false,current=true;
+  const ctx={$:()=>root,el:node,currentUser:{id:"admin",role:"org_admin"},Intl,Date,
+    api:async url=>{calls.push(url);if(pending)return await pending;if(fail)throw Error("权限已变化");return {id:"task/id",revision:2,versions:[{revision:2,kind:"edit",created_at:"2026-10-17T13:43:30+00:00",created_by:"admin"}],events:[{action:"view",created_at:"2026-10-17T13:43:30+00:00",actor_id:"admin",revision:2}]};}};
+  vm.createContext(ctx);vm.runInContext(source.slice(start,end),ctx);
+  const rows=[{target_type:"material_batch",target_id:"task/id",action:"material_edit",created_at:"2026-10-17T13:43:30+00:00"}];
+  const all=n=>[n,...n.children.flatMap(all)],button=()=>all(root).find(n=>n.tag==="button");
+  ctx.renderAdminLogs(rows,()=>current);assert.equal(calls.length,0,"management only requests history on demand");
+  await button().onclick();assert.deepEqual(calls,["/api/enterprise/materials/task%2Fid/trace"]);
+  assert.ok(all(root).some(n=>n.textContent.includes("保存资料核对")&&n.textContent.includes("21:43:30")),"timestamps use Asia/Shanghai");
+  const trace=all(root).find(n=>n.tag==="div"&&n.children.some(c=>c.textContent.includes("材料任务 task/id")));
+  await button().onclick();assert.equal(trace.hidden,true);assert.equal(calls.length,1);
+  await button().onclick();assert.equal(calls.length,2,"reopening reauthorizes the trace on the server");
+  await button().onclick();fail=true;await button().onclick();assert.ok(all(root).some(n=>n.textContent==="查询失败：权限已变化"));
+  fail=false;ctx.renderAdminLogs(rows,()=>current);let resolve;pending=new Promise(done=>{resolve=done;});const request=button().onclick();current=false;
+  resolve({id:"stale-private-task",revision:3,versions:[],events:[]});await request;
+  assert.ok(!all(root).some(n=>n.textContent.includes("stale-private-task")),"late responses cannot repopulate an inactive session or panel");
+  for(const role of ["accountant","teacher","platform_admin"]){ctx.currentUser.role=role;ctx.renderAdminLogs(rows,()=>true);assert.equal(button(),undefined);}
+  console.log("Admin material trace: on-demand query, close/reopen authorization, failure and stale-session guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});

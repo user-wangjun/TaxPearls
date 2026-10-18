@@ -79,6 +79,83 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(set(closure["clause_ids"]), {"CL05A", "CL20"})
         self.assertEqual(len(closure["relationships"]), 2)
 
+    def test_more_than_eight_categorized_batches_are_analyzed_with_part_local_citations(self):
+        package=self.package()
+        original=deepcopy(package['batching']['parts'][0])
+        package['batching'].update(unsplittable=False,part_count=9,requires_joint_review=True,
+            parts=[{**deepcopy(original),'part_number':i,'part_count':9,'batch_category':'policy_basis',
+                    'batch_category_name':'政策依据','batch_group':f'policy-{i}'} for i in range(1,10)])
+        def answer(system, part, failure):
+            self.assertEqual(part['response_constraints']['required_type'],'insufficient_evidence')
+            return {'assessments':[{'type':'insufficient_evidence','text':'本批依据仍须与其他批次联合核查。',
+                'rule_id':package['check']['rule_id'],'clause_ids':[part['policy_evidence'][0]['clause_id']],
+                'source_ids':[],'amounts':[],'dates':[],'required_materials':[]}]},'test-provider'
+        with patch.object(service,'acceptance_gate',return_value={'passed':True,'model_fingerprints':[None]}), \
+             patch('webapp.knowledge._chat_json',side_effect=answer) as ai:
+            result=service.analyze(package)
+        self.assertEqual(ai.call_count,9)
+        self.assertEqual(len(result['batches']),9)
+        self.assertTrue(all(b['status']=='completed' for b in result['batches']))
+        self.assertTrue(result['validated'])
+        self.assertEqual(result['status'],'needs_review')
+        successful_answer=answer
+        attempt=[0]
+        def intermittent(system, part, failure):
+            attempt[0]+=1
+            if attempt[0]==3:
+                raise service.HTTPException(502,'模拟上游连接失败')
+            return successful_answer(system,part,failure)
+        with patch.object(service,'acceptance_gate',return_value={'passed':True,'model_fingerprints':[None]}), \
+             patch('webapp.knowledge._chat_json',side_effect=intermittent):
+            partial=service.analyze(package)
+        self.assertFalse(partial['validated'])
+        self.assertEqual(len(partial['batch_results']),2)
+        self.assertEqual(partial['batches'][2]['status'],'failed')
+        with patch.object(service,'acceptance_gate',return_value={'passed':True,'model_fingerprints':[None]}), \
+             patch('webapp.knowledge._chat_json',side_effect=successful_answer) as resumed:
+            completed=service.analyze(package,prior=partial)
+        self.assertTrue(completed['validated'])
+        self.assertEqual(completed['reused_batches'],2)
+        self.assertEqual(resumed.call_count,7)
+        self.assertTrue(all(b['status']=='completed' for b in completed['batches']))
+        changed_profile=deepcopy(partial)
+        changed_profile['batch_profile']='previous-model-or-output-configuration'
+        with patch.object(service,'acceptance_gate',return_value={'passed':True,'model_fingerprints':[None]}), \
+             patch('webapp.knowledge._chat_json',side_effect=successful_answer) as changed:
+            service.analyze(package,prior=changed_profile)
+        self.assertEqual(changed.call_count,9)
+        permission_checks=[0]
+        def authorize():
+            permission_checks[0]+=1
+            if permission_checks[0]>1:
+                raise service.HTTPException(409,'资料或权限已变化')
+        token=service._AUTHORIZE_BATCH.set(authorize)
+        try:
+            with patch.object(service,'acceptance_gate',return_value={'passed':True,'model_fingerprints':[None]}), \
+                 patch('webapp.knowledge._chat_json',side_effect=successful_answer) as stopped:
+                with self.assertRaises(service.HTTPException):
+                    service.analyze(package)
+            self.assertEqual(stopped.call_count,1)
+        finally:
+            service._AUTHORIZE_BATCH.reset(token)
+
+    def test_unreviewed_or_unsourced_changes_remain_explained_review_gaps(self):
+        for review, source in (("candidate", "CL01"), ("approved", None), ("candidate", None)):
+            with self.subTest(review=review, source=source):
+                self.db.execute("DELETE FROM Relationship WHERE relationship_id='pending-change'")
+                self.db.execute("INSERT INTO Relationship(relationship_id,from_type,from_id,relation_type,to_type,to_id,evidence_clause_id,review_status) "
+                                "VALUES ('pending-change','Clause','CL01','SUPPLEMENTS','Clause','CL03',?,?)", (source, review))
+                result = self.package()
+                codes = {g["code"] for g in result["gaps"]}
+                if review == "candidate":
+                    self.assertIn("change_pending", codes)
+                if source is None:
+                    self.assertIn("change_source_missing", codes)
+                self.assertTrue(all(g.get("message") for g in result["gaps"]))
+                self.assertEqual(result["check"]["evaluation"], "UNKNOWN")
+                self.assertNotEqual(result["bundle_status"], "ready")
+                self.assertEqual(result["risk_assessment"]["missing_evidence"], [g["message"] for g in result["gaps"]])
+
     def test_historical_repeal_region_unknown_and_null_end(self):
         old, current = self.package("K06"), self.package("K07")
         self.assertIn("CL06", {p["clause_id"] for p in old["policy_evidence"]})
@@ -288,6 +365,36 @@ class RetrievalHTTPTests(unittest.TestCase):
         self.assertEqual(uploaded.status_code, 200, uploaded.text)
         return uploaded.json()
 
+    def test_automatic_budget_uses_selected_model_capacity_and_clamps_manual_requests(self):
+        from src.settings import AISettings
+        from webapp import ai_keys
+        settings=AISettings(enabled=False,model='capacity-test')
+        with patch.object(ai_keys,'capability',return_value={'context_window':1048576,'max_output_tokens':393216}):
+            profile=ai_keys.context_budget(settings,self.store)
+        self.assertEqual(profile['context_window'],1048576)
+        self.assertEqual(profile['input_budget'],128000)
+        self.assertEqual(profile['output_reserve'],8192)
+        self.assertTrue(profile['cache_tokens_included'])
+        self.assertLess(profile['input_budget'],1048576)
+        with patch.object(ai_keys,'capability',return_value={'context_window':32000,'max_output_tokens':4096}):
+            small=ai_keys.context_budget(settings,self.store)
+        self.assertEqual(small['output_reserve'],4096)
+        self.assertLessEqual(small['input_budget'],32000*3//5)
+        self.assertLessEqual(sum(small[k] for k in ('input_budget','output_reserve','instruction_reserve','safety_reserve')),32000)
+        task=self.task()
+        body={'rule_id':'R01','task_id':task['id'],'expected_revision':task['revision'],'region_code':'CN-33'}
+        with patch.object(ai_keys,'context_budget',return_value=profile):
+            first=self.client.post('/api/knowledge/retrieve',json=body)
+            self.assertEqual(first.status_code,200,first.text)
+            plan=first.json()['bundle']['batching']
+            self.assertEqual(plan['soft_token_budget'],profile['input_budget'])
+            self.assertFalse(plan['unsplittable'])
+            self.assertEqual(plan['model_context']['capacity_source'],'provider_models')
+            body.update(expected_revision=first.json()['revision'],token_budget=16000000)
+            clamped=self.client.post('/api/knowledge/retrieve',json=body)
+            self.assertEqual(clamped.status_code,200,clamped.text)
+            self.assertEqual(clamped.json()['bundle']['batching']['soft_token_budget'],profile['input_budget'])
+
     def test_task_facts_history_cache_and_tenant_isolation(self):
         task = self.task()
         body = {"rule_id": "R01", "task_id": task["id"], "expected_revision": task["revision"], "region_code": "CN-33"}
@@ -354,6 +461,12 @@ class RetrievalHTTPTests(unittest.TestCase):
             self.assertEqual(second.status_code, 200, second.text)
             self.assertTrue(second.json()["cached"])
             self.assertEqual(ai.call_count, 1)
+            from dataclasses import replace
+            with patch('webapp.ai_keys.apply', side_effect=lambda settings, *args, **kwargs: replace(settings,model='another-model')):
+                changed=self.client.post('/api/knowledge/retrieve',json={**body,'expected_revision':second.json()['revision']})
+            self.assertEqual(changed.status_code,200,changed.text)
+            self.assertFalse(changed.json().get('cached'))
+            self.assertEqual(ai.call_count,2)
         saved = self.client.get("/api/enterprise/input-tasks/" + task["id"]).json()
         self.assertTrue(saved["tax_checks"]["R01"]["ai"]["validated"])
 

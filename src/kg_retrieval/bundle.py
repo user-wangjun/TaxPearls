@@ -5,7 +5,7 @@ from time import perf_counter
 
 from src import tax_conditions
 from . import applicability, keyword_search, relation_search, semantic_search
-from .common import canonical, checked_task, clause_record, digest, period_basis, unit
+from .common import checked_task, clause_record, digest, period_basis, unit
 
 
 def fuse(routes, *, k=60):
@@ -105,48 +105,8 @@ def _conditions(context, facts, task):
 
 
 def split_bundle(bundle, token_budget=6000):
-    """Use UTF-8 bytes as a conservative token upper bound; never cut clause originals."""
-    if not 256 <= token_budget <= 128000:
-        raise ValueError("材料包预算须在 256–128000 之间。")
-    base = {key: deepcopy(bundle[key]) for key in ("task", "check", "facts", "conditions", "exceptions", "relationships")}
-    for key in ("fact_assessment", "risk_assessment"):
-        if key in bundle:
-            base[key] = {k: deepcopy(v) for k, v in bundle[key].items() if k != "mapping_review"}
-    # Full provenance and retrieval scores remain in the exported bundle. Only
-    # decision-relevant policy fields travel to the provider; no original text
-    # is shortened, and the actual transmitted IDs remain available to validation.
-    fields = {"clause_id", "policy_id", "clause_version", "policy_version", "document_no", "title", "issuer",
-              "text", "source_url", "file_sha256", "region_code", "effective_from", "effective_to",
-              "applicability", "reasons", "segments", "required", "review_status"}
-    items = [(kind, {key: deepcopy(value) for key, value in item.items() if key in fields})
-             for kind in ("policy_evidence", "policy_leads") for item in bundle[kind]]
-    required = [(kind, item) for kind, item in items if item.get("required")]
-    optional = [(kind, item) for kind, item in items if not item.get("required")]
-
-    def package(selected):
-        included = required + selected
-        ids = {item["clause_id"] for _, item in included}
-        return {**base,
-                "gaps": [deepcopy(gap) for gap in bundle["gaps"] if not gap.get("clause_id") or gap["clause_id"] in ids],
-                **{kind: [item for route, item in included if route == kind] for kind in ("policy_evidence", "policy_leads")}}
-
-    parts, current = [], []
-    for item in optional:
-        proposed = package([*current, item])
-        if current and len(canonical(proposed).encode()) > token_budget:
-            parts.append(package(current))
-            current = []
-        current.append(item)
-    if current or not parts:
-        parts.append(package(current))
-    for number, part in enumerate(parts, 1):
-        part.update(part_number=number, part_count=len(parts), requires_joint_review=len(parts) > 1,
-                    bundle_id=bundle["bundle_id"])
-        part["token_upper_bound"] = len(canonical(part).encode())
-        part["over_budget"] = part["token_upper_bound"] > token_budget
-    return {"parts": parts, "part_count": len(parts), "soft_token_budget": token_budget,
-            "estimator": "utf8_bytes_upper_bound", "requires_joint_review": len(parts) > 1,
-            "unsplittable": any(p["over_budget"] for p in parts)}
+    from .batching import split
+    return split(bundle, token_budget)
 
 
 def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_catalog=(), model_dir=None,

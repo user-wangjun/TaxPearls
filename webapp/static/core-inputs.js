@@ -2,6 +2,8 @@
 function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, policyUI=()=>null}) {
   const base = "/api/enterprise/input-tasks";
   let current = null, busy = false, dirty = false, generation = 0, policyCatalog=null;
+  let checkFoldScope=null,checkPage=0;const checkFolds=new Map(),CHECK_PAGE_SIZE=5;
+  let reportState=null;
   let formOwner = user()?.id, clients=[], scopeDirty=false, attempted=false;
   const uploadStates=new Map(),uploadViews=new Map(),waitingUploads=[];
   let activeUpload=null,uploadRun=null,currentUpload=null,uploadsPaused=false;
@@ -363,14 +365,14 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const owner=user()?.id,ticket=generation,id=current.id;
     const valid=()=>owner===user()?.id&&ticket===generation&&enabled()&&current?.id===id;
     const stage=message=>{checkProgress.message=message;renderChecks();};
-    checkProgress={id,message:"正在核对企业与检查区间…",pending:[],done:0,total:0};renderChecks();
+    checkProgress={id,message:"正在核对企业与检查区间…",pending:[],done:0,total:0};checkPage=0;renderChecks();
     $("coreCheckResult").scrollIntoView?.({block:"start",behavior:"smooth"});
     await action(async()=>{
       await saveScope(true);if(!valid())return current;
       if(Object.keys(current.scope_errors||{}).length||current.task.scope_confirmed===false)
         throw new Error("企业与检查区间尚未核对通过，请补全页面提示后重试。");
       stage("正在读取检查项目与 AI 配置…");
-      const [rules,status]=await Promise.all([api("/api/knowledge/checks"),api("/api/knowledge/retrieval/status")]);
+      const [rules,status]=await Promise.all([api("/api/knowledge/checks?enterprise=true"),api("/api/knowledge/retrieval/status")]);
       if(!valid())return current;
       if(!Array.isArray(rules)||!rules.length)throw new Error("尚无可用检查项目，请先配置核查规则。");
       if(!status.ai_configured)throw new Error("尚未配置 AI 服务，请先完成 AI 服务配置后重新开始检查。");
@@ -382,42 +384,193 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
         const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),300000);
         let result;
         try{result=await api("/api/knowledge/retrieve",{...json({task_id:id,expected_revision:current.revision,
-          rule_id:rule.rule_id,region_code:region,token_budget:6000,use_ai:true}),signal:controller.signal});}
+          rule_id:rule.rule_id,region_code:region,use_ai:true}),signal:controller.signal});}
         catch(error){if(controller.signal.aborted)throw new Error("AI 分析等待超时，服务端可能仍在处理。请重新读取最新任务确认结果，避免重复发起检查。");throw error;}
         finally{clearTimeout(timer);}
         if(!valid())return current;
         current.revision=result.revision;(current.tax_checks??={})[rule.rule_id]=result;
+        if(result.ai?.batches?.some(b=>b.status==="failed"))throw new Error(result.ai.reason||"本批 AI 请求未完成，已保存完成批次，请稍后重新开始检查。");
         checkProgress.done++;checkProgress.pending.shift();renderChecks();
       }
       stage("正在保存并核对检查结果…");
       const fresh=await api(base+"/"+encodeURIComponent(id));if(!valid())return current;
-      checkProgress.message="检查流程已完成，请查看各项结果和待补充事项。";
+      current=fresh;stage("检查已完成，正在生成检查报告…");
+      const report=reportForTask();report.creating=true;
+      try{await saveReport(fresh,report);if(!valid())return current;checkProgress.message="检查流程已完成，报告已生成，请查看报告和待复核事项。";}
+      catch(error){if(valid()){report.createError=error.message;checkProgress.message="检查结果已保存，报告尚未生成，请点击生成检查报告重试。";}}
+      finally{report.creating=false;}
+      if(!valid())return current;
       checkProgress.complete=true;checkProgress.revision=fresh.revision;return fresh;
     },true);
     if(valid()){renderChecks();$("coreCheckResult").scrollIntoView?.({block:"start",behavior:"smooth"});}
   }
+  function reportForTask(){
+    if(!reportState||reportState.taskId!==current?.id||reportState.owner!==user()?.id)
+      reportState={taskId:current?.id,owner:user()?.id,rows:[],loadedRevision:null,loading:false,creating:false,loadError:"",createError:""};
+    return reportState;
+  }
+  function reportCurrent(state,ticket){return reportState===state&&generation===ticket&&current?.id===state.taskId&&user()?.id===state.owner;}
+  async function loadReports(state){
+    const ticket=generation,revision=current.revision,request=state.listRequest=(state.listRequest||0)+1;state.loading=true;state.loadError="";
+    const valid=()=>reportCurrent(state,ticket)&&state.listRequest===request;
+    try{
+      const rows=await api(base+"/"+encodeURIComponent(state.taskId)+"/reports");
+      if(valid()){if(!Array.isArray(rows))throw new Error("报告列表格式无效，请重试。");state.rows=rows;}
+    }catch(error){if(valid())state.loadError=error.message;}
+    finally{if(valid()){state.loading=false;state.loadedRevision=revision;renderChecks();}}
+  }
+  async function saveReport(task,state){
+    const ticket=generation,row=await api(base+"/"+encodeURIComponent(task.id)+"/reports",json({expected_revision:task.revision}));
+    if(!reportCurrent(state,ticket))return;
+    state.listRequest=(state.listRequest||0)+1;state.loading=false;
+    state.rows=[row,...state.rows.filter(r=>r.version!==row.version)];state.loadedRevision=task.revision;
+    state.confirmedRevision=task.revision;state.confirmedVersion=row.version;state.createError="";state.loadError="";
+  }
+  async function generateReport(){
+    if(busy||!current)return;
+    if(dirty||scopeDirty){showError("请先保存资料与检查区间，再生成检查报告。");return;}
+    const state=reportForTask(),ticket=generation;if(state.creating||state.loading)return;
+    busy=true;state.creating=true;state.createError="";taskControls(true);renderChecks();
+    try{await saveReport(current,state);}
+    catch(error){if(reportCurrent(state,ticket))state.createError=error.message;}
+    finally{state.creating=false;if(reportCurrent(state,ticket)){busy=false;taskControls(false);renderChecks();}}
+  }
+  function renderReportActions(root){
+    const state=reportForTask();
+    if(!busy&&!state.loading&&state.loadedRevision!==current.revision)void loadReports(state);
+    const box=el("section","core-report-actions");box.setAttribute("aria-label","检查报告");
+    box.append(el("h4","","检查报告"));
+    const latest=state.rows[0],matches=latest&&(latest.input_revision===current.revision||state.confirmedRevision===current.revision&&state.confirmedVersion===latest.version);
+    const actions=el("div","core-report-buttons");
+    const create=button(state.creating?"正在生成报告…":latest?"更新检查报告":"生成检查报告",generateReport);
+    create.disabled=busy||state.loading||dirty||scopeDirty;actions.append(create);
+    if(latest){
+      box.append(el("p",matches?"muted":"material-note",matches?"报告已就绪，包含已保存的检查结果与待复核事项。":"资料或检查结果已更新，以下为上次报告；请更新报告获取当前结果。"));
+      for(const [format,label] of [["html",matches?"查看报告":"查看上次报告"],["pdf",matches?"下载 PDF":"下载上次报告 PDF"]]){
+        const link=el("a","btn re",label);link.href=base+"/"+encodeURIComponent(state.taskId)+"/reports/"+latest.version+"?format="+format;link.target="_blank";link.rel="noopener noreferrer";actions.append(link);
+      }
+    }else box.append(el("p","muted",state.creating?"正在整理并保存检查报告…":busy?"本轮检查结束后会自动生成报告。":"可将已保存的检查结果生成报告；未完成的检查不作结论。"));
+    box.append(actions);
+    if(state.loading)box.append(el("p","muted","正在读取报告…"));
+    if(state.loadError){box.append(el("p","material-note","报告读取失败："+state.loadError));const retry=button("重试读取报告",()=>{state.loadedRevision=null;renderChecks();});retry.disabled=busy;box.append(retry);}
+    if(state.createError)box.append(el("p","material-note","检查结果已保留，报告生成失败："+state.createError));
+    root.append(box);
+  }
+  function checkDisclosure(key,label,className=""){
+    const details=el("details",("core-check-disclosure "+className).trim()),heading=el("summary","",label);
+    const toggle=el("span","core-check-toggle");heading.append(toggle);details.append(heading);
+    details.open=checkFolds.get(key)===true;
+    const sync=()=>{checkFolds.set(key,details.open);heading.setAttribute("aria-expanded",String(details.open));toggle.textContent=details.open?"收起":"展开";};
+    // Handle the title once, including native keyboard activation, without a second default toggle.
+    heading.onclick=event=>{event.preventDefault();details.open=!details.open;sync();};
+    details.addEventListener("toggle",event=>{if(event.target===details&&details.isConnected)sync();});sync();
+    return {details,heading,close:()=>{details.open=false;sync();heading.focus?.({preventScroll:true});heading.scrollIntoView?.({block:"nearest"});}};
+  }
+  function legacyCheck(slot){
+    return slot.bundle?.batching?.strategy!=="category_and_source_v1"||!slot.bundle?.batching?.model_context;
+  }
+  function renderReviewGaps(card,pack,legacy,foldKey){
+    const categories=new Map([
+      ["facts",{name:"指标与材料",hint:"展开查看具体指标，并在下方核对数据与材料来源；未取得有效值不一定是少上传了文件。",groups:new Map()}],
+      ["policy",{name:"政策与规则",hint:"这些是政策效力、适用范围或关联关系的核实事项，需要核实依据，不能仅靠补传企业材料解决。",groups:new Map()}],
+      ["system",{name:"系统处理",hint:"这些是处理过程中留下的限制或错误，请结合本次处理状态核对。",groups:new Map()}],
+      ["other",{name:"其他核实事项",hint:"请核对以下事项及其对应对象。",groups:new Map()}]
+    ]);
+    const facts=new Map((pack.facts||[]).map(f=>[f.metric_id,f.name||f.metric_id]));
+    const policies=new Map([...(pack.policy_evidence||[]),...(pack.policy_leads||[])].map(p=>[p.clause_id,p]));
+    const conditions=new Map((pack.conditions||[]).map(c=>[c.condition_id,c]));
+    const exceptions=new Map((pack.exceptions||[]).map(e=>[e.exception_id,e]));
+    const relationships=new Map((pack.relationships||[]).map(r=>[r.relationship_id,r]));
+    const archived=new Set();
+    const policyName=id=>{const p=policies.get(id);return p?[p.title,p.source_location,id].filter(Boolean).join(" · "):id;};
+    const metricName=id=>facts.get(id)||pack.metric_definitions?.[id]?.name||id;
+    for(const gap of pack.gaps||[]){
+      if(!gap.message)continue;
+      if(legacy&&gap.code?.startsWith("budget_")){archived.add(gap.message);continue;}
+      const kind=/^(metric_|comparability_)/.test(gap.code||"")?"facts":/^(budget_|semantic_|retrieval_)/.test(gap.code||"")?"system":/^(policy_|rule_|relationship_|change_|required_clause_|entity_|exception_)/.test(gap.code||"")?"policy":"other";
+      const category=categories.get(kind),key=JSON.stringify([gap.code||"",gap.message.trim()]);
+      if(!category.groups.has(key))category.groups.set(key,{message:gap.message.trim(),objects:new Map()});
+      let object="本项检查";
+      if(gap.metric_id)object=metricName(gap.metric_id);
+      else if(gap.clause_id)object=policyName(gap.clause_id)+(gap.relationship_id?" · 关联记录 "+gap.relationship_id:"");
+      else if(gap.condition_id){const c=conditions.get(gap.condition_id);object=c?[metricName(c.left_metric_id),metricName(c.right_metric_id)].filter(Boolean).join(" 与 "):gap.condition_id;}
+      else if(gap.relationship_id){const r=relationships.get(gap.relationship_id);object=r?[policyName(r.from_id),policyName(r.to_id)].filter(Boolean).join(" → "):"关联记录 "+gap.relationship_id;}
+      else if(gap.exception_id)object=exceptions.get(gap.exception_id)?.name||"例外记录 "+gap.exception_id;
+      else if(gap.entity_id)object="适用主体 "+gap.entity_id;
+      else if(gap.rule_id)object=pack.check.topic||gap.rule_id;
+      // Deduplicate the same issue and source while retaining separate source records with equal labels.
+      const identity=JSON.stringify([gap.metric_id,gap.clause_id,gap.condition_id,gap.relationship_id,gap.exception_id,gap.entity_id,gap.rule_id]);
+      category.groups.get(key).objects.set(identity,object);
+    }
+    const active=[...categories.values()].filter(c=>c.groups.size);
+    const count=c=>[...c.groups.values()].reduce((sum,g)=>sum+g.objects.size,0);
+    if(active.length)card.append(el("p","material-note","待核实："+active.map(c=>`${c.name} ${count(c)} 项`).join("；")+"。同类原因已合并，可展开查看具体对象。"));
+    for(const [kind,category] of categories){
+      if(!category.groups.size)continue;
+      const {details}=checkDisclosure(`${foldKey}:gaps:${kind}`,`${category.name}：${category.groups.size} 类问题 · ${count(category)} 项`,"material-card");
+      details.append(el("p","muted",category.hint));
+      for(const group of category.groups.values()){
+        details.append(el("p","material-note",group.message));
+        const list=el("ul","muted");for(const object of group.objects.values())list.append(el("li","",object));
+        details.append(list);
+      }
+      card.append(details);
+    }
+    if(legacy&&pack.batching?.unsplittable&&!archived.size)archived.add("旧版分批记录：当时未能在预算内组织完整上下文。");
+    return archived;
+  }
   function renderChecks(){
     const root=$("coreCheckResult");root.replaceChildren();
-    const progress=checkProgress?.id===current?.id&&(!checkProgress.complete||checkProgress.revision===current?.revision)?checkProgress:null,checks=Object.values(current?.tax_checks||{});
+    const scope=JSON.stringify([user()?.id,current?.id]);if(scope!==checkFoldScope){checkFolds.clear();checkFoldScope=scope;checkPage=0;}
+    const progress=checkProgress?.id===current?.id&&(!checkProgress.complete||checkProgress.revision===current?.revision)?checkProgress:null,checks=Object.values(current?.tax_checks||{}).filter(slot=>slot.bundle);
+    const pages=Math.max(1,Math.ceil(checks.length/CHECK_PAGE_SIZE));checkPage=Math.max(0,Math.min(checkPage,pages-1));
     root.hidden=!progress&&!checks.length;if(root.hidden)return;
     root.append(el("h3","",progress?.error?"检查未完成":progress&&!progress.complete?"正在检查":"检查结果"));
     const status=el("p",progress?.error?"material-note":"muted",progress?.error||progress?.message||"以下为本任务已保存的检查结果。");
     status.setAttribute("role","status");root.append(status);
     if(progress?.total)root.append(el("p","muted",`本轮已完成 ${progress.done}/${progress.total} 项。未完成不等于通过。`));
-    if(progress?.error&&progress.pending.length)root.append(el("p","muted","尚未完成："+progress.pending.join("、")));
+    if(progress?.error&&progress.pending.length){
+      const {details:pending}=checkDisclosure("pending",`尚未完成 ${progress.pending.length} 项（展开查看）`);
+      const list=el("ul","muted");for(const name of progress.pending)list.append(el("li","",name));
+      pending.append(list);root.append(pending);
+    }
     if(progress?.error)root.append(button("重新读取最新任务",()=>{checkProgress=null;return action(()=>api(base+"/"+encodeURIComponent(current.id)));}));
-    for(const slot of checks){
+    if(checks.length)renderReportActions(root);
+    const legacyCount=checks.filter(slot=>slot.bundle&&legacyCheck(slot)).length;
+    if(legacyCount)root.append(el("p","material-note",`已保存的检查中有 ${legacyCount} 项旧版结果，需点击「开始检查」重新生成。重新读取任务不会自动重算。`));
+    const pager=position=>{
+      const nav=el("nav","core-pagination core-check-pagination");nav.setAttribute("aria-label",`检查结果分页（${position}）`);
+      const move=delta=>{checkPage+=delta;renderChecks();root.setAttribute("tabindex","-1");root.focus?.({preventScroll:true});root.scrollIntoView?.({block:"start"});};
+      const previous=button("上一页",()=>move(-1)),next=button("下一页",()=>move(1));previous.disabled=checkPage===0;next.disabled=checkPage===pages-1;
+      const description=el("span","muted",`共 ${checks.length} 项 · 第 ${checkPage+1}/${pages} 页 · ${checkPage*CHECK_PAGE_SIZE+1}–${Math.min((checkPage+1)*CHECK_PAGE_SIZE,checks.length)} 项`);
+      nav.append(previous,description,next);return nav;
+    };
+    if(pages>1)root.append(pager("顶部"));
+    for(const slot of checks.slice(checkPage*CHECK_PAGE_SIZE,(checkPage+1)*CHECK_PAGE_SIZE)){
       const pack=slot.bundle,ai=slot.ai;if(!pack)continue;
-      const label=slot.stale?"资料有变化，待重检":!ai?"尚未完成 AI 分析":!ai.validated||ai.status==="needs_review"?"待复核":"AI 分析已完成";
-      const card=el("details","material-card"),summary=el("summary","",`${pack.check.topic} · ${label}`);card.append(summary);
+      const legacy=legacyCheck(slot);
+      const label=slot.stale?"资料有变化，待重检":legacy?"旧版结果，需重新检查":!ai?"尚未完成 AI 分析":!ai.validated||ai.status==="needs_review"?"待复核":"AI 分析已完成";
+      const foldKey=`rule:${pack.check.rule_id}`,{details:card,close}=checkDisclosure(foldKey,`${pack.check.topic} · ${label}`,"material-card");
       if(slot.stale)card.append(el("p","material-note","以下是历史结果，不能代表当前资料。请重新开始检查。"));
-      if(ai?.reason)card.append(el("p","material-note",ai.reason));
-      for(const item of ai?.assessments||[]){
-        card.append(el("p","",item.text));
-        if(item.required_materials?.length)card.append(el("p","material-note","需补充或核实："+item.required_materials.join("；")));
+      if(legacy)card.append(el("p","material-note","这份结果生成于旧版检查流程，尚未按当前容量和分类批次重检。请点击「开始检查」重新生成；以下缺口为当时记录。"));
+      if(ai?.reason&&!legacy&&!(pack.gaps||[]).some(g=>g.message===ai.reason))card.append(el("p","material-note",ai.reason));
+      const capacity=pack.batching?.model_context;
+      if(capacity)card.append(el("p","muted",(capacity.context_window?`模型上下文：${capacity.context_window.toLocaleString()} Token。`:"上游未提供模型上下文容量，使用保守容量。")+`本次单批输入估算上限 ${capacity.input_budget.toLocaleString()}（含缓存输入），输出预留 ${capacity.output_reserve.toLocaleString()} Token。`));
+      if(ai?.batches?.length){
+        const {details:batches}=checkDisclosure(`${foldKey}:batches`,`分析批次：已完成 ${ai.batches.filter(b=>b.status==="completed").length}/${pack.batching.part_count} 批`);
+        for(const batch of ai.batches)batches.append(el("p","muted",`${batch.part_number}/${pack.batching.part_count} · ${batch.category_name}${batch.group?" · "+batch.group:""} · ${batch.status==="completed"?"已完成":"待复核"}`));
+        card.append(batches);
       }
-      for(const gap of pack.gaps||[])if(gap.message)card.append(el("p","material-note",gap.message));
-      const facts=el("details");facts.append(el("summary","","核对数据与材料来源"));
+      const assessments=legacy?checkDisclosure(`${foldKey}:assessments`,"历史分析说明（仅供追溯）").details:card;
+      if(legacy&&ai?.assessments?.length)card.append(assessments);
+      for(const item of ai?.assessments||[]){
+        assessments.append(el("p","",item.text));
+        if(item.required_materials?.length)assessments.append(el("p","material-note","需补充或核实："+item.required_materials.join("；")));
+      }
+      const archived=renderReviewGaps(card,pack,legacy,foldKey);
+      if(legacy&&ai?.reason)archived.add(ai.reason);
+      if(archived.size){const {details:history}=checkDisclosure(`${foldKey}:history`,"旧版处理记录（仅供追溯）");for(const message of archived)history.append(el("p","muted",message));card.append(history);}
+      const {details:facts}=checkDisclosure(`${foldKey}:facts`,"核对数据与材料来源");
       for(const fact of pack.facts||[]){
         facts.append(el("p","",`${fact.name}：${fact.state==="known"?amount(fact.value)+" "+(fact.unit||""):"待补充或核实"}`));
         for(const source of fact.source_ids||[]){
@@ -426,13 +579,14 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
         }
       }
       card.append(facts);
-      const basis=el("details");basis.append(el("summary","","参考依据与核实事项"));
+      const {details:basis}=checkDisclosure(`${foldKey}:basis`,"参考依据与核实事项");
       for(const item of [...(pack.policy_evidence||[]),...(pack.policy_leads||[])]){
         basis.append(el("p","",[item.title,item.clause_id].filter(Boolean).join(" · ")),el("p","muted",item.text));
         if(/^https?:\/\//i.test(item.source_url||"")){const link=el("a","","查看原文");link.href=item.source_url;link.target="_blank";link.rel="noopener noreferrer";basis.append(link);}
       }
-      card.append(basis);root.append(card);
+      card.append(basis,button("收起本项",close));root.append(card);
     }
+    if(pages>1)root.append(pager("底部"));
     root.append(el("p","muted","AI 分析为待复核线索；资料或政策依据不足的项目保留待核实状态。未选择企业所在地时先匹配国家级政策；地方政策须确认地区后再核查。"));
     if(checks.length){const evidence=button("查看知识依据图谱",()=>continueCheck(current.id));evidence.disabled=busy;root.append(evidence);}
   }
@@ -443,7 +597,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   const json = value => ({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
   const button = (text, fn) => {const n=el("button","btn re",text);n.type="button";n.onclick=fn;return n;};
   function clearScope(){regionTaskId=null;$("coreRegion").value="";$("coreRegion").setAttribute("aria-invalid","false");for(const id of Object.values(scopeIds))$(id).value="";rangeKind.value="custom";writePeriodInputs("");syncRange();$("coreClient").value="";scopeDirty=attempted=false;displayErrors({});}
-  function reset() {checkProgress=null;$("coreCheckResult").replaceChildren();$("coreCheckResult").hidden=true;$("coreActionStatus").replaceChildren();generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");if(identityDialog.open)identityDialog.close("cancel");displayErrors({});renderIdentityCandidates();clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
+  function reset() {reportState=null;checkFolds.clear();checkFoldScope=null;checkPage=0;checkProgress=null;$("coreCheckResult").replaceChildren();$("coreCheckResult").hidden=true;$("coreActionStatus").replaceChildren();generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");if(identityDialog.open)identityDialog.close("cancel");displayErrors({});renderIdentityCandidates();clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
   async function action(fn, saving=false, uploading=false) {
     if(busy||!enabled())return;
     if(waitingUploads.length&&!uploading){showError("还有等待上传的文件，请先继续上传或清除待上传文件。");return;}
@@ -516,7 +670,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const root=$("coreTaskResult");root.replaceChildren();renderIdentityCandidates();renderChecks();if(!current)return;
     const task=current.task,p=current.processing,prepared=new Map(p.records.map(r=>[r.id,r])),parsedCount=current.documents.reduce((sum,d)=>sum+d.records.length,0),scopePending=Object.keys(current.scope_errors||{}).length>0;
     const rangeLabels={month:"按月",quarter:"按季度",year:"按年度",custom:"自定义起止日"};
-    root.append(el("h3","",`${task.company_name||"待识别企业"} · ${task.tax_no||"税号待填写"}`),el("p","muted",`${task.start_date||"起始日待确认"} 至 ${task.end_date||"终止日待确认"} · ${rangeLabels[task.range_kind||current.range_kind]||""} · 版本 ${current.revision}`),
+    root.append(el("h3","",`${task.company_name||"待识别企业"} · ${task.tax_no||"税号待填写"}`),el("p","muted",`${task.start_date||"起始日待确认"} 至 ${task.end_date||"终止日待确认"} · ${rangeLabels[task.range_kind||current.range_kind]||""}`),
       el("p",p.status==="ready_for_analysis"?"":"material-note",states[p.status]||p.status),el("p","muted",Object.keys(current.tax_checks||{}).length?"检查结果见上方；资料更新后需重新检查。":"资料已保存。核对后点击开始检查，自动检索依据并进行 AI 辅助分析。"));
     const actions=el("div","core-actions");actions.append(button("重新读取任务",()=>action(()=>api(base+"/"+current.id))));
     actions.append(button("保存企业与检查区间",()=>{if(dirty){showError("请先保存资料口径核对，再保存企业与检查区间。");return;}return action(()=>saveScope(),true);}));
@@ -553,7 +707,11 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const editors=[];
     for(const doc of current.documents){
       const card=el("details","core-document"),options=current.source_options[doc.id]||{},meta=options.confirmed_metadata||{};
-      card.open=editors.length===0;const heading=el("summary","core-document-heading");heading.append(el("span","core-file-name",doc.name),el("span","core-file-state",`${kinds[doc.material_type]} · ${doc.records.length} 条候选 · ${options.source_reviewed?"已人工核对":"待核对"}`));card.append(heading);
+      const foldKey="document:"+doc.id;card.open=checkFolds.get(foldKey)===true;
+      const heading=el("summary","core-document-heading");heading.append(el("span","core-file-name",doc.name),el("span","core-file-state",`${kinds[doc.material_type]} · ${doc.records.length} 条候选 · ${options.source_reviewed?"已人工核对":"待核对"}`));card.append(heading);
+      const syncFold=()=>{checkFolds.set(foldKey,card.open);heading.setAttribute("aria-expanded",String(card.open));};
+      heading.onclick=event=>{event.preventDefault();card.open=!card.open;syncFold();};
+      card.addEventListener("toggle",event=>{if(event.target===card&&card.isConnected)syncFold();});syncFold();
       const content=el("div","core-document-body"),download=el("a","btn re","下载原件");download.href=base+"/"+current.id+"/originals/"+doc.id;content.append(download);card.append(content);
       const metadata=el("details","core-metadata");metadata.append(el("summary","","文件口径与排除设置（选填）"),el("p","muted","留空沿用识别值；统一口径应用到本文件所有记录，混合期间请保留原识别值。"));
       const grid=el("div","material-company"+(doc.material_type==="invoice_detail"?" core-invoice-metadata":""));
@@ -594,7 +752,6 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       else{const group=el("details");group.append(el("summary","",`${items[0].message}（${items.length} 处）`));for(const location of locations)group.append(el("p","muted",location||"任务整体口径"));problems.append(group);}
     }root.append(problems);
     if(p.notices.length){const notes=el("details");notes.append(el("summary","",`来源说明（${p.notices.length}）`));for(const n of p.notices)notes.append(el("p","muted",n.message+(n.source_position?" · "+n.source_position:"")));root.append(notes);}
-    const trace=el("details");trace.append(el("summary","","版本与操作记录"));for(const v of current.versions)trace.append(el("p","muted",`版本 ${v.revision} · ${v.kind} · ${v.created_at}`));root.append(trace);
   }
   async function history(){const owner=user()?.id,ticket=generation,rows=await api(base);if(owner!==user()?.id||ticket!==generation||!enabled())return;const root=$("coreTaskHistory");root.replaceChildren(el("h3","","继续资料处理任务"));for(const row of rows)root.append(button(`${row.task.company_name||"待识别企业"} · ${row.task.start_date||"待确认"} 至 ${row.task.end_date||"待确认"} · ${states[row.status]||row.status}`,()=>action(()=>api(base+"/"+row.id))));}
   async function refresh(){const active=enabled();if(formOwner!==user()?.id){reset();clearScope();formOwner=user()?.id;}$("coreInputs").hidden=!active;$("coreLegacyToggle").hidden=!active;if(active){const owner=user()?.id,ticket=generation;if(policyUI()){const config=await api("/api/enterprise/materials/config");if(owner!==user()?.id||ticket!==generation)return;policyCatalog=config.policy_catalog;}const rows=await api("/api/clients");if(owner!==user()?.id||ticket!==generation||!enabled())return;clients=rows;const selected=$("coreClient").value;$("coreClient").replaceChildren();const empty=el("option","","新企业 / 从文件读取");empty.value="";$("coreClient").append(empty);for(const c of clients){const option=el("option","",`${c.name} · ${c.taxpayer_id}`);option.value=c.id;$("coreClient").append(option);}$("coreClient").value=selected;await history();}}

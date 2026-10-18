@@ -16,6 +16,9 @@ def prepare(package, *, authorized, destination):
     parts = []
     for original in package["batching"]["parts"]:
         part = {k: deepcopy(original[k]) for k in ("task", "check", "facts", "conditions", "exceptions", "policy_evidence", "policy_leads", "gaps", "relationships", "part_number", "part_count")}
+        for key in ('batch_category', 'batch_category_name', 'batch_group', 'batch_group_name', 'required_clause_ids'):
+            if key in original:
+                part[key] = deepcopy(original[key])
         # Keep source/form selection and reviewer identity locally. The model
         # receives only the independently calculated fact and trace.
         part["fact_assessment"] = {k: deepcopy(v) for k, v in package.get("fact_assessment", {}).items() if k != "mapping_review"}

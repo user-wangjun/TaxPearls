@@ -1282,8 +1282,8 @@ class CoreAPITests(unittest.TestCase):
         with self.store.connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM material_events WHERE batch_id=?", (task["id"],)).fetchone()[0], events_before)
         after = self.client.get(url).json()
-        before.pop("events")
-        after.pop("events")
+        self.assertNotIn("events", before)
+        self.assertNotIn("events", after)
         self.assertEqual(after, before, "validation must not save a revision or confirm source review")
         period_value = {**value, "start_date": "2026-01-01", "end_date": "2026-01-31", "range_kind": "custom",
                         "fields": ["company_name", "tax_no", "start_date", "end_date"]}
@@ -1412,7 +1412,11 @@ class CoreAPITests(unittest.TestCase):
         self.assertGreater(changed["processing"]["scope"]["outside_records"], 0)
         codes = {i["code"] for i in changed["processing"]["issues"]}
         self.assertTrue({"period_alignment", "record_outside_scope"} <= codes)
-        self.assertEqual(changed["versions"][-1]["revision"], changed["revision"])
+        self.assertNotIn("versions", changed)
+        self.assertNotIn("events", changed)
+        trace = self.client.get(f"/api/enterprise/materials/{changed['id']}/trace")
+        self.assertEqual(trace.status_code, 200, trace.text)
+        self.assertEqual(trace.json()["versions"][-1]["revision"], changed["revision"])
 
     def test_existing_company_selection_and_cross_tenant_rejection(self):
         existing = self.store.upsert_client(self.admin, "已有企业", TAX)

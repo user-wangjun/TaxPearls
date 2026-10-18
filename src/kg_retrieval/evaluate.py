@@ -91,7 +91,11 @@ def evaluate(db, cases, *, model_dir=None, offline=True, token_budget=6000):
                 failures.append("出现不存在的条款引用")
         if case.get("must_preserve_full_text"):
             parts = bundle["batching"]["parts"]
-            restored = {item["clause_id"]: item["text"] for part in parts for item in part["policy_evidence"]}
+            fragments = {}
+            for part in parts:
+                for item in part['policy_evidence']:
+                    fragments.setdefault(item['clause_id'], {})[item.get('source_char_start', 0)] = item['text']
+            restored = {cid: ''.join(text for _, text in sorted(pieces.items())) for cid, pieces in fragments.items()}
             require(all(restored.get(item["clause_id"]) == item["text"] for item in evidence), "超预算拆包遗漏原文")
             require(bundle["batching"]["part_count"] > 1 or bundle["batching"]["unsplittable"], "未实际触发预算边界")
             require(all(part["exceptions"] == bundle["exceptions"] for part in parts), "拆包丢失例外")
