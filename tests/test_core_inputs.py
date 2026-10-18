@@ -720,6 +720,173 @@ class MappingTests(unittest.TestCase):
 
 
 class CoreAPITests(unittest.TestCase):
+    def assert_write_available(self):
+        writer = sqlite3.connect(self.store.path, timeout=0.05)
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+        finally:
+            writer.rollback()
+            writer.close()
+
+    def test_file_parser_does_not_hold_database_write_lock(self):
+        task = self.create()
+        parse = core_materials.parse
+
+        def parse_without_lock(*args, **kwargs):
+            self.assert_write_available()
+            return parse(*args, **kwargs)
+
+        with patch("src.core_materials.parse", side_effect=parse_without_lock) as parser:
+            self.upload(task, "account_balance")
+        parser.assert_called_once()
+
+    def test_mapping_call_does_not_hold_write_lock_and_stale_result_cannot_save(self):
+        for change in (None, "revision", "permission"):
+            with self.subTest(change=change):
+                task = self.create()
+
+                def mapping_response(*args, **kwargs):
+                    self.assert_write_available()
+                    with self.store.connect() as db:
+                        if change == "revision":
+                            batch = material_batches._authorize(db, self.admin, task["id"])
+                            version = db.execute("SELECT kind,payload_cipher FROM material_revisions WHERE batch_id=? AND revision=?",
+                                                 (task["id"], batch["revision"])).fetchone()
+                            payload = json.loads(material_batches._open(version["payload_cipher"],
+                                material_batches._context(self.admin["org_id"], task["id"], "revision:" + version["kind"], batch["revision"])))
+                            material_batches._append(db, batch, self.admin, "edit", payload)
+                        elif change == "permission":
+                            db.execute("UPDATE users SET active=0 WHERE id=?", (self.admin["id"],))
+                    return json.dumps({"mappings": [{"source_column": 2, "target_field": "declared_value",
+                                                     "status": "mapped", "explanation": "column context"}]})
+
+                try:
+                    with (patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED": "1", "TAXPEARLS_AI_API_KEY": "synthetic"}),
+                          patch("src.core_mapping.chat_content", side_effect=mapping_response) as call):
+                        response = self.client.post("/api/enterprise/input-tasks/" + task["id"] + "/files",
+                            data={"expected_revision": str(task["revision"]), "material_type": "vat_declaration", "mapping_mode": "ai"},
+                            files={"files": ("申报.xlsx", book("vat_declaration", alias="本期申报值-" + str(change)))})
+                    call.assert_called_once()
+                    self.assertEqual(response.status_code, {None: 200, "revision": 409, "permission": 403}[change], response.text)
+                    with self.store.connect() as db:
+                        count = db.execute("SELECT COUNT(*) FROM core_mapping_observations WHERE task_id=?", (task["id"],)).fetchone()[0]
+                    self.assertEqual(count, 1 if change is None else 0)
+                finally:
+                    with self.store.connect() as db:
+                        db.execute("UPDATE users SET active=1 WHERE id=?", (self.admin["id"],))
+
+    def test_mapping_promotion_and_its_audit_event_commit_or_rollback_together(self):
+        event = material_batches._event
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                task = self.create()
+                alias = "本期申报值-" + str(fail)
+                with self.store.connect() as db:
+                    for index in range(4):
+                        db.execute("INSERT INTO core_mapping_observations VALUES (?,?,?,?,?,?,?,'now','seed')",
+                                   (self.admin["org_id"], "vat_declaration", "main", core_mapping.label(alias),
+                                    "declared_value", "seed-" + str(index), task["id"]))
+
+                def audited(db, batch, actor, action, detail, **kwargs):
+                    if fail and action == "mapping_promotion":
+                        raise RuntimeError("synthetic audit failure")
+                    return event(db, batch, actor, action, detail, **kwargs)
+
+                with (patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED": "1", "TAXPEARLS_AI_API_KEY": "synthetic"}),
+                      patch("src.core_mapping.chat_content", return_value=json.dumps({"mappings": [
+                          {"source_column": 2, "target_field": "declared_value", "status": "mapped"}]})) as call,
+                      patch("webapp.material_batches._event", side_effect=audited)):
+                    response = self.client.post("/api/enterprise/input-tasks/" + task["id"] + "/files",
+                        data={"expected_revision": str(task["revision"]), "material_type": "vat_declaration", "mapping_mode": "ai"},
+                        files={"files": ("申报.xlsx", book("vat_declaration", alias=alias))})
+                call.assert_called_once()
+                self.assertEqual(response.status_code, 500 if fail else 200, response.text)
+                with self.store.connect() as db:
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM core_mapping_observations WHERE task_id=?",
+                                                (task["id"],)).fetchone()[0], 4 if fail else 5)
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM material_events WHERE batch_id=? AND action='mapping_promotion'",
+                                                (task["id"],)).fetchone()[0], 0 if fail else 1)
+
+    def test_listing_does_not_write_view_events_and_detail_still_does(self):
+        task = self.upload(self.create(), "account_balance")
+
+        def counts():
+            with self.store.connect() as db:
+                return tuple(db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                             for table in ("material_events", "audit_log"))
+
+        before = counts()
+        for _ in range(2):
+            response = self.client.get("/api/enterprise/input-tasks")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(len(response.json()), 1)
+            row = response.json()[0]
+            self.assertEqual(set(row), {"id", "revision", "task", "status", "created_at"})
+            self.assertEqual(row["id"], task["id"])
+            self.assertEqual(row["revision"], task["revision"])
+            self.assertEqual(row["task"], task["task"])
+            self.assertEqual(row["status"], task["processing"]["status"])
+        self.assertEqual(counts(), before)
+        detail = self.client.get("/api/enterprise/input-tasks/" + task["id"])
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(counts(), tuple(n + 1 for n in before))
+
+    def test_listing_reads_committed_snapshot_while_another_writer_holds_lock(self):
+        task = self.upload(self.create(), "account_balance")
+        connect = sqlite3.connect
+
+        def short_wait(*args, **kwargs):
+            kwargs["timeout"] = 0.05
+            return connect(*args, **kwargs)
+
+        with self.store.connect() as writer:
+            self.assertEqual(writer.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            stamp = writer.execute("SELECT created_at FROM material_batches WHERE id=?", (task["id"],)).fetchone()[0]
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE material_batches SET created_at='uncommitted' WHERE id=?", (task["id"],))
+            try:
+                with patch("webapp.storage.sqlite3.connect", side_effect=short_wait):
+                    response = self.client.get("/api/enterprise/input-tasks")
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json(), [{
+                    "id": task["id"], "revision": task["revision"], "task": task["task"],
+                    "status": task["processing"]["status"], "created_at": stamp,
+                }])
+            finally:
+                writer.rollback()
+
+    def test_listing_preserves_tenant_owner_and_live_client_assignment_scope(self):
+        task = self.create()
+        first = self.store.create_user("list-first", "Core-test-2026!", "会计一", "accountant", self.admin["org_id"])
+        second = self.store.create_user("list-second", "Core-test-2026!", "会计二", "accountant", self.admin["org_id"])
+        self.store.upsert_client(self.admin, task["task"]["company_name"], TAX, first["id"])
+        self.login(first)
+        draft = self.client.post("/api/enterprise/input-tasks", json={})
+        self.assertEqual(draft.status_code, 200, draft.text)
+        draft_id = draft.json()["id"]
+
+        def ids():
+            response = self.client.get("/api/enterprise/input-tasks")
+            self.assertEqual(response.status_code, 200, response.text)
+            return [row["id"] for row in response.json()]
+
+        self.assertEqual(ids(), [draft_id, task["id"]])
+        self.login(second)
+        self.assertEqual(ids(), [])
+        self.store.upsert_client(self.admin, task["task"]["company_name"], TAX, second["id"])
+        self.assertEqual(ids(), [task["id"]])
+        self.login(first)
+        self.assertEqual(ids(), [draft_id])
+        self.login(self.foreign)
+        self.assertEqual(ids(), [])
+        foreign = self.create()
+        self.assertEqual(ids(), [foreign["id"]])
+        self.login(self.admin)
+        legacy = material_batches.create(self.store, self.admin, [("legacy.xlsx", book("account_balance"))])
+        self.assertEqual(ids(), [draft_id, task["id"]])
+        self.assertEqual([row["id"] for row in material_batches.listing(self.store, self.admin, workflow="legacy")],
+                         [legacy["id"]])
+
     def test_delete_task_purges_its_materials_and_keeps_other_tasks(self):
         task = self.upload(self.create(), "account_balance")
         other = self.create()
@@ -1079,7 +1246,11 @@ class CoreAPITests(unittest.TestCase):
                 "period_start": "2026-01-01", "period_end": "2026-01-31", "unit": "元", "quote": "申报主表",
                 "rows": [{"item_label": "销售额", "item_key": "1", "declared_value": "100.0123",
                           "column_scope": "本期数", "quote": "销售额 100.0123"}]})
-            with patch("src.core_materials.chat_content", return_value=answer) as ocr:
+            def ocr_response(*args, **kwargs):
+                self.assert_write_available()
+                return answer
+
+            with patch("src.core_materials.chat_content", side_effect=ocr_response) as ocr:
                 response = self.client.post(url, data={"expected_revision": str(task["revision"]),
                     "material_type": "vat_declaration", "ocr": "1"}, files={"files": ("扫描.pdf",
                     (Path(__file__).parent / "fixtures" / "materials-scanned.pdf").read_bytes())})

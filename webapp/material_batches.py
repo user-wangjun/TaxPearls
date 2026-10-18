@@ -254,7 +254,13 @@ def authorize_client(store, actor, client_id):
         operations.bind_client(db, actor, client_id)
 
 
-def listing(store, actor, *, workflow='all'):
+def listing(store, actor, *, workflow='all', include_latest=False):
+    """Read authorized metadata and optionally the current payload in one snapshot.
+
+    Listing is not an evidence-detail view: do not append view events or load
+    original metadata/history. Decrypt only the selected current versions after
+    releasing the read transaction.
+    """
     with store.connect() as db:
         db.execute('BEGIN')
         current_actor(db, actor, ROLES)
@@ -265,8 +271,18 @@ def listing(store, actor, *, workflow='all'):
         if actor['role'] == 'accountant':
             where += ' AND ((b.client_id IS NULL AND b.owner_id=?) OR c.accountant_id=?)'
             args.extend([actor['id'], actor['id']])
-        return [dict(r) for r in db.execute('SELECT b.id,b.revision,b.created_at FROM material_batches b '
-            'LEFT JOIN clients c ON c.id=b.client_id WHERE ' + where + ' ORDER BY b.rowid DESC LIMIT 100', args)]
+        columns, join = 'b.id,b.revision,b.created_at', ''
+        if include_latest:
+            columns += ',b.org_id,r.kind,r.payload_cipher'
+            join = ' LEFT JOIN material_revisions r ON r.batch_id=b.id AND r.revision=b.revision'
+        rows = [dict(r) for r in db.execute('SELECT ' + columns + ' FROM material_batches b '
+            'LEFT JOIN clients c ON c.id=b.client_id' + join + ' WHERE ' + where + ' ORDER BY b.rowid DESC LIMIT 100', args)]
+    if include_latest:
+        for row in rows:
+            cipher, org, kind = row.pop('payload_cipher'), row.pop('org_id'), row.pop('kind')
+            row['payload'] = None if cipher is None else json.loads(
+                _open(cipher, _context(org, row['id'], 'revision:' + kind, row['revision'])))
+    return rows
 
 
 def _append(db, batch, actor, kind, payload, *, job_id=None):
