@@ -462,7 +462,8 @@ def validate(name, raw, *, member=False):
         from .legacy_workbooks import VERSION as legacy_version, read
         book = read(raw)
         try:
-            info.update(parser=legacy_version, sheets=book.nsheets, formulas='rejected')
+            info.update(parser=legacy_version, biff_version=book.biff_version, sheets=book.nsheets,
+                        formulas='rejected', compatibility_notes=book.compatibility_notes)
         finally:
             book.release_resources()
     elif extension in {'csv', 'tsv'}:
