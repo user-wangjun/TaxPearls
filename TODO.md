@@ -139,10 +139,10 @@
 - [ ] **代码提交与版本存储（待开发，FR-J02）。** 支持多次提交历史、每次判题结果版本与代码文件管理，代码正文按 05 号文档加密留存。验收：提交与判题结果一一对应；重判不覆盖历史结果。
 - [ ] **判题沙箱（教学强化级 v3 已落地，FR-J03 未验收）。** 已有：python -I + 独立临时目录 + 硬超时、网络/危险模块禁用、**审计钩子（sys.addaudithook 在解释器底层拦截 import/open/socket/子进程/ctypes，防守卫摘除绕过）**、OS 级内存（Windows Job Object / POSIX rlimit）与 CPU 限制、文件访问约束在题目工作目录内、Job Object 进程树回收、**可选受限账号执行**（TAXPEARLS_SANDBOX_USER/PASSWORD + CreateProcessWithLogonW + icacls，fail-closed；账号创建见 scripts/setup_sandbox_user.py）（webapp/code_sandbox.py）。仍非容器级安全边界；容器池/go-judge 与逃逸专项安全验收待进行，不以本地演示代替。
 - [ ] **判题引擎（待开发，FR-J04）。** 编译、逐用例运行、输出比对（浮点容差、多解判定）、部分得分及超时、运行错误、编译错误归因。验收：每分可追到具体用例结果，判题失败原因可见。
-- [ ] **判题任务队列与调度（待开发，FR-J05）。** 批量提交时的排队、判题机调度、失败重试与状态机。验收：并发提交不丢不重、状态可查；并发规模目标另行确认。
-- [ ] **判题结果接入现有评分体系（需扩展，FR-J08）。** 判题产出作为评分框架的客观事实来源，沿用评分标准配置、教师调分、评分明细与留痕。验收：调分不改判题客观记录，明细页可展开核对。
-- [ ] **代码查重（条件性扩展，FR-J06）。** 班内与跨班同题比对。验收：查重结果仅作参考提示，不自动定性抄袭。
-- [ ] **代码质量维度（条件性扩展，FR-J07）。** lint、规范、复杂度等辅助评分项，可选启用。验收：质量分与正确性分分开列示。
+- [x] **判题任务队列与调度（v1 已接入，FR-J05）。** `code_judge_task` 队列表（queued→running→done/failed 状态机、退避重试、教师手动重试置回 queued），`TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1` 时后台 worker 随应用启动消化队列，默认关（同步判题契约不变）；教师端 `GET /api/training/staff/code-judge/tasks` 队列视图 + `POST .../tasks/{id}/retry`。边界：单机 SQLite 队列（认领原子、多副本共享库可用），跨机判题池待专项。验收：并发提交不丢不重、状态可查（测试覆盖重试与耗尽转 failed）。
+- [x] **判题结果接入现有评分体系（v1 已接入，FR-J08）。** `code_score_record` 桥接表：判题客观分作为事实来源自动落记录，教师调分（`PUT /api/training/staff/code-submissions/{id}/score`）强制留痕理由并累计 adjust_log；生效分=调分值（未调=客观分），学生提交列表与教师明细均可查。验收：调分不改判题客观记录，明细可展开核对。
+- [x] **代码查重（v1 已接入，FR-J06）。** `webapp/code_plagiarism.py`：tokenize 结构归一化（去注释/空白、标识符→<ID>、字面量→<STR>/<NUM>）+ k-gram shingle Jaccard；同题每生最新提交两两比对（班内/跨班 same_class 标记），超阈值落 `code_plagiarism_flag`（按题幂等重建）。教师端 `POST .../code-problems/{id}/plagiarism-scan` + `GET .../plagiarism`。边界：结构同构可能误报、语义级查重待专项；结果仅作参考提示，不自动定性抄袭。
+- [x] **代码质量维度（v1 已接入，FR-J07）。** `webapp/code_quality.py`：AST 静态检查（语法/行长/函数命名/函数长度/分支复杂度/裸 except）确定性扣分 0~100，判题时同事务落 `code_quality_result`，与正确性分分开列示；教师端 `GET .../code-submissions/{id}/quality` 明细。边界：辅助维度不改判对错，规则集 v1 固定。
 
 ### 使用效果与教学验收
 
