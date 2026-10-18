@@ -3,6 +3,96 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   const base = "/api/enterprise/input-tasks";
   let current = null, busy = false, dirty = false, generation = 0, policyCatalog=null;
   let formOwner = user()?.id, clients=[], scopeDirty=false, attempted=false;
+  const uploadStates=new Map(),uploadViews=new Map(),waitingUploads=[];
+  let activeUpload=null,uploadRun=null,currentUpload=null,uploadsPaused=false;
+  function paintUpload(kind){
+    const view=uploadViews.get(kind);if(!view)return;
+    const state=uploadStates.get(kind),count=waitingUploads.filter(item=>item.kind===kind).reduce((n,item)=>n+item.files.length,0);
+    view.root.hidden=!state&&!count;view.root.dataset.phase=state?.phase||"waiting";
+    view.text.textContent=state?.text||"等待前一批资料处理完成。";
+    if(state?.percent===null)view.bar.removeAttribute("value");else view.bar.value=state?.percent||0;
+    view.waiting.hidden=!count;view.waiting.textContent=count?`${uploadsPaused?"已暂停，等待上传":"等待上传"} ${count} 份（尚未发送）`:"";
+    view.controls.hidden=!count;view.resume.hidden=!uploadsPaused;
+  }
+  function paintUploads(){for(const kind of uploadViews.keys())paintUpload(kind);}
+  function uploadStatus(kind,state){
+    uploadStates.set(kind,state);paintUpload(kind);
+  }
+  function taskControls(locked){
+    $("coreTaskForm").disabled=locked;
+    $("coreTaskResult").querySelectorAll("fieldset,button,input,select").forEach(n=>{
+      n.disabled=locked?!(n.coreUploadPicker&&uploadRun||n.coreUploadQueueControl):!!n.corePageDisabled;
+    });
+  }
+  function clearWaiting(kind){
+    for(let i=waitingUploads.length-1;i>=0;i--)if(waitingUploads[i].kind===kind)waitingUploads.splice(i,1)[0].finish(false);
+    if(!waitingUploads.length)uploadsPaused=false;paintUploads();
+  }
+  async function resumeUploads(){
+    if(busy||uploadRun||!waitingUploads.length)return;
+    // The failed batch may already have been saved. Refresh its revision first;
+    // resume only the files that have never been sent, not the failed batch.
+    if(await action(()=>api(base+"/"+current.id),true,true)){uploadsPaused=false;paintUploads();return drainUploads();}
+  }
+  async function drainUploads(){
+    if(uploadRun||busy||uploadsPaused||!waitingUploads.length||!enabled())return;
+    const run={owner:user()?.id,ticket:generation,id:current.id};uploadRun=run;
+    const valid=()=>uploadRun===run&&run.owner===user()?.id&&run.ticket===generation&&current?.id===run.id&&enabled();
+    try{
+      while(waitingUploads.length&&valid()&&!uploadsPaused){
+        const item=waitingUploads.shift();currentUpload=item;paintUploads();
+        const ok=await action(async()=>{
+          if(scopeDirty)await saveScope();
+          const form=new FormData();form.append("material_type",item.kind);form.append("expected_revision",current.revision);
+          form.append("mapping_mode","ai");form.append("ocr","1");item.files.forEach(file=>form.append("files",file));
+          const result=await sendUpload(base+"/"+run.id+"/files",form,item.kind,item.files.length);item.received=true;return result;
+        },true,true);
+        if(!valid())return;
+        item.finish(!!ok);currentUpload=null;
+        if(!ok)uploadsPaused=waitingUploads.length>0;
+        paintUploads();if(!ok)break;
+      }
+    }finally{if(uploadRun===run){uploadRun=null;currentUpload=null;taskControls(busy);paintUploads();}}
+  }
+  function queueUpload(kind,files){
+    if(!files.length||!current||!enabled())return;
+    if(busy&&!uploadRun){showError("正在保存任务，请稍后再添加文件。");return;}
+    if(dirty){showError("请先保存资料口径核对，再补传资料。");return;}
+    const pending=[...waitingUploads.flatMap(item=>item.files),...(currentUpload&&!currentUpload.received?currentUpload.files:[])];
+    if(files.some(file=>!file.size||file.size>10*1024*1024)){showError("单份文件须非空且不超过 10MB。");return;}
+    if((current.files||[]).length+pending.length+files.length>20){showError("已保存、正在上传和等待上传的文件合计不能超过 20 份。");return;}
+    if([...pending,...files].reduce((n,file)=>n+file.size,0)>50*1024*1024){showError("正在上传和等待上传的文件合计不能超过 50MB。");return;}
+    const result=new Promise(finish=>waitingUploads.push({kind,files,finish,received:false}));
+    paintUploads();void drainUploads();return result;
+  }
+  globalThis.addEventListener?.("beforeunload",event=>{if(currentUpload||waitingUploads.length){event.preventDefault();event.returnValue="";}});
+  function sendUpload(url,form,kind,count){
+    const owner=user()?.id,ticket=generation,valid=()=>owner===user()?.id&&ticket===generation&&enabled();
+    const update=state=>{if(valid())uploadStatus(kind,state);};
+    update({phase:"uploading",percent:0,text:`正在上传 ${count} 个文件 · 0%`});
+    return new Promise((resolve,reject)=>{
+      const request=new XMLHttpRequest();activeUpload=request;request.open("POST",url);
+      const failed=message=>{if(activeUpload===request)activeUpload=null;update({phase:"error",percent:0,text:message});reject(new Error(message));};
+      request.upload.onprogress=event=>{
+        const percent=event.lengthComputable&&event.total>0?Math.min(100,Math.floor(event.loaded/event.total*100)):null;
+        update({phase:"uploading",percent,text:`正在上传 ${count} 个文件${percent===null?"":` · ${percent}%`}`});
+      };
+      request.upload.onload=()=>update({phase:"processing",percent:null,text:"文件已传输，正在保存和解析，请稍候……"});
+      request.onload=()=>{
+        let result;try{result=JSON.parse(request.responseText);}catch{failed("未收到有效处理结果，请重新读取任务核对。");return;}
+        if(request.status<200||request.status>=300){
+          const detail=result?.detail,message=Array.isArray(detail)?detail.map(item=>item.msg||"字段校验失败").join("；"):detail;
+          failed(typeof message==="string"?message:`请求失败（${request.status}），请重新读取任务核对。`);return;
+        }
+        if(!result||typeof result.id!=="string"||!result.task||!result.processing){failed("处理结果不完整，请重新读取任务核对。");return;}
+        if(activeUpload===request)activeUpload=null;
+        update({phase:"done",percent:100,text:`${count} 个文件已上传，解析结果已返回，请核对下方资料。`});resolve(result);
+      };
+      request.onerror=()=>failed("连接中断，上传结果未确认，请重新读取任务核对后再重试。");
+      request.onabort=()=>failed("上传已中断，请重新读取任务核对。");
+      request.send(form);
+    });
+  }
   const scopeIds={company_name:"coreCompanyName",tax_no:"coreTaxNo",start_date:"coreStart",end_date:"coreEnd"};
   const rangeKind=$("coreRangeKind"),rangeMonth=$("coreRangeMonth"),rangeYear=$("coreRangeYear"),rangeQuarter=$("coreRangeQuarter");
   const rangeTrigger=$("coreDateRange"),calendar=$("coreRangeCalendar"),calendarMonth=$("coreCalendarMonth");
@@ -110,18 +200,20 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   const json = value => ({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
   const button = (text, fn) => {const n=el("button","btn re",text);n.type="button";n.onclick=fn;return n;};
   function clearScope(){for(const id of Object.values(scopeIds))$(id).value="";rangeKind.value="custom";writePeriodInputs("");syncRange();$("coreClient").value="";scopeDirty=attempted=false;displayErrors({});}
-  function reset() {generation++;current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");displayErrors({});clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
-  async function action(fn, saving=false) {
+  function reset() {generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");displayErrors({});clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
+  async function action(fn, saving=false, uploading=false) {
     if(busy||!enabled())return;
+    if(waitingUploads.length&&!uploading){showError("还有等待上传的文件，请先继续上传或清除待上传文件。");return;}
     if((dirty||scopeDirty&&current)&&!saving){showError("存在未保存的资料口径核对，请先保存后再补传、创建或读取任务。");return;}
-    busy=true;$("coreTaskForm").disabled=true;$("coreTaskResult").querySelectorAll("button,input,select").forEach(n=>n.disabled=true);
+    busy=true;taskControls(true);
     const owner=user()?.id, ticket=generation, previousId=current?.id;
-    try {const result=await fn();if(owner===user()?.id&&ticket===generation&&enabled()){if(previousId!==result.id)attempted=false;current=result;dirty=false;scopeWrite();render();await history();return true;}}
+    try {const result=await fn();if(owner===user()?.id&&ticket===generation&&enabled()){if(previousId!==result.id){attempted=false;uploadStates.clear();}current=result;dirty=false;scopeWrite();render();taskControls(true);await history();return true;}}
     catch(error){if(owner===user()?.id&&ticket===generation)showError(error.message);}
-    finally{if(ticket===generation){busy=false;$("coreTaskForm").disabled=false;$("coreTaskResult").querySelectorAll("fieldset,button,input,select").forEach(n=>n.disabled=!!n.corePageDisabled);}}
+    finally{if(ticket===generation){busy=false;taskControls(false);}}
   }
   async function removeCurrent(){
     if(busy||!current||user()?.role!=="org_admin")return;
+    if(waitingUploads.length){showError("请先处理或清除等待上传的文件，再删除任务。");return;}
     const owner=user()?.id,ticket=generation,id=current.id,revision=current.revision;
     const approved=await confirmDelete(current.task.company_name||"待识别企业");
     if(!approved||busy||ticket!==generation||owner!==user()?.id||user()?.role!=="org_admin"||current?.id!==id)return;
@@ -177,6 +269,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     pager.append(description);if(pages>1)pager.append(previous,next);wrap.append(pager);draw();return wrap;
   }
   function render() {
+    uploadViews.clear();
     const root=$("coreTaskResult");root.replaceChildren();if(!current)return;
     const task=current.task,p=current.processing,prepared=new Map(p.records.map(r=>[r.id,r])),parsedCount=current.documents.reduce((sum,d)=>sum+d.records.length,0),scopePending=Object.keys(current.scope_errors||{}).length>0,recordsPending=scopePending&&p.records.length===0;
     const rangeLabels={month:"按月",quarter:"按季度",year:"按年度",custom:"自定义起止日"};
@@ -202,8 +295,14 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       const card=el("section","material-card");card.append(el("h4","",name+"（必传）"));
       card.append(el("p","muted",kind==="account_balance"?"Excel / PDF 科目汇总余额；不是逐笔明细账。":kind==="vat_declaration"?"Excel / PDF 主表及适用附表，可多文件合并期间。":"Excel / PDF 发票 / 数电 XML，须覆盖进销项；按开具日期统计。"));
       const pick=el("input");pick.type="file";pick.multiple=true;pick.accept=kind==="invoice_detail"?".xlsx,.xls,.xml,.pdf":".xlsx,.xls,.pdf";pick.setAttribute("aria-label",name+"上传");
-      pick.onchange=()=>{const files=Array.from(pick.files);if(!files.length)return;if(dirty){showError("请先保存资料口径核对，再补传资料。");return;}return action(async()=>{if(scopeDirty)await saveScope();const form=new FormData();form.append("material_type",kind);form.append("expected_revision",current.revision);form.append("mapping_mode","ai");form.append("ocr","1");files.forEach(f=>form.append("files",f));return api(base+"/"+current.id+"/files",{method:"POST",body:form});},true);};
-      pick.disabled=busy;card.append(pick,el("p","muted",`已保存 ${current.documents.filter(d=>d.material_type===kind).length} 份。`));slots.append(card);
+      pick.coreUploadPicker=true;pick.onchange=()=>{const files=Array.from(pick.files);pick.value="";return queueUpload(kind,files);};
+      const status=el("div","core-upload-status"),bar=el("progress"),statusText=el("p");status.hidden=true;status.dataset.phase="idle";
+      bar.max=100;bar.value=0;bar.setAttribute("aria-label",name+"文件传输进度");statusText.setAttribute("role","status");statusText.setAttribute("aria-live","polite");
+      const waiting=el("p","core-upload-waiting"),controls=el("div","core-upload-queue-actions"),resume=button("读取任务并继续上传",resumeUploads),remove=button("清除待上传",()=>clearWaiting(kind));
+      waiting.setAttribute("role","status");resume.coreUploadQueueControl=remove.coreUploadQueueControl=true;controls.append(resume,remove);
+      status.append(bar,statusText,waiting,controls);uploadViews.set(kind,{root:status,bar,text:statusText,waiting,controls,resume});paintUpload(kind);
+      const upload=el("div","core-upload-control");pick.disabled=busy&&!uploadRun;upload.append(pick,status);
+      card.append(upload,el("p","muted",`已保存 ${current.documents.filter(d=>d.material_type===kind).length} 份。`));slots.append(card);
     }
     root.append(slots);
     const excluded=(current.files||[]).filter(file=>current.source_options[file.id]?.excluded&&!file.deleted_at);
@@ -263,6 +362,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     for(const r of p.records.slice(0,100)){const card=el("section","material-card");card.append(el("p","",`${kinds[r.material_type]} · ${r.source_position} · ${r.in_scope?"检查区间内":"区间外保留"}${r.duplicate_of?" · 重复来源":""}`));const raw=el("pre","",JSON.stringify(r,null,2));raw.style.whiteSpace="pre-wrap";raw.style.overflowWrap="anywhere";card.append(raw);evidence.append(card);}if(p.records.length>100)evidence.append(el("p","muted","页面预览前100条；下载整理结果包含全部记录。"));root.append(evidence);
     const exportButton=button("下载标准数据 JSON",async()=>{
       if(busy||!enabled())return;
+      if(waitingUploads.length){showError("还有等待上传的文件，请先继续上传或清除后再下载。");return;}
       if(dirty||scopeDirty){showError("请先保存资料与检查范围，再下载标准数据。");return;}
       const owner=user()?.id,ticket=generation,id=current.id,revision=current.revision;
       busy=true;exportButton.disabled=true;
