@@ -412,6 +412,52 @@ class CoreReportTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return task["id"], response.json()
 
+    def test_report_uses_readable_policy_citations_and_retains_frozen_ids(self):
+        from jinja2 import Environment, FileSystemLoader, select_autoescape
+        from webapp import core_reports
+
+        tid, result = self.checked()
+        base = '/api/enterprise/input-tasks/' + tid + '/reports'
+        self.assertEqual(self.client.post(base, json={'expected_revision': result['revision']}).status_code, 200)
+        report = self.client.get(base + '/1?format=json').json()
+        original = deepcopy(report)
+        slot = report['checks']['R01']
+        cid = 'TAX-COLLECTION-LAW-2015:organized:c47f560c3d8ae679e90c:第二十五条'
+        evidence = deepcopy(slot['bundle']['policy_evidence'][0])
+        evidence.update(clause_id=cid, title='合成测试法规', required=True, document_no='合成文号〔2026〕1号')
+        slot['bundle']['policy_evidence'] = [evidence]
+        slot['bundle']['policy_leads'] = []
+        slot['bundle']['check']['disposition'] = 'condition_met'
+        slot['bundle']['risk_assessment']['status'] = 'RISK_CANDIDATE'
+        slot['bundle']['conditions'][0]['source_clause_id'] = cid
+        slot['bundle']['exceptions'] = [{'name': '合成例外', 'source_clause_ids': [cid]}]
+        slot['bundle']['relationships'] = []
+        slot['bundle']['retrieval_trace']['excluded'] = [{'clause_id': cid, 'reasons': ['测试过滤']}]
+        slot['ai'] = {'validated': True, 'assessments': [{'text': '合成说明', 'clause_ids': [cid]}]}
+        before = deepcopy(report)
+        env = Environment(loader=FileSystemLoader(ROOT / 'templates'), autoescape=select_autoescape(['html']))
+        env.filters.update(report_evidence=core_reports.report_evidence, report_gaps=core_reports.report_gaps,
+                           source_location=core_reports.source_location, clause_reference=core_reports.clause_reference,
+                           check_result=core_reports.check_result, report_result=core_reports.report_result,
+                           material_reference=core_reports.material_reference, metric_label=core_reports.metric_label)
+        html = env.get_template('core_check_report.html').render(report=report)
+        self.assertIn('合成测试法规 · 第二十五条', html)
+        self.assertIn('合成文号〔2026〕1号', html)
+        self.assertNotIn(cid, html)
+        self.assertNotIn(':organized:', html)
+        self.assertNotIn(evidence['text'], html)
+        self.assertNotIn(evidence['file_sha256'], html)
+        self.assertIn('处理建议', html)
+        self.assertIn('材料来源与核对数据', html)
+        self.assertEqual(report, before)
+        self.assertEqual(self.client.get(base + '/1?format=json').json(), original)
+        self.assertIn('待核实', core_reports.clause_reference('missing', slot))
+        evidence.update(clause_id='opaque', text='第一条 合成原文')
+        slot['bundle']['policy_evidence'] = [evidence]
+        self.assertEqual(core_reports.clause_reference('opaque', slot), '合成测试法规 · 第一条')
+        evidence.update(text='<script>合成文本</script>', clause_label='<b>合成条款</b>')
+        self.assertIn('&lt;b&gt;合成条款&lt;/b&gt;', env.from_string('{{ cid|clause_reference(slot) }}').render(cid='opaque', slot=slot))
+
     def test_scope_changes_invalidate_results_and_recheck_uses_current_period(self):
         tid, checked = self.checked()
         base = "/api/enterprise/input-tasks/" + tid
@@ -455,6 +501,10 @@ class CoreReportTests(unittest.TestCase):
         self.assertIn("纯合成工程验收样本", html.text)
         data = self.client.get(base + "/1?format=json").json()
         self.assertEqual(data["summary"]["not_met"], 1)
+        self.assertEqual(data['result']['status'], 'incomplete')
+        self.assertEqual(data['result']['label'], '暂无法完成检查')
+        self.assertIn(data['result']['label'], html.text)
+        self.assertIn('合成.xlsx', html.text)
         self.assertFalse(data["formal_finding"])
         self.assertEqual(data["checks"]["R01"]["bundle"]["facts"][0]["value"], "100.0123")
         def pdf(html, path, **kwargs):
@@ -566,6 +616,69 @@ class CoreReportTests(unittest.TestCase):
         self.assertEqual(self.client.post(base + "/recheck", json={"expected_revision": updated["revision"]}).status_code, 409)
         self.login("kg-other")
         self.assertEqual(self.client.post(base + "/recheck", json={"expected_revision": checked.json()["revision"]}).status_code, 404)
+
+
+class ReportPresentationTests(unittest.TestCase):
+    def report(self):
+        return {'checks': {'R01': {'bundle': {
+            'check': {'disposition': 'condition_not_met'}, 'bundle_status': 'ready', 'gaps': [],
+            'fact_assessment': {'status': 'FACT_CONFIRMED', 'amount': None},
+            'risk_assessment': {'status': 'NO_RISK_SIGNAL'}}}},
+            'processing': {'status': 'ready_for_analysis', 'issues': []}}
+
+    def test_pass_requires_complete_materials_checks_and_policy_review(self):
+        from webapp.core_reports import report_result
+        report = self.report()
+        self.assertEqual(report_result(report)['status'], 'passed')
+        for change in ('materials', 'policy', 'fact', 'ai', 'stale', 'zero_with_gaps', 'no_checks', 'excluded'):
+            with self.subTest(change=change):
+                current = deepcopy(report)
+                slot = current['checks']['R01']
+                if change == 'materials':
+                    current['processing']['status'] = 'needs_completion'
+                elif change == 'policy':
+                    current['policy_assessment'] = {'consistency': {'status': 'needs_review'}}
+                elif change == 'fact':
+                    slot['bundle']['fact_assessment']['status'] = 'FACT_INCOMPLETE'
+                elif change == 'ai':
+                    slot['ai'] = {'validated': True, 'assessments': [{'type': 'insufficient_evidence'}]}
+                elif change == 'stale':
+                    slot['stale'] = True
+                elif change == 'zero_with_gaps':
+                    slot['bundle']['fact_assessment']['amount'] = '0'
+                    slot['bundle']['gaps'] = [{'code': 'policy_review'}]
+                    slot['bundle']['bundle_status'] = 'needs_review'
+                elif change == 'no_checks':
+                    current['checks'] = {}
+                elif change == 'excluded':
+                    slot['bundle']['check']['disposition'] = 'excluded'
+                    slot['bundle']['risk_assessment']['status'] = 'NOT_APPLICABLE'
+                self.assertEqual(report_result(current)['status'], 'incomplete')
+
+    def test_confirmed_difference_remains_visible_with_pending_risk_and_other_gaps(self):
+        from webapp.core_reports import check_result, report_result
+        report = self.report()
+        slot = report['checks']['R01']
+        slot['bundle']['fact_assessment']['amount'] = '15000.00'
+        slot['bundle']['risk_assessment']['status'] = 'NEEDS_REVIEW'
+        slot['bundle']['bundle_status'] = 'needs_review'
+        slot['bundle']['gaps'] = [{'code': 'policy_review'}]
+        report['checks']['R02'] = deepcopy(self.report()['checks']['R01'])
+        report['checks']['R02']['bundle']['fact_assessment']['status'] = 'FACT_INCOMPLETE'
+        before = deepcopy(report)
+        self.assertEqual(check_result(slot)['label'], '已确认数据差异，问题性质待核实')
+        result = report_result(report)
+        self.assertEqual((result['status'], result['issues'], result['pending']), ('issues_found', 1, 2))
+        self.assertEqual(report, before)
+
+    def test_material_references_use_names_and_positions_without_inventing_missing_sources(self):
+        from webapp.core_reports import material_reference
+        report = {'sources': [{'record_id': 'private-id', 'file_name': '申报表.xlsx', 'source_position': '主表!C6'}],
+                  'source_files': [{'file_id': 'proof-id', 'name': '零发生额证明.pdf'}]}
+        self.assertEqual(material_reference(['private-id'], report), '申报表.xlsx · 主表!C6')
+        self.assertEqual(material_reference(['file:proof-id'], report), '零发生额证明.pdf')
+        self.assertEqual(material_reference(['unknown-id'], report), '材料来源待核对')
+        self.assertEqual(material_reference([], report), '缺少材料来源')
 
 
 if __name__ == "__main__":
