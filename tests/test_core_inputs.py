@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from src import core_materials, core_mapping
 from src.input_errors import InputError
@@ -79,20 +79,31 @@ def mapper():
     return db, core_mapping.Mapper(db, "org", "task", "sha")
 
 
-def pdf_table():
+def pdf_table(kind="vat_declaration"):
     """Constructed PDF fixture with a ruled table and fixed ASCII field names."""
     contents = ["0.5 w"]
-    for x in [40, 200, 280, 430]:
+    columns = {"vat_declaration":[40, 200, 280, 430], "account_balance":[10, 140, 230, 320, 410, 500],
+               "invoice_detail":[10,180,280,400,490]}[kind]
+    for x in columns:
         contents.append(f"{x} 600 m {x} 690 l S")
     for y in [600, 630, 660, 690]:
-        contents.append(f"40 {y} m 430 {y} l S")
-    for y, cols in [
+        contents.append(f"{columns[0]} {y} m {columns[-1]} {y} l S")
+    rows = [
         (675, ["item_label", "item_key", "declared_value"]),
         (645, ["Sales", "1", "100.0123"]),
         (615, ["Tax", "11", "13.0016"]),
-    ]:
-        for x, value in zip([45, 205, 285], cols):
-            contents.append(f"BT /F1 10 Tf {x} {y} Td ({value}) Tj ET")
+    ] if kind == "vat_declaration" else [
+        (675, ["account_name", "opening_balance", "current_debit", "current_credit", "closing_balance"]),
+        (645, ["Cash", "10", "100", "20", "90"]),
+        (615, ["Bank", "5", "20", "10", "15"]),
+    ] if kind == "account_balance" else [
+        (675, ["invoice_no", "issue_date", "amount_excluding_tax", "tax_amount"]),
+        (645, ["12345678901234567890", "2026-01-15", "100", "13"]),
+        (615, ["22345678901234567890", "2026-01-16", "200", "26"]),
+    ]
+    for y, cols in rows:
+        for x, value in zip([n+5 for n in columns], cols):
+            contents.append(f"BT /F1 8 Tf {x} {y} Td ({value}) Tj ET")
     content = "\n".join(contents).encode()
     objects = [
         b"<< /Type /Catalog /Pages 2 0 R >>",
@@ -112,6 +123,67 @@ def pdf_table():
         output.extend(f"{n:010} 00000 n \n".encode())
     output.extend(f"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode())
     return bytes(output)
+
+
+def invoice_pdf(*, number="12345678901234567890", total="113.00", other_number=None):
+    """Chinese ticket with side-by-side parties and item amounts unlike totals."""
+    lines = [(40, 710, "电子发票（普通发票）"), (40, 680, "发票号码："+number),
+             (330, 680, "开票日期：2026年01月15日"),
+             (40, 640, "购买方信息"), (330, 640, "销售方信息"),
+             (40, 620, "名称：购方企业"), (330, 620, "名称：销方企业"),
+             (40, 600, "统一社会信用代码："+OTHER), (330, 600, "统一社会信用代码："+TAX),
+             (40, 550, "货物名称 金额 税额"), (40, 530, "商品甲 60.00 7.80"), (40, 510, "商品乙 40.00 5.20"),
+             (40, 470, "合 计 ￥100.00 ￥13.00"), (40, 440, "价税合计（小写）￥"+total)]
+    if other_number:
+        lines.append((40, 400, "发票号码："+other_number))
+    return chinese_pdf(lines)
+
+
+def chinese_pdf(lines, drawing=""):
+    content = (drawing + "\n" + "\n".join(f"BT /F1 10 Tf {x} {y} Td <{value.encode('utf-16-be').hex()}> Tj ET" for x,y,value in lines)).encode()
+    objects = [b"<< /Type /Catalog /Pages 2 0 R >>", b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+               b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 640 750] /Resources << /Font << /F1 4 0 R >> >> /Contents 6 0 R >>",
+               b"<< /Type /Font /Subtype /Type0 /BaseFont /STSong-Light /Encoding /UniGB-UCS2-H /DescendantFonts [5 0 R] >>",
+               b"<< /Type /Font /Subtype /CIDFontType0 /BaseFont /STSong-Light /FontDescriptor 7 0 R /CIDSystemInfo << /Registry (Adobe) /Ordering (GB1) /Supplement 4 >> >>",
+               f"<< /Length {len(content)} >>\nstream\n".encode()+content+b"\nendstream",
+               b"<< /Type /FontDescriptor /FontName /STSong-Light /Flags 6 /FontBBox [-250 -250 1200 1000] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 880 /StemV 80 >>"]
+    output=bytearray(b"%PDF-1.4\n");offsets=[0]
+    for i,obj in enumerate(objects,1):
+        offsets.append(len(output));output.extend(f"{i} 0 obj\n".encode()+obj+b"\nendobj\n")
+    xref=len(output);output.extend(f"xref\n0 {len(objects)+1}\n0000000000 65535 f \n".encode())
+    for offset in offsets[1:]:
+        output.extend(f"{offset:010} 00000 n \n".encode())
+    output.extend(f"trailer\n<< /Size {len(objects)+1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode())
+    return bytes(output)
+
+
+def grouped_business_pdf(kind, *, unknown=False):
+    """Actual PDF cells with wrapped subheaders, as on native printed forms."""
+    title = "科目余额表" if kind == "account_balance" else "增值税纳税申报表主表"
+    lines = [(40,710,title), (40,690,"纳税人识别号："+TAX), (40,670,"金额单位：元"),
+             (40,650,("会计期间" if kind=="account_balance" else "税款所属期")+"：2026-01-01 至 2026-01-31")]
+    columns = [40,150,220,290,360,430,500,570] if kind=="account_balance" else [40,180,290,400]
+    drawing = "0.5 w\n"+"\n".join(f"{x} 480 m {x} 630 l S" for x in columns)
+    drawing += "\n"+"\n".join(f"40 {y} m {columns[-1]} {y} l S" for y in [480,530,580,630])
+    if kind=="account_balance":
+        parents=["科目名称","期初余额","","本期发生额","","期末余额",""]
+        children=["","借\n方","贷\n方","借\n方","贷\n方","借\n方","贷\n方"]
+        values=["现金","10","0","100","20","90","0"]
+    else:
+        parents=["项目","一般项目",""]
+        children=["","本期\n数","本年\n累计数"]
+        values=["应税销售额","100","900"]
+    if unknown:
+        if kind=="account_balance":
+            parents[3]="发生额来源"
+        else:
+            children=["","申报\n值","累计\n值"]
+    for x,parent,child,value in zip(columns,parents,children,values):
+        if parent:lines.append((x+5,610,parent))
+        for offset,part in enumerate(child.split("\n")):
+            if part:lines.append((x+5,565-offset*13,part))
+        lines.append((x+5,510,value))
+    return chinese_pdf(lines,drawing)
 
 
 def balance_xls():
@@ -213,6 +285,69 @@ class CoreParserTests(unittest.TestCase):
         self.assertIn("company_conflict", {i["code"] for i in result["issues"]})
         self.assertNotIn("invoice_company_conflict", {i["code"] for i in result["issues"]})
         self.assertFalse(result["records"][-1]["in_scope"])
+
+    def test_range_modes_require_complete_calendar_intervals(self):
+        base = {"company_name": "企业", "tax_no": TAX}
+        self.assertEqual(core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-01-31", "range_kind": "month"}), {})
+        self.assertIn("range_kind", core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-02-28", "range_kind": "month"}))
+        self.assertEqual(core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-03-31", "range_kind": "quarter"}), {})
+        self.assertIn("range_kind", core_materials.scope_errors(
+            {**base, "start_date": "2026-02-01", "end_date": "2026-04-30", "range_kind": "quarter"}))
+        self.assertEqual(core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-12-31", "range_kind": "year"}), {})
+        self.assertIn("range_kind", core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-01-31", "range_kind": "year"}))
+        self.assertEqual(core_materials.scope_errors(
+            {**base, "start_date": "2026-01-15", "end_date": "2026-02-20", "range_kind": "custom"}), {})
+        self.assertIn("range_kind", core_materials.scope_errors(
+            {**base, "start_date": "2026-01-01", "end_date": "2026-01-31", "range_kind": "week"}))
+
+    def test_mixed_invoice_file_blocks_and_keeps_out_of_scope_record(self):
+        docs = self.complete()
+        invoice = docs[2]
+        original_id = invoice["records"][0]["id"]
+        outside = deepcopy(invoice["records"][0])
+        outside.update(id="outside-record", invoice_no="OUTSIDE-2026-02",
+                       issue_date="2026-02-15", source_position="Sheet1!A9")
+        invoice["records"].append(outside)
+        result = core_materials.prepare(self.task, docs)
+        codes = {i["code"] for i in result["issues"]}
+        self.assertIn("record_outside_scope", codes)
+        self.assertIn("mixed_scope_file", codes)
+        statuses = {r["id"]: r["scope_status"] for r in result["records"]
+                    if r["material_type"] == "invoice_detail"}
+        self.assertEqual(statuses[original_id], "in_scope")
+        self.assertEqual(statuses["outside-record"], "outside_scope")
+        kept = next(r for r in result["records"] if r["id"] == "outside-record")
+        self.assertEqual(kept["source_position"], "Sheet1!A9")
+        self.assertEqual(kept["date_basis"], "issue_date")
+        self.assertFalse(kept["in_scope"])
+        self.assertNotIn("outside-record", {rid for group in result["invoice_summaries"]
+                                            for rid in group["source_record_ids"]})
+
+    def test_unknown_invoice_date_blocks_and_is_not_in_scope(self):
+        docs = self.complete()
+        record = docs[2]["records"][0]
+        record["issue_date"] = None
+        result = core_materials.prepare(self.task, docs)
+        self.assertIn("record_date_unknown", {i["code"] for i in result["issues"]})
+        kept = next(r for r in result["records"] if r["id"] == record["id"])
+        self.assertEqual(kept["scope_status"], "unknown_date")
+        self.assertEqual(kept["date_basis"], "issue_date")
+        self.assertFalse(kept["in_scope"])
+
+    def test_user_confirmed_period_is_labelled_separately(self):
+        docs = self.complete()
+        expected = {}
+        for record in docs[0]["records"]:
+            record["confirmed_metadata"] = {"period_start": "2026-01-01", "period_end": "2026-01-31"}
+            expected[record["id"]] = "user_confirmed"
+        result = core_materials.prepare(self.task, docs)
+        labels = {r["id"]: r["date_source"] for r in result["records"] if r["id"] in expected}
+        self.assertEqual(labels, expected)
 
     def test_months_merge_quarter_and_gap_remains(self):
         self.task["end_date"] = "2026-03-31"
@@ -413,6 +548,113 @@ class CoreParserTests(unittest.TestCase):
         self.assertFalse(doc["records"])
         self.assertIn("ocr_failed", {i["code"] for i in doc["issues"]})
 
+    def test_pdf_invoice_ticket_totals_parties_and_unknown_statuses(self):
+        with patch("src.core_materials.chat_content") as model:
+            doc = core_materials.parse(invoice_pdf(), "电子发票.pdf", "invoice_detail", "ticket", self.mapper, ocr=True)
+            model.assert_not_called()
+        self.assertEqual(len(doc["records"]), 1, doc)
+        record = doc["records"][0]
+        self.assertEqual(record["invoice_no"], "12345678901234567890")
+        self.assertEqual(record["issue_date"], "2026-01-15")
+        self.assertEqual((record["seller_tax_no"], record["buyer_tax_no"]), (TAX, OTHER))
+        self.assertEqual((record["amount_excluding_tax"], record["tax_amount"], record["amount_including_tax"]), ("100.00", "13.00", "113.00"))
+        self.assertIsNone(record["red_letter_status"])
+        self.assertIsNone(record["void_status"])
+        self.assertTrue(record["requires_source_review"])
+        self.assertIn("PDF第1页", record["field_sources"]["invoice_no"]["position"])
+        self.assertIn("合计", record["field_sources"]["tax_amount"]["quote"])
+        self.assertEqual(doc["parts"][0]["tax_nos"], [])
+        self.assertIsNone(doc["parts"][0]["period"])
+        self.assertIn("invoice_status_missing", {i["code"] for i in doc["issues"]})
+        checked = core_materials.prepare(self.task, [doc])
+        self.assertEqual(checked["records"][0]["direction"], "output")
+        self.assertIn("invoice_coverage_gap", {i["code"] for i in checked["issues"]})
+
+    def test_pdf_invoice_conflicting_totals_and_multiple_tickets_block(self):
+        doc = core_materials.parse(invoice_pdf(total="114.00"), "票.pdf", "invoice_detail", "bad", self.mapper)
+        self.assertIn("invoice_total_conflict", {i["code"] for i in doc["issues"]})
+        doc = core_materials.parse(invoice_pdf(other_number="22345678901234567890"), "票.pdf", "invoice_detail", "multi", self.mapper)
+        self.assertFalse(doc["records"])
+        self.assertIn("pdf_ambiguous", {i["code"] for i in doc["issues"]})
+
+    def test_multipage_invoice_sources_duplicate_once_and_pdf_listing_status_gap(self):
+        import pypdfium2
+        output=BytesIO()
+        with pypdfium2.PdfDocument.new() as merged, pypdfium2.PdfDocument(invoice_pdf()) as ticket:
+            merged.import_pages(ticket)
+            merged.import_pages(ticket)
+            merged.save(output)
+        doc=core_materials.parse(output.getvalue(),"两页.pdf","invoice_detail","multi",self.mapper)
+        self.assertEqual(len(doc["records"]),2)
+        self.assertIn("PDF第2页",doc["records"][1]["source_position"])
+        result=core_materials.prepare(self.task,[doc])
+        self.assertIn("duplicate_invoice",{i["code"] for i in result["notices"]})
+        self.assertEqual(result["invoice_summaries"][0]["count"],1)
+        doc=core_materials.parse(pdf_table("invoice_detail"),"发票清单.pdf","invoice_detail","grid",self.mapper)
+        self.assertEqual(len(doc["records"]),2,doc)
+        self.assertNotIn("record_fields",{i["code"] for i in doc["issues"]})
+        self.assertNotIn("missing_columns",{i["code"] for i in doc["issues"]})
+        self.assertIn("invoice_status_missing",{i["code"] for i in doc["issues"]})
+
+    def test_balance_pdf_table_and_scanned_business_candidates(self):
+        doc = core_materials.parse(pdf_table("account_balance"), "余额.pdf", "account_balance", "balance", self.mapper)
+        self.assertEqual(len(doc["records"]), 2, doc)
+        self.assertEqual(doc["records"][0]["closing_balance"], "90")
+        raw = (Path(__file__).parent / "fixtures" / "materials-scanned.pdf").read_bytes()
+        for kind, row in [("account_balance", {"account_name":"现金", "opening_balance":"10", "current_debit":"100", "current_credit":"20", "closing_balance":"90"}),
+                          ("invoice_detail", {"invoice_no":"12345678901234567890", "issue_date":"2026-01-15", "seller_tax_no":TAX,"buyer_tax_no":OTHER,"amount_excluding_tax":"100", "tax_amount":"13"})]:
+            answer={"unit":"元", "rows":[{"fields":row,"quotes":{key:value for key,value in row.items()}}]}
+            with self.subTest(kind=kind), patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED":"1", "TAXPEARLS_AI_API_KEY":"synthetic"}), patch("src.core_materials.chat_content",return_value=json.dumps(answer)):
+                doc=core_materials.parse(raw,"扫描.pdf",kind,"scan-"+kind,self.mapper,ocr=True)
+            self.assertEqual(len(doc["records"]),1,doc)
+            self.assertTrue(doc["records"][0]["requires_source_review"])
+            self.assertIn("ocr_review",{i["code"] for i in doc["issues"]})
+        answer["rows"][0]["quotes"]["tax_amount"]="其他金额 99"
+        with patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED":"1", "TAXPEARLS_AI_API_KEY":"synthetic"}), patch("src.core_materials.chat_content",return_value=json.dumps(answer)):
+            doc=core_materials.parse(raw,"扫描.pdf","invoice_detail","bad",self.mapper,ocr=True)
+        self.assertFalse(doc["records"])
+        self.assertIn("ocr_failed",{i["code"] for i in doc["issues"]})
+
+    def test_other_two_pdf_uploads_preserve_wrapped_group_headers(self):
+        for kind in ["account_balance", "vat_declaration"]:
+            with self.subTest(kind=kind), patch("src.core_materials.chat_content") as model:
+                doc=core_materials.parse(grouped_business_pdf(kind),kind+".pdf",kind,kind,self.mapper,ocr=True)
+                model.assert_not_called()
+                self.assertEqual(doc["issues"],[],doc)
+                if kind=="account_balance":
+                    self.assertEqual(len(doc["records"]),1)
+                    self.assertEqual(doc["records"][0]["opening_balance"],{"debit":"10","credit":"0"})
+                    self.assertEqual(doc["records"][0]["closing_balance"],{"debit":"90","credit":"0"})
+                else:
+                    self.assertEqual({r["column_scope"]:r["declared_value"] for r in doc["records"]},
+                                     {"一般项目本期数":"100","一般项目本年累计数":"900"})
+
+    def test_other_two_partial_pdf_tables_use_ocr_and_keep_gaps_when_unavailable(self):
+        balance={"account_name":"现金","opening_balance":"10","current_debit":"100","current_credit":"20","closing_balance":"90"}
+        for kind in ["account_balance", "vat_declaration"]:
+            raw=grouped_business_pdf(kind,unknown=True)
+            answer={"tax_no":TAX,"period_start":"2026-01-01","period_end":"2026-01-31","unit":"元","quote":"来源表头"}
+            if kind=="account_balance":
+                answer["rows"]=[{"fields":balance,"quotes":balance}]
+                field="current_debit"
+            else:
+                answer.update(form_name="增值税纳税申报表主表",form_type="main",rows=[{"item_label":"应税销售额","declared_value":"100","column_scope":"一般项目本期数","quote":"应税销售额 100"}])
+                field="declared_value"
+            with self.subTest(kind=kind), patch.dict(os.environ,{"TAXPEARLS_AI_ENABLED":"1","TAXPEARLS_AI_API_KEY":"synthetic"}),patch("src.core_materials.chat_content",return_value=json.dumps(answer)) as model:
+                doc=core_materials.parse(raw,"非标准.pdf",kind,"partial-"+kind,self.mapper,ocr=True)
+                self.assertEqual(model.call_count,1)
+                self.assertTrue(doc["ocr_candidate"],doc)
+                self.assertEqual(doc["records"][0][field],"100")
+                self.assertEqual({i["code"] for i in doc["issues"]},{"ocr_review"})
+                self.assertTrue(doc["records"][0]["requires_source_review"])
+            with patch.dict(os.environ,{"TAXPEARLS_AI_ENABLED":"0"}),patch("src.core_materials.chat_content") as model:
+                doc=core_materials.parse(raw,"非标准.pdf",kind,"no-model-"+kind,self.mapper,ocr=True)
+                model.assert_not_called()
+                self.assertNotIn("ocr_candidate",doc)
+                self.assertTrue(doc["records"])
+                self.assertIsNone(doc["records"][0].get(field))
+                self.assertTrue({"missing_columns","ocr_unavailable"}<={i["code"] for i in doc["issues"]})
+
 
 class MappingTests(unittest.TestCase):
     def setUp(self):
@@ -478,6 +720,246 @@ class MappingTests(unittest.TestCase):
 
 
 class CoreAPITests(unittest.TestCase):
+    def assert_write_available(self):
+        writer = sqlite3.connect(self.store.path, timeout=0.05)
+        try:
+            writer.execute("BEGIN IMMEDIATE")
+        finally:
+            writer.rollback()
+            writer.close()
+
+    def test_file_parser_does_not_hold_database_write_lock(self):
+        task = self.create()
+        parse = core_materials.parse
+
+        def parse_without_lock(*args, **kwargs):
+            self.assert_write_available()
+            return parse(*args, **kwargs)
+
+        with patch("src.core_materials.parse", side_effect=parse_without_lock) as parser:
+            self.upload(task, "account_balance")
+        parser.assert_called_once()
+
+    def test_mapping_call_does_not_hold_write_lock_and_stale_result_cannot_save(self):
+        for change in (None, "revision", "permission"):
+            with self.subTest(change=change):
+                task = self.create()
+
+                def mapping_response(*args, **kwargs):
+                    self.assert_write_available()
+                    with self.store.connect() as db:
+                        if change == "revision":
+                            batch = material_batches._authorize(db, self.admin, task["id"])
+                            version = db.execute("SELECT kind,payload_cipher FROM material_revisions WHERE batch_id=? AND revision=?",
+                                                 (task["id"], batch["revision"])).fetchone()
+                            payload = json.loads(material_batches._open(version["payload_cipher"],
+                                material_batches._context(self.admin["org_id"], task["id"], "revision:" + version["kind"], batch["revision"])))
+                            material_batches._append(db, batch, self.admin, "edit", payload)
+                        elif change == "permission":
+                            db.execute("UPDATE users SET active=0 WHERE id=?", (self.admin["id"],))
+                    return json.dumps({"mappings": [{"source_column": 2, "target_field": "declared_value",
+                                                     "status": "mapped", "explanation": "column context"}]})
+
+                try:
+                    with (patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED": "1", "TAXPEARLS_AI_API_KEY": "synthetic"}),
+                          patch("src.core_mapping.chat_content", side_effect=mapping_response) as call):
+                        response = self.client.post("/api/enterprise/input-tasks/" + task["id"] + "/files",
+                            data={"expected_revision": str(task["revision"]), "material_type": "vat_declaration", "mapping_mode": "ai"},
+                            files={"files": ("申报.xlsx", book("vat_declaration", alias="本期申报值-" + str(change)))})
+                    call.assert_called_once()
+                    self.assertEqual(response.status_code, {None: 200, "revision": 409, "permission": 403}[change], response.text)
+                    with self.store.connect() as db:
+                        count = db.execute("SELECT COUNT(*) FROM core_mapping_observations WHERE task_id=?", (task["id"],)).fetchone()[0]
+                    self.assertEqual(count, 1 if change is None else 0)
+                finally:
+                    with self.store.connect() as db:
+                        db.execute("UPDATE users SET active=1 WHERE id=?", (self.admin["id"],))
+
+    def test_mapping_promotion_and_its_audit_event_commit_or_rollback_together(self):
+        event = material_batches._event
+        for fail in (False, True):
+            with self.subTest(fail=fail):
+                task = self.create()
+                alias = "本期申报值-" + str(fail)
+                with self.store.connect() as db:
+                    for index in range(4):
+                        db.execute("INSERT INTO core_mapping_observations VALUES (?,?,?,?,?,?,?,'now','seed')",
+                                   (self.admin["org_id"], "vat_declaration", "main", core_mapping.label(alias),
+                                    "declared_value", "seed-" + str(index), task["id"]))
+
+                def audited(db, batch, actor, action, detail, **kwargs):
+                    if fail and action == "mapping_promotion":
+                        raise RuntimeError("synthetic audit failure")
+                    return event(db, batch, actor, action, detail, **kwargs)
+
+                with (patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED": "1", "TAXPEARLS_AI_API_KEY": "synthetic"}),
+                      patch("src.core_mapping.chat_content", return_value=json.dumps({"mappings": [
+                          {"source_column": 2, "target_field": "declared_value", "status": "mapped"}]})) as call,
+                      patch("webapp.material_batches._event", side_effect=audited)):
+                    response = self.client.post("/api/enterprise/input-tasks/" + task["id"] + "/files",
+                        data={"expected_revision": str(task["revision"]), "material_type": "vat_declaration", "mapping_mode": "ai"},
+                        files={"files": ("申报.xlsx", book("vat_declaration", alias=alias))})
+                call.assert_called_once()
+                self.assertEqual(response.status_code, 500 if fail else 200, response.text)
+                with self.store.connect() as db:
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM core_mapping_observations WHERE task_id=?",
+                                                (task["id"],)).fetchone()[0], 4 if fail else 5)
+                    self.assertEqual(db.execute("SELECT COUNT(*) FROM material_events WHERE batch_id=? AND action='mapping_promotion'",
+                                                (task["id"],)).fetchone()[0], 0 if fail else 1)
+
+    def test_listing_does_not_write_view_events_and_detail_still_does(self):
+        task = self.upload(self.create(), "account_balance")
+
+        def counts():
+            with self.store.connect() as db:
+                return tuple(db.execute("SELECT COUNT(*) FROM " + table).fetchone()[0]
+                             for table in ("material_events", "audit_log"))
+
+        before = counts()
+        for _ in range(2):
+            response = self.client.get("/api/enterprise/input-tasks")
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(len(response.json()), 1)
+            row = response.json()[0]
+            self.assertEqual(set(row), {"id", "revision", "task", "status", "created_at"})
+            self.assertEqual(row["id"], task["id"])
+            self.assertEqual(row["revision"], task["revision"])
+            self.assertEqual(row["task"], task["task"])
+            self.assertEqual(row["status"], task["processing"]["status"])
+        self.assertEqual(counts(), before)
+        detail = self.client.get("/api/enterprise/input-tasks/" + task["id"])
+        self.assertEqual(detail.status_code, 200, detail.text)
+        self.assertEqual(counts(), tuple(n + 1 for n in before))
+
+    def test_listing_reads_committed_snapshot_while_another_writer_holds_lock(self):
+        task = self.upload(self.create(), "account_balance")
+        connect = sqlite3.connect
+
+        def short_wait(*args, **kwargs):
+            kwargs["timeout"] = 0.05
+            return connect(*args, **kwargs)
+
+        with self.store.connect() as writer:
+            self.assertEqual(writer.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+            stamp = writer.execute("SELECT created_at FROM material_batches WHERE id=?", (task["id"],)).fetchone()[0]
+            writer.execute("BEGIN IMMEDIATE")
+            writer.execute("UPDATE material_batches SET created_at='uncommitted' WHERE id=?", (task["id"],))
+            try:
+                with patch("webapp.storage.sqlite3.connect", side_effect=short_wait):
+                    response = self.client.get("/api/enterprise/input-tasks")
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json(), [{
+                    "id": task["id"], "revision": task["revision"], "task": task["task"],
+                    "status": task["processing"]["status"], "created_at": stamp,
+                }])
+            finally:
+                writer.rollback()
+
+    def test_listing_preserves_tenant_owner_and_live_client_assignment_scope(self):
+        task = self.create()
+        first = self.store.create_user("list-first", "Core-test-2026!", "会计一", "accountant", self.admin["org_id"])
+        second = self.store.create_user("list-second", "Core-test-2026!", "会计二", "accountant", self.admin["org_id"])
+        self.store.upsert_client(self.admin, task["task"]["company_name"], TAX, first["id"])
+        self.login(first)
+        draft = self.client.post("/api/enterprise/input-tasks", json={})
+        self.assertEqual(draft.status_code, 200, draft.text)
+        draft_id = draft.json()["id"]
+
+        def ids():
+            response = self.client.get("/api/enterprise/input-tasks")
+            self.assertEqual(response.status_code, 200, response.text)
+            return [row["id"] for row in response.json()]
+
+        self.assertEqual(ids(), [draft_id, task["id"]])
+        self.login(second)
+        self.assertEqual(ids(), [])
+        self.store.upsert_client(self.admin, task["task"]["company_name"], TAX, second["id"])
+        self.assertEqual(ids(), [task["id"]])
+        self.login(first)
+        self.assertEqual(ids(), [draft_id])
+        self.login(self.foreign)
+        self.assertEqual(ids(), [])
+        foreign = self.create()
+        self.assertEqual(ids(), [foreign["id"]])
+        self.login(self.admin)
+        legacy = material_batches.create(self.store, self.admin, [("legacy.xlsx", book("account_balance"))])
+        self.assertEqual(ids(), [draft_id, task["id"]])
+        self.assertEqual([row["id"] for row in material_batches.listing(self.store, self.admin, workflow="legacy")],
+                         [legacy["id"]])
+
+    def test_delete_task_purges_its_materials_and_keeps_other_tasks(self):
+        task = self.upload(self.create(), "account_balance")
+        other = self.create()
+        task_id, file_id = task["id"], task["documents"][0]["id"]
+        with self.store.connect() as db:
+            db.execute("INSERT INTO core_tax_reports VALUES (?,1,?,'hash','now',?,X'01',X'02')",
+                       (task_id, task["revision"], self.admin["id"]))
+            db.execute("INSERT INTO core_mapping_observations VALUES (?,?,?,?,?,?,?,'now','candidate')",
+                       (self.admin["org_id"], "account_balance", "main", "column", "value", "sha", task_id))
+            db.execute("INSERT INTO material_operations(id,org_id,actor_id,action,batch_id,state,started_at) VALUES ('delete-op',?,?,'extract',?,'committed','now')",
+                       (self.admin["org_id"], self.admin["id"], task_id))
+            db.execute("INSERT INTO material_jobs(id,org_id,batch_id,input_revision,actor_id,actor_role,operation_id,state,available_at,created_at,input_cipher) VALUES ('delete-job',?,?,?,?,?,'delete-op','running',0,'now',X'01')",
+                       (self.admin["org_id"], task_id, task["revision"], self.admin["id"], self.admin["role"]))
+            db.execute("INSERT INTO material_ai_slots VALUES ('delete-slot','delete-job',0)")
+        url = "/api/enterprise/input-tasks/" + task_id
+        body = {"expected_revision": task["revision"], "confirm": True}
+        self.assertEqual(self.client.request("DELETE", url, json=body).status_code, 409)
+        with self.store.connect() as db:
+            db.execute("UPDATE material_jobs SET state='queued' WHERE id='delete-job'")
+        result = self.client.request("DELETE", url, json=body)
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(result.json(), {"id": task_id, "deleted": True})
+        for path in [url, url + "/originals/" + file_id, url + "/data?expected_revision=" + str(task["revision"]), url + "/reports"]:
+            self.assertEqual(self.client.get(path).status_code, 404, path)
+        self.assertNotIn(task_id, [row["id"] for row in self.client.get("/api/enterprise/input-tasks").json()])
+        self.assertEqual(self.client.get("/api/enterprise/input-tasks/" + other["id"]).status_code, 200)
+        with self.store.connect() as db:
+            for table in ["material_originals", "material_revisions", "material_events", "material_executions", "material_jobs", "material_operations", "core_tax_reports"]:
+                self.assertEqual(db.execute(f"SELECT COUNT(*) FROM {table} WHERE batch_id=?", (task_id,)).fetchone()[0], 0, table)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM core_mapping_observations WHERE task_id=?", (task_id,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM material_ai_slots WHERE job_id='delete-job'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM material_batches WHERE id=?", (task_id,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM core_input_tasks WHERE id=?", (task_id,)).fetchone()[0], 0)
+            self.assertEqual(db.execute("PRAGMA foreign_key_check").fetchall(), [])
+        self.assertEqual(len(self.store.list_clients(self.admin)), 1)
+        from webapp.access import AccessDenied
+        with self.assertRaises(AccessDenied) as late:
+            material_batches.append_revision(self.store, self.admin, task_id, task["revision"], "edit", {"core_task": True})
+        self.assertEqual(late.exception.status, 404)
+
+    def test_delete_task_checks_confirmation_revision_and_tenant_permissions(self):
+        task = self.create()
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        valid = {"expected_revision": task["revision"], "confirm": True}
+        for body in [{"expected_revision": task["revision"]}, {**valid, "confirm": False}, {**valid, "expected_revision": True}]:
+            self.assertEqual(self.client.request("DELETE", url, json=body).status_code, 422)
+        self.assertEqual(self.client.request("DELETE", url, json={**valid, "expected_revision": 0}).status_code, 409)
+        self.login(self.foreign)
+        self.assertEqual(self.client.request("DELETE", url, json=valid).status_code, 404)
+        accountant = self.store.create_user("delete-accountant", "Core-test-2026!", "会计", "accountant", self.admin["org_id"])
+        self.login(accountant)
+        owned = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        self.assertEqual(self.client.request("DELETE", "/api/enterprise/input-tasks/" + owned["id"], json={"expected_revision": owned["revision"], "confirm": True}).status_code, 403)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.request("DELETE", url, json=valid).status_code, 401)
+        self.login(self.admin)
+        self.assertEqual(self.client.get(url).status_code, 200)
+        self.assertEqual(self.client.request("DELETE", url, json=valid).status_code, 200)
+        legacy = material_batches.create(self.store, self.admin, [("legacy.xlsx", book("account_balance"))])
+        self.assertEqual(self.client.request("DELETE", "/api/enterprise/input-tasks/" + legacy["id"], json={"expected_revision": legacy["revision"], "confirm": True}).status_code, 404)
+        self.assertEqual(material_batches.read(self.store, self.admin, legacy["id"])["id"], legacy["id"])
+
+    def test_delete_task_rolls_back_if_audit_logging_fails(self):
+        task = self.upload(self.create(), "account_balance")
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        original_url = url + "/originals/" + task["documents"][0]["id"]
+        original = self.client.get(original_url).content
+        with patch("webapp.core_inputs.members.log", side_effect=RuntimeError("synthetic audit failure")):
+            result = self.client.request("DELETE", url, json={"expected_revision": task["revision"], "confirm": True})
+        self.assertEqual(result.status_code, 500)
+        self.assertEqual(self.client.get(url).json()["revision"], task["revision"])
+        self.assertEqual(self.client.get(original_url).content, original)
+
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -532,6 +1014,209 @@ class CoreAPITests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         return r.json()
 
+    def scope(self, task, **changes):
+        fields = {key: task["task"][key] for key in core_materials.SCOPE_FIELDS}
+        return self.client.post(f"/api/enterprise/input-tasks/{task['id']}/scope",
+                                json={**fields, "expected_revision": task["revision"], **changes})
+
+    def test_material_export_contains_normalized_facts_and_enforces_acl_and_revision(self):
+        task = self.upload(self.create(), "invoice_detail")
+        url = f"/api/enterprise/input-tasks/{task['id']}"
+        export_url = url + f"/data?expected_revision={task['revision']}"
+        before = self.client.get(url).json()
+        response = self.client.get(export_url)
+        self.assertEqual(response.status_code, 200, response.text)
+        result = response.json()
+        self.assertEqual(result["schema_version"], "taxpearls.material-data.v1")
+        self.assertEqual(result["records"][0]["fields"]["invoice_no"], "12345678901234567890")
+        self.assertEqual(result["records"][0]["fields"]["amount_excluding_tax"], "100.0123")
+        self.assertNotIn("documents", result)
+        self.assertNotIn("events", result)
+        self.assertNotIn("versions", result)
+        self.assertEqual(set(result), {"schema_version", "task", "records", "sources"})
+        self.assertNotIn("quality", result)
+        self.assertTrue(before["processing"]["issues"])
+        after = self.client.get(url).json()
+        # Authorized reads append access audit events; the material snapshot stays unchanged.
+        self.assertEqual({k: v for k, v in after.items() if k != "events"},
+                         {k: v for k, v in before.items() if k != "events"})
+        self.assertEqual(after["processing"]["issues"], before["processing"]["issues"])
+        self.assertEqual(self.client.get(url + "/data?expected_revision=0").status_code, 409)
+        self.login(self.foreign)
+        self.assertEqual(self.client.get(export_url).status_code, 404)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get(export_url).status_code, 401)
+
+    def test_blank_draft_upload_autofill_and_explicit_confirmation(self):
+        task = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        self.assertFalse(task["task"]["scope_confirmed"])
+        self.assertIsNone(task["task"]["company_id"])
+        self.assertEqual(self.store.list_clients(self.admin), [])
+        task = self.upload(task, "account_balance")
+        self.assertEqual(task["task"]["tax_no"], TAX)
+        # The source period is a candidate only; the program never selects the
+        # inspection range from material dates.
+        self.assertEqual(task["task"]["start_date"], "")
+        self.assertEqual(task["task"]["end_date"], "")
+        self.assertEqual(task["task"]["scope_candidates"]["start_date"][0]["value"], "2026-01-01")
+        self.assertEqual(task["task"]["scope_candidates"]["end_date"][0]["value"], "2026-01-31")
+        self.assertNotIn("start_date", task["task"]["scope_origins"])
+        self.assertEqual(task["task"]["scope_origins"]["tax_no"]["sources"][0]["file_id"], task["documents"][0]["id"])
+        from webapp.core_inputs import require_scope
+        with self.assertRaises(ValueError):
+            require_scope(task)
+        result = self.scope(task, company_name="文件读取测试企业",
+                            start_date="2026-01-01", end_date="2026-01-31", confirm=True)
+        self.assertEqual(result.status_code, 200, result.text)
+        confirmed = result.json()
+        require_scope(confirmed)
+        self.assertTrue(confirmed["task"]["scope_confirmed"])
+        self.assertEqual(len(self.store.list_clients(self.admin)), 1)
+        self.assertTrue(confirmed["processing"]["records"])
+        with self.store.connect() as db:
+            batch = material_batches._authorize(db, self.admin, task["id"])
+            self.assertEqual(batch["client_id"], confirmed["task"]["company_id"])
+        self.assertEqual(self.scope(task, confirm=True).status_code, 409)
+
+    def test_source_period_is_candidate_and_never_overrides_user_range(self):
+        task = {key: "" for key in core_materials.SCOPE_FIELDS}
+        doc = {"id": "source", "material_type": "account_balance", "parts": [{"name": "Sheet1", "tax_nos": [TAX],
+            "period": ["2026-02-01", "2026-02-28"], "parsed_metadata": {"period": ["2026-01-01", "2026-01-31"]}}]}
+        core_materials.autofill_scope(task, [doc])
+        self.assertEqual(task["start_date"], "")
+        self.assertEqual(task["end_date"], "")
+        self.assertEqual(task["scope_candidates"]["start_date"][0]["value"], "2026-01-01")
+        self.assertEqual(task["scope_candidates"]["end_date"][0]["value"], "2026-01-31")
+        self.assertNotIn("start_date", task["scope_origins"])
+        # A user-selected range survives later parses even when the source differs.
+        task.update(start_date="2026-01-15", end_date="2026-01-20")
+        core_materials.autofill_scope(task, [doc])
+        self.assertEqual((task["start_date"], task["end_date"]), ("2026-01-15", "2026-01-20"))
+
+    def test_legacy_file_selected_range_is_cleared_for_reconfirmation(self):
+        task = {
+            "start_date": "2026-01-01",
+            "end_date": "2026-01-31",
+            "scope_confirmed": True,
+            "scope_origins": {"start_date": {"kind": "file"}, "end_date": {"kind": "file"}},
+        }
+        doc = {"id": "source", "material_type": "account_balance", "parts": [{"name": "Sheet1", "tax_nos": [TAX],
+            "period": ["2026-01-01", "2026-01-31"], "parsed_metadata": {"period": ["2026-01-01", "2026-01-31"]}}]}
+        core_materials.autofill_scope(task, [doc])
+        self.assertEqual(task["start_date"], "")
+        self.assertEqual(task["end_date"], "")
+        self.assertFalse(task["scope_confirmed"])
+        self.assertEqual(task["scope_candidates"]["start_date"][0]["value"], "2026-01-01")
+
+    def test_draft_name_is_read_from_explicit_file_metadata(self):
+        from openpyxl import load_workbook
+        task = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        wb = load_workbook(BytesIO(book("account_balance")))
+        wb.active.insert_rows(2)
+        wb.active.cell(2, 1, "企业名称：自动读取有限公司")
+        raw = BytesIO()
+        wb.save(raw)
+        wb.close()
+        r = self.client.post(f"/api/enterprise/input-tasks/{task['id']}/files",
+            data={"material_type": "account_balance", "expected_revision": str(task["revision"])},
+            files={"files": ("余额.xlsx", raw.getvalue())})
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["task"]["company_name"], "自动读取有限公司")
+        self.assertFalse(r.json()["task"]["scope_confirmed"])
+
+    def test_manual_values_preserved_and_conflict_blocks_confirmation(self):
+        task = self.create()
+        task = self.upload(task, "account_balance", tax=OTHER)
+        self.assertEqual(task["task"]["tax_no"], TAX)
+        self.assertIn("tax_no", task["scope_errors"])
+        r = self.scope(task, confirm=True)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["task"]["scope_confirmed"])
+        from webapp.core_inputs import require_scope
+        with self.assertRaises(ValueError):
+            require_scope(r.json())
+
+    def test_multiple_source_periods_are_not_combined_and_exclusion_rederives_candidates(self):
+        task = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        task = self.upload(task, "account_balance")
+        task = self.upload(task, "vat_declaration", start="2026-02-01", end="2026-02-28")
+        self.assertEqual(task["task"]["start_date"], "")
+        self.assertEqual(len(task["task"]["scope_candidates"]["start_date"]), 2)
+        file_id = task["documents"][-1]["id"]
+        r = self.client.post(f"/api/enterprise/input-tasks/{task['id']}/prepare",
+                             json={"expected_revision": task["revision"], "source_options": {file_id: {"excluded": True}}})
+        self.assertEqual(r.status_code, 200, r.text)
+        # Excluding a source updates the candidates but still does not choose
+        # the inspection range for the user.
+        self.assertEqual(r.json()["task"]["start_date"], "")
+        self.assertEqual(len(r.json()["task"]["scope_candidates"]["start_date"]), 1)
+
+    def test_invalid_range_mode_blocks_confirmation(self):
+        task = self.create()
+        r = self.scope(task, start_date="2026-01-01", end_date="2026-02-28",
+                       range_kind="quarter", confirm=True)
+        self.assertEqual(r.status_code, 200, r.text)
+        value = r.json()
+        self.assertIn("range_kind", value["scope_errors"])
+        self.assertFalse(value["task"]["scope_confirmed"])
+
+    def test_range_change_reruns_checks_and_retains_history(self):
+        task = self.create()
+        task = self.upload(task, "account_balance")
+        confirmed = self.scope(task, range_kind="month", confirm=True)
+        self.assertEqual(confirmed.status_code, 200, confirmed.text)
+        confirmed = confirmed.json()
+        self.assertTrue(confirmed["task"]["scope_confirmed"])
+        self.assertEqual(confirmed["task"]["range_kind"], "month")
+
+        changed = self.scope(confirmed, start_date="2026-02-01", end_date="2026-02-28",
+                             range_kind="month")
+        self.assertEqual(changed.status_code, 200, changed.text)
+        changed = changed.json()
+        self.assertFalse(changed["task"]["scope_confirmed"])
+        self.assertEqual(changed["task"]["scope_revision"], 1)
+        self.assertEqual(changed["task"]["scope_history"][-1]["start_date"], "2026-01-01")
+        self.assertEqual(changed["task"]["scope_history"][-1]["end_date"], "2026-01-31")
+        self.assertGreater(changed["processing"]["scope"]["outside_records"], 0)
+        codes = {i["code"] for i in changed["processing"]["issues"]}
+        self.assertTrue({"period_alignment", "record_outside_scope"} <= codes)
+        self.assertEqual(changed["versions"][-1]["revision"], changed["revision"])
+
+    def test_existing_company_selection_and_cross_tenant_rejection(self):
+        existing = self.store.upsert_client(self.admin, "已有企业", TAX)
+        value = {"client_id": existing["id"], "company_name": existing["name"], "tax_no": TAX}
+        r = self.client.post("/api/enterprise/input-tasks", json=value)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["task"]["company_id"], existing["id"])
+        self.login(self.foreign)
+        self.assertEqual(self.client.post("/api/enterprise/input-tasks", json=value).status_code, 404)
+        self.assertEqual(self.scope(r.json(), confirm=True).status_code, 404)
+        self.login(self.admin)
+        task = r.json()
+        bad = self.scope(task, client_id=existing["id"], tax_no=OTHER, confirm=True)
+        self.assertEqual(bad.status_code, 422, bad.text)
+        self.assertEqual(self.client.get(f"/api/enterprise/input-tasks/{task['id']}").json()["revision"], task["revision"])
+
+    def test_invalid_scope_keeps_existing_client_authorization(self):
+        task = self.create()
+        r = self.scope(task, tax_no="bad", confirm=True)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertFalse(r.json()["task"]["scope_confirmed"])
+        self.assertIn("tax_no", r.json()["scope_errors"])
+        self.assertEqual(r.json()["task"]["company_id"], task["task"]["company_id"])
+        with self.store.connect() as db:
+            batch = material_batches._authorize(db, self.admin, task["id"])
+            self.assertEqual(batch["client_id"], task["task"]["company_id"])
+
+    def test_direct_ai_request_cannot_bypass_missing_scope(self):
+        task = self.client.post("/api/enterprise/input-tasks", json={}).json()
+        with patch("webapp.knowledge_evidence.analyze") as model:
+            r = self.client.post("/api/knowledge/retrieve", json={"task_id": task["id"],
+                "expected_revision": task["revision"], "rule_id": "VAT-R01", "use_ai": True})
+            self.assertEqual(r.status_code, 422, r.text)
+            self.assertIn("企业与检查区间", r.text)
+            model.assert_not_called()
+
     def test_mapping_and_ocr_use_admin_extraction_keys_instead_of_other_purposes(self):
         root = self.store.create_user("core-root", "Core-test-2026!", "平台", "platform_admin", "platform")
         self.login(root)
@@ -561,7 +1246,11 @@ class CoreAPITests(unittest.TestCase):
                 "period_start": "2026-01-01", "period_end": "2026-01-31", "unit": "元", "quote": "申报主表",
                 "rows": [{"item_label": "销售额", "item_key": "1", "declared_value": "100.0123",
                           "column_scope": "本期数", "quote": "销售额 100.0123"}]})
-            with patch("src.core_materials.chat_content", return_value=answer) as ocr:
+            def ocr_response(*args, **kwargs):
+                self.assert_write_available()
+                return answer
+
+            with patch("src.core_materials.chat_content", side_effect=ocr_response) as ocr:
                 response = self.client.post(url, data={"expected_revision": str(task["revision"]),
                     "material_type": "vat_declaration", "ocr": "1"}, files={"files": ("扫描.pdf",
                     (Path(__file__).parent / "fixtures" / "materials-scanned.pdf").read_bytes())})
@@ -601,6 +1290,84 @@ class CoreAPITests(unittest.TestCase):
         r = self.client.post(url + "/prepare", json={"expected_revision": incomplete["revision"]})
         self.assertEqual(r.status_code, 409)
 
+    def test_invoice_direction_is_automatic_per_record_and_legacy_override_is_retired(self):
+        task = self.create()
+        wb = load_workbook(BytesIO(book("invoice_detail")))
+        sheet = wb.active
+        sheet.title = "发票明细"
+        sheet.delete_cols(9)  # No explicit direction: infer each invoice from its parties.
+        sheet.append(["12345678901234567891", "2026-01-02", OTHER, TAX, "200", "26", "蓝字", "正常"])
+        sheet.append(["12345678901234567892", "2026-01-03", OTHER, OTHER, "300", "39", "蓝字", "正常"])
+        raw = BytesIO()
+        wb.save(raw)
+        wb.close()
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        response = self.client.post(
+            url + "/files",
+            data={"expected_revision": str(task["revision"]), "material_type": "invoice_detail"},
+            files=[("files", ("混合发票.xlsx", raw.getvalue()))],
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        task = response.json()
+        self.assertEqual([r["direction"] for r in task["processing"]["records"]], ["output", "input", None])
+        self.assertIn("direction_missing", {i["code"] for i in task["processing"]["issues"]})
+        fid = task["documents"][0]["id"]
+        for direction in ["input", "output"]:
+            response = self.client.post(url + "/prepare", json={
+                "expected_revision": task["revision"],
+                "source_options": {fid: {"confirmed_metadata": {"direction": direction}}},
+            })
+            self.assertEqual(response.status_code, 422, response.text)
+            self.assertIn("逐票判断", response.json()["detail"])
+        self.assertEqual(self.client.get(url).json()["revision"], task["revision"])
+
+        # Simulate an existing task saved by the old file-wide selector.
+        legacy = deepcopy(material_batches.read(self.store, self.admin, task["id"])["versions"][-1]["payload"])
+        legacy["source_options"][fid].update(confirmed_metadata={"unit": "元", "direction": "output"}, source_reviewed=True)
+        old_revision = material_batches.append_revision(self.store, self.admin, task["id"], task["revision"], "edit", legacy)
+        response = self.client.post(url + "/prepare", json={"expected_revision": old_revision})
+        self.assertEqual(response.status_code, 200, response.text)
+        refreshed = response.json()
+        self.assertEqual([r["direction"] for r in refreshed["processing"]["records"]], ["output", "input", None])
+        self.assertIn("direction_missing", {i["code"] for i in refreshed["processing"]["issues"]})
+        self.assertEqual(refreshed["source_options"][fid]["confirmed_metadata"], {"unit": "元"})
+        self.assertFalse(refreshed["source_options"][fid]["source_reviewed"])
+        for record in refreshed["documents"][0]["records"]:
+            self.assertNotIn("direction", record["confirmed_metadata"])
+        history = material_batches.read(self.store, self.admin, task["id"])["versions"]
+        self.assertEqual(next(v["payload"] for v in history if v["revision"] == old_revision), legacy)
+
+        ids = [row["id"] for row in refreshed["documents"][0]["records"]]
+        for directions in [{"another-file-record": "input"}, {ids[0]: "both"}, {ids[0]: True}, []]:
+            response = self.client.post(url + "/prepare", json={
+                "expected_revision": refreshed["revision"], "source_options": {fid: {"invoice_directions": directions}},
+            })
+            self.assertEqual(response.status_code, 422, response.text)
+        response = self.client.post(url + "/prepare", json={
+            "expected_revision": refreshed["revision"],
+            "source_options": {fid: {"invoice_directions": {ids[0]: "input", ids[2]: "output"}}},
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        selected = response.json()
+        self.assertEqual([r["direction"] for r in selected["processing"]["records"]], ["input", "input", "output"])
+        self.assertEqual([r["automatic_direction"] for r in selected["documents"][0]["records"]], ["output", "input", None])
+        self.assertIn("invoice_company_conflict", {i["code"] for i in selected["processing"]["issues"]})
+        self.assertEqual(selected["documents"][0]["records"][0]["source_metadata"]["direction"],
+                         refreshed["documents"][0]["records"][0]["source_metadata"]["direction"])
+        exported = self.client.get(url + "/data", params={"expected_revision": selected["revision"]}).json()
+        self.assertEqual(exported["records"][0]["source"]["confirmed_fields"]["direction"], "input")
+        self.assertEqual(self.client.get(url).json()["source_options"][fid]["invoice_directions"],
+                         {ids[0]: "input", ids[2]: "output"})
+        response = self.client.post(url + "/prepare", json={
+            "expected_revision": selected["revision"], "source_options": {fid: {"invoice_directions": {}}},
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        restored = response.json()
+        self.assertEqual([r["direction"] for r in restored["processing"]["records"]], ["output", "input", None])
+        self.assertIn("direction_missing", {i["code"] for i in restored["processing"]["issues"]})
+        self.assertNotIn("invoice_company_conflict", {i["code"] for i in restored["processing"]["issues"]})
+        self.assertNotIn("direction", restored["documents"][0]["records"][0]["confirmed_metadata"])
+
     def test_conflicting_manual_metadata_is_not_ready_and_malformed_json_is_rejected(self):
         task = self.upload(self.create(), "account_balance")
         fid = task["documents"][0]["id"]
@@ -636,7 +1403,8 @@ class CoreAPITests(unittest.TestCase):
             "/api/enterprise/input-tasks",
             json={"company_name": "x", "tax_no": TAX, "start_date": "2026-02-01", "end_date": "2026-01-01"},
         )
-        self.assertEqual(r.status_code, 422)
+        self.assertEqual(r.status_code, 200)
+        self.assertIn("end_date", r.json()["scope_errors"])
         r = self.client.post(
             "/api/enterprise/input-tasks/" + task["id"] + "/files",
             data={"expected_revision": str(task["revision"]), "material_type": "account_balance"},
@@ -782,7 +1550,7 @@ class CoreAPITests(unittest.TestCase):
         task = self.create()
         url = "/api/enterprise/input-tasks/" + task["id"]
         for kind, name, raw in [
-            ("account_balance", "申报.pdf", pdf_table()),
+            ("account_balance", "票.xml", b"<Invoice/>"),
             ("invoice_detail", "恶意.xml", b'<!DOCTYPE x [<!ENTITY e "boom">]><Invoice/>'),
         ]:
             response = self.client.post(
@@ -794,6 +1562,89 @@ class CoreAPITests(unittest.TestCase):
         fresh = self.client.get(url).json()
         self.assertEqual(fresh["revision"], task["revision"])
         self.assertEqual(fresh["files"], [])
+
+    def test_all_pdf_slots_preserve_original_and_invoice_review_roundtrip(self):
+        task = self.create()
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        for kind, raw in [("account_balance", pdf_table("account_balance")), ("vat_declaration", pdf_table()), ("invoice_detail", invoice_pdf())]:
+            response = self.client.post(url+"/files", data={"expected_revision":str(task["revision"]),"material_type":kind,"ocr":"1"}, files={"files":(kind+".pdf",raw)})
+            self.assertEqual(response.status_code, 200, response.text)
+            task=response.json()
+            doc=next(d for d in task["documents"] if d["material_type"]==kind)
+            self.assertTrue(doc["records"],doc)
+            original=self.client.get(url+"/originals/"+doc["id"])
+            self.assertEqual(original.status_code,200)
+            self.assertEqual(original.content,raw)
+        doc=next(d for d in task["documents"] if d["material_type"]=="invoice_detail")
+        file_id,record_id=doc["id"],doc["records"][0]["id"]
+        status={record_id:{"red_letter_status":"蓝字","void_status":"正常"}}
+        def save(change):
+            return self.client.post(url+"/prepare",json={"expected_revision":task["revision"],"source_options":{file_id:change}})
+        response=save({"invoice_statuses":status,"source_reviewed":True})
+        self.assertEqual(response.status_code,200,response.text)
+        task=response.json()
+        doc=next(d for d in task["documents"] if d["id"]==file_id)
+        self.assertFalse({"pdf_source_review","ocr_review","invoice_status_missing"}&{i["code"] for i in doc["issues"]})
+        self.assertEqual(doc["records"][0]["red_letter_status"],"蓝字")
+        self.assertIsNone(doc["records"][0]["parsed_invoice_statuses"]["red_letter_status"])
+        self.assertFalse(doc["records"][0]["requires_source_review"])
+        self.assertIn("invoice_coverage_gap",{i["code"] for i in task["processing"]["issues"]})
+        self.assertEqual(self.client.get(url).json()["source_options"][file_id]["invoice_statuses"],status)
+        # Clearing a prior confirmation restores the missing-state blocker.
+        response=save({"invoice_statuses":{record_id:{"red_letter_status":"","void_status":""}}})
+        self.assertEqual(response.status_code,200,response.text)
+        task=response.json()
+        doc=next(d for d in task["documents"] if d["id"]==file_id)
+        self.assertIn("invoice_status_missing",{i["code"] for i in doc["issues"]})
+        self.assertTrue(doc["records"][0]["requires_source_review"])
+        response=save({"invoice_statuses":{"foreign-record":{"void_status":"正常"}}})
+        self.assertEqual(response.status_code,422)
+
+    def test_other_two_scanned_pdf_upload_review_reopen_and_revoke(self):
+        raw=(Path(__file__).parent/"fixtures"/"materials-scanned.pdf").read_bytes()
+        balance={"account_name":"现金","opening_balance":"10","current_debit":"100","current_credit":"20","closing_balance":"90"}
+        for kind in ["account_balance","vat_declaration"]:
+            task=self.create()
+            url="/api/enterprise/input-tasks/"+task["id"]
+            answer={"tax_no":TAX,"period_start":"2026-01-01","period_end":"2026-01-31","unit":"元","quote":"来源表头"}
+            if kind=="account_balance":
+                answer["rows"]=[{"fields":balance,"quotes":balance}]
+            else:
+                answer.update(form_name="增值税纳税申报表主表",form_type="main",rows=[{"item_label":"应税销售额","declared_value":"100","column_scope":"本期数","quote":"应税销售额 100"}])
+            with self.subTest(kind=kind),patch.dict(os.environ,{"TAXPEARLS_AI_ENABLED":"1","TAXPEARLS_AI_API_KEY":"synthetic"}),patch("src.core_materials.chat_content",return_value=json.dumps(answer)) as model:
+                response=self.client.post(url+"/files",data={"expected_revision":str(task["revision"]),"material_type":kind,"ocr":"1"},files={"files":(kind+".pdf",raw)})
+                self.assertEqual(response.status_code,200,response.text)
+                task=response.json();doc=task["documents"][0];fid=doc["id"]
+                self.assertEqual(self.client.get(url+"/originals/"+fid).content,raw)
+                self.assertTrue(doc["records"][0]["requires_source_review"])
+                for reviewed in [True,False]:
+                    response=self.client.post(url+"/prepare",json={"expected_revision":task["revision"],"source_options":{fid:{"source_reviewed":reviewed}}})
+                    self.assertEqual(response.status_code,200,response.text)
+                    task=response.json();doc=task["documents"][0]
+                    self.assertEqual(doc["records"][0]["requires_source_review"],not reviewed)
+                    self.assertEqual("ocr_review" in {i["code"] for i in doc["issues"]},not reviewed)
+                    self.assertEqual(self.client.get(url).json()["documents"][0]["records"],doc["records"])
+                self.assertEqual(model.call_count,1)
+
+    def test_scanned_invoice_review_uses_cache_and_revokes_without_model(self):
+        task=self.create()
+        url="/api/enterprise/input-tasks/"+task["id"]
+        fields={"invoice_no":"12345678901234567890","issue_date":"2026-01-15","buyer_tax_no":OTHER,"seller_tax_no":TAX,"amount_excluding_tax":"100","tax_amount":"13"}
+        answer={"unit":"元","rows":[{"fields":fields,"quotes":fields}]}
+        raw=(Path(__file__).parent/"fixtures"/"materials-scanned.pdf").read_bytes()
+        with patch.dict(os.environ,{"TAXPEARLS_AI_ENABLED":"1","TAXPEARLS_AI_API_KEY":"synthetic"}),patch("src.core_materials.chat_content",return_value=json.dumps(answer)) as model:
+            response=self.client.post(url+"/files",data={"expected_revision":str(task["revision"]),"material_type":"invoice_detail","ocr":"1"},files={"files":("扫描票.pdf",raw)})
+            self.assertEqual(response.status_code,200,response.text)
+            task=response.json();doc=task["documents"][0]
+            self.assertTrue(doc["ocr_candidate"])
+            rid=doc["records"][0]["id"]
+            for status,reviewed in [({"red_letter_status":"蓝字","void_status":"正常"},True),({"red_letter_status":"","void_status":""},False)]:
+                response=self.client.post(url+"/prepare",json={"expected_revision":task["revision"],"source_options":{doc["id"]:{"invoice_statuses":{rid:status},"source_reviewed":reviewed}}})
+                self.assertEqual(response.status_code,200,response.text)
+                task=response.json();doc=task["documents"][0]
+                self.assertEqual(doc["records"][0]["requires_source_review"],not reviewed)
+                self.assertEqual("invoice_status_missing" in {i["code"] for i in doc["issues"]},not reviewed)
+            self.assertEqual(model.call_count,1)
 
     def test_ocr_review_cache_revoke_and_metadata_restore_without_more_calls(self):
         task = self.ready_task()

@@ -36,6 +36,7 @@ from webapp.storage import _hash_token, _now, session_max_age
 from webapp.training_content import (applicability, ensure_active_version,
                                      resolve_active_version, version_brief)
 from webapp.training_graph import relations_payload
+from webapp.training_content import attempt_rules
 
 STATIC_DIR_KEYS = ("training-portal.html", "training-portal.js")
 
@@ -2413,7 +2414,10 @@ def mark_stats(store, staff: dict, cert_id: str) -> dict[str, Any]:
 RULES_DIR = Path(__file__).resolve().parent.parent / "rules"
 
 
-def _load_rules() -> list[Any]:
+def _load_rules(store=None) -> list[Any]:
+    if store is not None:
+        from src.rule_conversion import effective_rules
+        return effective_rules(store, RULES_DIR)
     from src import engine
     return engine.load_rules(RULES_DIR)
 
@@ -2430,7 +2434,7 @@ def create_link(store, staff: dict, kp_id: str, target_type: str, target_id: str
         db.execute("BEGIN IMMEDIATE")
         if not db.execute("SELECT 1 FROM knowledge_point WHERE id=?", (kp_id,)).fetchone():
             raise TrainingPortalError("知识点不存在。", 404)
-        if target_type == "rule" and target_id not in {r.id for r in _load_rules()}:
+        if target_type == "rule" and target_id not in {r.id for r in _load_rules(store)}:
             raise TrainingPortalError("规则不存在或未启用。")
         if target_type == "task" and not db.execute(
                 "SELECT 1 FROM training_task WHERE id=?", (target_id,)).fetchone():
@@ -2488,6 +2492,8 @@ def student_knowledge_points(store, student_id: str, cert_id: str) -> list[dict[
             item["high_freq"] = [dict(m) for m in marks]
             item["rule_links"] = rule_counts.get(row["id"], 0)
             item["relations"] = relations_payload(db, row["id"])
+            from webapp.knowledge_sync import rule_knowledge
+            item['knowledge'] = rule_knowledge(db, row['id'], _load_rules(store))
             stat = coverage.get(row["id"], {"attempts": 0, "perfect": 0})
             item["attempts"] = stat["attempts"]
             item["perfect"] = stat["perfect"]
@@ -2515,12 +2521,12 @@ def _materials(exercise) -> dict[str, Any]:
 def _candidate_rules(db, cert_id: str, kp_id: str | None) -> list[str]:
     if kp_id:
         rows = db.execute(
-            "SELECT target_id FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule'",
+            "SELECT target_id FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule' AND active=1",
             (kp_id,)).fetchall()
     else:
         rows = db.execute(
             "SELECT DISTINCT l.target_id FROM knowledge_point_link l JOIN knowledge_point k ON k.id=l.knowledge_point_id"
-            " WHERE l.target_type='rule' AND k.certificate_id=? AND k.active=1", (cert_id,)).fetchall()
+            " WHERE l.target_type='rule' AND l.active=1 AND k.certificate_id=? AND k.active=1", (cert_id,)).fetchall()
     return sorted({r["target_id"] for r in rows})
 
 
@@ -2531,7 +2537,7 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
         raise TrainingPortalError("作答模式必须是 new 或 redo_same。")
     if mode == "redo_same" and (rule_id is None or seed is None):
         raise TrainingPortalError("原题重做必须显式提供规则与种子。")
-    rules = _load_rules()
+    rules = _load_rules(store)
     by_id = {r.id: r for r in rules}
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -2546,7 +2552,7 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
                 raise TrainingPortalError("所选规则不存在或未启用。")
             if kp_id:
                 linked = db.execute(
-                    "SELECT 1 FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule' AND target_id=?",
+                    "SELECT 1 FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule' AND target_id=? AND active=1",
                     (kp_id, rule_id)).fetchone()
                 if not linked:
                     prior = db.execute(
@@ -2606,7 +2612,8 @@ def get_attempt(store, student_id: str, attempt_id: str) -> dict[str, Any]:
     if row["status"] == "scored":
         with store.connect() as db:
             return _scored_view(row, db)
-    rules = _load_rules()
+    with store.connect() as db:
+        rules = attempt_rules(db, row, _load_rules(store))
     exercise = _generate(rules, row["rule_id"], row["seed"])
     with store.connect() as db:
         return _open_view(exercise, row, rules, db=db)
@@ -2617,7 +2624,8 @@ def submit_practice(store, student_id: str, attempt_id: str, selected: list[str]
     row = _attempt_row(store, student_id, attempt_id)
     if row["status"] != "open":
         raise TrainingPortalError("本题已判分，重复提交不重复计数。", 409)
-    rules = _load_rules()
+    with store.connect() as db:
+        rules = attempt_rules(db, row, _load_rules(store))
     by_id = {r.id: r for r in rules}
     if row["rule_id"] not in by_id:
         raise TrainingPortalError("本题规则已被停用，无法判分；请放弃本题重新开始练习。")
@@ -3852,7 +3860,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         staff(session)
         # 轻量规则目录：供教师把知识点关联到规则仿真题（练习题源）。
         return response({"rules": sorted(
-            ({"id": r.id, "name": r.name} for r in _load_rules()), key=lambda x: x["id"])})
+            ({"id": r.id, "name": r.name} for r in _load_rules(store_provider())), key=lambda x: x["id"])})
 
     @app.get("/api/training/staff/certificates/{cert_id}/mark-stats")
     @guarded
@@ -4336,6 +4344,10 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.get("/training-portal.js")
     def training_portal_script() -> FileResponse:
         return FileResponse(STATIC_DIR / "training-portal.js", media_type="text/javascript")
+
+    @app.get("/training-dark.css")
+    def training_dark_theme() -> FileResponse:
+        return FileResponse(STATIC_DIR / "training-dark.css", media_type="text/css")
 
     @app.get("/training-staff")
     def training_staff_page() -> FileResponse:

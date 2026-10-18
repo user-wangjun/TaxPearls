@@ -216,13 +216,26 @@ function renderKpRows() {
       ...(rel.confusable || []).map((t) => `<span class="chip" title="与本知识点易混淆">易混淆：${esc(t.name)}</span>`),
       ...(rel.concept || []).map((t) => `<span class="chip" title="概念关联">关联：${esc(t.name)}</span>`),
     ].join("");
+    const knowledge = (k.knowledge || []).map((r) => {
+      const sources = r.sources.map((s) => {
+        const title = `${s.title} · ${s.clause_label}`;
+        const link = /^https:\/\//.test(s.source_url || "")
+          ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>` : esc(title);
+        return `<li>${link}（${s.validity_status === "unverified" || s.extraction_status !== "verified" ? "待适用复核" : "来源已复核，适用范围另核"}）</li>`;
+      }).join("");
+      return `<div class="detail"><strong>${esc(r.rule_code)} · v${esc(r.rule_version)}</strong>
+        <div class="muted">${esc(r.threshold_basis)}</div>
+        ${sources ? `<ul>${sources}</ul>` : `<p class="muted">尚未关联原文依据，待完善；不据此确认政策适用。</p>`}</div>`;
+    }).join("");
     return `<div class="item"><div class="item-head">
       <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
         ${k.high_freq.map((m) => `<span class="badge warn">常考${m.basis_ref ? " · " + esc(m.basis_ref) : ""}</span>`).join("")}
         ${k.rule_links ? "" : `<span class="badge gray">暂无题目</span>`}
       </div>
       <div class="muted">已练 ${k.attempts} 次 · 满分 ${k.perfect} 次</div>
-    </div>${relChips ? `<div style="margin-top:4px;">${relChips}</div>` : ""}</div>`;
+    </div>${k.subject ? `<div class="muted">${esc(k.subject)} · ${esc(k.outline_version || "未标注内容版本")}</div>` : ""}
+    ${relChips ? `<div style="margin-top:4px;">${relChips}</div>` : ""}
+    ${knowledge ? `<details><summary>规则与政策依据</summary>${knowledge}</details>` : ""}</div>`;
   }).join("");
 }
 
@@ -363,6 +376,9 @@ function renderAttempt() {
         </div>
         <div id="tutor-out"></div>
       </div>`;
+  }
+  if (a.applicability?.notice) {
+    box.insertAdjacentHTML("afterbegin", `<div class="detail miss">${esc(a.applicability.notice)}</div>`);
   }
 }
 

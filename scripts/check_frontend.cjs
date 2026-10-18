@@ -2,6 +2,50 @@
 const fs = require("node:fs");
 const vm = require("node:vm");
 const assert = require("node:assert/strict");
+// Registration gives feedback before submission and rechecks both fields after edits.
+{
+  const source = fs.readFileSync('webapp/static/console.js', 'utf8');
+  const start = source.indexOf('function updateSignupPasswordValidation(');
+  assert.ok(start >= 0, 'Registration needs live password validation');
+  const nodes = Object.fromEntries(['signupPass', 'signupPass2', 'signupPasswordHint', 'signupPasswordMatch', 'authForm'].map(id => [id, {
+    value:'', dataset:{view:'signup'}, attributes:{}, textContent:'',
+    setCustomValidity(message){this.validationMessage=message;},
+    setAttribute(name,value){this.attributes[name]=String(value);}
+  }]));
+  const ctx = {$:id=>nodes[id]};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(start, source.indexOf('\nfunction showAuthView(', start)), ctx);
+  const check = (password, confirm=password) => {
+    nodes.signupPass.value=password;nodes.signupPass2.value=confirm;
+    ctx.updateSignupPasswordValidation();
+    return nodes.signupPass.validationMessage;
+  };
+  assert.match(check('short12!'), /10–128/);
+  assert.match(check('abcdef1234'), /三类/);
+  assert.match(check('abcdef123 '), /三类/, 'Whitespace is not a symbol');
+  assert.equal(check('ZebraForest92'), '');
+  assert.equal(check('éééééééé9!'), '', 'Unicode letters follow the server policy');
+  assert.equal(check('ａｂｃｄｅｆ１２３！'), '', 'Check character classes after NFKC normalization');
+  assert.equal(check('Ab9'+'😀'.repeat(7)), '');
+  assert.match(check('Ab9'+'😀'.repeat(6)), /10–128/, 'Length counts Unicode code points');
+  assert.equal(check('Ab9!'+'x'.repeat(124)), '');
+  assert.match(check('Ab9!'+'x'.repeat(125)), /10–128/);
+  check('ZebraForest92', 'ZebraForest93');
+  assert.match(nodes.signupPass2.validationMessage, /不一致/);
+  assert.equal(nodes.signupPass2.attributes['aria-invalid'], 'true');
+  check('ZebraForest93');
+  assert.equal(nodes.signupPass2.validationMessage, '');
+  assert.match(nodes.signupPasswordMatch.textContent, /一致/);
+  check('ZebraForest94', 'ZebraForest93');
+  assert.match(nodes.signupPass2.validationMessage, /不一致/, 'Changing the first field rechecks confirmation');
+  check('', '');
+  assert.equal(nodes.signupPass.validationMessage, '');
+  assert.equal(nodes.signupPasswordMatch.textContent, '');
+  check('short12!', 'different');
+  nodes.authForm.dataset.view='login';ctx.updateSignupPasswordValidation();
+  assert.equal(nodes.signupPass.validationMessage, '', 'Hidden registration fields must not block login');
+  assert.equal(nodes.signupPass2.validationMessage, '');
+}
 // Skipped can mean evidence, period, denominator or applicability limits.
 // The shared UI must not translate every skipped result into missing files.
 const indexMarkup = fs.readFileSync("webapp/static/index.html", "utf8");
@@ -282,7 +326,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
     api:url=>new Promise((resolve,reject)=>graphCalls.push({url,resolve,reject})),
     filterGraph:()=>graphDraws.push(vm.runInContext('graphData.audit_id',graphCtx)),focusGraph(){}};
   vm.createContext(graphCtx);
-  vm.runInContext('let graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
+  vm.runInContext('let graphMatchedCount=0,graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
     graph.slice(graph.indexOf('function graphCurrent('),graph.indexOf('$("graphAudit").addEventListener'))+
     graph.slice(graph.indexOf('function updateGraphRegions('),graph.indexOf('for(const id of ["knowledgeSearch"')),graphCtx);
   const listOld=graphCtx.loadKnowledge(),oldList=graphCalls.shift();
@@ -311,6 +355,12 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   graphCtx.$('knowledgeCategory').value='';graphCtx.$('graphStatus').value='';graphCtx.$('graphRuleLevel').value='national';
   graphCtx.filterGraph();assert.equal(vm.runInContext('graphVisible.has("national")&&graphVisible.has("metric")&&!graphVisible.has("local")',graphCtx),true);
   assert.equal(vm.runInContext('neighbors(graphVisible).has("local")',graphCtx),false);
+  // The full corpus stays searchable while the SVG view has a bounded size.
+  for(const id of ['knowledgeSearch','knowledgeCategory','graphStatus','graphRuleLevel','graphRegion'])graphCtx.$(id).value='';
+  vm.runInContext('graphData={nodes:Array.from({length:1000},(_,i)=>({id:"policy-"+i,kind:"clause",label:"条款"+i})),edges:[]};graphSelected=null;',graphCtx);
+  graphCtx.filterGraph();assert.equal(vm.runInContext('graphVisible.size',graphCtx),240);
+  graphCtx.$('knowledgeSearch').value='policy-999';graphCtx.filterGraph();
+  assert.equal(vm.runInContext('graphVisible.has("policy-999")',graphCtx),true);
   vm.runInContext(graph.slice(graph.indexOf('function layoutGraph('),graph.indexOf('function drawGraph(')),graphCtx);
   vm.runInContext('graphData={nodes:[],edges:[]};graphFocused=true;graphVisible=new Set();',graphCtx);
   graphCtx.innerWidth=390;graphCtx.layoutGraph(); // empty focused mobile view must not dereference undefined

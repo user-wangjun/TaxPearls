@@ -4,6 +4,7 @@ let graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),grap
 const graphCanvas=$("graphCanvas");
 const graphRuleLevels={national:"国家级规则",provincial:"省级规则",municipal:"市级规则",unspecified:"未标注级别"};
 let graphAllowed=new Set();
+let graphMatchedCount=0;
 let graphScopes=new Map();
 for(const [kind,[label,color]]of Object.entries(graphKinds)){const item=el("span",null,label);item.style.setProperty("--node-color",color);$("graphLegend").append(item);}
 function graphCurrent(ticket,owner){return ticket===graphRequest&&currentUser?.id===owner&&$("knowledgePanel").classList.contains("active");}
@@ -69,6 +70,13 @@ function updateGraphRegions(){
 }
 for(const id of ["knowledgeSearch","knowledgeCategory","graphStatus","graphRuleLevel","graphRegion"])$(id).addEventListener(id==="knowledgeSearch"?"input":"change",()=>{if(id==="graphRuleLevel")updateGraphRegions();graphFocused=false;graphTransform={x:0,y:0,k:1};filterGraph();});
 function neighbors(ids){const result=new Set(ids);for(const e of graphData.edges){if(ids.has(e.source))result.add(e.target);if(ids.has(e.target))result.add(e.source);}return new Set([...result].filter(id=>graphAllowed.has(id)));}
+function limitGraphView(){
+  graphMatchedCount=graphVisible.size;
+  if(graphData.taxpayer_id||graphVisible.size<=240)return;
+  const ordered=graphData.nodes.filter(n=>graphVisible.has(n.id));
+  ordered.sort((a,b)=>(a.id===graphSelected?-1:b.id===graphSelected?1:0));
+  graphVisible=new Set(ordered.slice(0,240).map(n=>n.id));
+}
 function filterGraph(historyFocus=false){
   const query=$("knowledgeSearch").value.trim().toLowerCase(),category=$("knowledgeCategory").value,status=$("graphStatus").value,level=$("graphRuleLevel").value,region=$("graphRegion").value;
   const matchesLevel=n=>!level||(level==="local"?["provincial","municipal"].includes(n.rule_level)&&(!region||n.region===region):(n.rule_level||"unspecified")===level);
@@ -79,6 +87,7 @@ function filterGraph(historyFocus=false){
   graphVisible=neighbors(new Set(seeds.map(n=>n.id)));
   if(!graphSelected||!graphVisible.has(graphSelected))graphSelected=(graphData.taxpayer_id?seeds.find(n=>n.kind==="risk"&&n.status==="hit")||seeds.find(n=>n.kind==="risk"):seeds.find(n=>n.kind==="rule"||n.kind==="risk"))?.id||seeds[0]?.id||null;
   if(historyFocus&&graphData.taxpayer_id&&!query&&!category&&!status&&!level){graphFocused=true;graphVisible=neighbors(new Set(graphSelected?[graphSelected]:[]));}
+  limitGraphView();
   layoutGraph();drawGraph();renderNode();
 }
 function layoutGraph(){
@@ -146,7 +155,7 @@ function drawGraph(){
   $("graphMode").textContent=graphFocused?"关联视图":"全景视图";
   $("graphOverview").classList.toggle("selected",!graphFocused);$("graphFocus").classList.toggle("selected",graphFocused);
   $("graphSummary").replaceChildren();for(const [num,label]of [[graphData.nodes.length,"知识节点"],[graphData.edges.length,"证据关联"]]){const item=el("div");item.append(el("strong",null,num),el("span",null,label));$("graphSummary").append(item);}
-  $("graphCount").textContent=graphVisible.size?graphVisible.size+" 个节点 · "+graphData.edges.filter(e=>graphVisible.has(e.source)&&graphVisible.has(e.target)).length+" 条关系":"没有匹配的节点，请调整筛选";
+  $("graphCount").textContent=graphVisible.size?graphVisible.size+" 个节点 · "+graphData.edges.filter(e=>graphVisible.has(e.source)&&graphVisible.has(e.target)).length+" 条关系"+(graphMatchedCount>graphVisible.size?`；匹配 ${graphMatchedCount} 个节点，当前展示前 ${graphVisible.size} 个，可搜索全部知识或按地区缩小范围。`:""):"没有匹配的节点，请调整筛选";
 }
 function selectGraphNode(id){graphSelected=id;drawGraph();renderNode();}
 function renderNode(){
@@ -161,7 +170,7 @@ function renderNode(){
   box.append(el("p","ev-title","相邻节点"));for(const e of graphData.edges.filter(e=>e.source===n.id||e.target===n.id)){const other=graphData.nodes.find(v=>v.id===(e.source===n.id?e.target:e.source));if(!graphAllowed.has(other.id))continue;box.append(action(e.label+" · "+other.label,()=>{graphVisible.add(other.id);if(!graphPositions.has(other.id))layoutGraph();selectGraphNode(other.id);}));}
 }
 function updateAIContext(){const n=graphData.nodes.find(n=>n.id===graphSelected);$("graphAIContext").textContent=n?"当前上下文："+n.label+(n.audit_period?" · "+n.audit_period:""):"请先在图谱中选择一个节点";}
-function focusGraph(){if(!graphSelected)return;graphFocused=true;graphVisible=neighbors(new Set([graphSelected]));layoutGraph();graphTransform={x:0,y:0,k:1};drawGraph();}
+function focusGraph(){if(!graphSelected)return;graphFocused=true;graphVisible=neighbors(new Set([graphSelected]));limitGraphView();layoutGraph();graphTransform={x:0,y:0,k:1};drawGraph();}
 $("graphFocus").addEventListener("click",focusGraph);
 $("graphExpand").addEventListener("click",()=>{graphVisible=neighbors(graphVisible);layoutGraph();drawGraph();});
 function clearGraphFilters(){for(const id of ["knowledgeSearch","knowledgeCategory","graphStatus","graphRuleLevel","graphRegion"])$(id).value="";updateGraphRegions();}

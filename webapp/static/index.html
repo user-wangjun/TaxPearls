@@ -196,6 +196,7 @@
   footer { border-top: 1px solid var(--line); padding: 22px 0 40px; color: var(--ink-3); font-size: 12px; line-height: 1.9; }
 
   .field { margin:12px 0; }
+  #coreInputs .core-task-group .field[hidden] { display:none; }
   .field label { display:block; font-size:12px; color:var(--ink-2); margin-bottom:6px; }
   .field input,.field select,.field textarea { width:100%; border:1px solid var(--line); border-radius:6px; padding:10px 12px; font:inherit; background:#fff; transition:border-color .16s,box-shadow .16s,background .16s; }
   /* 自绘下拉组件：原生 select 弹层无法控制可见条数，改用按钮 + 列表面板 */
@@ -222,6 +223,10 @@
   .auth-password-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
   .auth-card .auth-password-row .field { margin-bottom:0; }
   .auth-card .auth-help { font-size:12px; line-height:1.6; margin:6px 0 16px; color:var(--ink-2); }
+  .auth-card .auth-help[data-state="error"] { color:#a12622; }
+  .auth-card .auth-help[data-state="valid"] { color:#17634b; }
+  .auth-card .pw-wrap input[aria-invalid="true"] { border-color:#a12622; }
+  #signupPasswordMatch:empty { display:none; }
   .auth-card .auth-verification-help { margin-bottom:0; }
   .auth-card #viewSignup > .field:last-child { margin-bottom:0; }
   .pw-wrap { position:relative; }
@@ -438,7 +443,7 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=20261016-enterprise-integration-1">
+<link rel="stylesheet" href="/workspace.css?v=20261018-936c5e6dac3b">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -479,9 +484,10 @@
         <div class="field"><label for="signupEmail">邮箱</label><input id="signupEmail" type="email" autocomplete="email" placeholder="name@example.com" required></div>
         <div class="auth-password-row">
           <div class="field"><label for="signupPass">设置密码</label><div class="pw-wrap"><input id="signupPass" minlength="10" maxlength="128" type="password" autocomplete="new-password" aria-describedby="signupPasswordHint" required placeholder="设置你的密码"><button type="button" class="pw-toggle" data-password="signupPass" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
-          <div class="field"><label for="signupPass2">确认密码</label><div class="pw-wrap"><input id="signupPass2" minlength="10" maxlength="128" type="password" autocomplete="new-password" required placeholder="再次输入密码"><button type="button" class="pw-toggle" data-password="signupPass2" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
+          <div class="field"><label for="signupPass2">确认密码</label><div class="pw-wrap"><input id="signupPass2" aria-describedby="signupPasswordMatch" minlength="10" maxlength="128" type="password" autocomplete="new-password" required placeholder="再次输入密码"><button type="button" class="pw-toggle" data-password="signupPass2" aria-label="显示密码" aria-pressed="false" tabindex="0"><svg class="pw-eye" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg><svg class="pw-eye-off" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none"><path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><line x1="4" y1="4" x2="20" y2="20"/></svg></button></div></div>
         </div>
-        <p class="auth-help" id="signupPasswordHint">10–128 位，大小写字母、数字、符号至少包含三类。</p>
+        <p class="auth-help" id="signupPasswordHint" aria-live="polite">10–128 位，大小写字母、数字、符号至少包含三类（空白不算符号）。</p>
+        <p class="auth-help" id="signupPasswordMatch" aria-live="polite"></p>
         <p class="auth-help" id="signupProofStatus" hidden>邮箱已验证，请设置密码完成注册；邀请凭证沿用发起验证时的绑定。</p>
         <div id="emailVerificationFields"><div class="field"><label for="captchaAnswer">人机验证</label>
           <div class="captcha-row">
@@ -617,6 +623,7 @@
       <details class="material-card kg-evidence" id="kgEvidencePanel">
         <summary>政策检索与检查材料包</summary>
         <p class="muted">选择检查项目，查看命中的政策、过滤原因、必要例外和数据缺口。选择企业任务后，从已保存资料取数并保留本次检查版本。</p>
+        <div id="kgKnowledgeStatus" aria-live="polite"></div>
         <form id="kgEvidenceForm"><fieldset id="kgEvidenceFields"><div class="kg-evidence-grid">
           <div class="field"><label for="kgTask">企业检查任务</label><select id="kgTask"><option value="">仅检索政策，不读取企业资料</option></select></div>
           <div class="field"><label for="kgRule">检查项目</label><select id="kgRule" required><option value="">等待载入检查项目</option></select></div>
@@ -638,18 +645,33 @@
     <section class="panel" id="uploadPanel">
     <div class="sheet" id="coreInputs" hidden>
       <h2>基础审查资料准备</h2>
-      <p class="muted">先指定企业与检查区间，再上传科目余额表、增值税申报表和进销项发票明细，核对保存后点击“继续核查”，查看检查结果与报告。</p>
-      <fieldset id="coreTaskForm"><legend>创建资料处理任务</legend>
+      <p class="muted">检查区间由你选择：按月、按季度、按年度或自定义起止日。程序读取材料期间只用于核对，不会自动改变你选择的区间；材料期间候选须明确采用。核对后点击“开始检查”校验并进入核查。</p>
+      <fieldset id="coreTaskForm"><legend>企业与检查区间（可先留空）</legend>
+        <label class="field core-client-field">选择历史企业<select id="coreClient"><option value="">新企业 / 从文件读取</option></select></label>
         <div class="core-task-fields">
           <div class="core-task-group">
             <h3>企业信息</h3>
-            <label class="field">企业名称<input id="coreCompanyName" maxlength="200" placeholder="填写企业全称" required></label>
-            <label class="field">税号<input id="coreTaxNo" maxlength="20" placeholder="填写纳税人识别号" required></label>
+            <label class="field">企业名称<input id="coreCompanyName" maxlength="200" placeholder="填写企业全称"></label>
+            <label class="field">税号<input id="coreTaxNo" maxlength="20" placeholder="填写纳税人识别号"></label>
           </div>
           <div class="core-task-group">
             <h3>检查区间</h3>
-            <label class="field">检查起始日<input id="coreStart" type="date" required></label>
-            <label class="field">检查终止日<input id="coreEnd" type="date" required></label>
+            <label class="field">范围方式<select id="coreRangeKind"><option value="month">按月</option><option value="quarter">按季度</option><option value="year">按年度</option><option value="custom">自定义起止日</option></select></label>
+            <label class="field" id="coreRangeMonthField" hidden>检查月份<input id="coreRangeMonth" type="month" min="0001-01" max="9999-12"></label>
+            <label class="field" id="coreRangeYearField" hidden>检查年份<input id="coreRangeYear" type="number" min="1" max="9999" step="1" placeholder="如 2026"></label>
+            <label class="field" id="coreRangeQuarterField" hidden>检查季度<select id="coreRangeQuarter"><option value="1">第一季度</option><option value="2">第二季度</option><option value="3">第三季度</option><option value="4">第四季度</option></select></label>
+            <div class="field core-range-field" id="coreDateRangeField">
+              <span id="coreDateRangeLabel">检查起止日期</span>
+              <button id="coreDateRange" class="core-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="coreRangeCalendar" aria-labelledby="coreDateRangeLabel coreDateRangeText"><span id="coreDateRangeText">选择起始和终止日期</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg></button>
+              <input id="coreStart" type="hidden"><input id="coreEnd" type="hidden">
+              <div id="coreRangeCalendar" class="core-range-calendar" role="dialog" aria-label="选择检查起止日期" hidden>
+                <p id="coreCalendarHint" role="status">请选择起始日期</p>
+                <div class="core-calendar-toolbar"><button id="coreCalendarPrev" type="button" aria-label="上个月">‹</button><input id="coreCalendarMonth" type="month" min="0001-01" max="9999-12" aria-label="日历显示月份"><button id="coreCalendarNext" type="button" aria-label="下个月">›</button></div>
+                <div class="core-calendar-week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+                <div id="coreCalendarDays" class="core-calendar-days" role="group" aria-label="日期"></div>
+                <div class="core-calendar-actions"><button id="coreCalendarClear" type="button">清空</button><button id="coreCalendarCancel" type="button">取消</button></div>
+              </div>
+            </div>
           </div>
         </div>
         <div class="core-task-footer">
@@ -660,10 +682,19 @@
               <p class="muted">原件加密留存，不把空白当作零。单份上限 10MB，每任务最多 20 份。</p>
             </details>
           </div>
-          <button id="coreCreateTask" class="btn pdf" type="button">创建任务并上传资料</button>
+          <button id="coreCreateTask" class="btn pdf" type="button">创建草稿并上传资料</button>
         </div>
       </fieldset>
       <div id="coreTaskResult" aria-live="polite"></div><div id="coreTaskHistory"></div>
+      <dialog id="coreDeleteDialog" class="core-delete-dialog" aria-labelledby="coreDeleteTitle" aria-describedby="coreDeleteDescription">
+        <div class="core-delete-body">
+          <h2 id="coreDeleteTitle">删除本次任务</h2>
+          <p>确认永久删除「<strong id="coreDeleteTaskName"></strong>」的本次任务？</p>
+          <p id="coreDeleteDescription">上传原件、解析与核对历史、任务内报告将一并删除，无法在本系统恢复。</p>
+          <p class="muted">企业档案和其他任务保留；已有备份及下载副本不受影响。</p>
+        </div>
+        <div class="core-delete-actions"><button id="coreDeleteCancel" class="btn re" type="button" autofocus>取消</button><button id="coreDeleteConfirm" class="btn core-delete-confirm" type="button">确认删除</button></div>
+      </dialog>
     </div>
     <details id="coreLegacyToggle" hidden><summary>历史材料检测入口</summary><p class="muted">下方为原有材料与报告流程；本次基础资料任务不从这里执行检测。</p></details>
     <div id="legacyInputFlow">
@@ -945,15 +976,15 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
-<script src="/core-inputs.js?v=20261015-auto-fallback-1"></script>
-<script src="/enterprise.js?v=enterprise-invoice-20261013-1"></script>
-<script src="/ai-keys.js?v=20261012-model-combobox-11"></script>
-<script src="/console.js?v=20261015-risk-evidence-layout-1"></script>
+<script src="/core-inputs.js?v=20261018-7142400410f4"></script>
+<script src="/enterprise.js?v=20261017-62c89aee0e75"></script>
+<script src="/ai-keys.js?v=20261017-live-balance-1"></script>
+<script src="/console.js?v=20261017-password-validation"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
-<script src="/graph.js?v=graph-reset-regions-1"></script>
+<script src="/graph.js?v=20261017-11967901ecc2"></script>
 <script src="/rule-bindings.js?v=20261016"></script>
-<script src="/knowledge-retrieval.js?v=20261016-risk-policy-1"></script>
+<script src="/knowledge-retrieval.js?v=20261017-90decf1290ba"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>
 </body>
