@@ -2,10 +2,11 @@
 // Exercise the shipped controller: failed saves retain edits, stale sessions cannot display evidence.
 const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm");
 class Node {
-  constructor(tag){this.tag=tag;this.children=[];this.value="";this.checked=false;this.disabled=false;this.listeners={};this.style={};}
+  constructor(tag){this.tag=tag;this.children=[];this.value="";this.checked=false;this.disabled=false;this.listeners={};this.style={};this.dataset={};}
   append(...nodes){this.children.push(...nodes);}
   replaceChildren(...nodes){this.children=nodes;}
   setAttribute(key,value){this[key]=value;}
+  removeAttribute(key){delete this[key];}
   addEventListener(key,fn){this.listeners[key]=fn;}
   click(){this.clicked=true;}
   focus(){this.focused=true;}
@@ -29,7 +30,16 @@ function all(root){return [root,...root.children.flatMap(all)];}
     if(options?.method==="DELETE"){if(failDelete)throw new Error("测试删除失败");return {id:"task",deleted:true};}
     if(failScope&&url.endsWith("/scope"))throw new Error("测试范围保存失败");
     if(fail&&url.endsWith("/prepare"))throw new Error("测试保存失败");if(url.includes("/data?"))return structuredClone(exported);return url==="/api/clients"?[{id:"existing",name:"历史企业",taxpayer_id:"91310000123456789A"}]:url==="/api/enterprise/input-tasks"&&!options?[]:structuredClone(sample);};
-  const context={document:{createElement:tag=>new Node(tag)},URL:{createObjectURL(blob){downloads.push(blob);return "blob:export";},revokeObjectURL(){}},Blob,setTimeout,console,FormData,};vm.createContext(context);vm.runInContext(fs.readFileSync("webapp/static/core-inputs.js","utf8"),context);
+  let holdUploads=false;const uploadRequests=[];
+  class UploadRequest {
+    constructor(){this.upload={};uploadRequests.push(this);}
+    open(method,url){this.method=method;this.url=url;}
+    send(body){calls.push({url:this.url,options:{method:this.method,body}});if(!holdUploads)queueMicrotask(()=>this.succeed());}
+    succeed(revision=sample.revision){this.upload.onload?.();this.status=200;this.responseText=JSON.stringify({...sample,revision});this.onload();}
+    abort(){this.aborted=true;this.onabort?.();}
+  }
+  const pageEvents={};
+  const context={document:{createElement:tag=>new Node(tag)},URL:{createObjectURL(blob){downloads.push(blob);return "blob:export";},revokeObjectURL(){}},Blob,setTimeout,console,FormData,XMLHttpRequest:UploadRequest,addEventListener:(event,fn)=>pageEvents[event]=fn};vm.createContext(context);vm.runInContext(fs.readFileSync("webapp/static/core-inputs.js","utf8"),context);
   const controller=context.createCoreInputs({api,el:(tag,cls,text)=>{const n=new Node(tag);n.className=cls||"";n.textContent=text||"";return n;},$,user:()=>actor,showError:msg=>errors.push(msg),continueCheck:id=>continued.push(id)});
   await controller.refresh();assert.equal($("coreClient").children.length,2);
   $("coreClient").value="existing";$("coreClient").onchange();assert.equal($("coreCompanyName").value,"历史企业");assert.equal($("coreTaxNo").value,"91310000123456789A");
@@ -89,7 +99,55 @@ function all(root){return [root,...root.children.flatMap(all)];}
     const upload=calls.findLast(c=>c.url.endsWith("/files")).options.body;
     assert.equal(upload.get("material_type"),kind);assert.equal(upload.get("mapping_mode"),"ai");
     assert.ok(pick.accept.split(",").includes(".pdf"));assert.equal(upload.get("ocr"),"1");
+    assert.equal(field(label+"文件传输进度").value,100);
   }
+  // Real transfer events drive the percentage; parsing never pretends to have a percentage.
+  holdUploads=true;
+  const uploadPick=field("科目余额表上传");uploadPick.files=[new Blob(["progress fixture"])];
+  const uploading=uploadPick.onchange(),request=uploadRequests.at(-1),progress=field("科目余额表文件传输进度");
+  request.upload.onprogress({lengthComputable:true,loaded:42,total:100});assert.equal(progress.value,42);
+  request.upload.onload();assert.equal(Object.hasOwn(progress,"value"),false);assert.ok(find("文件已传输，正在保存和解析，请稍候……"));
+  assert.equal(uploadPick.disabled,false,"file selection stays available during parsing");
+  assert.equal(field("增值税申报表上传").disabled,false);assert.equal($("coreTaskForm").disabled,true);
+  const requestCount=uploadRequests.length,queuedPick=field("增值税申报表上传");queuedPick.files=[new Blob(["next batch"])];
+  const queued=queuedPick.onchange();uploadPick.files=[new Blob(["another balance"])];const sameKind=uploadPick.onchange();
+  assert.equal(uploadRequests.length,requestCount,"new selections wait without concurrent revision writes");
+  assert.ok(find("等待上传 1 份（尚未发送）"));
+  const unloadEvent={preventDefault(){this.prevented=true;}};pageEvents.beforeunload(unloadEvent);assert.equal(unloadEvent.prevented,true);
+  request.succeed(2);await uploading;
+  const secondRequest=uploadRequests.at(-1);assert.notEqual(secondRequest,request);
+  assert.equal(calls.at(-1).options.body.get("expected_revision"),"2");assert.equal(calls.at(-1).options.body.get("material_type"),"vat_declaration");
+  secondRequest.succeed(3);await queued;
+  assert.equal(calls.at(-1).options.body.get("expected_revision"),"3");assert.equal(calls.at(-1).options.body.get("material_type"),"account_balance");
+  uploadRequests.at(-1).succeed(4);await sameKind;
+  assert.equal(field("科目余额表文件传输进度").value,100);assert.equal(field("科目余额表上传").disabled,false);
+  const completedUnload={preventDefault(){this.prevented=true;}};pageEvents.beforeunload(completedUnload);assert.equal(completedUnload.prevented,undefined);
+  const failedPick=field("增值税申报表上传");failedPick.files=[new Blob(["failed fixture"])];
+  const failing=failedPick.onchange(),failingRequest=uploadRequests.at(-1),waitingPick=field("发票明细上传");waitingPick.files=[new Blob(["not sent yet"])];
+  const waiting=waitingPick.onchange(),beforeFailure=uploadRequests.length;failingRequest.onerror();await failing;
+  assert.match(errors.at(-1),/结果未确认/);assert.equal(failedPick.disabled,false);assert.equal(failedPick.value,"");
+  assert.equal(uploadRequests.length,beforeFailure);assert.ok(find("已暂停，等待上传 1 份（尚未发送）"));
+  const beforeSwitch=calls.length;await controller.openTask("other-task");assert.equal(calls.length,beforeSwitch,"waiting files cannot follow a task switch");
+  const resuming=find("读取任务并继续上传").onclick();await new Promise(setImmediate);
+  assert.equal(uploadRequests.length,beforeFailure+1,"resume sends only the never-sent batch");assert.equal(calls.at(-1).options.body.get("expected_revision"),"1","resume refreshes the authoritative task revision");
+  uploadRequests.at(-1).succeed();await waiting;await resuming;
+  const retryPick=field("增值税申报表上传");retryPick.files=[new Blob(["retry fixture"])];
+  const retry=retryPick.onchange(),httpFailure=uploadRequests.at(-1);httpFailure.status=422;httpFailure.responseText=JSON.stringify({detail:"文件格式不支持"});httpFailure.onload();await retry;
+  assert.equal(errors.at(-1),"文件格式不支持");assert.equal(retryPick.disabled,false);
+  // Removing waiting files never cancels or resends the active batch.
+  const keepPick=field("科目余额表上传");keepPick.files=[new Blob(["keep active"])];const keepActive=keepPick.onchange(),keepRequest=uploadRequests.at(-1);
+  const removePick=field("发票明细上传");removePick.files=[new Blob(["remove waiting"])];const removed=removePick.onchange();
+  const queueBox=all($("coreTaskResult")).find(n=>n.className==="core-upload-status"&&all(n).includes(field("发票明细文件传输进度")));
+  all(queueBox).find(n=>n.textContent==="清除待上传").onclick();assert.equal(await removed,false);assert.equal(keepRequest.aborted,undefined);
+  keepRequest.succeed();await keepActive;
+  const limitPick=field("科目余额表上传"),beforeLimit=uploadRequests.length;limitPick.files=Array.from({length:20},()=>new Blob(["limit"]));await limitPick.onchange();assert.match(errors.at(-1),/合计不能超过 20/);
+  limitPick.files=[{size:10*1024*1024+1}];await limitPick.onchange();assert.match(errors.at(-1),/10MB/);assert.equal(uploadRequests.length,beforeLimit);
+  const cancelPick=field("发票明细上传");cancelPick.files=[new Blob(["cancel fixture"])];
+  const cancelled=cancelPick.onchange(),cancelRequest=uploadRequests.at(-1);const stalePick=field("增值税申报表上传");stalePick.files=[new Blob(["stale queued fixture"])];const staleQueued=stalePick.onchange();
+  controller.reset();await cancelled;assert.equal(await staleQueued,false);
+  assert.equal(cancelRequest.aborted,true);assert.equal($("coreTaskResult").children.length,0,"session reset discards stale progress");
+  cancelRequest.upload.onprogress({lengthComputable:true,loaded:100,total:100});assert.equal($("coreTaskResult").children.length,0);
+  holdUploads=false;await controller.openTask("task");
   const review=find("资料口径核对");const editor=all($("coreTaskResult")).find(n=>n.tag==="fieldset");assert.ok(review);
   const forms=field("本期适用附表名称（以分号分隔）");forms.value="附表一";editor.listeners.input();
   const downloadsBefore=downloads.length;await find("下载标准数据 JSON").onclick();assert.equal(downloads.length,downloadsBefore);assert.match(errors.at(-1),/先保存/);
@@ -169,5 +227,5 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.ok(find("删除本次任务"),"late deletion result cannot clear a new session's task");assert.equal($("coreCompanyName").value,"企业");
   const beforeReset=calls.length,resetDialog=find("删除本次任务").onclick();controller.reset();await resetDialog;assert.equal($("coreDeleteDialog").open,false);assert.equal(calls.length,beforeReset,"session reset cancels an open confirmation");
   actor={id:"four",role:"accountant"};controller.reset();await controller.openTask("task");assert.equal(find("删除本次任务"),undefined,"task deletion follows administrator-only material deletion permissions");
-  console.log("Core frontend: scope validation, upload dispatch, unsaved/session guards, candidate/standard record distinction, three material tables, exact decimal display, paginated invoice edits and full save passed.");
+  console.log("Core frontend: scope validation, continuous upload/progress, serial revisions, pause/resume/cancel, unsaved/session guards, candidate/standard records, three material tables, exact decimals, paginated invoice edits and full save passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});
