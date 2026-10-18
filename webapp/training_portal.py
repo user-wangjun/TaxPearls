@@ -32,6 +32,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from webapp.login_guard import LoginGuard
+from webapp import code_sandbox
 from webapp.storage import _hash_token, _now, session_max_age
 from webapp.training_content import (applicability, ensure_active_version,
                                      resolve_active_version, version_brief)
@@ -440,12 +441,20 @@ def update_code_problem(store, problem_id: str, fields: dict[str, Any],
             "SELECT count(*) n FROM code_test_case WHERE problem_id=?",
             (problem_id,)).fetchone()["n"]
         payload["cases"] = [dict(r) for r in db.execute(
-            "SELECT seq, input_text, expected_output, weight, sample FROM code_test_case"
+            "SELECT seq, input_text, expected_output, weight, sample, match_mode,"
+            " float_tolerance, alternatives_json FROM code_test_case"
             " WHERE problem_id=? ORDER BY seq", (problem_id,)).fetchall()]
     return payload
 
 
 def _clean_test_cases(cases: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """用例清洗（v3.1）：match_mode/float_tolerance/alternatives 校验。
+
+    - match_mode: exact|float|any_of（缺省 exact）；
+    - float_tolerance: (0, 0.5] 开区间内（缺省 None → 引擎用 1e-6），
+      仅 float/any_of 模式允许给；exact 模式给了也忽略并存原值；
+    - alternatives: 仅 any_of 使用，非空字符串列表（≤20 条，单条 ≤4096 字符）；
+      exact 模式给 alternatives 视为配置错误（避免教师误配静默失效）。"""
     cleaned = []
     for i, c in enumerate(cases or [], start=1):
         input_text = str(c.get("input_text") or "")
@@ -454,8 +463,36 @@ def _clean_test_cases(cases: list[dict[str, Any]] | None) -> list[dict[str, Any]
         weight = 1.0 if raw_weight is None else float(raw_weight)
         if weight <= 0:
             raise TrainingPortalError(f"第 {i} 个用例权重必须为正数。")
+        mode = str(c.get("match_mode") or "exact").strip().lower()
+        if mode not in code_sandbox.MATCH_MODES:
+            raise TrainingPortalError(
+                f"第 {i} 个用例 match_mode 须为 {'/'.join(code_sandbox.MATCH_MODES)}。")
+        raw_tol = c.get("float_tolerance")
+        tolerance = None if raw_tol in (None, "") else float(raw_tol)
+        if tolerance is not None and not (0 < tolerance <= 0.5):
+            raise TrainingPortalError(f"第 {i} 个用例容差须在 (0, 0.5] 之间。")
+        alternatives = c.get("alternatives")
+        if alternatives is not None and mode != "any_of":
+            raise TrainingPortalError(
+                f"第 {i} 个用例只有 any_of 模式可配置多解候选。")
+        alt_list: list[str] = []
+        if mode == "any_of":
+            for alt in (alternatives or []):
+                text = str(alt)
+                if not text.strip():
+                    raise TrainingPortalError(f"第 {i} 个用例多解候选不能为空串。")
+                if len(text) > 4096:
+                    raise TrainingPortalError(f"第 {i} 个用例多解候选超长（≤4096 字符）。")
+                alt_list.append(text)
+            if len(alt_list) > 20:
+                raise TrainingPortalError(f"第 {i} 个用例多解候选最多 20 条。")
+            if not alt_list:
+                raise TrainingPortalError(
+                    f"第 {i} 个用例 any_of 模式须至少给 1 条多解候选。")
         cleaned.append({"seq": i, "input_text": input_text, "expected_output": expected,
-                        "weight": weight, "sample": 1 if c.get("sample") else 0})
+                        "weight": weight, "sample": 1 if c.get("sample") else 0,
+                        "match_mode": mode, "float_tolerance": tolerance,
+                        "alternatives": alt_list})
     return cleaned
 
 
@@ -463,10 +500,15 @@ def _insert_test_cases(db, problem_id: str, cases: list[dict[str, Any]]) -> None
     for c in cases:
         db.execute(
             """INSERT INTO code_test_case (id, problem_id, seq, input_text,
-                                           expected_output, weight, sample, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                                           expected_output, weight, sample,
+                                           match_mode, float_tolerance, alternatives_json,
+                                           created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (str(uuid.uuid4()), problem_id, c["seq"], c["input_text"],
-             c["expected_output"], c["weight"], c["sample"], _now()))
+             c["expected_output"], c["weight"], c["sample"],
+             c["match_mode"], c["float_tolerance"],
+             json.dumps(c["alternatives"], ensure_ascii=False) if c["alternatives"] else None,
+             _now()))
 
 
 
@@ -555,10 +597,11 @@ def code_judge_queue_retry(store, task_id: str) -> dict[str, Any]:
 
 
 def judge_submission(store, submission_id: str) -> dict[str, Any]:
-    """教学级判题（J04 v1）：逐用例受限运行并加权计分。
+    """教学级判题（J04 v3.1）：逐用例受限运行并加权计分。
 
-    边界：单进程同步执行（J05 异步队列待专项）；逐字节级比对归一化后
-    进行，浮点容差/多解判定未实现；判题器边界见 code_sandbox.SANDBOX_NOTICE。"""
+    边界：单进程同步执行（J05 队列可选异步）；比对按用例 match_mode
+    （exact/float 浮点容差/any_of 多解判定，见 code_sandbox.compare_output）；
+    判题器边界见 code_sandbox.SANDBOX_NOTICE。"""
     from webapp import code_sandbox
     with store.connect() as db:
         submission = db.execute(
@@ -570,7 +613,8 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
             (submission["problem_id"],)).fetchone()
         code = submission["code_text"]  # 行工厂（attach row handler）已按身份校验并解密
         cases = [dict(r) for r in db.execute(
-            "SELECT seq, input_text, expected_output, weight FROM code_test_case"
+            "SELECT seq, input_text, expected_output, weight, match_mode,"
+            " float_tolerance, alternatives_json FROM code_test_case"
             " WHERE problem_id=? ORDER BY seq", (submission["problem_id"],)).fetchall()]
         detail: list[dict[str, Any]] = []
         passed_weight = 0.0
@@ -581,8 +625,15 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
         for case in cases:
             run = code_sandbox.run_case(code, case["input_text"],
                                         time_limit_ms=problem["time_limit_ms"])
-            ok = run["status"] == "ok" and code_sandbox.judge_output(
-                run["output"], case["expected_output"])
+            try:
+                alternatives = json.loads(case["alternatives_json"] or "[]")
+            except (TypeError, ValueError):
+                alternatives = []
+            ok = run["status"] == "ok" and code_sandbox.compare_output(
+                run["output"], case["expected_output"],
+                mode=case["match_mode"] or "exact",
+                tolerance=case["float_tolerance"],
+                alternatives=alternatives)
             total_weight += float(case["weight"])
             if ok:
                 passed_weight += float(case["weight"])
@@ -3220,6 +3271,10 @@ class CodeTestCaseIn(BaseModel):
     expected_output: str = ""
     weight: float = 1.0
     sample: bool = False
+    match_mode: str = Field(default="exact",
+                            pattern="^(exact|float|any_of)$")  # v3.1 比对模式
+    float_tolerance: float | None = Field(default=None, gt=0.0, le=0.5)
+    alternatives: list[str] | None = None  # any_of 多解候选
 
 
 class CodeSubmitBody(BaseModel):
