@@ -1383,7 +1383,11 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 @media(max-width:380px) { #coreInputs .core-record-table td[data-label="购销方向"] { grid-column:1/-1; } }
 #coreInputs .core-task-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px 32px; }
 #coreInputs .core-task-group { min-width:0; }
-#coreInputs .core-task-group h3 { margin:4px 0 16px; font-size:14px; font-weight:600; }
+#coreInputs .core-task-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 12px; min-height:36px; margin:0 0 16px; }
+#coreInputs .core-task-heading h3 { margin:0; font-size:14px; font-weight:600; }
+#coreInputs .core-task-group .field > :is(.core-identity-field-heading,.core-field-label,#coreDateRangeLabel) { display:flex; align-items:center; min-height:24px; }
+#coreInputs .core-identity-field-heading { justify-content:space-between; gap:8px 12px; flex-wrap:wrap; }
+#coreInputs .core-identity-field-heading label { margin:0; font:inherit; }
 #coreInputs .core-task-group .field { display:flex; flex-direction:column; gap:8px; margin:0 0 16px; font-size:12px; color:var(--ink-2); }
 #coreInputs .core-task-group .field:last-child { margin-bottom:0; }
 #coreInputs .core-task-group input { width:100%; min-width:0; box-sizing:border-box; padding:10px 12px; font:inherit; font-size:14px; }
@@ -1447,6 +1451,33 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 
 #coreInputs #coreTaskForm [aria-invalid="true"] { border-color: #b42318; }
 .core-field-error { color: #b42318; font-size: 0.8rem; line-height: 1.5; overflow-wrap: anywhere; }
+html[data-theme=dark] #coreInputs .core-field-error { color:#ff9b9b; }
+html[data-theme=dark] #appMain #coreInputs #coreTaskForm [aria-invalid="true"] { border-color:#ff9b9b; }
+#coreInputs .core-identity-actions { margin:0; max-width:100%; }
+#appMain #coreInputs .core-identity-actions .btn { margin:0; min-height:32px; padding:5px 10px; font-size:12px; line-height:1.5; white-space:normal; }
+.core-identity-dialog { width:min(640px,calc(100vw - 32px)); }
+.core-identity-dialog[open] { display:flex; flex-direction:column; }
+.core-identity-dialog .core-delete-body { min-height:0; overflow-y:auto; }
+.core-identity-dialog .core-delete-actions { flex-shrink:0; }
+.core-identity-change { margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:10px; }
+#coreInputs .core-identity-change h3 { margin:0 0 10px; font-size:15px; }
+.core-identity-current { overflow-wrap:anywhere; }
+#coreInputs .core-identity-option { display:flex; align-items:flex-start; gap:10px; margin:8px 0; cursor:pointer; font-size:14px; line-height:1.7; }
+#coreInputs .core-identity-option input { flex:0 0 16px; width:16px; margin-top:5px; }
+#coreInputs .core-identity-option > span { min-width:0; overflow-wrap:anywhere; }
+#coreInputs .core-identity-option small { display:block; font-size:12px; }
+#coreInputs .core-identity-different { color:#b42318; }
+#coreInputs mark.core-identity-different { background:none; font-weight:inherit; }
+html[data-theme=dark] #coreInputs .core-identity-different { color:#ff9b9b; }
+#coreInputs .core-identity-sources { margin:4px 0 12px 26px; font-size:12px; line-height:1.7; }
+#coreInputs .core-identity-sources summary { cursor:pointer; color:var(--ink-2); }
+#coreInputs .core-identity-sources ul { margin:6px 0 0; padding-left:16px; }
+#coreInputs .core-identity-sources li { overflow-wrap:anywhere; margin-bottom:4px; }
+#coreInputs .core-identity-candidates { margin:0; }
+#appMain #coreInputs .core-identity-link { padding:0; border:0; background:none; box-shadow:none; color:var(--ink-2); font-size:12px; text-decoration:underline; cursor:pointer; min-height:24px; }
+#appMain #coreInputs .core-identity-link:hover { color:var(--ink); }
 
 #coreInputs .core-client-field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; font-size: 12px; color: var(--ink-2); }
 #coreInputs #coreClient { width: 100%; min-width: 0; min-height: 46px; box-sizing: border-box; }
+
+.core-check-result{margin:20px 0;padding:20px;border:1px solid var(--line,#64748b);border-radius:16px;scroll-margin-top:24px;overflow-wrap:anywhere}.core-check-result h3{margin-top:0}.core-check-result>.material-card{margin:12px 0}.core-check-result details>summary{cursor:pointer}.core-check-result details details{margin:12px 0}.core-check-result[hidden]{display:none}

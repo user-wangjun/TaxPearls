@@ -93,6 +93,11 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       request.send(form);
     });
   }
+  let checkProgress=null;
+  let regionTaskId=null;
+  const regions={"CN-11":"北京市","CN-12":"天津市","CN-13":"河北省","CN-14":"山西省","CN-15":"内蒙古自治区","CN-21":"辽宁省","CN-22":"吉林省","CN-23":"黑龙江省","CN-31":"上海市","CN-32":"江苏省","CN-33":"浙江省","CN-34":"安徽省","CN-35":"福建省","CN-36":"江西省","CN-37":"山东省","CN-41":"河南省","CN-42":"湖北省","CN-43":"湖南省","CN-44":"广东省","CN-45":"广西壮族自治区","CN-46":"海南省","CN-50":"重庆市","CN-51":"四川省","CN-52":"贵州省","CN-53":"云南省","CN-54":"西藏自治区","CN-61":"陕西省","CN-62":"甘肃省","CN-63":"青海省","CN-64":"宁夏回族自治区","CN-65":"新疆维吾尔自治区"};
+  for(const [value,name] of Object.entries(regions)){const option=el("option","",name);option.value=value;$("coreRegion").append(option);}
+  $("coreRegion").addEventListener("change",()=>{$("coreRegion").setAttribute("aria-invalid","false");});
   const scopeIds={company_name:"coreCompanyName",tax_no:"coreTaxNo",start_date:"coreStart",end_date:"coreEnd"};
   const rangeKind=$("coreRangeKind"),rangeMonth=$("coreRangeMonth"),rangeYear=$("coreRangeYear"),rangeQuarter=$("coreRangeQuarter");
   const rangeTrigger=$("coreDateRange"),calendar=$("coreRangeCalendar"),calendarMonth=$("coreCalendarMonth");
@@ -147,7 +152,9 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const range=selectedRange(kind);
     $("coreStart").value=range?.[0]||"";$("coreEnd").value=range?.[1]||"";updateRangeDisplay();}
   const scopeRead=()=>({...Object.fromEntries(Object.entries(scopeIds).map(([key,id])=>[key,$(id).value.trim()])),range_kind:rangeKind.value||"custom"});
-  const scopeWrite=()=>{for(const [key,id] of Object.entries(scopeIds))$(id).value=current.task[key]||"";const kind=current.task.range_kind||current.range_kind;rangeKind.value=["month","quarter","year","custom"].includes(kind)?kind:"custom";writePeriodInputs(current.task.start_date||"");syncRange();$("coreClient").value=clients.some(c=>c.id===current.task.company_id)?current.task.company_id:"";scopeDirty=false;};
+  const scopeWrite=()=>{for(const [key,id] of Object.entries(scopeIds))$(id).value=current.task[key]||"";const kind=current.task.range_kind||current.range_kind;rangeKind.value=["month","quarter","year","custom"].includes(kind)?kind:"custom";writePeriodInputs(current.task.start_date||"");syncRange();$("coreClient").value=clients.some(c=>c.id===current.task.company_id)?current.task.company_id:"";scopeDirty=false;
+    if(regionTaskId!==current.id){const saved=[...new Set(Object.values(current.tax_checks||{}).map(s=>s.bundle?.task?.region_code).filter(code=>code==="CN"||regions[code]))];$("coreRegion").value=saved.length===1&&saved[0]!=="CN"?saved[0]:"";regionTaskId=current.id;}
+  };
   const deleteDialog=$("coreDeleteDialog");let deleteDecision=null;
   deleteDialog.addEventListener("close",()=>{const resolve=deleteDecision;deleteDecision=null;resolve?.(deleteDialog.returnValue==="delete");});
   $("coreDeleteCancel").onclick=()=>deleteDialog.close("cancel");
@@ -162,6 +169,122 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     if(deleteDecision)return Promise.resolve(false);
     $("coreDeleteTaskName").textContent=name;deleteDialog.returnValue="";
     return new Promise(resolve=>{deleteDecision=resolve;deleteDialog.showModal();});
+  }
+  const identityDialog=$("coreIdentityDialog");let identityDecision=null,identityRead=null,identityValidate=null;
+  identityDialog.addEventListener("close",()=>{const resolve=identityDecision;identityDecision=null;const read=identityRead;identityRead=identityValidate=null;resolve?.(identityDialog.returnValue==="apply"?read?.():null);});
+  $("coreIdentityCancel").onclick=()=>identityDialog.close("cancel");
+  $("coreIdentityConfirm").onclick=()=>identityValidate?.();
+  identityDialog.addEventListener("keydown",event=>{
+    if(event.key!=="Tab")return;
+    const focusable=[...identityDialog.querySelectorAll("input,button")].filter(n=>!n.disabled);
+    const first=focusable[0]||$("coreIdentityCancel"),last=focusable.at(-1)||$("coreIdentityConfirm");
+    if(event.shiftKey&&event.target===first){event.preventDefault();last.focus();}
+    else if(!event.shiftKey&&event.target===last){event.preventDefault();first.focus();}
+  });
+  const identityToken=(key,value)=>{const text=String(value||"").normalize("NFKC").replace(/\s/g,"");return key==="tax_no"?text.toUpperCase():text;};
+  function identityChoices(key){
+    if(key==="period")return (current?.scope_period_candidates||[]).map(p=>({...p,value:`${p.start_date} 至 ${p.end_date}`,sources:(p.sources||[]).map(s=>({...s,file_name:current.documents.find(d=>d.id===s.file_id)?.name||s.file_id}))}));
+    const groups=new Map();
+    for(const choice of current?.scope_identity_candidates?.[key]||[])if(choice.selectable!==false)
+      for(const value of choice.alternatives||[choice.value]){
+        const token=identityToken(key,value);if(!token)continue;
+        if(!groups.has(token))groups.set(token,{value,sources:[]});
+        const sources=groups.get(token).sources;
+        for(const source of choice.sources||[])if(!sources.some(s=>s.file_id===source.file_id&&s.position===source.position))sources.push(source);
+      }
+    return [...groups.values()];
+  }
+  function identitySources(sources){
+    const files=new Map();
+    for(const source of sources){
+      const id=source.file_id||source.file_name;
+      if(!files.has(id))files.set(id,{name:source.file_name||id,positions:new Set(),review:false});
+      const file=files.get(id);file.positions.add(source.position||"来源待核对");file.review ||= !!source.needs_review;
+    }
+    const details=el("details","core-identity-sources"),list=el("ul");
+    details.append(el("summary","",`查看来源（${files.size} 个文件 · ${[...files.values()].reduce((n,f)=>n+f.positions.size,0)} 处）`));
+    for(const file of files.values()){
+      const pages=[],other=[];
+      for(const pos of file.positions){const match=pos.match(/第(\d+)页/);if(match)pages.push(Number(match[1]));else other.push(pos);}
+      const sorted=[...new Set(pages)].sort((a,b)=>a-b),ranges=[];
+      for(let i=0;i<sorted.length;i++){const first=sorted[i];let last=first;while(sorted[i+1]===last+1)last=sorted[++i];ranges.push(first===last?String(first):`${first}–${last}`);}
+      const positions=[...(ranges.length?[`第 ${ranges.slice(0,4).join("、")}${ranges.length>4?"等":""} 页`]:[]),...other.slice(0,3)];
+      if(other.length>3)positions.push(`等 ${other.length} 处`);
+      list.append(el("li","",`${file.name} · ${positions.join("；")}${file.review?"（待核对候选）":""}`));
+    }
+    details.append(list);return details;
+  }
+  function identityDiff(value,other){
+    const node=el("span"),text=String(value||"未填写"),reference=String(other||"");
+    let first=0,last=text.length,end=reference.length;
+    while(first<last&&first<end&&text[first]===reference[first])first++;
+    while(last>first&&end>first&&text[last-1]===reference[end-1]){last--;end--;}
+    node.append(el("span","",text.slice(0,first)),el("mark","core-identity-different",text.slice(first,last)),el("span","",text.slice(last)));return node;
+  }
+  function identityFieldErrors(value){
+    const errors={};
+    if(!value.company_name?.trim())errors.company_name="请填写企业名称，或从材料读取后核对。";
+    else if(value.company_name.trim().length>200)errors.company_name="企业名称不得超过200字。";
+    if(!value.tax_no?.replace(/\s/g,""))errors.tax_no="请填写税号，或从材料读取后核对。";
+    else if(!/^[A-Za-z0-9]{8,20}$/.test(value.tax_no.replace(/\s/g,"")))errors.tax_no="税号须为8至20位字母或数字。";
+    return errors;
+  }
+  function confirmIdentity(keys,before,preferred={}){
+    if(identityDecision)return Promise.resolve(null);
+    const list=$("coreIdentityChanges"),readers=[],notice=$("coreIdentityValidation"),id=current.id,revision=current.revision;
+    let checking=false;list.replaceChildren();notice.textContent="";notice.hidden=true;
+    const fields=keys.flatMap(key=>key==="period"?["start_date","end_date"]:[key]);
+    const read=()=>Object.assign({},...readers.map(r=>{
+      if(r.key!=="period")return {[r.key]:r.read()};
+      const choice=identityChoices("period").find(p=>p.value===r.read());
+      return {start_date:choice?.start_date||"",end_date:choice?.end_date||"",range_kind:"custom"};
+    }));
+    const errors=()=>{
+      const value={...before,...read()},all={...identityErrors(value),...identityFieldErrors(value)};
+      if(keys.includes("period"))for(const key of ["start_date","end_date"]){
+        const date=new Date(value[key]+"T00:00:00Z");
+        if(!/^\d{4}-\d{2}-\d{2}$/.test(value[key])||!Number.isFinite(date.getTime())||date.toISOString().slice(0,10)!==value[key])all[key]="请选择材料中的完整检查区间。";
+      }
+      if(keys.includes("period")&&value.start_date>value.end_date)all.end_date="检查终止日不能早于起始日。";
+      return Object.fromEntries(Object.entries(all).filter(([key])=>fields.includes(key)));
+    };
+    const show=messages=>{notice.textContent=Object.values(messages).join("；");notice.hidden=!notice.textContent;};
+    const update=()=>{const messages=errors();show(messages);$("coreIdentityConfirm").disabled=checking||!!Object.keys(messages).length;return messages;};
+    for(const key of keys){
+      const label={company_name:"企业名称",tax_no:"本企业税号",period:"检查区间"}[key],choices=identityChoices(key),row=el("section","core-identity-change");
+      const previousValue=key==="period"?(before.start_date||before.end_date?`${before.start_date||"待选择起始日"} 至 ${before.end_date||"待选择终止日"}`:""):before[key];
+      const previous=el("p","core-identity-current");previous.append(el("span","","当前填写："),identityDiff(previousValue,choices.length===1?choices[0].value:previousValue));row.append(el("h3","",label),previous);
+      const radios=[];
+      for(const choice of choices){
+        const option=el("label","core-identity-option"),radio=el("input"),info=el("span");radio.type="radio";radio.name="coreIdentityChoice_"+key;radio.value=choice.value;
+        radio.setAttribute("aria-label",`${label}采用${choice.value}`);
+        radio.checked=preferred[key]?identityToken(key,preferred[key])===identityToken(key,choice.value):choices.length===1;
+        info.append(identityDiff(choice.value,previousValue));
+        if(choice.sources.some(s=>s.needs_review))info.append(el("small","muted","含待核对的识别候选"));
+        option.append(radio,info);row.append(option,identitySources(choice.sources));radios.push(radio);
+        radio.addEventListener("change",()=>{for(const r of radios)r.checked=r===radio;update();});
+      }
+      if(!choices.length){
+        row.append(el("p","material-note","当前来源尚不能确定本企业信息。发票购销双方不作为企业候选，请先核对购销方向或补充余额表、申报表。"));
+        row.append(identitySources((current?.scope_identity_candidates?.[key]||[]).flatMap(c=>c.sources||[])));
+      }
+      readers.push({key,read:()=>radios.find(r=>r.checked)?.value});list.append(row);
+    }
+    update();identityRead=read;identityDialog.returnValue="";
+    identityValidate=async()=>{
+      if(checking||Object.keys(update()).length)return;
+      const pending=identityDecision,values=read();checking=true;$("coreIdentityConfirm").disabled=true;
+      const radios=[...identityDialog.querySelectorAll("input")];radios.forEach(n=>n.disabled=true);
+      notice.textContent="正在校验所选企业信息与检查区间…";notice.hidden=false;
+      try{
+        const result=await api(base+"/"+encodeURIComponent(id)+"/identity-validation",json({company_name:values.company_name??before.company_name,tax_no:values.tax_no??before.tax_no,...(keys.includes("period")?{start_date:values.start_date,end_date:values.end_date,range_kind:values.range_kind}:{}),fields,expected_revision:revision}));
+        if(identityDecision!==pending)return;
+        if(result.valid!==true||Object.keys(result.errors||{}).length){show(Object.keys(result.errors||{}).length?result.errors:{validation:"所选字段校验未通过，请重新核对。"});return;}
+        identityDialog.close("apply");
+      }catch(error){if(identityDecision===pending)show({validation:error.message});}
+      finally{if(identityDecision===pending){checking=false;radios.forEach(n=>n.disabled=false);$("coreIdentityConfirm").disabled=!!Object.keys(errors()).length;}}
+    };
+    return new Promise(resolve=>{identityDecision=resolve;identityDialog.showModal();});
   }
   const fieldErrors={};
   for(const [key,id] of Object.entries(scopeIds)){
@@ -180,36 +303,156 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       (ys===ye&&ms===1&&ds===1&&me===12&&de===31);
     if(!aligned)errors.range_kind=`按${{month:"月份",quarter:"季度",year:"年度"}[kind]}检查时，起止日期须覆盖完整自然${{month:"月",quarter:"季度",year:"年度"}[kind]}。`;
     return errors;}
-  function validateScope(){const value=scopeRead(),errors={};for(const [key,label] of Object.entries({company_name:"企业名称",tax_no:"税号",start_date:"检查起始日",end_date:"检查终止日"}))if(!value[key])errors[key]="请填写"+label+"，或从材料读取后核对。";
-    if(value.tax_no&&!/^[A-Za-z0-9]{8,20}$/.test(value.tax_no.replace(/\s/g,"")))errors.tax_no="税号须为8至20位字母或数字。";
+  function validateScope(){const value=scopeRead(),errors=identityFieldErrors(value);for(const [key,label] of Object.entries({start_date:"检查起始日",end_date:"检查终止日"}))if(!value[key])errors[key]="请填写"+label+"，或从材料读取后核对。";
     const selected=clients.find(c=>c.id===$("coreClient").value);if(selected&&value.tax_no.replace(/\s/g,"").toUpperCase()!==selected.taxpayer_id.replace(/\s/g,"").toUpperCase())errors.tax_no="所选企业与填写税号不一致，请核对或切换为新企业。";
     if(value.start_date&&value.end_date&&value.start_date>value.end_date)errors.end_date="检查终止日不能早于起始日。";
-    Object.assign(errors,validateRange(value));return errors;}
+    Object.assign(errors,validateRange(value),identityErrors(value));return errors;}
+  function identityErrors(value){
+    const errors={},candidates=current?.scope_identity_candidates||{};
+    for(const key of ["company_name","tax_no"]){
+      const choices=candidates[key]||[];
+      if(value[key]&&choices.some(c=>!(c.alternatives||[c.value]).some(v=>identityToken(key,v)===identityToken(key,value[key]))))
+        errors[key]=`${key==="company_name"?"企业名称":"税号"}与材料识别结果不同，请查看差异并对照原件确认。`;
+    }return errors;
+  }
+  const identityLinks={};
+  function renderIdentityCandidates(){
+    const actions=$("coreIdentityActions");actions.replaceChildren();actions.hidden=true;
+    const candidates=current?.scope_identity_candidates||{},unique={};
+    const owner=user()?.id,ticket=generation,id=current?.id,revision=current?.revision;
+    const apply=async (keys,preferred={})=>{
+      if(busy||!enabled()||owner!==user()?.id||ticket!==generation||current?.id!==id||current?.revision!==revision)return;
+      const before=scopeRead(),selectedClient=$("coreClient").value,values=await confirmIdentity(keys,before,preferred);
+      if(!values||Object.values(values).some(v=>!v))return;
+      if(busy||!enabled()||owner!==user()?.id||ticket!==generation||current?.id!==id||current?.revision!==revision)return;
+      if(JSON.stringify(scopeRead())!==JSON.stringify(before)||$("coreClient").value!==selectedClient){showError("表单已变化，请重新选择文件识别值并确认。");return;}
+      const changes=Object.entries(values).filter(([key,value])=>identityToken(key,before[key])!==identityToken(key,value));
+      if(!changes.length)return;
+      for(const [key,value] of changes)if(key==="range_kind")rangeKind.value=value;else $(scopeIds[key]).value=value;
+      if(keys.includes("period")){writePeriodInputs(values.start_date);syncRange();closeCalendar();}
+      const selected=clients.find(c=>c.id===$("coreClient").value);
+      if(selected&&identityToken("tax_no",selected.taxpayer_id)!==identityToken("tax_no",$("coreTaxNo").value))$("coreClient").value="";
+      scopeDirty=true;const errors=validateScope();displayErrors(attempted?errors:Object.fromEntries(Object.entries(errors).filter(([key])=>scopeRead()[key])));
+    };
+    for(const key of ["company_name","tax_no"]){
+      const box=$(scopeIds[key]+"Candidates"),checks=candidates[key]||[],choices=identityChoices(key);box.replaceChildren();box.hidden=!checks.length;identityLinks[key]=null;
+      if(!checks.length)continue;
+      const agreed=choices.filter(choice=>checks.every(c=>(c.alternatives||[c.value]).some(v=>identityToken(key,v)===identityToken(key,choice.value))));
+      if(agreed.length===1)unique[key]=agreed[0].value;
+      const link=button("查看差异",()=>apply([key]));link.className="core-identity-link";box.append(link);identityLinks[key]=link;
+    }
+    const periods=identityChoices("period"),periodBox=$("corePeriodCandidates");periodBox.replaceChildren();periodBox.hidden=!periods.length;
+    if(periods.length){const link=button("查看期间候选",()=>apply(["period"]));link.className="core-identity-link";periodBox.append(link);}
+    if(unique.company_name&&unique.tax_no){
+      actions.hidden=false;actions.append(button("一键采用文件信息",()=>apply(["company_name","tax_no",...(periods.length?["period"]:[])],unique)));
+    }
+  }
   function inputFor(key){return key==="range_kind"?rangeKind:["start_date","end_date"].includes(key)?rangeTrigger:$(scopeIds[key]);}
-  function displayErrors(errors,keys=Object.keys(scopeIds)){for(const key of [...new Set([...keys,"range_kind"])]){if(!fieldErrors[key])continue;const message=errors[key]||"";fieldErrors[key].textContent=message;fieldErrors[key].hidden=!message;inputFor(key)?.setAttribute?.("aria-invalid",String(!!message));}rangeTrigger.setAttribute("aria-invalid",String(!fieldErrors.start_date.hidden||!fieldErrors.end_date.hidden));}
+  function displayErrors(errors,keys=Object.keys(scopeIds)){for(const key of [...new Set([...keys,"range_kind"])]){if(!fieldErrors[key])continue;const message=errors[key]||"";fieldErrors[key].textContent=message;fieldErrors[key].hidden=!message;inputFor(key)?.setAttribute?.("aria-invalid",String(!!message));}rangeTrigger.setAttribute("aria-invalid",String(!fieldErrors.start_date.hidden||!fieldErrors.end_date.hidden));for(const key of ["company_name","tax_no"])if(identityLinks[key])identityLinks[key].textContent=identityErrors(scopeRead())[key]?"查看差异":"查看识别结果";}
   rangeKind.addEventListener("change",()=>{scopeDirty=true;writePeriodInputs($("coreStart").value);syncRange();displayErrors(attempted?validateScope():{});});
   for(const input of [rangeMonth,rangeYear,rangeQuarter])input.addEventListener("change",()=>{scopeDirty=true;syncRange();displayErrors(attempted?validateScope():{});});
   syncRange();
-  $("coreClient").onchange=()=>{const company=clients.find(c=>c.id===$("coreClient").value);$("coreCompanyName").value=company?.name||"";$("coreTaxNo").value=company?.taxpayer_id||"";scopeDirty=true;displayErrors(attempted?validateScope():{});};
+  $("coreClient").onchange=()=>{const company=clients.find(c=>c.id===$("coreClient").value);$("coreCompanyName").value=company?.name||"";$("coreTaxNo").value=company?.taxpayer_id||"";scopeDirty=true;displayErrors(attempted?validateScope():identityErrors(scopeRead()));};
   async function saveScope(confirm=false){const owner=user()?.id,ticket=generation;const result=await api(base+"/"+current.id+"/scope",json({...scopeRead(),client_id:$("coreClient").value||null,expected_revision:current.revision,confirm}));if(owner!==user()?.id||ticket!==generation)throw new Error("会话已变化，请重新读取任务。");current=result;scopeDirty=false;return result;}
-  async function startCheck(){if(busy)return;if(dirty){showError("请先保存资料口径核对，再开始检查。");return;}attempted=true;const errors=validateScope();displayErrors(errors);if(Object.keys(errors).length){inputFor(Object.keys(errors)[0]).focus?.();return;}const owner=user()?.id,ticket=generation;const saved=await action(()=>saveScope(true),true);if(!saved||owner!==user()?.id||ticket!==generation)return;displayErrors(current.scope_errors||{});if(!Object.keys(current.scope_errors||{}).length&&current.task.scope_confirmed!==false)continueCheck(current.id);}
+  async function startCheck(){
+    if(busy)return;if(dirty){showError("请先保存资料口径核对，再开始检查。");return;}
+    attempted=true;const errors=validateScope();displayErrors(errors);
+    if(Object.keys(errors).length){inputFor(Object.keys(errors)[0]).focus?.();return;}
+    const region=$("coreRegion").value||"CN";
+    if(region!=="CN"&&!regions[region]){const message="企业所在地选项无效，请重新选择；也可留空，先匹配国家级政策。";$("coreRegion").setAttribute("aria-invalid","true");$("coreActionStatus").textContent=message;showError(message);$("coreRegion").focus?.();return;}
+    const owner=user()?.id,ticket=generation,id=current.id;
+    const valid=()=>owner===user()?.id&&ticket===generation&&enabled()&&current?.id===id;
+    const stage=message=>{checkProgress.message=message;renderChecks();};
+    checkProgress={id,message:"正在核对企业与检查区间…",pending:[],done:0,total:0};renderChecks();
+    $("coreCheckResult").scrollIntoView?.({block:"start",behavior:"smooth"});
+    await action(async()=>{
+      await saveScope(true);if(!valid())return current;
+      if(Object.keys(current.scope_errors||{}).length||current.task.scope_confirmed===false)
+        throw new Error("企业与检查区间尚未核对通过，请补全页面提示后重试。");
+      stage("正在读取检查项目与 AI 配置…");
+      const [rules,status]=await Promise.all([api("/api/knowledge/checks"),api("/api/knowledge/retrieval/status")]);
+      if(!valid())return current;
+      if(!Array.isArray(rules)||!rules.length)throw new Error("尚无可用检查项目，请先配置核查规则。");
+      if(!status.ai_configured)throw new Error("尚未配置 AI 服务，请先完成 AI 服务配置后重新开始检查。");
+      if(!status.acceptance?.passed)throw new Error(status.acceptance?.reason||"知识检索校验尚未通过，暂不能进行 AI 检查。");
+      checkProgress.pending=rules.map(r=>r.name);checkProgress.total=rules.length;
+      for(const [index,rule] of rules.entries()){
+        if(!valid())return current;
+        stage(`正在检索依据、组装上下文并进行 AI 分析（${index+1}/${rules.length}）：${rule.name}`);
+        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),300000);
+        let result;
+        try{result=await api("/api/knowledge/retrieve",{...json({task_id:id,expected_revision:current.revision,
+          rule_id:rule.rule_id,region_code:region,token_budget:6000,use_ai:true}),signal:controller.signal});}
+        catch(error){if(controller.signal.aborted)throw new Error("AI 分析等待超时，服务端可能仍在处理。请重新读取最新任务确认结果，避免重复发起检查。");throw error;}
+        finally{clearTimeout(timer);}
+        if(!valid())return current;
+        current.revision=result.revision;(current.tax_checks??={})[rule.rule_id]=result;
+        checkProgress.done++;checkProgress.pending.shift();renderChecks();
+      }
+      stage("正在保存并核对检查结果…");
+      const fresh=await api(base+"/"+encodeURIComponent(id));if(!valid())return current;
+      checkProgress.message="检查流程已完成，请查看各项结果和待补充事项。";
+      checkProgress.complete=true;checkProgress.revision=fresh.revision;return fresh;
+    },true);
+    if(valid()){renderChecks();$("coreCheckResult").scrollIntoView?.({block:"start",behavior:"smooth"});}
+  }
+  function renderChecks(){
+    const root=$("coreCheckResult");root.replaceChildren();
+    const progress=checkProgress?.id===current?.id&&(!checkProgress.complete||checkProgress.revision===current?.revision)?checkProgress:null,checks=Object.values(current?.tax_checks||{});
+    root.hidden=!progress&&!checks.length;if(root.hidden)return;
+    root.append(el("h3","",progress?.error?"检查未完成":progress&&!progress.complete?"正在检查":"检查结果"));
+    const status=el("p",progress?.error?"material-note":"muted",progress?.error||progress?.message||"以下为本任务已保存的检查结果。");
+    status.setAttribute("role","status");root.append(status);
+    if(progress?.total)root.append(el("p","muted",`本轮已完成 ${progress.done}/${progress.total} 项。未完成不等于通过。`));
+    if(progress?.error&&progress.pending.length)root.append(el("p","muted","尚未完成："+progress.pending.join("、")));
+    if(progress?.error)root.append(button("重新读取最新任务",()=>{checkProgress=null;return action(()=>api(base+"/"+encodeURIComponent(current.id)));}));
+    for(const slot of checks){
+      const pack=slot.bundle,ai=slot.ai;if(!pack)continue;
+      const label=slot.stale?"资料有变化，待重检":!ai?"尚未完成 AI 分析":!ai.validated||ai.status==="needs_review"?"待复核":"AI 分析已完成";
+      const card=el("details","material-card"),summary=el("summary","",`${pack.check.topic} · ${label}`);card.append(summary);
+      if(slot.stale)card.append(el("p","material-note","以下是历史结果，不能代表当前资料。请重新开始检查。"));
+      if(ai?.reason)card.append(el("p","material-note",ai.reason));
+      for(const item of ai?.assessments||[]){
+        card.append(el("p","",item.text));
+        if(item.required_materials?.length)card.append(el("p","material-note","需补充或核实："+item.required_materials.join("；")));
+      }
+      for(const gap of pack.gaps||[])if(gap.message)card.append(el("p","material-note",gap.message));
+      const facts=el("details");facts.append(el("summary","","核对数据与材料来源"));
+      for(const fact of pack.facts||[]){
+        facts.append(el("p","",`${fact.name}：${fact.state==="known"?amount(fact.value)+" "+(fact.unit||""):"待补充或核实"}`));
+        for(const source of fact.source_ids||[]){
+          const row=current.processing.records.find(r=>r.id===source),doc=current.documents.find(d=>d.id===(row?.source_file_id||source.replace(/^file:/,"")));
+          if(doc)facts.append(el("p","muted",[doc.name,row?.source_position].filter(Boolean).join(" · ")));
+        }
+      }
+      card.append(facts);
+      const basis=el("details");basis.append(el("summary","","参考依据与核实事项"));
+      for(const item of [...(pack.policy_evidence||[]),...(pack.policy_leads||[])]){
+        basis.append(el("p","",[item.title,item.clause_id].filter(Boolean).join(" · ")),el("p","muted",item.text));
+        if(/^https?:\/\//i.test(item.source_url||"")){const link=el("a","","查看原文");link.href=item.source_url;link.target="_blank";link.rel="noopener noreferrer";basis.append(link);}
+      }
+      card.append(basis);root.append(card);
+    }
+    root.append(el("p","muted","AI 分析为待复核线索；资料或政策依据不足的项目保留待核实状态。未选择企业所在地时先匹配国家级政策；地方政策须确认地区后再核查。"));
+    if(checks.length){const evidence=button("查看知识依据图谱",()=>continueCheck(current.id));evidence.disabled=busy;root.append(evidence);}
+  }
 
   const enabled = () => ["org_admin", "accountant"].includes(user()?.role);
   const states = {needs_completion:"待补充或核对",ready_for_analysis:"资料已就绪，可继续核查",parsing:"正在解析"};
   const kinds = {account_balance:"科目余额表",vat_declaration:"增值税申报表",invoice_detail:"发票明细"};
   const json = value => ({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
   const button = (text, fn) => {const n=el("button","btn re",text);n.type="button";n.onclick=fn;return n;};
-  function clearScope(){for(const id of Object.values(scopeIds))$(id).value="";rangeKind.value="custom";writePeriodInputs("");syncRange();$("coreClient").value="";scopeDirty=attempted=false;displayErrors({});}
-  function reset() {generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");displayErrors({});clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
+  function clearScope(){regionTaskId=null;$("coreRegion").value="";$("coreRegion").setAttribute("aria-invalid","false");for(const id of Object.values(scopeIds))$(id).value="";rangeKind.value="custom";writePeriodInputs("");syncRange();$("coreClient").value="";scopeDirty=attempted=false;displayErrors({});}
+  function reset() {checkProgress=null;$("coreCheckResult").replaceChildren();$("coreCheckResult").hidden=true;$("coreActionStatus").replaceChildren();generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");if(identityDialog.open)identityDialog.close("cancel");displayErrors({});renderIdentityCandidates();clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreTaskForm").disabled=false;if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
   async function action(fn, saving=false, uploading=false) {
     if(busy||!enabled())return;
     if(waitingUploads.length&&!uploading){showError("还有等待上传的文件，请先继续上传或清除待上传文件。");return;}
     if((dirty||scopeDirty&&current)&&!saving){showError("存在未保存的资料口径核对，请先保存后再补传、创建或读取任务。");return;}
-    busy=true;taskControls(true);
+    busy=true;taskControls(true);$("coreActionStatus").textContent="正在处理，请稍候…";
     const owner=user()?.id, ticket=generation, previousId=current?.id;
-    try {const result=await fn();if(owner===user()?.id&&ticket===generation&&enabled()){if(previousId!==result.id){attempted=false;uploadStates.clear();}current=result;dirty=false;scopeWrite();render();taskControls(true);await history();return true;}}
-    catch(error){if(owner===user()?.id&&ticket===generation)showError(error.message);}
-    finally{if(ticket===generation){busy=false;taskControls(false);}}
+    try {const result=await fn();if(owner===user()?.id&&ticket===generation&&enabled()){if(previousId!==result.id){attempted=false;uploadStates.clear();}current=result;dirty=false;scopeWrite();render();$("coreActionStatus").textContent="";taskControls(true);history().catch(error=>{if(owner===user()?.id&&ticket===generation)$("coreActionStatus").textContent="任务已更新，但历史列表未能刷新："+error.message;});return true;}}
+    catch(error){if(owner===user()?.id&&ticket===generation){$("coreActionStatus").textContent=error.message;if(checkProgress?.id===current?.id&&!checkProgress.complete){checkProgress.error=error.message;}showError(error.message);}}
+    finally{if(ticket===generation){busy=false;taskControls(false);renderChecks();}}
   }
   async function removeCurrent(){
     if(busy||!current||user()?.role!=="org_admin")return;
@@ -270,26 +513,19 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   }
   function render() {
     uploadViews.clear();
-    const root=$("coreTaskResult");root.replaceChildren();if(!current)return;
-    const task=current.task,p=current.processing,prepared=new Map(p.records.map(r=>[r.id,r])),parsedCount=current.documents.reduce((sum,d)=>sum+d.records.length,0),scopePending=Object.keys(current.scope_errors||{}).length>0,recordsPending=scopePending&&p.records.length===0;
+    const root=$("coreTaskResult");root.replaceChildren();renderIdentityCandidates();renderChecks();if(!current)return;
+    const task=current.task,p=current.processing,prepared=new Map(p.records.map(r=>[r.id,r])),parsedCount=current.documents.reduce((sum,d)=>sum+d.records.length,0),scopePending=Object.keys(current.scope_errors||{}).length>0;
     const rangeLabels={month:"按月",quarter:"按季度",year:"按年度",custom:"自定义起止日"};
     root.append(el("h3","",`${task.company_name||"待识别企业"} · ${task.tax_no||"税号待填写"}`),el("p","muted",`${task.start_date||"起始日待确认"} 至 ${task.end_date||"终止日待确认"} · ${rangeLabels[task.range_kind||current.range_kind]||""} · 版本 ${current.revision}`),
-      el("p",p.status==="ready_for_analysis"?"":"material-note",states[p.status]||p.status),el("p","muted",p.boundary));
+      el("p",p.status==="ready_for_analysis"?"":"material-note",states[p.status]||p.status),el("p","muted",Object.keys(current.tax_checks||{}).length?"检查结果见上方；资料更新后需重新检查。":"资料已保存。核对后点击开始检查，自动检索依据并进行 AI 辅助分析。"));
     const actions=el("div","core-actions");actions.append(button("重新读取任务",()=>action(()=>api(base+"/"+current.id))));
     actions.append(button("保存企业与检查区间",()=>{if(dirty){showError("请先保存资料口径核对，再保存企业与检查区间。");return;}return action(()=>saveScope(),true);}));
-    const next=button("开始检查",startCheck);actions.append(next);root.append(actions,el("p","muted","先核对企业与检查区间；字段错误会阻止开始检查和 AI 审查。"));
+    const next=button("开始检查",startCheck);actions.append(next);root.append(actions,el("p","muted","点击开始检查后，自动检索知识依据、整理材料上下文并调用已配置的 AI，在本页展示结果。"));
     if(user()?.role==="org_admin"){const remove=button("删除本次任务",removeCurrent);remove.style.color="var(--red,#b42318)";actions.append(remove);}
     const origins=task.scope_origins||{};for(const [key,origin] of Object.entries(origins))if(origin.kind==="file"&&["company_name","tax_no"].includes(key))root.append(el("p","muted",`${{company_name:"企业名称",tax_no:"税号"}[key]}已从文件读取：${(origin.sources||[]).map(s=>`${current.documents.find(d=>d.id===s.file_id)?.name||s.file_id} · ${s.position}`).join("；")}，请核对后开始检查。`));
-    const candidates=task.scope_candidates||{},candidateStarts=candidates.start_date||[],candidateEnds=candidates.end_date||[];
-    if(candidateStarts.length){const box=el("section","material-card");box.append(el("h4","","材料读取的期间候选（不会自动更改检查区间）"));
-      for(const start of candidateStarts){const end=candidateEnds.find(e=>JSON.stringify(e.sources)===JSON.stringify(start.sources));
-        const source=(start.sources||[]).map(s=>`${current.documents.find(d=>d.id===s.file_id)?.name||s.file_id} · ${s.position}`).join("；")||"来源未记录";
-        box.append(el("p","muted",`${start.value}${end?" 至 "+end.value:""} · ${source}`));
-        if(end)box.append(button("采用此期间",()=>{rangeKind.value="custom";$("coreStart").value=start.value;$("coreEnd").value=end.value;writePeriodInputs(start.value);syncRange();scopeDirty=true;displayErrors(attempted?validateScope():{});}));}
-      root.append(box);}
     displayErrors(attempted?current.scope_errors||{}:Object.fromEntries(Object.entries(current.scope_errors||{}).filter(([key])=>scopeRead()[key])));
     const saved=Object.values(current.tax_checks||{});
-    if(saved.length)root.append(el("p","material-note",`已保存 ${saved.length} 项核查；${saved.filter(s=>s.stale).length} 项因资料变化待重检。点击继续核查可查看结果和报告。`));
+    if(saved.length)root.append(el("p","material-note",`已保存 ${saved.length} 项核查；${saved.filter(s=>s.stale).length} 项因资料变化待重检。结果已展示在上方，可展开查看依据。`));
     const slots=el("div","core-slots");
     for(const [kind,name] of Object.entries(kinds)) {
       const card=el("section","material-card");card.append(el("h4","",name+"（必传）"));
@@ -358,22 +594,6 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       else{const group=el("details");group.append(el("summary","",`${items[0].message}（${items.length} 处）`));for(const location of locations)group.append(el("p","muted",location||"任务整体口径"));problems.append(group);}
     }root.append(problems);
     if(p.notices.length){const notes=el("details");notes.append(el("summary","",`来源说明（${p.notices.length}）`));for(const n of p.notices)notes.append(el("p","muted",n.message+(n.source_position?" · "+n.source_position:"")));root.append(notes);}
-    const evidence=el("details");evidence.append(el("summary","",recordsPending?`标准记录与字段来源（待整理；已解析候选 ${parsedCount} 条）`:`标准记录与字段来源（${p.records.length}）`));if(recordsPending)evidence.append(el("p","muted","解析候选已按文件展示在上方；补全范围并重新整理后，此处显示标准记录及字段来源。"));
-    for(const r of p.records.slice(0,100)){const card=el("section","material-card");card.append(el("p","",`${kinds[r.material_type]} · ${r.source_position} · ${r.in_scope?"检查区间内":"区间外保留"}${r.duplicate_of?" · 重复来源":""}`));const raw=el("pre","",JSON.stringify(r,null,2));raw.style.whiteSpace="pre-wrap";raw.style.overflowWrap="anywhere";card.append(raw);evidence.append(card);}if(p.records.length>100)evidence.append(el("p","muted","页面预览前100条；下载整理结果包含全部记录。"));root.append(evidence);
-    const exportButton=button("下载标准数据 JSON",async()=>{
-      if(busy||!enabled())return;
-      if(waitingUploads.length){showError("还有等待上传的文件，请先继续上传或清除后再下载。");return;}
-      if(dirty||scopeDirty){showError("请先保存资料与检查范围，再下载标准数据。");return;}
-      const owner=user()?.id,ticket=generation,id=current.id,revision=current.revision;
-      busy=true;exportButton.disabled=true;
-      try{
-        const data=await api(base+"/"+encodeURIComponent(id)+"/data?expected_revision="+revision);
-        if(owner!==user()?.id||ticket!==generation||!enabled()||current?.id!==id||current.revision!==revision)return;
-        const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"}),url=URL.createObjectURL(blob),link=document.createElement("a");
-        link.href=url;link.download="标准材料数据-"+id+".json";link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
-      }catch(error){if(owner===user()?.id&&ticket===generation)showError(error.message);}
-      finally{if(ticket===generation){busy=false;exportButton.disabled=false;}}
-    });root.append(exportButton);
     const trace=el("details");trace.append(el("summary","","版本与操作记录"));for(const v of current.versions)trace.append(el("p","muted",`版本 ${v.revision} · ${v.kind} · ${v.created_at}`));root.append(trace);
   }
   async function history(){const owner=user()?.id,ticket=generation,rows=await api(base);if(owner!==user()?.id||ticket!==generation||!enabled())return;const root=$("coreTaskHistory");root.replaceChildren(el("h3","","继续资料处理任务"));for(const row of rows)root.append(button(`${row.task.company_name||"待识别企业"} · ${row.task.start_date||"待确认"} 至 ${row.task.end_date||"待确认"} · ${states[row.status]||row.status}`,()=>action(()=>api(base+"/"+row.id))));}

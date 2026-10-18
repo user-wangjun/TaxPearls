@@ -35,7 +35,11 @@ class MaterialJobTests(unittest.TestCase):
             'TAXPEARLS_NOTIFICATION_EMAIL_ENABLED':'0'})
         env.start()
         self.addCleanup(env.stop)
-        self.store = Store(Path(self.tmp.name)/'queue.db')
+        # 并发压力测试里多线程同时 claim；哨兵连接让 WAL 的 -wal/-shm 不被
+        # "最后一个连接关闭即删除"反复删建，否则 Windows 上偶发 SQLITE_READONLY
+        # （storage.connect 注释记录的同一竞态，生产由 lifespan 的 keepalive 覆盖）。
+        self.store = Store(Path(self.tmp.name)/'queue.db', keepalive=True)
+        self.addCleanup(self.store.close)
         self.admin = self.store.create_user('queue-admin','Queue-tests-2026!','管理员','org_admin','queue')
         self.foreign = self.store.create_user('queue-other','Queue-tests-2026!','其他机构','org_admin','other')
         replacement = patch.object(module,'store',self.store)

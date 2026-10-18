@@ -74,6 +74,8 @@ def project(view):
     return {
         **value,
         "scope_errors": scope_errors(value),
+        "scope_identity_candidates": core_materials.scope_identity_candidates(value.get("documents", [])),
+        "scope_period_candidates": core_materials.scope_period_candidates(value["task"]),
         "id": view["id"],
         "revision": view["revision"],
         "files": view["files"],
@@ -86,8 +88,12 @@ def project(view):
 
 def scope_errors(payload):
     errors = core_materials.scope_errors(payload["task"])
+    # Document-level identity conflicts block the check; invoice-level ones are
+    # counterparties and belong to the rule layer as findings to review.
+    errors.update(core_materials.scope_identity_errors(
+        payload["task"], payload.get("documents", []), invoices=False))
     for item in payload.get("processing", {}).get("issues", []):
-        if item["code"] == "company_conflict":
+        if item["code"] == "company_conflict" and "tax_no" not in errors:
             errors["tax_no"] = "文件税号与任务企业冲突，请核对原件或排除不属于本企业的材料。"
     return errors
 
@@ -614,6 +620,50 @@ def register(app, get_store, get_user, allow, static_dir):
                 raise InputError("映射方式无效。")
             revision = batches.append_revision(get_store(), user, task_id, revision, "edit", payload)
             return await run_in_threadpool(process, user, task_id, revision, ai=mode == "ai")
+        except (InputError, ValueError, batches.MaterialStorageError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post("/api/enterprise/input-tasks/{task_id}/identity-validation")
+    async def validate_identity(task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, store = actor(session), get_store()
+        value = await body(request)
+        try:
+            if set(value) - {*core_materials.SCOPE_FIELDS, "range_kind", "fields", "expected_revision"}:
+                raise InputError("请求包含未知字段。")
+            fields = value.get("fields")
+            if (not isinstance(fields, list) or not fields or len(fields) > 4
+                    or any(not isinstance(key, str) or key not in core_materials.SCOPE_FIELDS for key in fields)
+                    or len(set(fields)) != len(fields)):
+                raise InputError("请选择需要校验的企业信息字段。")
+            period_selected = "start_date" in fields or "end_date" in fields
+            if period_selected and not {"start_date", "end_date"}.issubset(fields):
+                raise InputError("请同时选择检查起始日和终止日。")
+            with store.connect() as db:
+                db.execute("BEGIN")
+                batch = batches._authorize(db, user, task_id)
+                if not db.execute("SELECT 1 FROM core_input_tasks WHERE id=?", (task_id,)).fetchone():
+                    raise AccessDenied("这不是基础资料处理任务。", 404)
+                if type(value.get("expected_revision")) is not int or value["expected_revision"] != batch["revision"]:
+                    raise AccessDenied("任务版本已变化，请重新读取。", 409)
+                row = db.execute("SELECT * FROM material_revisions WHERE batch_id=? AND revision=?",
+                                 (task_id, batch["revision"])).fetchone()
+                if not row:
+                    raise AccessDenied("当前任务版本不存在，请重新读取。", 409)
+                payload = json.loads(batches._open(row["payload_cipher"], batches._context(
+                    batch["org_id"], task_id, "revision:" + row["kind"], row["revision"])))
+            task = scope_values(value)
+            errors = core_materials.scope_identity_errors(task, payload.get("documents", []), invoices=False)
+            errors.update(core_materials.identity_field_errors(task))
+            if period_selected:
+                errors.update({key: message for key, message in core_materials.scope_errors(task).items()
+                               if key in {"start_date", "end_date", "range_kind"}})
+                if not any(p["start_date"] == task["start_date"] and p["end_date"] == task["end_date"]
+                           for p in core_materials.scope_period_candidates(payload["task"])):
+                    errors.setdefault("end_date", "所选区间不是当前材料中的完整期间候选，请重新读取并核对。")
+            errors = {key: message for key, message in errors.items() if key in fields}
+            if period_selected and core_materials.range_error(task):
+                errors["range_kind"] = core_materials.range_error(task)
+            return {"valid": not errors, "errors": errors}
         except (InputError, ValueError, batches.MaterialStorageError) as exc:
             raise HTTPException(422, str(exc)) from None
 
