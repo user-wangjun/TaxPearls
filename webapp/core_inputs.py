@@ -1,6 +1,7 @@
 """Task -> encrypted inputs -> standardized evidence; stops before risk evaluation."""
 
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import date
 import json
 import secrets
@@ -172,14 +173,13 @@ def register(app, get_store, get_user, allow, static_dir):
     def listing(session: str | None = Cookie(default=None, alias="taxpearls_session")):
         user = actor(session)
         result = []
-        for row in batches.listing(get_store(), user, workflow="core"):
-            view = batches.read(get_store(), user, row["id"])
-            if view["versions"] and view["versions"][-1]["payload"].get("core_task"):
-                value = project(view)
+        for row in batches.listing(get_store(), user, workflow="core", include_latest=True):
+            value = row["payload"]
+            if value and value.get("core_task"):
                 result.append(
                     {
-                        "id": value["id"],
-                        "revision": value["revision"],
+                        "id": row["id"],
+                        "revision": row["revision"],
                         "task": value["task"],
                         "status": value["processing"]["status"],
                         "created_at": row["created_at"],
@@ -294,9 +294,28 @@ def register(app, get_store, get_user, allow, static_dir):
                 continue
             _, raw = batches.original(store, user, task_id, meta["id"], purpose="read_for_reanalysis")
             with store.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                batches._authorize(db, user, task_id)
-                mapper = core_mapping.Mapper(db, user["org_id"], task_id, meta["sha256"], ai=ai, settings=settings)
+                @contextmanager
+                def mapping_write():
+                    # Parsing/OCR/model waits run outside transactions. Recheck
+                    # live permission and the source revision at every write.
+                    with db:
+                        db.execute("BEGIN IMMEDIATE")
+                        batch = batches._authorize(db, user, task_id)
+                        if batch["revision"] != revision:
+                            raise AccessDenied("任务版本已变化，请重新读取。", 409)
+                        start = len(mapper.promotions)
+                        yield batch
+                        for promotion in mapper.promotions[start:]:
+                            batches._event(db, batch, user, "mapping_promotion",
+                                           {**promotion, "source_file_id": meta["id"]})
+
+                with db:
+                    db.execute("BEGIN")
+                    batch = batches._authorize(db, user, task_id)
+                    if batch["revision"] != revision:
+                        raise AccessDenied("任务版本已变化，请重新读取。", 409)
+                mapper = core_mapping.Mapper(db, user["org_id"], task_id, meta["sha256"], ai=ai, settings=settings,
+                                             observation_transaction=mapping_write)
                 mapper.call_limit = calls_remaining
                 try:
                     previous = next(
@@ -337,14 +356,6 @@ def register(app, get_store, get_user, allow, static_dir):
                         "issues": [core_materials.issue("parse_failed", str(exc)[:300], meta["id"])],
                     }
                 calls_remaining -= mapper.calls
-                for promotion in mapper.promotions:
-                    batches._event(
-                        db,
-                        batches._authorize(db, user, task_id),
-                        user,
-                        "mapping_promotion",
-                        {**promotion, "source_file_id": meta["id"]},
-                    )
             override = options.get("confirmed_metadata", {})
             if "direction" in override:
                 # Old file-wide overrides must not replace per-invoice evidence on reprocessing.

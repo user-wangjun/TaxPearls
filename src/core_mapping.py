@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import unicodedata
+from contextlib import nullcontext
 
 from .ai_transport import chat_content, TransportError
 from .settings import AISettings
@@ -82,13 +83,14 @@ def migrate(db):
 
 
 class Mapper:
-    def __init__(self, db, org_id, task_id, source_hash, *, ai=False, settings=None):
+    def __init__(self, db, org_id, task_id, source_hash, *, ai=False, settings=None, observation_transaction=None):
         self.db, self.org, self.task, self.sha = db, org_id, task_id, source_hash
         self.ai = ai
         self.settings = settings
         self.calls = 0
         self.call_limit = 8
         self.promotions = []
+        self.observation_transaction = observation_transaction or nullcontext
 
     def resolve(self, kind, headers, context, samples):
         result, unknown = {}, []
@@ -172,30 +174,33 @@ class Mapper:
                         if not self.compatible(target, [row[i] if i < len(row) else None for row in samples[:3]]):
                             continue
                         normalized = label(headers[i])
-                        inserted = self.db.execute(
-                            "INSERT OR IGNORE INTO core_mapping_observations (org_id,document_type,context,source_label,target_field,source_hash,task_id,observed_at,explanation) VALUES (?,?,?,?,?,?,?,datetime('now'),?)",
-                            (
-                                self.org,
-                                kind,
-                                context,
-                                normalized,
-                                target,
-                                self.sha,
-                                self.task,
-                                str(item.get("explanation", ""))[:500],
-                            ),
-                        )
-                        conflicts = self.db.execute(
-                            "SELECT COUNT(DISTINCT target_field) FROM core_mapping_observations "
-                            "WHERE org_id=? AND document_type=? AND context=? AND source_label=?",
-                            (self.org, kind, context, normalized),
-                        ).fetchone()[0]
-                        if conflicts == 1:
-                            result[i] = self.entry(kind, headers[i], target, context, "ai_candidate")
-                            if inserted.rowcount and result[i]["independent_sources"] == 5:
-                                self.promotions.append(
-                                    {"rule_id": result[i]["rule_id"], "document_type": kind, "independent_sources": 5}
-                                )
+                        # Persist only validated candidates in a short transaction;
+                        # model calls above must never hold the database write lock.
+                        with self.observation_transaction():
+                            inserted = self.db.execute(
+                                "INSERT OR IGNORE INTO core_mapping_observations (org_id,document_type,context,source_label,target_field,source_hash,task_id,observed_at,explanation) VALUES (?,?,?,?,?,?,?,datetime('now'),?)",
+                                (
+                                    self.org,
+                                    kind,
+                                    context,
+                                    normalized,
+                                    target,
+                                    self.sha,
+                                    self.task,
+                                    str(item.get("explanation", ""))[:500],
+                                ),
+                            )
+                            conflicts = self.db.execute(
+                                "SELECT COUNT(DISTINCT target_field) FROM core_mapping_observations "
+                                "WHERE org_id=? AND document_type=? AND context=? AND source_label=?",
+                                (self.org, kind, context, normalized),
+                            ).fetchone()[0]
+                            if conflicts == 1:
+                                result[i] = self.entry(kind, headers[i], target, context, "ai_candidate")
+                                if inserted.rowcount and result[i]["independent_sources"] == 5:
+                                    self.promotions.append(
+                                        {"rule_id": result[i]["rule_id"], "document_type": kind, "independent_sources": 5}
+                                    )
                 except (TransportError, ValueError, KeyError, TypeError, AttributeError):
                     pass  # Unmapped columns remain explicit; originals never change.
         # Multiple columns for one target are ambiguous, never silently last-wins.
