@@ -88,7 +88,10 @@ def project(view):
 
 def scope_errors(payload):
     errors = core_materials.scope_errors(payload["task"])
-    errors.update(core_materials.scope_identity_errors(payload["task"], payload.get("documents", [])))
+    # Document-level identity conflicts block the check; invoice-level ones are
+    # counterparties and belong to the rule layer as findings to review.
+    errors.update(core_materials.scope_identity_errors(
+        payload["task"], payload.get("documents", []), invoices=False))
     for item in payload.get("processing", {}).get("issues", []):
         if item["code"] == "company_conflict" and "tax_no" not in errors:
             errors["tax_no"] = "文件税号与任务企业冲突，请核对原件或排除不属于本企业的材料。"
@@ -649,7 +652,7 @@ def register(app, get_store, get_user, allow, static_dir):
                 payload = json.loads(batches._open(row["payload_cipher"], batches._context(
                     batch["org_id"], task_id, "revision:" + row["kind"], row["revision"])))
             task = scope_values(value)
-            errors = core_materials.scope_identity_errors(task, payload.get("documents", []))
+            errors = core_materials.scope_identity_errors(task, payload.get("documents", []), invoices=False)
             errors.update(core_materials.identity_field_errors(task))
             if period_selected:
                 errors.update({key: message for key, message in core_materials.scope_errors(task).items()

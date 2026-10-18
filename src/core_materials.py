@@ -1120,12 +1120,24 @@ def scope_identity_candidates(documents):
     return {key: list(groups.values()) for key, groups in grouped.items()}
 
 
-def scope_identity_errors(task, documents):
+def scope_identity_errors(task, documents, *, invoices=True):
     errors = {}
+    invoice_ids = {d["id"] for d in documents if d.get("material_type") == "invoice_detail"}
     for key, choices in scope_identity_candidates(documents).items():
+        # Non-selectable entries are invoice counterparties with no known
+        # enterprise side: they may only narrow a choice, never contradict the
+        # task identity. Treating them as the enterprise produced false
+        # company_conflict blocks for ordinary invoices.
+        candidates = [c for c in choices if c.get("selectable", True)]
+        if not invoices:
+            # Invoice-level identity belongs to the rule layer: a counterparty
+            # mismatch is a finding to review, not an input error that blocks
+            # the whole check.
+            candidates = [c for c in candidates
+                          if not any(s.get("file_id") in invoice_ids for s in c.get("sources", []))]
         if task.get(key) and any(
             identity_token(key, task[key]) not in [identity_token(key, v) for v in c["alternatives"]]
-            for c in choices
+            for c in candidates
         ):
             label = "企业名称" if key == "company_name" else "税号"
             errors[key] = label + "与材料识别结果不同，请查看差异并对照原件确认。"
@@ -1213,7 +1225,7 @@ def prepare(task, documents):
                 "scope": scope_summary(task, []),
                 "boundary": "资料已保存；开始检查前请核对企业与检查区间。"}
     problems = [issue("company_name_conflict" if key == "company_name" else "company_conflict", message)
-                for key, message in scope_identity_errors(task, documents).items()]
+                for key, message in scope_identity_errors(task, documents, invoices=False).items()]
     notices, records = [], []
     coverage = {kind: [] for kind in KINDS}
     direction_coverage = {"input": [], "output": []}

@@ -330,14 +330,17 @@ class CoreParserTests(unittest.TestCase):
         record = {"seller_tax_no": TAX, "buyer_tax_no": OTHER, "source_position": "PDF第1页"}
         doc = {"id": "invoice", "name": "发票.pdf", "material_type": "invoice_detail", "records": [record]}
         payload = {"task": task, "documents": [doc]}
-        self.assertIn("查看差异", scope_errors(payload)["tax_no"])
+        # 发票往来单位只用于缩小选择范围，不能当作企业自身身份阻断检查；
+        # 身份冲突由 VAT 规则层作为待核查项输出（见 V12-K32）。
+        self.assertNotIn("tax_no", scope_errors(payload), "invoice counterparties never block the check")
         self.assertFalse(core_materials.scope_identity_candidates([doc])["tax_no"][0]["selectable"])
         self.assertNotIn("company_name", scope_errors(payload))
         for tax in [TAX, OTHER]:
             task["tax_no"] = tax
             self.assertNotIn("tax_no", scope_errors(payload))
         record["direction"] = "output"
-        self.assertIn("tax_no", scope_errors(payload))  # Buyer cannot identify an output invoice's enterprise.
+        self.assertNotIn("tax_no", scope_errors(payload), "invoice identity belongs to the rule layer")
+        self.assertTrue(core_materials.scope_identity_candidates([doc])["tax_no"][0]["selectable"])
         record.update(direction=None, buyer_tax_no=None)
         self.assertNotIn("tax_no", scope_errors(payload))
 
