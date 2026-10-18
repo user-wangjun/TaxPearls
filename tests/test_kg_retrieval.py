@@ -90,6 +90,19 @@ class RetrievalTests(unittest.TestCase):
         self.assertNotEqual(result["bundle_status"], "ready")
         self.assertIn("CL01", {p["clause_id"] for p in result["policy_leads"]})
 
+    def test_national_default_uses_national_evidence_and_leaves_local_policy_pending(self):
+        def national_package(rule_id):
+            task, facts, catalog = evaluate.case_input(
+                self.db, {"id": "national-default", "rule_id": rule_id, "region_code": "CN"})
+            return bundle.build(self.db, task, rule_id, facts, source_catalog=catalog,
+                                model_dir=Path(self.tmp.name) / "no-model", offline=True)
+
+        national, local = national_package("R01"), national_package("R07")
+        self.assertIn("CL01", {p["clause_id"] for p in national["policy_evidence"]})
+        self.assertNotIn("CL07", {p["clause_id"] for p in local["policy_evidence"]})
+        self.assertIn("CL07", {p["clause_id"] for p in local["policy_leads"]})
+        self.assertEqual(local["check"]["evaluation"], "UNKNOWN")
+
     def test_crossing_change_date_requires_segments_and_old_rule_review(self):
         task, _, _ = evaluate.case_input(self.db, self.cases["K05"])
         task.update(period_start="2026-06-15", period_end="2026-07-15")

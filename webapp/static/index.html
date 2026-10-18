@@ -443,7 +443,7 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=20261018-936c5e6dac3b">
+<link rel="stylesheet" href="/workspace.css?v=20261018-3041a93210e9">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -645,7 +645,7 @@
     <section class="panel" id="uploadPanel">
     <div class="sheet" id="coreInputs" hidden>
       <h2>基础审查资料准备</h2>
-      <p class="muted">检查区间由你选择：按月、按季度、按年度或自定义起止日。程序读取材料期间只用于核对，不会自动改变你选择的区间；材料期间候选须明确采用。核对后点击“开始检查”校验并进入核查。</p>
+      <p class="muted">检查区间由你选择：按月、按季度、按年度或自定义起止日。程序读取材料期间只用于核对，不会自动改变你选择的区间；材料期间候选须明确采用。核对后点击“开始检查”，自动检索依据并由 AI 辅助分析，在本页查看结果。</p>
       <fieldset id="coreTaskForm"><legend>企业与检查区间（可先留空）</legend>
         <label class="field core-client-field">选择历史企业<select id="coreClient"><option value="">新企业 / 从文件读取</option></select></label>
         <div class="core-task-fields">
@@ -653,6 +653,7 @@
             <h3>企业信息</h3>
             <label class="field">企业名称<input id="coreCompanyName" maxlength="200" placeholder="填写企业全称"></label>
             <label class="field">税号<input id="coreTaxNo" maxlength="20" placeholder="填写纳税人识别号"></label>
+            <label class="field">企业所在地<select id="coreRegion" aria-label="企业所在地"><option value="">未选择：先匹配国家级政策</option></select><small>选填。选择实际所在地后，可进一步核对该地区的地方政策。</small></label>
           </div>
           <div class="core-task-group">
             <h3>检查区间</h3>
@@ -685,6 +686,8 @@
           <button id="coreCreateTask" class="btn pdf" type="button">创建草稿并上传资料</button>
         </div>
       </fieldset>
+      <p id="coreActionStatus" class="material-note" role="status"></p>
+      <section id="coreCheckResult" class="core-check-result" aria-live="polite" hidden></section>
       <div id="coreTaskResult" aria-live="polite"></div><div id="coreTaskHistory"></div>
       <dialog id="coreDeleteDialog" class="core-delete-dialog" aria-labelledby="coreDeleteTitle" aria-describedby="coreDeleteDescription">
         <div class="core-delete-body">
@@ -976,7 +979,7 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
-<script src="/core-inputs.js?v=20261018-7142400410f4"></script>
+<script src="/core-inputs.js?v=20261018-57d88bc73a4b"></script>
 <script src="/enterprise.js?v=20261017-62c89aee0e75"></script>
 <script src="/ai-keys.js?v=20261017-live-balance-1"></script>
 <script src="/console.js?v=20261017-password-validation"></script>
