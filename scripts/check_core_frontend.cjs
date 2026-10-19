@@ -26,8 +26,10 @@ function all(root){return [root,...root.children.flatMap(all)];}
       {id:"review-sheet",name:"余额.xlsx",material_type:"account_balance",records:[],parts:[],sha256:"synthetic-sheet"}],
     files:[{id:"excluded-file",deleted_at:null}],source_options:{"excluded-file":{excluded:true,original_name:"进项.xlsx"},
       "review-pdf":{original_name:"进项.pdf",ocr:false,source_reviewed:false,confirmed_metadata:{direction:"output"}},"review-sheet":{original_name:"余额.xlsx",ocr:false}},versions:[]};
-  let reports=[],reportFailure=false,reportListFailure=false,reportHold=null;
-  const api=async(url,options)=>{calls.push({url,options});if(url.endsWith("/reports")){if(reportHold)return await reportHold;if(options?.method==="POST"){if(reportFailure)throw new Error("测试报告生成失败");const data=JSON.parse(options.body);assert.equal(data.expected_revision,sample.revision);const row={version:reports.length+1,input_revision:sample.revision,created_at:"2026-10-19T00:00:00+08:00"};reports=[row,...reports];return structuredClone(row);}if(reportListFailure)throw new Error("测试报告读取失败");return structuredClone(reports);}if(url==="/api/enterprise/input-tasks"&&!options&&holdHistory)return await holdHistory;if(delay)return await delay;
+  let reports=[],reportFailure=false,reportListFailure=false,reportHold=null,completeFailure=false;
+  const api=async(url,options)=>{calls.push({url,options});if(url.endsWith("/reports")){if(reportHold)return await reportHold;if(options?.method==="POST"){if(reportFailure)throw new Error("测试报告生成失败");const data=JSON.parse(options.body);assert.equal(data.expected_revision,sample.revision);const row={version:reports.length+1,input_revision:sample.revision,created_at:"2026-10-19T00:00:00+08:00",content_hash:"synthetic-report-hash"};reports=[row,...reports];return structuredClone(row);}if(reportListFailure)throw new Error("测试报告读取失败");return structuredClone(reports);}if(url==="/api/enterprise/input-tasks"&&!options&&holdHistory)return await holdHistory;if(delay)return await delay;
+    if(url.endsWith("/complete")){if(completeFailure)throw new Error("测试归档版本冲突");const data=JSON.parse(options.body);assert.equal(data.expected_revision,sample.revision);assert.equal(data.report_version,reports[0].version);sample.completion={report_version:data.report_version,content_hash:reports[0].content_hash,completed_at:"2026-10-19T12:00:00+08:00"};sample.revision++;return structuredClone(sample);}
+    if(url.endsWith("/reopen")){assert.equal(JSON.parse(options.body).expected_revision,sample.revision);delete sample.completion;sample.revision++;return structuredClone(sample);}
     if(url.endsWith("/identity-validation")){if(identityFailure instanceof Error)throw identityFailure;return identityFailure||{valid:true,errors:{}};}
     if(url==="/api/knowledge/checks?enterprise=true")return checkRules;
     if(url==="/api/knowledge/retrieval/status")return {ai_configured:aiReady,acceptance:{passed:acceptance}};
@@ -42,7 +44,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
     }
     if(options?.method==="DELETE"){if(failDelete)throw new Error("测试删除失败");return {id:"task",deleted:true};}
     if(failScope&&url.endsWith("/scope"))throw new Error("测试范围保存失败");
-    if(fail&&url.endsWith("/prepare"))throw new Error("测试保存失败");return url==="/api/clients"?[{id:"existing",name:"历史企业",taxpayer_id:"91310000123456789A"}]:url==="/api/enterprise/input-tasks"&&!options?[]:structuredClone(sample);};
+    if(fail&&url.endsWith("/prepare"))throw new Error("测试保存失败");return url==="/api/clients"?[{id:"existing",name:"历史企业",taxpayer_id:"91310000123456789A"}]:url==="/api/enterprise/input-tasks"&&!options?(sample.completion?[{id:sample.id,task:sample.task,status:"archived",completion:sample.completion}]:[]):structuredClone(sample);};
   let holdUploads=false;const uploadRequests=[];
   class UploadRequest {
     constructor(){this.upload={};uploadRequests.push(this);}
@@ -471,5 +473,28 @@ function all(root){return [root,...root.children.flatMap(all)];}
   releaseReport({version:1000,input_revision:sample.revision});await reportPending;
   assert.equal($("coreCheckResult").children.length,0,"late report generation cannot repopulate a reset session");
   assert.equal($("coreTaskForm").disabled,false);
+  await controller.refresh();await controller.openTask("task");await Promise.resolve();
+  const archivedScopeInput=new Node("input"),newTaskButton=new Node("button");newTaskButton.id="coreCreateTask";
+  $("coreTaskForm").append(archivedScopeInput,newTaskButton);
+  const reportButton=text=>all($("coreCheckResult")).find(n=>n.tag==="button"&&n.textContent===text);
+  await reportButton("更新检查报告").onclick();
+  assert.equal(reportButton("完成任务并归档").disabled,false);
+  completeFailure=true;await reportButton("完成任务并归档").onclick();assert.match(errors.at(-1),/归档版本冲突/);assert.ok(find("开始检查"));completeFailure=false;
+  await reportButton("完成任务并归档").onclick();await Promise.resolve();
+  assert.equal(reportButton("完成任务并归档"),undefined);assert.equal(reportButton("更新检查报告"),undefined);
+  assert.equal(find("开始检查"),undefined);assert.ok(find("重新打开任务"));
+  assert.equal(archivedScopeInput.disabled,true);assert.equal(newTaskButton.disabled,false);
+  assert.ok(all($("coreCheckResult")).some(n=>n.tag==="a"&&n.textContent==="查看报告"));
+  assert.ok(all($("coreTaskHistory")).some(n=>n.textContent==="已完成并归档的任务"));
+  assert.ok(all($("coreTaskResult")).some(n=>n.textContent?.includes("归档不代表检查通过")));
+  await controller.renderArchived();assert.equal($("coreArchivedTasks").hidden,false);
+  assert.ok(all($("coreArchivedTasks")).some(n=>n.textContent==="查看归档任务"));
+  assert.ok(all($("coreArchivedTasks")).some(n=>n.tag==="a"&&n.textContent==="下载归档 PDF"&&n.href.includes("/reports/"+sample.completion.report_version)));
+  const archivedCalls=calls.length;await controller.openTask("task");await Promise.resolve();
+  assert.ok(find("重新打开任务"));assert.equal(calls.slice(archivedCalls).filter(c=>c.options?.method==="POST").length,0,"reading an archive never starts AI or generates a report");
+  controller.reset();assert.equal(archivedScopeInput.disabled,false,"resetting an archived task must unlock the next session's form");
+  await controller.refresh();await controller.openTask("task");assert.equal(archivedScopeInput.disabled,true);
+  await find("重新打开任务").onclick();assert.ok(find("开始检查"));assert.equal(find("重新打开任务"),undefined);assert.equal(archivedScopeInput.disabled,false);
+  console.log("Core frontend: task completion/archive/reopen, archive failure, read-only history and frozen report links;");
   console.log("Core frontend: scope validation, continuous upload/progress, serial revisions, pause/resume/cancel, automatic AI workflow, revision chaining, partial failures, session isolation, unsaved/session guards, no internal JSON, material tables, exact decimals, paginated invoice edits and review saves passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});

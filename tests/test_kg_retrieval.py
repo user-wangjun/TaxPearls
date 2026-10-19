@@ -687,6 +687,83 @@ class CoreReportTests(unittest.TestCase):
             self.assertEqual(self.client.get(url).status_code, 404, url)
         self.assertEqual(self.client.post(base, json={"expected_revision": result["revision"]}).status_code, 404)
 
+    def test_complete_archive_reopen_preserves_report_and_blocks_edits(self):
+        from tests.test_core_inputs import book
+        from webapp import core_inputs, material_batches
+        from webapp.access import AccessDenied
+        tid, result = self.checked()
+        base = '/api/enterprise/input-tasks/' + tid
+        request = {'expected_revision': result['revision'], 'report_version': 1}
+        self.assertEqual(self.client.post(base + '/complete', json=request).status_code, 409)
+        report = self.client.post(base + '/reports', json={'expected_revision': result['revision']})
+        self.assertEqual(report.status_code, 200, report.text)
+        before = self.client.get(base + '/reports/1').content
+        checked_before = self.client.get(base).json()['tax_checks']
+        self.assertEqual(self.client.post(base + '/complete', json={**request, 'expected_revision': 0}).status_code, 409)
+        self.assertEqual(self.client.post(base + '/complete', json={**request, 'report_version': 2}).status_code, 409)
+        with patch.object(service, 'analyze') as ai:
+            response = self.client.post(base + '/complete', json=request)
+            self.assertEqual(response.status_code, 200, response.text)
+            saved = response.json()
+            self.assertEqual(saved['revision'], result['revision'] + 1)
+            self.assertEqual(saved['completion']['content_hash'], report.json()['content_hash'])
+            self.assertEqual(saved['completion']['input_revision'], result['revision'])
+            self.assertEqual(saved['tax_checks'], checked_before)
+            self.assertEqual(next(row for row in self.client.get('/api/enterprise/input-tasks').json() if row['id'] == tid)['status'], 'archived')
+            self.assertEqual(self.client.get(base + '/reports/1').content, before)
+            self.assertEqual(self.client.get(base + '/reports/1?format=json').json()['result']['status'], 'incomplete')
+            revision = {'expected_revision': saved['revision']}
+            original_url = base + '/originals/' + saved['documents'][0]['id']
+            original = self.client.get(original_url).content
+            self.assertEqual(self.client.request('DELETE', '/api/enterprise/materials/' + tid + '/originals/' + saved['documents'][0]['id'], json=revision).status_code, 409)
+            self.assertEqual(self.client.get(original_url).content, original)
+            for suffix in ('/prepare', '/scope', '/recheck', '/reports'):
+                self.assertEqual(self.client.post(base + suffix, json=revision).status_code, 409, suffix)
+            self.assertEqual(self.client.post('/api/knowledge/retrieve', json={**revision, 'task_id': tid, 'rule_id': 'R01', 'region_code': 'CN-33', 'use_ai': True}).status_code, 409)
+            self.assertEqual(self.client.post(base + '/files', data={**revision, 'material_type': 'account_balance'}, files={'files': ('合成.xlsx', book('account_balance'))}).status_code, 409)
+            actor = self.store.authenticate('kg-admin', 'Knowledge-test-2026!')[0]
+            payload = deepcopy(core_inputs.latest(material_batches.read(self.store, actor, tid)))
+            payload.pop('completion')
+            with self.assertRaises(AccessDenied):
+                material_batches.append_revision(self.store, actor, tid, saved['revision'], 'edit', payload)
+            ai.assert_not_called()
+        self.login('kg-other')
+        self.assertEqual(self.client.post(base + '/complete', json=request).status_code, 404)
+        self.assertEqual(self.client.post(base + '/reopen', json=revision).status_code, 404)
+        self.login('kg-admin')
+        self.assertEqual(self.client.post(base + '/reopen', json={'expected_revision': 0}).status_code, 409)
+        reopened = self.client.post(base + '/reopen', json=revision)
+        self.assertEqual(reopened.status_code, 200, reopened.text)
+        self.assertNotIn('completion', reopened.json())
+        self.assertEqual(self.client.get(base + '/reports/1').content, before)
+        refreshed = self.client.post(base + '/reports', json={'expected_revision': reopened.json()['revision']})
+        self.assertTrue(refreshed.json()['cached'])
+        # A cached report may have an earlier input revision; identical evidence is valid.
+        again = self.client.post(base + '/complete', json={'expected_revision': reopened.json()['revision'], 'report_version': 1})
+        self.assertEqual(again.status_code, 200, again.text)
+
+    def test_complete_rejects_changed_evidence_and_rolls_back_failed_event(self):
+        tid, result = self.checked()
+        base = '/api/enterprise/input-tasks/' + tid
+        request = {'expected_revision': result['revision'], 'report_version': 1}
+        self.client.post(base + '/reports', json={'expected_revision': result['revision']})
+        from webapp import material_batches
+        original_event = material_batches._event
+        def fail_completion_event(db, batch, actor, action, detail, **kwargs):
+            if action == 'core_complete':
+                raise RuntimeError('event failure')
+            return original_event(db, batch, actor, action, detail, **kwargs)
+        with patch('webapp.material_batches._event', side_effect=fail_completion_event):
+            with self.assertRaises(RuntimeError):
+                self.client.post(base + '/complete', json=request)
+        current = self.client.get(base).json()
+        self.assertNotIn('completion', current)
+        self.assertEqual(current['revision'], result['revision'])
+        with self.store.connect() as db:
+            db.execute("UPDATE Policy SET validity_status='unverified' WHERE policy_id='P01'")
+        self.assertEqual(self.client.post(base + '/complete', json=request).status_code, 409)
+        self.assertNotIn('completion', self.client.get(base).json())
+
     def test_supplement_recheck_updates_report_version_without_rewriting_history(self):
         from tests.test_core_inputs import book
         tid, result = self.checked()
