@@ -310,7 +310,7 @@ def register(app, get_store, get_user, allow):
                     package = old["bundle"]
                     fresh = metrics.build_task_bundle(db, payload, package["task"], rid, topic=package["check"]["topic"],
                                                       token_budget=package["batching"]["soft_token_budget"])
-                    if fresh["content_hash"] == package["content_hash"] and not old.get("stale"):
+                    if bundle.content_hash(fresh) == bundle.content_hash(package) and not old.get("stale"):
                         reused.append(rid)
                     else:
                         changed.append(rid)
@@ -405,7 +405,7 @@ def register(app, get_store, get_user, allow):
             if not payload:
                 return {"bundle": package, "saved": False, "ai": None}
             old = payload.get("tax_checks", {}).get(body.rule_id)
-            same_input = old and not old.get('stale') and old['bundle']['content_hash'] == package['content_hash']
+            same_input = old and not old.get('stale') and bundle.content_hash(old['bundle']) == bundle.content_hash(package)
             cached_ai = (old or {}).get('ai') or {}
             matching_model = cached_ai.get('batch_profile') == analysis_profile(settings, profile['output_reserve'])
             if same_input and (not body.use_ai or cached_ai.get('validated') and matching_model and cached_ai.get('validation_version') == AI_VALIDATION_VERSION):

@@ -5,7 +5,16 @@ from time import perf_counter
 
 from src import tax_conditions
 from . import applicability, keyword_search, relation_search, semantic_search
-from .common import checked_task, clause_record, digest, period_basis, unit
+from .common import canonical, checked_task, clause_record, digest, period_basis, unit
+
+
+def content_hash(package):
+    """Compare evidence content, including legacy bundles with unordered review gaps."""
+    core = {key: package[key] for key in ("task", "check", "facts", "metric_definitions", "conditions", "exceptions",
+            "policy_evidence", "policy_leads", "relationships", "gaps", "fact_assessment", "risk_assessment")}
+    core["gaps"] = sorted(core["gaps"], key=canonical)
+    core["relationships"] = sorted(core["relationships"], key=canonical)
+    return digest({**core, "token_budget": package["batching"]["soft_token_budget"]})
 
 
 def fuse(routes, *, k=60):
@@ -254,5 +263,5 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
     bundle["execution"]["elapsed_ms"] = round((perf_counter() - started) * 1000, 3)
     bundle["analysis_readiness"] = bundle["bundle_status"]
     bundle["analysis_mode"] = "evidence_assessment" if bundle["bundle_status"] == "ready" else "review_only"
-    bundle["content_hash"] = digest({**core, "token_budget": token_budget})
+    bundle["content_hash"] = content_hash(bundle)
     return bundle

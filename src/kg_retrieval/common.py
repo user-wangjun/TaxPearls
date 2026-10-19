@@ -19,7 +19,9 @@ def implementation_fingerprint():
              root / "webapp/policy_graph.py", root / "webapp/knowledge_evidence.py",
              *[root/'src'/name for name in ['rule_conversion.py','rule_bindings.py','policy_corpus.py','engine.py','config.py',
                                            'periods.py','reference_scope.py','models.py','snapshots.py']]]
-    return digest({str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest() for path in sorted(files)})
+    # Git may check the same source out with LF or CRLF on Windows.
+    return digest({str(path.relative_to(root)): hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+                   for path in sorted(files)})
 
 
 def tax_type(value):

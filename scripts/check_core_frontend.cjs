@@ -288,6 +288,9 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,noRequests,"pagination is local and does not run AI");
   reportFailure=true;await find("开始检查").onclick();
   assert.ok(reviewNodes().some(n=>n.textContent?.includes("报告生成失败：测试报告生成失败")),"a report failure preserves the completed checks and has a local retry");
+  assert.ok(reviewNodes().some(n=>n.textContent==="本次报告更新失败，以下为上次保存的报告。"));
+  assert.ok(!reviewNodes().some(n=>n.textContent==="报告已就绪，包含已保存的检查结果与待复核事项。"));
+  assert.ok(reviewNodes().some(n=>n.tag==="a"&&n.textContent==="查看上次报告"));
   const beforeReportRetry=calls.filter(c=>c.url==="/api/knowledge/retrieve").length;reportFailure=false;
   await reviewNodes().find(n=>n.tag==="button"&&n.textContent==="更新检查报告").onclick();
   assert.ok(reviewNodes().some(n=>n.tag==="a"&&n.textContent==="查看报告"));
@@ -306,6 +309,8 @@ function all(root){return [root,...root.children.flatMap(all)];}
   aiReady=false;await find("开始检查").onclick();assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,aiCount);assert.match(errors.at(-1),/尚未配置/);assert.equal($("coreTaskForm").disabled,false);
   aiReady=true;acceptance=false;await find("开始检查").onclick();assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,aiCount);assert.match(errors.at(-1),/检索校验/);
   acceptance=true;failAI=true;await find("开始检查").onclick();assert.match(errors.at(-1),/AI连接失败/);assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="检查未完成"));assert.equal($("coreTaskForm").disabled,false);
+  assert.ok(reviewNodes().some(n=>n.textContent==="本次检查未完成，以下为上次保存的报告。"));
+  assert.ok(!reviewNodes().some(n=>n.textContent==="报告已就绪，包含已保存的检查结果与待复核事项。"));
   const originalRules=checkRules;checkRules=Array.from({length:1233},(_,i)=>({rule_id:`rule-${i}`,name:`尚未完成的检查第${i}项`}));
   await find("开始检查").onclick();
   const pendingList=all($("coreCheckResult")).find(n=>n.tag==="details"&&n.children[0]?.textContent==="尚未完成 1233 项（展开查看）");

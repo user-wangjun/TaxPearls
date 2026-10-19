@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
 from src.kg_retrieval import applicability, bundle, evaluate, fixtures, keyword_search, metrics, relation_search, semantic_search
-from src.kg_retrieval.common import clause_record
+from src.kg_retrieval.common import clause_record, implementation_fingerprint
 from webapp import app as app_module, knowledge_evidence as service
 from webapp.storage import Store
 from tests.enterprise_support import material_key
@@ -44,6 +44,31 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(metadata["policy_count"], 20)
         self.assertFalse(metadata["legal_review"])
         self.assertTrue(all(r[0].startswith("local-fixture://") for r in self.db.execute("SELECT source_url FROM Policy")))
+
+    def test_acceptance_fingerprint_ignores_checkout_newlines_but_detects_source_changes(self):
+        original = Path.read_bytes
+        expected = implementation_fingerprint()
+        with patch.object(Path, 'read_bytes', lambda path: original(path).replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')):
+            self.assertEqual(implementation_fingerprint(), expected)
+        with patch.object(Path, 'read_bytes', lambda path: original(path) + b'\n# changed source\n'):
+            self.assertNotEqual(implementation_fingerprint(), expected)
+
+    def test_dependency_order_and_legacy_review_gap_order_do_not_invalidate_content(self):
+        self.db.execute("UPDATE Relationship SET review_status='candidate' WHERE relation_type='AMENDS'")
+        first = relation_search.dependency_closure(self.db, ['CL05A', 'CL20'])
+        self.assertEqual(first, relation_search.dependency_closure(self.db, ['CL20', 'CL05A']))
+        package = self.package('K05')
+        previous = deepcopy(package)
+        previous['gaps'].reverse()
+        previous['relationships'].reverse()
+        previous['content_hash'] = 'legacy-order-dependent-hash'
+        self.assertEqual(bundle.content_hash(package), bundle.content_hash(previous))
+        self.assertNotEqual(package['gaps'], previous['gaps'])
+        previous['gaps'][0]['message'] = 'changed review requirement'
+        self.assertNotEqual(bundle.content_hash(package), bundle.content_hash(previous))
+        previous = deepcopy(package)
+        previous['facts'][0]['value'] = '999999'
+        self.assertNotEqual(bundle.content_hash(package), bundle.content_hash(previous))
 
     def test_trigram_and_two_character_fallback_and_safe_query(self):
         results = keyword_search.search(self.db, "红字发票")
@@ -546,10 +571,22 @@ class CoreReportTests(unittest.TestCase):
         slot['bundle']['exceptions'] = [{'name': '合成例外', 'source_clause_ids': [cid]}]
         slot['bundle']['relationships'] = []
         slot['bundle']['retrieval_trace']['excluded'] = [{'clause_id': cid, 'reasons': ['测试过滤']}]
-        slot['ai'] = {'validated': True, 'assessments': [{'text': '合成说明', 'clause_ids': [cid]}]}
+        internal_rule = 'R-001@2.0:converted:d30fb9986b82df0c'
+        slot['bundle']['check']['rule_id'] = internal_rule
+        calculation = deepcopy(slot['bundle']['facts'][0])
+        calculation.update(metric_id=internal_rule + ':CALC1', name='内部子条件1计算',
+                           is_calculation=True, unit='布尔数值', calculation='内部程序条件比较',
+                           period_basis='rule_period')
+        slot['bundle']['facts'].append(calculation)
+        slot['bundle']['gaps'] = [{'code': 'rule_period'}, {'code': 'rule_unapproved', 'message': 'TaxRule 版本尚未审核。'}]
+        slot['ai'] = {'validated': True, 'assessments': [{'text': '整体核查状态为 UNKNOWN。conditions 与 fact_evaluation 仅为计算事实。合成说明：请核对人员花名册。', 'clause_ids': [cid]}],
+                      'usage': [{'model': 'unit-test-internal-model', 'elapsed_seconds': 9.85,
+                                 'usage': {'prompt_tokens': 3256, 'completion_tokens': 1827}}]}
+        report['source_files'] = [{'file_id': 'internal-proof-id', 'name': '合成证明.pdf',
+                                   'purpose': '合成核对材料', 'sha256': 'ac' * 32}]
         before = deepcopy(report)
         env = Environment(loader=FileSystemLoader(ROOT / 'templates'), autoescape=select_autoescape(['html']))
-        env.filters.update(report_evidence=core_reports.report_evidence, report_gaps=core_reports.report_gaps,
+        env.filters.update(report_evidence=core_reports.report_evidence, report_analysis=core_reports.report_analysis, report_materials=core_reports.report_materials, report_period=core_reports.report_period, report_gaps=core_reports.report_gaps,
                            source_location=core_reports.source_location, clause_reference=core_reports.clause_reference,
                            check_result=core_reports.check_result, report_result=core_reports.report_result,
                            material_reference=core_reports.material_reference, metric_label=core_reports.metric_label)
@@ -562,8 +599,23 @@ class CoreReportTests(unittest.TestCase):
         self.assertNotIn(evidence['file_sha256'], html)
         self.assertIn('处理建议', html)
         self.assertIn('材料来源与核对数据', html)
+        self.assertIn('合成证明.pdf', html)
+        self.assertIn('合成说明：请核对人员花名册。', html)
+        self.assertNotIn('适用性待核实', html)
+        self.assertEqual(html.count('内容由AI生成，请核实重要信息'), 1)
+        self.assertTrue(html.rstrip().endswith('内容由AI生成，请核实重要信息</footer>\n</body>\n</html>'))
+        self.assertEqual(html.count('待补充/复核：本项判断依据尚待确认。'), 1)
+        for hidden in (internal_rule, '内部子条件1计算', '布尔数值', '程序条件', 'rule_period',
+                       'TaxRule', 'JSON', 'Token', 'unit-test-internal-model', 'SHA-256',
+                       'internal-proof-id', 'ac' * 32, 'UNKNOWN', 'conditions', 'fact_evaluation'):
+            self.assertNotIn(hidden, html)
         self.assertEqual(report, before)
         self.assertEqual(self.client.get(base + '/1?format=json').json(), original)
+        slot['ai'].update(validated=False, reason='internal diagnostic 3256 Token')
+        pending_html = env.get_template('core_check_report.html').render(report=report)
+        self.assertIn('部分辅助说明尚待核实，本项仍需复核', pending_html)
+        self.assertNotIn('internal diagnostic', pending_html)
+        self.assertNotIn('Token', pending_html)
         self.assertIn('待核实', core_reports.clause_reference('missing', slot))
         evidence.update(clause_id='opaque', text='第一条 合成原文')
         slot['bundle']['policy_evidence'] = [evidence]
@@ -609,10 +661,11 @@ class CoreReportTests(unittest.TestCase):
         html = self.client.get(base + "/1")
         self.assertEqual(html.status_code, 200, html.text)
         self.assertIn("100.0123", html.text)
-        self.assertIn("不满足本规则条件", html.text)
+        self.assertIn("本项核对未发现异常", html.text)
         self.assertIn("仍有资料待补充", html.text)
-        self.assertIn("纯合成工程验收样本", html.text)
+        self.assertNotIn("纯合成工程验收样本", html.text)
         data = self.client.get(base + "/1?format=json").json()
+        self.assertEqual(data['checks']['R01']['bundle']['task']['data_scope'], 'synthetic')
         self.assertEqual(data["summary"]["not_met"], 1)
         self.assertEqual(data['result']['status'], 'incomplete')
         self.assertEqual(data['result']['label'], '暂无法完成检查')
@@ -750,6 +803,29 @@ class CoreReportTests(unittest.TestCase):
         self.assertEqual(changed.status_code, 409, changed.text)
         self.assertEqual(self.client.get(base).json(), [])
 
+    def test_report_accepts_legacy_gap_order_without_rechecking_or_calling_ai(self):
+        with self.store.connect() as db:
+            db.execute("UPDATE Policy SET validity_status='unverified' WHERE policy_id='P01'")
+        original = metrics.build_task_bundle
+        def legacy(*args, **kwargs):
+            package = original(*args, **kwargs)
+            package['gaps'].reverse()
+            package['content_hash'] = 'legacy-order-dependent-hash'
+            return package
+        with patch.object(metrics, 'build_task_bundle', side_effect=legacy):
+            tid, checked = self.checked()
+        base = '/api/enterprise/input-tasks/' + tid
+        with patch('webapp.knowledge_evidence.analyze') as ai:
+            recheck = self.client.post(base + '/recheck', json={'expected_revision': checked['revision']})
+            self.assertEqual(recheck.status_code, 200, recheck.text)
+            self.assertEqual(recheck.json()['changed_rule_ids'], [])
+            self.assertEqual(recheck.json()['reused_rule_ids'], ['R01'])
+            created = self.client.post(base + '/reports', json={'expected_revision': checked['revision']})
+            self.assertEqual(created.status_code, 200, created.text)
+            ai.assert_not_called()
+        report = self.client.get(base + '/reports/1?format=json').json()
+        self.assertEqual(report['checks']['R01']['bundle'], checked['bundle'])
+
     def test_report_escapes_user_text_and_pdf_reauthorizes_after_render(self):
         tid, result = self.checked()
         base = "/api/enterprise/input-tasks/" + tid
@@ -809,6 +885,96 @@ class CoreReportTests(unittest.TestCase):
 
 
 class ReportPresentationTests(unittest.TestCase):
+    def test_material_dates_keep_historical_boundaries_and_unknown_comparisons(self):
+        from webapp.core_reports import report_period
+        report = {'task': {'start_date': '2026-09-01', 'end_date': '2026-09-30'}}
+        cases = {
+            '存货期初余额': '期初余额：2026-09-01 期初。',
+            '存货期末余额': '期末余额：2026-09-30 期末。',
+            '存货本期入库成本': '要求期间：2026-09-01 至 2026-09-30。',
+            '历史.上年同期收入': '要求期间：2025-09-01 至 2025-09-30。',
+            '上年同期营业收入报表': '要求期间：2025-09-01 至 2025-09-30。',
+            '上期收入报表': '上期：2026-08-01 至 2026-08-31。',
+            '上期期末余额': '上期期末余额时点：2026-08-31。',
+        }
+        for name, expected in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(report_period(name, report), expected)
+        self.assertIn('待确认', report_period('本期及可比期间收入', report))
+        self.assertIn('待确认', report_period('年度.上年净利润', report))
+        self.assertIn('2025-01-01 至 2025-12-31', report_period('2025-01-01至2025-12-31的利润表', report))
+        self.assertIn('待确认', report_period('2025-02-30至2025-03-01的报表', report))
+        self.assertIn('2025-08-01 至 2025-08-31', report_period('2025年8月利润表', report))
+        self.assertIn('2025-01-01 至 2025-12-31', report_period('2025年度财务报表', report))
+        self.assertIn('待确认', report_period('2025年13月利润表', report))
+        self.assertIn('2025-08-31', report_period('截至2025年8月31日的余额表', report))
+        annual = {'task': {'start_date': '2026-01-01', 'end_date': '2026-12-31'}}
+        self.assertEqual(report_period('年度.上年净利润', annual), '要求期间：2025-01-01 至 2025-12-31。')
+        self.assertEqual(report_period('年度.前年末资产', annual), '余额时点：2024-12-31 期末。')
+        leap = {'task': {'start_date': '2024-02-01', 'end_date': '2024-02-29'}}
+        self.assertIn('2023-02-01 至 2023-02-28', report_period('历史.上年同期收入', leap))
+        custom = {'task': {'start_date': '2026-09-08', 'end_date': '2026-10-17'}}
+        self.assertIn('待确认', report_period('上期收入', custom))
+        fact = {'name': '历史.上年同期收入', 'metric_period': '2024年度'}
+        self.assertIn('2025-09-01 至 2025-09-30', report_period(fact, report))
+        self.assertEqual(fact['metric_period'], '2024年度')
+
+    def test_material_list_deduplicates_without_losing_periods_or_project_links(self):
+        from webapp.core_reports import report_materials
+        report = self.report()
+        report['task'] = {'start_date': '2026-09-01', 'end_date': '2026-09-30'}
+        first = report['checks']['R01']
+        first['bundle'].update(check={'disposition': 'needs_review', 'topic': '存货余额'},
+                               facts=[], gaps=[{'code': 'policy_review'}])
+        first['ai'] = {'validated': True, 'assessments': [{'type': 'insufficient_evidence',
+            'required_materials': ['存货本期入库成本明细表', '存货本期入库成本明细表',
+                                   '存货本期出库成本明细表', '政策条款效力与原文的复核记录']} ]}
+        second = deepcopy(first)
+        second['bundle']['check']['topic'] = '存货成本'
+        second['ai']['assessments'][0]['required_materials'] = ['存货本期入库成本明细表', '存货期初余额凭证',
+                                                             '存货期末余额凭证']
+        report['checks']['R02'] = second
+        third = deepcopy(first)
+        third['bundle']['check']['topic'] = '收入比较'
+        third['bundle']['facts'] = [{'name': '利润表.营业收入', 'state': 'known'}]
+        third['ai']['assessments'][0]['required_materials'] = ['利润表.营业收入本期及可比期间数据',
+                                                             '上年同期营业收入报表']
+        report['checks']['R03'] = third
+        original = deepcopy(report)
+        result = report_materials(report)
+        rows = result['uploads']
+        current = next(row for row in rows if row['name'] == '存货账簿及收发存资料' and '要求期间' in row['period'])
+        self.assertEqual(current['requirements'], ['存货本期入库成本明细表', '存货本期出库成本明细表'])
+        self.assertEqual([p['number'] for p in current['projects']], [1, 2])
+        self.assertEqual(len([row for row in rows if row['name'] == '存货账簿及收发存资料']), 3)
+        self.assertTrue(any('2025-09-01 至 2025-09-30' in row['period'] for row in rows))
+        self.assertTrue(any('待确认' in row['period'] for row in rows))
+        self.assertFalse(any('政策条款' in text for row in rows for text in row['requirements']))
+        self.assertEqual(len(result['reviews']), 1)
+        for rid, item in result['by_check'].items():
+            for number in item['uploads']:
+                self.assertIn(rid, [p['key'] for p in rows[number - 1]['projects']])
+        self.assertEqual(report, original)
+
+    def test_business_analysis_omits_execution_diagnostics_and_preserves_material_requests(self):
+        from webapp.core_reports import report_analysis
+        slot = {'ai': {'validated': True, 'assessments': [
+            {'text': '整体核查状态为 UNKNOWN。conditions 与 fact_evaluation 不能替代结论。'
+                     '应核对个税申报人数与社保参保人数，补充对应期间的申报表。',
+             'required_materials': ['人员花名册及申报记录', '补齐 rule_period 与 RuleCalculation', 'TaxRule版本审核记录']},
+            {'text': '当前状态unknown、UNKOWN、TRUE、FALSE。所用规则版本尚未审核。'},
+            {'text': '已知数据不足时不能仅凭差额认定问题。请核对原始凭证。'},
+        ]}}
+        original = deepcopy(slot)
+        self.assertEqual(report_analysis(slot), [
+            {'text': '应核对个税申报人数与社保参保人数，补充对应期间的申报表。',
+             'required_materials': ['人员花名册及申报记录']},
+            {'text': '已知数据不足时不能仅凭差额认定问题。请核对原始凭证。', 'required_materials': []},
+        ])
+        self.assertEqual(slot, original)
+        slot['ai']['validated'] = False
+        self.assertEqual(report_analysis(slot), [])
+
     def report(self):
         return {'checks': {'R01': {'bundle': {
             'check': {'disposition': 'condition_not_met'}, 'bundle_status': 'ready', 'gaps': [],

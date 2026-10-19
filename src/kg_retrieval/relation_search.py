@@ -71,7 +71,7 @@ def search(db, rule_id, *, limit=20, hops=2):
 def dependency_closure(db, clause_ids):
     """Mandatory ancestors and modification evidence, including pending links as explicit gaps."""
     required, edges, gaps = set(clause_ids), {}, []
-    queue, visited = deque(clause_ids), set()
+    queue, visited = deque(sorted(required)), set()
     while queue:
         cid = queue.popleft()
         if cid in visited:
@@ -84,7 +84,7 @@ def dependency_closure(db, clause_ids):
         links = rows(db, "Relationship", "((from_type='Clause' AND from_id=?) OR (to_type='Clause' AND to_id=?) "
                      "OR (from_type='Policy' AND from_id=?) OR (to_type='Policy' AND to_id=?))",
                      (cid, cid, policy["policy_id"], policy["policy_id"]))
-        for edge in links:
+        for edge in sorted(links, key=lambda row: row["relationship_id"]):
             if edge["relation_type"] not in CHANGE_RELATIONS:
                 continue
             edges[edge["relationship_id"]] = edge
@@ -99,8 +99,8 @@ def dependency_closure(db, clause_ids):
             else:
                 gaps.append({"code": "change_source_missing", "relationship_id": edge["relationship_id"],
                              "message": "政策变更或解释关系缺少依据条款，须补充来源后复核。"})
-        for item in added:
+        for item in sorted(added):
             if item not in required:
                 required.add(item)
                 queue.append(item)
-    return {"clause_ids": sorted(required), "relationships": list(edges.values()), "gaps": gaps}
+    return {"clause_ids": sorted(required), "relationships": [edges[key] for key in sorted(edges)], "gaps": gaps}
