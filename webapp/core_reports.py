@@ -192,12 +192,14 @@ def summary(checks):
     return result
 
 
-def archive(store, actor, task_id, expected_revision):
+def archive(store, actor, task_id, expected_revision, *, complete_report_version=None):
     # Frozen task read and final CAS both use the existing tenant/client authorization.
     view = batches.read(store, actor, task_id)
     if view["revision"] != expected_revision:
         raise AccessDenied("任务版本已变化，请重新读取后生成报告。", 409)
     payload = core_inputs.latest(view)
+    if payload.get("completion"):
+        raise AccessDenied("任务已完成并归档，请先重新打开任务。", 409)
     checks = deepcopy(payload.get("tax_checks", {}))
     from webapp import core_policies
     if not checks:
@@ -241,6 +243,18 @@ def archive(store, actor, task_id, expected_revision):
         snapshot['result'] = report_result(snapshot)
         content_hash = digest(snapshot)
         previous = db.execute("SELECT * FROM core_tax_reports WHERE batch_id=? ORDER BY version DESC LIMIT 1", (task_id,)).fetchone()
+        if complete_report_version is not None:
+            if not previous or previous['version'] != complete_report_version or previous['content_hash'] != content_hash:
+                raise AccessDenied("报告与当前资料或检查结果不一致，请先更新检查报告后再归档。", 409)
+            if db.execute("SELECT 1 FROM material_jobs WHERE batch_id=? AND state IN ('queued','running')", (task_id,)).fetchone():
+                raise AccessDenied("任务仍有待处理工作，请处理结束后再归档。", 409)
+            if core_policies.current_for_report(payload) != policy_assessment:
+                raise AccessDenied("归档期间政策版本变化，请重新核对。", 409)
+            payload['completion'] = {'report_version': previous['version'], 'content_hash': content_hash,
+                                     'input_revision': expected_revision, 'completed_at': members.now(),
+                                     'completed_by': actor['id']}
+            batches._append(db, batch, actor, 'confirmation', payload, lifecycle='complete')
+            return payload['completion']
         if previous and previous["content_hash"] == content_hash:
             return {**descriptor(previous), "cached": True}
         version, stamp = (previous["version"] + 1 if previous else 1), members.now()
@@ -283,11 +297,37 @@ class ArchiveBody(BaseModel):
     expected_revision: int = Field(ge=0)
 
 
+class CompleteBody(ArchiveBody):
+    report_version: int = Field(ge=1)
+
+
 def register(app, get_store, get_user, allow):
     def actor(session):
         user = get_user(session)
         allow(user, "org_admin", "accountant")
         return user
+
+    @app.post("/api/enterprise/input-tasks/{task_id}/complete")
+    def complete(task_id: str, body: CompleteBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        store, user = get_store(), actor(session)
+        archive(store, user, task_id, body.expected_revision, complete_report_version=body.report_version)
+        return core_inputs.project(batches.read(store, user, task_id))
+
+    @app.post("/api/enterprise/input-tasks/{task_id}/reopen")
+    def reopen(task_id: str, body: ArchiveBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        store, user = get_store(), actor(session)
+        view = batches.read(store, user, task_id)
+        payload = deepcopy(core_inputs.latest(view))
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            batch = batches._authorize(db, user, task_id)
+            if batch['revision'] != body.expected_revision or view['revision'] != body.expected_revision:
+                raise AccessDenied('任务版本已变化，请重新读取。', 409)
+            if not payload.get('completion'):
+                raise AccessDenied('任务尚未归档，无需重新打开。', 409)
+            payload.pop('completion')
+            batches._append(db, batch, user, 'edit', payload, lifecycle='reopen')
+        return core_inputs.project(batches.read(store, user, task_id))
 
     @app.get("/api/enterprise/input-tasks/{task_id}/reports")
     def listing(task_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):

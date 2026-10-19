@@ -32,10 +32,13 @@ def migrate(db):
     core_reports.migrate(db)
 
 
-def latest(view):
+def latest(view, *, writable=False):
     if not view["versions"] or not view["versions"][-1]["payload"].get("core_task"):
         raise AccessDenied("这不是基础资料处理任务。", 404)
-    return view["versions"][-1]["payload"]
+    payload = view["versions"][-1]["payload"]
+    if writable and payload.get("completion"):
+        raise AccessDenied("任务已完成并归档，请先重新打开任务。", 409)
+    return payload
 
 
 def delete_task(store, user, task_id, expected_revision):
@@ -183,8 +186,9 @@ def register(app, get_store, get_user, allow, static_dir):
                         "id": row["id"],
                         "revision": row["revision"],
                         "task": value["task"],
-                        "status": value["processing"]["status"],
+                        "status": "archived" if value.get("completion") else value["processing"]["status"],
                         "created_at": row["created_at"],
+                        **({"completion": value["completion"]} if value.get("completion") else {}),
                     }
                 )
         return result
@@ -282,7 +286,7 @@ def register(app, get_store, get_user, allow, static_dir):
     def process_work(user, task_id, revision, *, ai=False):
         store = get_store()
         view = batches.read(store, user, task_id)
-        payload = deepcopy(latest(view))
+        payload = deepcopy(latest(view, writable=True))
         if view["revision"] != revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         documents = []
@@ -463,7 +467,7 @@ def register(app, get_store, get_user, allow, static_dir):
     ):
         user = actor(session)
         view = batches.read(get_store(), user, task_id)
-        payload = deepcopy(latest(view))
+        payload = deepcopy(latest(view, writable=True))
         try:
             async with multipart(
                 request,
@@ -528,7 +532,7 @@ def register(app, get_store, get_user, allow, static_dir):
             if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input"}:
                 raise InputError("请求包含未知字段。")
             view = batches.read(get_store(), user, task_id)
-            payload = deepcopy(latest(view))
+            payload = deepcopy(latest(view, writable=True))
             revision = value.get("expected_revision")
             if type(revision) is not int or revision != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
@@ -681,7 +685,7 @@ def register(app, get_store, get_user, allow, static_dir):
             view = batches.read(store, user, task_id)
             if value.get("expected_revision") != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
-            payload = deepcopy(latest(view))
+            payload = deepcopy(latest(view, writable=True))
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 batch = batches._authorize(db, user, task_id)
