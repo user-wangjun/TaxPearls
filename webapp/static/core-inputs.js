@@ -440,12 +440,14 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     if(!busy&&!state.loading&&state.loadedRevision!==current.revision)void loadReports(state);
     const box=el("section","core-report-actions");box.setAttribute("aria-label","检查报告");
     box.append(el("h4","","检查报告"));
-    const latest=state.rows[0],matches=latest&&(latest.input_revision===current.revision||state.confirmedRevision===current.revision&&state.confirmedVersion===latest.version);
+    const latest=state.rows[0],checkFailed=checkProgress?.id===current.id&&Boolean(checkProgress.error);
+    const matches=latest&&!state.createError&&!checkFailed&&(latest.input_revision===current.revision||state.confirmedRevision===current.revision&&state.confirmedVersion===latest.version);
     const actions=el("div","core-report-buttons");
     const create=button(state.creating?"正在生成报告…":latest?"更新检查报告":"生成检查报告",generateReport);
     create.disabled=busy||state.loading||dirty||scopeDirty;actions.append(create);
     if(latest){
-      box.append(el("p",matches?"muted":"material-note",matches?"报告已就绪，包含已保存的检查结果与待复核事项。":"资料或检查结果已更新，以下为上次报告；请更新报告获取当前结果。"));
+      const reportMessage=matches?"报告已就绪，包含已保存的检查结果与待复核事项。":checkFailed?"本次检查未完成，以下为上次保存的报告。":state.createError?"本次报告更新失败，以下为上次保存的报告。":"资料或检查结果已更新，以下为上次报告；请更新报告获取当前结果。";
+      box.append(el("p",matches?"muted":"material-note",reportMessage));
       for(const [format,label] of [["html",matches?"查看报告":"查看上次报告"],["pdf",matches?"下载 PDF":"下载上次报告 PDF"]]){
         const link=el("a","btn re",label);link.href=base+"/"+encodeURIComponent(state.taskId)+"/reports/"+latest.version+"?format="+format;link.target="_blank";link.rel="noopener noreferrer";actions.append(link);
       }

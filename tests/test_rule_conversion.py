@@ -144,10 +144,17 @@ class ConversionTests(unittest.TestCase):
                          '官方原文.txt · 第3至5行')
         self.assertEqual(source_location('原表!C6'),'原表!C6')
         gaps=[{'code':'change_pending','clause_id':'one'}, {'code':'change_pending','clause_id':'two'},
-              {'code':'policy_review','message':'原文待审核','clause_id':'three'}]
+              {'code':'policy_review','message':'原文待审核','clause_id':'three'},
+              {'code':'rule_unapproved','message':'TaxRule 版本尚未审核。'},
+              {'code':'relationship_pending','message':'规则关系尚未审核。'},
+              {'code':'rule_period'}, {'code':'internal_new_code','message':'internal traceback'}]
         saved=deepcopy(gaps)
-        self.assertEqual(report_gaps(gaps),[{'message':'政策修订关系尚待审核。','count':2},
-                                           {'message':'原文待审核','count':1}])
+        self.assertEqual(report_gaps(gaps),[
+            {'message':'相关法规存在变更，当前适用版本尚待核实。','count':2},
+            {'message':'法规条款对本次业务及期间的适用性尚待复核。','count':1},
+            {'message':'本项检查依据尚待复核。','count':2},
+            {'message':'检查依据是否覆盖本次检查期间尚待核实。','count':1},
+            {'message':'本项仍有资料或依据待复核。','count':1}])
         self.assertEqual(gaps,saved)
 
     def test_all_cases_are_resolvable_from_existing_complete_material_metrics(self):
@@ -264,7 +271,7 @@ class ConvertedScopeTests(unittest.TestCase):
                  'conditions':[],'exceptions':[],'policy_evidence':[],'policy_leads':[],
                  'relationships':[],'retrieval_trace':{'excluded':[]}}
         env=Environment(loader=FileSystemLoader(ROOT/'templates'),autoescape=True)
-        env.filters.update(report_evidence=core_reports.report_evidence,report_gaps=core_reports.report_gaps,
+        env.filters.update(report_evidence=core_reports.report_evidence,report_analysis=core_reports.report_analysis,report_materials=core_reports.report_materials,report_period=core_reports.report_period,report_gaps=core_reports.report_gaps,
                            source_location=core_reports.source_location,clause_reference=core_reports.clause_reference,
                            check_result=core_reports.check_result,report_result=core_reports.report_result,
                            material_reference=core_reports.material_reference,metric_label=core_reports.metric_label)
@@ -356,11 +363,21 @@ class BindingHTTPTests(unittest.TestCase):
         self.assertEqual(report.status_code,200,report.text)
         url='/api/enterprise/input-tasks/'+task['id']+'/reports/'+str(report.json()['version'])
         html=self.client.get(url).text
-        self.assertIn('数据计算结果：未满足筛查条件',html)
-        self.assertIn('规则审核与法规适用性仍需单独核实',html)
+        self.assertIn('现有资料或适用依据尚不足以完成本项判断',html)
         self.assertIn('暂无法完成本项检查',html)
-        self.assertIn('TaxRule 版本尚未审核',html)
+        self.assertIn('本项判断依据尚待确认',html)
+        self.assertNotIn('TaxRule',html)
+        self.assertNotIn('布尔数值',html)
+        self.assertNotIn('子条件1计算',html)
+        self.assertNotIn('rule_period',html)
+        self.assertNotIn('核对条件',html)
+        self.assertNotIn(rid,html)
         self.assertIn('980000.00',html)
+        self.assertIn('1000000.00',html)
+        frozen=self.client.get(url+'?format=json').json()['checks'][rid]['bundle']
+        self.assertEqual(frozen['check']['fact_evaluation'],'FALSE')
+        self.assertIn('rule_unapproved',{g['code'] for g in frozen['gaps']})
+        self.assertTrue(any(f['is_calculation'] for f in frozen['facts']))
         self.login('other');self.assertEqual(self.client.get(url).status_code,404)
 
     def test_forged_values_foreign_rows_and_stale_revision_are_rejected(self):

@@ -22,7 +22,6 @@ h1{font-size:27px;line-height:1.3;letter-spacing:.05em;margin:18px 0 6px}
 .meta-item{display:grid;grid-template-columns:84px minmax(0,1fr);gap:8px}
 .meta-item dt{color:#697689;white-space:nowrap}
 .meta-item dd{margin:0}
-.sample-notice{font-size:11px;padding:7px 10px;margin-top:10px;border:1px solid #e2cf9f;color:#785d27;background:#fffcf5}
 .conclusion{padding:14px 18px;margin:18px 0 16px;border:1px solid #e4d9bc;border-left:4px solid #ab7a20;background:#fcfaf5;break-inside:avoid}
 .conclusion.passed{border-color:#c8dfd2;border-left-color:#347255;background:#f5faf7}
 .conclusion.issues_found{border-color:#ead2cc;border-left-color:#9a4c3b;background:#fdf8f6}
@@ -59,7 +58,13 @@ h1{font-size:27px;line-height:1.3;letter-spacing:.05em;margin:18px 0 6px}
 .amount{font-weight:700;color:#263548;font-variant-numeric:tabular-nums}
 .policy-references{padding:0;list-style:none}
 .policy-references li+li{margin-top:5px}
-.policy-state{color:#8a6627;font-size:11px}
+.ai-notice{margin-top:18px;padding-top:8px;border-top:1px solid #dce3eb;color:#697689;font-size:10px;break-inside:avoid}
+.supplements{margin-top:24px}
+.supplement-table th:nth-child(1){width:22%}
+.supplement-table th:nth-child(2){width:25%}
+.supplement-table th:nth-child(3){width:33%}
+.supplement-table th:nth-child(4){width:20%}
+.supplement-table .long-material{break-inside:auto}
 table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:11px;line-height:1.55}
 th,td{text-align:left;padding:7px 8px;border:1px solid #dce3eb;vertical-align:top;overflow-wrap:anywhere}
 th{font-weight:600;color:#4f6075;background:#f5f7fa}
@@ -85,7 +90,6 @@ tr{break-inside:avoid}
  .company-heading{font-size:14pt;margin-bottom:11px}
  .metadata{gap:5px 20px;padding:9px 0;font-size:8.5pt}
  .meta-item{grid-template-columns:74px minmax(0,1fr);gap:6px}
- .sample-notice{font-size:7.5pt;padding:5px 8px;margin-top:7px}
  .conclusion{margin:12px 0;padding:10px 13px}
  .conclusion-label{font-size:7pt;margin-bottom:2px}
  .conclusion h2{font-size:14pt;margin-bottom:2px}
@@ -105,7 +109,9 @@ tr{break-inside:avoid}
  .check-body{padding:0 10px 4px}
  .detail-row{grid-template-columns:76px minmax(0,1fr);gap:9px;padding:7px 0}
  .detail-row h3{font-size:8pt}
- .assessment,.policy-state{font-size:7.5pt}
+ .assessment{font-size:7.5pt}
+ .ai-notice{font-size:7pt;line-height:1.4;margin-top:4px;padding-top:4px;break-before:avoid}
+ .check:last-of-type{margin-bottom:3px;break-after:avoid}
  table{font-size:7.5pt}
  th,td{padding:5px 6px}
  .metric-context{font-size:7pt}
@@ -120,6 +126,7 @@ tr{break-inside:avoid}
 </head>
 <body>
 {% set result=report|report_result %}
+{% set supplements=report.supplements if report.supplements is defined else report|report_materials %}
 <header class="report-header">
 <div class="brand-line"><span class="brand">税海拾珠 · TAXPEARLS</span><span>报告编号 {{ report.report_no }} · V{{ report.version }}</span></div>
 <h1>企业税务核查报告</h1>
@@ -129,7 +136,6 @@ tr{break-inside:avoid}
 <div class="meta-item"><dt>检查期间</dt><dd>{{ report.task.start_date }} 至 {{ report.task.end_date }}</dd></div>
 <div class="meta-item"><dt>生成时间</dt><dd>{{ report.created_at|replace('T',' ')|replace('+00:00',' UTC') }}</dd></div>
 </dl>
-{% if report.checks.values()|selectattr('bundle.task.data_scope','equalto','synthetic')|list %}<p class="sample-notice">纯合成工程验收样本，包含虚构政策及企业数据，不能用于真实纳税判断。</p>{% endif %}
 </header>
 <section class="conclusion {{ result.status }}">
 <p class="conclusion-label">本次检查结论</p><h2>{{ result.label }}</h2><p>{{ result.message }}</p>
@@ -146,44 +152,43 @@ tr{break-inside:avoid}
 <div class="metric"><strong>{{ result.pending }}</strong><span>待检查或复核</span></div>
 </div>
 {% if result.issues and result.pending %}<p class="scope-note">问题数量包含数据差异和待核实线索；其中尚需复核的项目也计入待检查或复核数量。</p>{% endif %}
-<p class="material-status"><b>资料状态</b>{{ {'ready_for_analysis':'已整理，可按项目核查','needs_completion':'仍有资料待补充或核对','parsing':'正在解析'}.get(report.processing.status,report.processing.status) }}。</p>
+<p class="material-status"><b>资料状态</b>{{ {'ready_for_analysis':'已整理，可按项目核查','needs_completion':'仍有资料待补充或核对','parsing':'正在解析'}.get(report.processing.status,'待核对') }}。</p>
 <p class="scope-note">本报告不构成税务鉴证或法律意见，不替代税务机关认定。数据差异和风险线索不直接等同于违法违规。</p>
 {% for issue in report.processing.issues or [] %}<p class="gap-note">资料缺口：{{ issue.message }}{% if issue.source_position %} · {{ issue.source_position }}{% endif %}</p>{% endfor %}
 </section>
 <h2 class="section-title">检查项目与处理建议</h2>
 {% for rid,slot in report.checks.items() %}{% set b=slot.bundle %}{% set item=slot|check_result %}
-{% set long_text=slot.ai.assessments|map(attribute='text')|join('') if slot.ai and slot.ai.validated else '' %}
-<article class="check{% if long_text|length>1200 or b.facts|length>5 or b.gaps|length>4 or slot|report_evidence|length>6 %} long-check{% endif %}">
+{% set visible_facts=b.facts|rejectattr('is_calculation')|list %}
+{% set analysis=slot|report_analysis %}
+{% set long_text=analysis|map(attribute='text')|join('') %}
+<article id="check-{{ loop.index }}" class="check{% if long_text|length>1200 or visible_facts|length>5 or b.gaps|report_gaps(slot)|length>4 or slot|report_evidence|length>6 %} long-check{% endif %}">
 <header class="check-header"><h2><span class="check-number">{{ '%02d'|format(loop.index) }}</span>{{ b.check.topic }}</h2><span class="status {{ item.status }}">{{ item.label }}</span></header>
 <div class="check-body">
 <div class="detail-row"><h3>{{ '问题说明' if item.status in ['issue','needs_review'] else '检查结果' }}</h3><div class="detail-content">
-<p>{{ {'condition_met':'满足筛查条件，形成待核查线索','condition_not_met':'不满足本规则条件','excluded':'触发排除例外','needs_review':'条件尚不能确定'}.get(b.check.disposition,'待复核') }}。</p>
-{% if b.check.conversion %}<p class="assessment">数据计算结果：{{ {'TRUE':'满足筛查条件','FALSE':'未满足筛查条件','UNKNOWN':'数据或口径不足'}.get(b.check.fact_evaluation,'待核对') }}。规则审核与法规适用性仍需单独核实。</p>{% endif %}
+<p>{{ item.description }}</p>
 {% if b.fact_assessment %}{% set f=b.fact_assessment %}{% set risk=slot.ai.risk_assessment if slot.ai and slot.ai.risk_assessment else b.risk_assessment %}
 {% if f.amount is not none and f.status=='FACT_CONFIRMED' %}<p class="amount">已核实差额：{{ f.amount }} {{ f.unit or '' }}<span class="assessment">（开票减申报，不是应补税额）</span></p>{% endif %}
 {% for t in f.calculation_trace %}<p>计算：{{ t.left_value }} − {{ t.right_value }} = {{ t.result }}。{{ t.definition }}</p>{% endfor %}
-<p class="assessment">事实核验：{{ {'FACT_CONFIRMED':'事实已核实','FACT_UNVERIFIED':'事实待核实','FACT_INCOMPLETE':'资料不足','NOT_COMPARABLE':'当前不可直接比较'}.get(f.status,f.status) }}；{{ {'RISK_CANDIDATE':'待核查风险线索','NEEDS_REVIEW':'风险仍待核查','NEEDS_MORE_DATA':'需补充资料','NO_RISK_SIGNAL':'本项未触发风险线索','NOT_APPLICABLE':'本项不适用'}.get(risk.status,'风险仍待核查') }}。</p>
+<p class="assessment">事实核验：{{ {'FACT_CONFIRMED':'事实已核实','FACT_UNVERIFIED':'事实待核实','FACT_INCOMPLETE':'资料不足','NOT_COMPARABLE':'当前不可直接比较'}.get(f.status,'待复核') }}；{{ {'RISK_CANDIDATE':'待核查风险线索','NEEDS_REVIEW':'风险仍待核查','NEEDS_MORE_DATA':'需补充资料','NO_RISK_SIGNAL':'本项未触发风险线索','NOT_APPLICABLE':'本项不适用'}.get(risk.status,'风险仍待核查') }}。</p>
 {% endif %}
-{% for g in b.gaps|report_gaps %}<p class="gap-note">待补充/复核：{{ g.message }}</p>{% endfor %}
-{% if slot.ai and slot.ai.validated %}{% for claim in slot.ai.assessments %}<p>{{ claim.text }}</p>{% endfor %}{% elif slot.ai %}<p class="gap-note">辅助说明尚需复核：{{ slot.ai.reason or '请重新核查' }}。未将其作为确定结论。</p>{% endif %}
+{% for g in b.gaps|report_gaps(slot) %}<p class="gap-note">待补充/复核：{{ g.message }}</p>{% endfor %}
+{% for claim in analysis %}{% if claim.text %}<p>{{ claim.text }}</p>{% endif %}{% endfor %}
+{% if slot.ai and not slot.ai.validated %}<p class="gap-note">部分辅助说明尚待核实，本项仍需复核。</p>{% endif %}
 </div></div>
-{% if item.status in ['issue','needs_review'] and b.conditions %}
-<div class="detail-row"><h3>核对条件</h3><div class="detail-content">
-{% for condition in b.conditions %}<p>{{ condition.left_metric_id|metric_label(slot) }} {{ condition.operator }} {% if condition.right_metric_id %}{{ condition.right_metric_id|metric_label(slot) }}{% elif condition.right_literal is not none %}{{ condition.right_literal }}{% else %}对比值待核对{% endif %} {{ condition.unit or '' }}。{{ condition.reason }}</p>{% endfor %}
-<p class="assessment">此处为本项检查规则；具体法规依据见下方引用。</p>
-</div></div>{% endif %}
 <div class="detail-row"><h3>材料来源与核对数据</h3><div class="detail-content">
 <table class="evidence-table"><thead><tr><th>检查指标与期间</th><th>数值 / 单位</th><th>材料来源</th></tr></thead><tbody>
-{% for f in b.facts %}<tr><td>{{ f.name }}{% if f.calculation %}<br><span class="metric-context">计算：{{ f.calculation }}</span>{% endif %}<br><span class="metric-context">{{ f.period_start }} 至 {{ f.period_end }}{% if f.metric_period %}<br>来源实际期间：{{ f.metric_period }}{% endif %}</span>
+{% for f in visible_facts %}<tr><td>{{ f.name }}{% if f.calculation %}<br><span class="metric-context">计算：{{ f.calculation }}</span>{% endif %}<br><span class="metric-context">{{ f|report_period(report) }}{% if f.metric_period %}<br>来源实际期间：{{ f.metric_period }}{% endif %}</span>
 {% if f.reference %}<br><span class="metric-context">参考依据：{{ f.reference.publisher }} · {{ f.reference.version }}<br>{{ f.reference.source }}<br>适用范围：{{ f.reference.region }} / {{ f.reference.industry }} / {{ f.reference.taxpayer_type or f.reference.business_scope }}<br>{{ f.reference.start }} 至 {{ f.reference.end }}<br>{{ f.reference.definition }}</span>{% endif %}</td>
-<td>{% if f.state=='known' %}{{ f.value }} {{ f.unit or '' }}{% else %}未知：{{ f.reason }}{% endif %}</td><td>{{ f.source_ids|material_reference(report) }}</td></tr>{% endfor %}
+<td>{% if f.state=='known' %}{{ f.value }} {{ f.unit or '' }}{% else %}待补充或核对{% endif %}</td><td>{{ f.source_ids|material_reference(report) }}</td></tr>{% else %}<tr><td colspan="3">本项核对数据尚待补充或核实。</td></tr>{% endfor %}
 </tbody></table>
 </div></div>
 <div class="detail-row"><h3>法规依据</h3><div class="detail-content"><ul class="policy-references">
-{% for p in slot|report_evidence %}<li>{% if p.source_url and p.source_url.startswith(('https://','http://')) %}<a href="{{ p.source_url }}" target="_blank" rel="noopener noreferrer">{{ p.clause_id|clause_reference(slot) }}</a>{% else %}{{ p.clause_id|clause_reference(slot) }}{% endif %}{% if p.document_no %}（{{ p.document_no }}）{% endif %}{% if p.applicability!='applicable' %}<span class="policy-state"> · {{ '历史条款，仅供参考' if p.applicability=='context_only' else '适用性待核实' }}</span>{% endif %}</li>{% else %}<li>法规依据尚未核实。</li>{% endfor %}
+{% for p in slot|report_evidence %}<li>{% if p.source_url and p.source_url.startswith(('https://','http://')) %}<a href="{{ p.source_url }}" target="_blank" rel="noopener noreferrer">{{ p.clause_id|clause_reference(slot) }}</a>{% else %}{{ p.clause_id|clause_reference(slot) }}{% endif %}{% if p.document_no %}（{{ p.document_no }}）{% endif %}{% if p.applicability=='context_only' %}<span class="assessment"> · 历史条款，仅供参考</span>{% endif %}</li>{% else %}<li>法规依据尚未核实。</li>{% endfor %}
 </ul></div></div>
 <div class="detail-row"><h3>{{ '处理建议' if item.status in ['issue','needs_review'] else '后续事项' }}</h3><div class="detail-content"><p>{{ item.advice }}</p>
-{% if item.status in ['issue','needs_review'] and slot.ai and slot.ai.validated %}{% for claim in slot.ai.assessments %}{% for material in claim.required_materials %}<p>需补充：{{ material }}</p>{% endfor %}{% endfor %}{% endif %}
+{% set needed=supplements.by_check.get(rid) %}
+{% if needed and needed.uploads %}<p>补充材料详见末尾清单：{% for number in needed.uploads %}<a href="#supplement-{{ number }}">第 {{ number }} 项</a>{% if not loop.last %}、{% endif %}{% endfor %}。</p>{% endif %}
+{% if needed and needed.review %}<p><a href="#review-tasks">本项另有待核实事项，见报告末尾。</a></p>{% endif %}
 </div></div>
 </div>
 </article>
@@ -196,7 +201,7 @@ tr{break-inside:avoid}
 {% if policy_assessment %}
 <section class="policy-notes">
 <h3 class="confirmed-input-heading">政策适用与复核依据</h3>
-<p class="muted">独立于本任务风险规则，不改写风险结论，不计算税款。官方来源核对截至 {{ policy_assessment.checked_as_of }}；业务事实由用户提供并复核。</p>
+<p class="muted">官方来源核对截至 {{ policy_assessment.checked_as_of }}；业务事实由用户提供并复核。</p>
 {% if policy_assessment.consistency %}<p>跨政策核对：{{ policy_assessment.consistency.status_label }}</p>{% for issue in policy_assessment.consistency.issues %}<p>{{ issue.message }}</p>{% endfor %}{% endif %}
 {% for item in policy_assessment.results %}<div class="policy-item"><h3>{{ item.name }} · {{ item.status_label }}</h3>
 <p>{{ item.document_number }}；所采生效区间 {{ item.effective_from }} 至 {{ item.effective_to or '未声明截止（非永久有效保证）' }}；事项区间 {{ item.business_start or '待核对' }} 至 {{ item.business_end or '待核对' }}。</p>
@@ -205,15 +210,27 @@ tr{break-inside:avoid}
 {% if item.facts %}<table class="confirmed-inputs"><thead><tr><th>业务事实</th><th>保存值</th><th>用户提供的依据位置</th></tr></thead><tbody>{% for fact in item.facts %}<tr><td>{{ fact.label }}</td><td>{{ fact.value_label|default(fact.value) }}</td><td>{{ fact.source or '待核对' }}</td></tr>{% endfor %}</tbody></table>{% endif %}
 {% for source in policy_assessment.sources %}{% if source.id in item.source_ids %}<p class="muted">{{ source.title }}（{{ source.document_number }}）：{{ source.url }}</p>{% endif %}{% endfor %}</div>{% endfor %}
 <h3>冲突、择一与叠加说明</h3>
-{% for relation in policy_assessment.relationships %}<p>{{ relation.message }} 依据：{{ relation.source_id or '未采齐，待核对' }} {{ relation.clause or '' }}</p>{% endfor %}
+{% for relation in policy_assessment.relationships %}<p>{{ relation.message }}{% for source in policy_assessment.sources if source.id==relation.source_id %} 依据：{{ source.title }}{% if relation.clause %} · {{ relation.clause }}{% endif %}{% else %}{% if relation.clause %} 依据：{{ relation.clause }}{% endif %}{% endfor %}</p>{% endfor %}
 {% for limitation in policy_assessment.limitations %}<p class="muted">{{ limitation }}</p>{% endfor %}
 </section>{% endif %}
-{% if report.sources or report.source_files %}<div class="source-evidence"><h3>取数定位与版本溯源</h3>
+{% if report.sources or report.source_files %}<div class="source-evidence"><h3>材料来源与原表位置</h3>
 {% for s in report.sources %}<p class="source-label">{{ s.file_name or '来源文件待核对' }} · {{ s.source_position or '原表位置待核对' }}</p>
-<table><thead><tr><th>原始字段</th><th>原表位置</th><th>原始值</th></tr></thead><tbody>{% for field,source in s.field_sources.items() %}<tr><td>{{ source.source_label or field }}</td><td>{{ source.position }}</td><td>{{ source.raw_value }}</td></tr>{% endfor %}</tbody></table>{% endfor %}
-{% for f in report.source_files or [] %}<p>证明原件：{{ f.name }} · {{ f.purpose }}<br>SHA-256 {{ f.sha256 }}</p>{% endfor %}
+<table><thead><tr><th>原始字段</th><th>原表位置</th><th>原始值</th></tr></thead><tbody>{% for field,source in s.field_sources.items() %}<tr><td>{{ source.source_label or '原表字段' }}</td><td>{{ source.position }}</td><td>{{ source.raw_value }}</td></tr>{% endfor %}</tbody></table>{% endfor %}
+{% for f in report.source_files or [] %}<p>证明原件：{{ f.name }} · {{ f.purpose }}</p>{% endfor %}
 </div>{% endif %}
-<p class="archive-note">报告版本 V{{ report.version }} · 输入任务版本 {{ report.input_revision }}。本报告保留生成时的资料、规则、政策和辅助说明；后续补传不会改写历史版本，最新核查须另行生成新版本。</p>
+<p class="archive-note">报告版本 V{{ report.version }}。本报告保留生成时的资料、政策和核对结果；后续补传不会改写历史版本，最新核查须另行生成新版本。</p>
 </section>{% endif %}
+{% if supplements.uploads or supplements.reviews %}
+<section class="supplements">
+<h2 class="section-title">统一补充材料清单</h2>
+<p class="scope-note">同一材料按时间要求汇总，具体取数要求完整保留。请按表中期间或余额时点提供资料，并注明企业、原表位置、金额或数量单位；历史及可比期间待确认的，先明确日期范围。</p>
+{% if supplements.uploads %}<table class="supplement-table"><thead><tr><th>补充材料</th><th>时间要求</th><th>具体内容</th><th>对应检查项目</th></tr></thead><tbody>
+{% for material in supplements.uploads %}<tr id="supplement-{{ material.number }}"{% if material.requirements|length>6 %} class="long-material"{% endif %}><td>{{ material.number }}. {{ material.name }}</td><td>{{ material.period }}</td><td>{% for requirement in material.requirements %}<p>{{ requirement }}</p>{% endfor %}</td><td>{% for project in material.projects %}<p><a href="#check-{{ project.number }}">第 {{ project.number }} 项 · {{ project.topic }}</a></p>{% endfor %}</td></tr>{% endfor %}
+</tbody></table>{% else %}<p>本次尚无已明确的新增上传材料要求。</p>{% endif %}
+{% if supplements.reviews %}<div id="review-tasks"><h3 class="section-title">待核实事项</h3>
+{% for review in supplements.reviews %}<p>{{ review.text }}</p><p class="muted">涉及项目：{% for project in review.projects %}<a href="#check-{{ project.number }}">第 {{ project.number }} 项 · {{ project.topic }}</a>{% if not loop.last %}；{% endif %}{% endfor %}。</p>{% endfor %}
+</div>{% endif %}
+</section>{% endif %}
+<footer class="ai-notice">内容由AI生成，请核实重要信息</footer>
 </body>
 </html>

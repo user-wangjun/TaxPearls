@@ -1,5 +1,7 @@
 """Frozen core-task check reports, encrypted with the existing material storage key."""
 from copy import deepcopy
+from calendar import monthrange
+from datetime import date
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
@@ -14,7 +16,9 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pydantic import BaseModel, ConfigDict, Field
 
 from src import render
-from src.kg_retrieval import metrics
+from src import periods
+from src.input_errors import InputError
+from src.kg_retrieval import bundle, metrics
 from src.kg_retrieval.common import digest
 from webapp import core_inputs, material_batches as batches, members
 from webapp.access import AccessDenied
@@ -29,13 +33,213 @@ def report_evidence(slot):
     return [item for item in items if item.get('required') or item['clause_id'] in cited]
 
 
+def report_analysis(slot):
+    """Retain business explanations while omitting model and execution diagnostics."""
+    ai = slot.get('ai') or {}
+    if not ai.get('validated'):
+        return []
+    diagnostic = re.compile(
+        r'(?<![a-z0-9_])(?:UNKNOWN|UNKOWN|TRUE|FALSE|conditions|fact_evaluation|TaxRule|RuleCalculation|JSON|tokens?)(?![a-z0-9_])'
+        r'|(?<![a-z0-9_])[a-z]+_[a-z_]+(?![a-z0-9_])|R-\d+@|:(?:converted|organized):'
+        r'|程序|子条件|布尔|内部筛查|规则版本|规则关系|整体核查状态|不得据此改判|只输出|条件成立或不成立',
+        re.IGNORECASE)
+
+    def business_text(value):
+        sentences = re.findall(r'[^。！？\n]+[。！？]?', value or '')
+        return ''.join(sentence.strip() for sentence in sentences if not diagnostic.search(sentence))
+
+    result = []
+    for claim in ai.get('assessments', []):
+        text = business_text(claim.get('text'))
+        materials = list(dict.fromkeys(value for material in claim.get('required_materials', [])
+                                      if (value := business_text(material))))
+        if text or materials:
+            result.append({'text': text, 'required_materials': materials})
+    return result
+
+
+def report_period(subject, report):
+    """Describe required dates without replacing historical periods with the task period."""
+    fact = subject if isinstance(subject, dict) else {}
+    name = fact.get('name', '') if fact else str(subject)
+    task = report.get('task', {})
+    try:
+        start, end = (date.fromisoformat(task[key]) for key in ('start_date', 'end_date'))
+        if start > end:
+            raise ValueError
+    except (KeyError, TypeError, ValueError):
+        return '时间范围待确认，请明确起止日期或余额时点。'
+    current = f'{start.isoformat()} 至 {end.isoformat()}'
+    explicit = re.findall(r'\d{4}-\d{2}-\d{2}', name)
+    if explicit:
+        try:
+            dates = [date.fromisoformat(value) for value in explicit]
+            if len(dates) == 2 and dates[0] <= dates[1]:
+                return f'材料说明要求期间：{dates[0].isoformat()} 至 {dates[1].isoformat()}；请核对本项所需口径。'
+            if len(dates) == 1 and re.search(r'截至|时点|期初|期末', name):
+                return f'材料说明要求时点：{dates[0].isoformat()}；请核对余额口径。'
+        except ValueError:
+            pass
+        return '材料说明中的时间范围或日期口径待确认，请明确起止日期或余额时点。'
+    calendar_labels = re.findall(r'\d{4}年\d{1,2}月(?:\d{1,2}日)?|\d{4}年度|\d{4}-(?:Q[1-4]|H[12]|\d{2})(?![\d-])', name)
+    if calendar_labels:
+        try:
+            if len(calendar_labels) == 1:
+                label = calendar_labels[0]
+                if '日' in label:
+                    point = periods.statement_date(label)
+                    if point and re.search(r'截至|时点|期初|期末', name):
+                        return f'材料说明要求时点：{point}；请核对余额口径。'
+                else:
+                    interval = periods.parse_period(label, '材料期间')
+                    return f'要求期间：{interval.start.isoformat()} 至 {interval.end.isoformat()}。'
+        except (InputError, ValueError):
+            pass
+        return '材料说明中的时间范围或日期口径待确认，请明确各期起止日期或余额时点。'
+    reference = fact.get('reference') or {}
+    if '参考' in name:
+        if reference.get('start') and reference.get('end'):
+            try:
+                a, b = date.fromisoformat(reference['start']), date.fromisoformat(reference['end'])
+                if a > b:
+                    raise ValueError
+                return f'参考依据有效期间：{a.isoformat()} 至 {b.isoformat()}；须核对其是否覆盖本次检查期间 {current}。'
+            except (TypeError, ValueError):
+                pass
+        return f'参考依据有效期间待确认；须覆盖本次检查期间 {current}。'
+    try:
+        expected = periods.metric_period(name, current)
+    except (InputError, ValueError):
+        return f'历史或年度范围待确认；须提供完整的相应期间，不能用本次检查期间 {current} 代替。'
+    if expected:
+        if '末' in name:
+            return f'余额时点：{expected.end.isoformat()} 期末。'
+        return f'要求期间：{expected.start.isoformat()} 至 {expected.end.isoformat()}。'
+    if '上年同期' in name and not re.search(r'本期|可比|以及|及本', name):
+        try:
+            expected = periods.metric_period('历史.上年同期收入', current)
+            return f'要求期间：{expected.start.isoformat()} 至 {expected.end.isoformat()}。'
+        except (InputError, ValueError):
+            return f'上年同期日期待确认；不能直接使用本次检查期间 {current}。'
+    if re.search(r'上期|前期|上年同期|去年|前年|上年|可比|历史|年度|同比|滚动|连续', name):
+        # Only explicit calendar periods can determine the immediately preceding period.
+        if '上期' in name and not re.search(r'可比|历史|年度|上年', name):
+            try:
+                interval = periods.parse_period(current, '检查期间')
+                index = start.year * 12 + start.month - 1 - interval.months
+                year, month = divmod(index, 12)
+                a = date(year, month + 1, 1)
+                index += interval.months - 1
+                year, month = divmod(index, 12)
+                b = date(year, month + 1, monthrange(year, month + 1)[1])
+                if '期末' in name:
+                    return f'上期期末余额时点：{b.isoformat()}。'
+                if '期初' in name:
+                    return f'上期期初余额时点：{a.isoformat()}。'
+                return f'上期：{a.isoformat()} 至 {b.isoformat()}。'
+            except (InputError, ValueError):
+                pass
+        return f'历史或可比期间待确认；请明确各期起止日期，不与本次检查期间 {current} 混用。'
+    points = []
+    if '期初' in name:
+        points.append(f'期初余额：{start.isoformat()} 期初')
+    if re.search(r'期末|年末', name):
+        points.append(f'期末余额：{end.isoformat()} 期末')
+    if not points or re.search(r'本期|入库|出库|调整|收发存|发生额', name):
+        points.insert(0, f'要求期间：{current}')
+    basis = {'tax_period': '按税款所属期核对', 'issue_date': '按开票日期核对',
+             'posting_date': '按记账日期核对'}.get(fact.get('period_basis'))
+    if basis:
+        points.append(basis)
+    return '；'.join(points) + '。'
+
+
+def report_materials(report):
+    """One upload checklist with exact date boundaries and reversible project links."""
+    uploads, reviews, by_check = {}, {}, {}
+    review_words = re.compile(r'(?:政策|法规|条款|规则).*(?:复核|核实|效力|生效|有效|原文|证据|文本|覆盖|审核)'
+                              r'|适用性.*(?:核对|核实|复核)|效力复核|原文核对')
+    families = (
+        (r'增值税.*申报表|增值税申报资料', '增值税申报表及附列资料'),
+        (r'个税.*申报|个人所得税.*申报', '个人所得税申报资料'),
+        (r'社保.*(?:申报|参保)|社会保险.*(?:申报|参保)', '社保参保及申报资料'),
+        (r'存货.*盘点|盘盈|盘亏', '存货盘点与差异处理资料'),
+        (r'存货.*(?:跌价|减值)', '存货跌价准备资料'),
+        (r'存货.*(?:计价|计算方法)', '存货计价与成本计算依据'),
+        (r'存货.*(?:余额|入库|出库|调整|收发存|取数)', '存货账簿及收发存资料'),
+        (r'工资表|人员花名册|入离职', '工资表及人员名册'),
+        (r'参考.*(?:毛利率|税负率)|(?:毛利率|税负率).*参考', '参考指标及出处说明'),
+        (r'利润表|财务报表|营业收入.*报表|历史\.上年同期(?:收入|成本)|年度\..*净利润', '利润表及财务报表'),
+        (r'资产负债表|年度\..*资产', '资产负债表及资产余额资料'),
+        (r'科目余额表|总账|明细账|账簿|账面\.|营业收入的原始', '会计账簿及科目余额表'),
+        (r'增值税\.|申报销售额', '增值税申报表及附列资料'),
+        (r'销项发票|进项发票|发票明细|发票.*清单|发票开具汇总|发票\.', '发票明细及对应凭证'),
+        (r'差异|调节|勾稽|复核记录|取数逻辑|计算底稿|分析底稿|完整性说明', '核对及差异调节底稿'),
+        (r'合同|结算单|收款|付款|凭证|单据', '业务凭证及交易资料'),
+    )
+
+    def add_upload(text, period, project):
+        text = re.sub(r'^(?:需补充|请补充|补充)[：:\s]*', '', text).strip('。；; ')
+        if not text:
+            return
+        name = next((label for pattern, label in families if re.search(pattern, text)), text)
+        key = (re.sub(r'[\s，,、；;。]', '', name), period)
+        row = uploads.setdefault(key, {'number': len(uploads) + 1, 'name': name, 'period': period,
+                                       'requirements': [], 'projects': []})
+        if text not in row['requirements']:
+            row['requirements'].append(text)
+        if project not in row['projects']:
+            row['projects'].append(project)
+        if row['number'] not in by_check[project['key']]['uploads']:
+            by_check[project['key']]['uploads'].append(row['number'])
+
+    for number, (rid, slot) in enumerate(report['checks'].items(), 1):
+        by_check[rid] = {'uploads': [], 'review': False}
+        if check_result(slot)['status'] not in {'issue', 'needs_review'}:
+            continue
+        package = slot['bundle']
+        project = {'key': rid, 'number': number, 'topic': package['check']['topic']}
+        facts = [fact for fact in package.get('facts', []) if not fact.get('is_calculation')]
+        requests = [text for claim in report_analysis(slot) for text in claim['required_materials']]
+        for text in requests:
+            if review_words.search(text):
+                by_check[rid]['review'] = True
+                continue
+            matched = [fact for fact in facts if fact['name'] in text or
+                       len(fact['name'].split('.')[-1]) >= 4 and fact['name'].split('.')[-1] in text]
+            # Explicit temporal wording must not be overridden by a matching current-period metric.
+            temporal = re.search(r'\d{4}|上期|前期|上年|去年|前年|可比|历史|年度|同比|滚动|连续|期初|期末', text)
+            required = list(dict.fromkeys(report_period(fact, report) for fact in matched))
+            if temporal:
+                period = report_period(text, report)
+                # Exact annual metric names can resolve their independently required dates.
+                if matched and all(fact['name'] in text for fact in matched) and not re.search(r'\d{4}|可比|同比|滚动|连续', text):
+                    period = ' '.join(required)
+            else:
+                period = ' '.join(required) if required else report_period(text, report)
+            add_upload(text, period, project)
+        # Missing data still appears when AI was unavailable or did not provide a list.
+        for fact in facts:
+            if fact.get('state') != 'known':
+                add_upload(fact['name'] + '的原始报表或取数凭证', report_period(fact, report), project)
+        basis_codes = {'rule_unapproved', 'rule_logic_pending', 'relationship_pending', 'rule_period', 'rule_region',
+                       'required_clause_inapplicable', 'policy_review', 'policy_evidence_missing',
+                       'rule_source_changed', 'change_pending', 'change_source_missing', 'entity_pending', 'exception_review'}
+        if by_check[rid]['review'] or any(gap.get('code') in basis_codes for gap in package.get('gaps', [])):
+            by_check[rid]['review'] = True
+            text = '核实本项法规依据、适用条件及其是否覆盖本次检查期间；由检查或复核人员处理。'
+            row = reviews.setdefault(text, {'text': text, 'projects': []})
+            row['projects'].append(project)
+    return {'uploads': list(uploads.values()), 'reviews': list(reviews.values()), 'by_check': by_check}
+
+
 def clause_reference(clause_id, slot):
     """Resolve display citations from the frozen evidence, retaining IDs in JSON."""
     package = slot['bundle']
     item = next((p for p in package['policy_evidence'] + package['policy_leads']
                  if p['clause_id'] == clause_id), None)
     if item is None:
-        return '条款来源待核实（定位见同版本 JSON）'
+        return '条款来源待核实'
     label = item.get('clause_label')
     if not label:
         # Organized corpus IDs end with the source's complete clause label.
@@ -85,7 +289,14 @@ def check_result(slot):
         advice = '补充下列缺失材料，核对数据口径和法规适用条件，完成复核后重新检查。'
     else:
         advice = '留存本项核对材料；资料或业务事实变化后重新检查。'
-    return {'status': status, 'label': label, 'pending': pending, 'advice': advice}
+    descriptions = {
+        'issue': '核对发现数据差异或异常线索，请结合原始材料查明原因。',
+        'needs_review': '现有资料或适用依据尚不足以完成本项判断。',
+        'passed': '本项核对未发现异常。',
+        'excluded': '本项不适用于当前业务情况。',
+    }
+    return {'status': status, 'label': label, 'pending': pending, 'advice': advice,
+            'description': descriptions[status]}
 
 
 def report_result(report):
@@ -143,12 +354,46 @@ def metric_label(metric_id, slot):
     return next((fact['name'] for fact in slot['bundle']['facts'] if fact['metric_id'] == metric_id), '对比指标')
 
 
-def report_gaps(gaps):
+def report_gaps(gaps, slot=None):
+    """Summarize review blockers for readers without exposing diagnostic fields."""
     grouped = {}
-    labels = {'change_pending': '政策修订关系尚待审核。'}
+    labels = {
+        'metric_missing': '请补充或核对本项所需数据。',
+        'comparability_pending': '不同材料的统计口径尚未核对一致。',
+        'exception_review': '本项业务的特殊适用情况尚待核实。',
+        'rule_unapproved': '本项检查依据尚待复核。',
+        'rule_logic_pending': '本项检查依据尚待复核。',
+        'relationship_pending': '本项检查依据尚待复核。',
+        'rule_period': '检查依据是否覆盖本次检查期间尚待核实。',
+        'rule_region': '检查依据对所在地区的适用性尚待核实。',
+        'entity_pending': '企业或业务是否符合适用条件尚待核实。',
+        'required_clause_inapplicable': '法规条款对本次业务及期间的适用性尚待复核。',
+        'policy_review': '法规条款对本次业务及期间的适用性尚待复核。',
+        'policy_evidence_missing': '本项法规依据尚未核实。',
+        'rule_source_changed': '相关法规存在变更，当前适用版本尚待核实。',
+        'change_pending': '相关法规存在变更，当前适用版本尚待核实。',
+        'change_source_missing': '相关法规存在变更，当前适用版本尚待核实。',
+    }
+    names = {fact['metric_id']: fact['name'] for fact in (slot or {}).get('bundle', {}).get('facts', [])
+             if not fact.get('is_calculation')}
+    basis_review = {'rule_unapproved', 'rule_logic_pending', 'relationship_pending', 'rule_period', 'rule_region',
+                    'required_clause_inapplicable', 'policy_review', 'policy_evidence_missing',
+                    'rule_source_changed', 'change_pending', 'change_source_missing'}
     for gap in gaps:
-        key = (gap['code'], gap.get('message') or labels.get(gap['code'], gap['code']))
-        grouped.setdefault(key, {'message': key[1], 'count': 0})['count'] += 1
+        message = labels.get(gap.get('code'), '本项仍有资料或依据待复核。')
+        if slot is not None and gap.get('code') in basis_review:
+            message = '本项判断依据尚待确认。'
+        if gap.get('code') == 'metric_missing':
+            reason = gap.get('message') or ''
+            if '单位' in reason:
+                message = '金额或数量单位尚未核实。'
+            elif '期间' in reason:
+                message = '数据所属期间或统计口径尚未核实。'
+            elif '来源' in reason:
+                message = '缺少可核对的原始材料。'
+            if name := names.get(gap.get('metric_id')):
+                message = f'{name}：{message}'
+        grouped.setdefault(message, {'message': message, 'count': 0})['count'] += 1
     return list(grouped.values())
 
 
@@ -212,7 +457,7 @@ def archive(store, actor, task_id, expected_revision):
             old = slot["bundle"]
             fresh = metrics.build_task_bundle(db, payload, old["task"], rid, topic=old["check"]["topic"],
                                               token_budget=old["batching"]["soft_token_budget"])
-            if slot.get("stale") or fresh["content_hash"] != old["content_hash"]:
+            if slot.get("stale") or bundle.content_hash(fresh) != bundle.content_hash(old):
                 raise AccessDenied("资料或政策依据已变化，请重新核查后生成报告。", 409)
             if (slot.get("ai") or {}).get("validated"):
                 from webapp.knowledge_evidence import validate_answer
@@ -239,6 +484,7 @@ def archive(store, actor, task_id, expected_revision):
                                      "purpose":"零发生额原件，由本任务核对人确认"}
                                     for d in payload.get("documents", []) if d["id"] in file_evidence]
         snapshot['result'] = report_result(snapshot)
+        snapshot['supplements'] = report_materials(snapshot)
         content_hash = digest(snapshot)
         previous = db.execute("SELECT * FROM core_tax_reports WHERE batch_id=? ORDER BY version DESC LIMIT 1", (task_id,)).fetchone()
         if previous and previous["content_hash"] == content_hash:
@@ -247,7 +493,7 @@ def archive(store, actor, task_id, expected_revision):
         snapshot.update(version=version, created_at=stamp, input_revision=expected_revision,
                         report_no=f"TP-KG-{task_id[:8]}-V{version}", content_hash=content_hash)
         env = Environment(loader=FileSystemLoader(ROOT / "templates"), autoescape=select_autoescape(["html"]))
-        env.filters.update(report_evidence=report_evidence,report_gaps=report_gaps,source_location=source_location,
+        env.filters.update(report_evidence=report_evidence,report_analysis=report_analysis,report_materials=report_materials,report_period=report_period,report_gaps=report_gaps,source_location=source_location,
                            clause_reference=clause_reference, check_result=check_result, report_result=report_result,
                            material_reference=material_reference, metric_label=metric_label)
         html = env.from_string(template).render(report=snapshot)
