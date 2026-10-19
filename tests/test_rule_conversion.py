@@ -249,7 +249,7 @@ class ConvertedScopeTests(unittest.TestCase):
         from jinja2 import Environment,FileSystemLoader
         from src.kg_retrieval.bundle import _facts
         from tests.test_business_scope import reference_dataset
-        from webapp.core_reports import report_evidence,report_gaps,source_location
+        from webapp import core_reports
         facts,compiled,_=self.collect(reference_dataset(),'R-003')
         definitions={m['metric_id']:m for m in [*compiled['bases'].values(),*compiled['calculations']]}
         task={'period_start':'2026-01-01','period_end':'2026-12-31'}
@@ -259,13 +259,20 @@ class ConvertedScopeTests(unittest.TestCase):
         ref=next(f for f in normalized.values() if f.get('reference'))
         self.assertEqual(ref['reference']['source'],'构造来源，不是真实业务验收')
         ref['metric_period']='2025年度'
-        package={'task':task,'check':{},'facts':list(normalized.values()),'gaps':[],
+        package={'task':task,'check':{'disposition':'needs_review','topic':'合成参考指标核查'},
+                 'bundle_status':'needs_review','facts':list(normalized.values()),'gaps':[],
                  'conditions':[],'exceptions':[],'policy_evidence':[],'policy_leads':[],
                  'relationships':[],'retrieval_trace':{'excluded':[]}}
         env=Environment(loader=FileSystemLoader(ROOT/'templates'),autoescape=True)
-        env.filters.update(report_evidence=report_evidence,report_gaps=report_gaps,source_location=source_location)
+        env.filters.update(report_evidence=core_reports.report_evidence,report_gaps=core_reports.report_gaps,
+                           source_location=core_reports.source_location,clause_reference=core_reports.clause_reference,
+                           check_result=core_reports.check_result,report_result=core_reports.report_result,
+                           material_reference=core_reports.material_reference,metric_label=core_reports.metric_label)
         html=env.get_template('core_check_report.html').render(report={
-            'task':{},'sources':[],'summary':{},'processing':{'status':'ready_for_analysis','issues':[]},
+            'task':{'company_name':'纯合成参考指标企业','tax_no':'合成示例',
+                    'start_date':task['period_start'],'end_date':task['period_end']},
+            'report_no':'TP-SYNTHETIC-REFERENCE','version':1,'created_at':'2026-01-01T00:00:00+00:00',
+            'sources':[],'summary':{'total':1},'processing':{'status':'ready_for_analysis','issues':[]},
             'checks':{'test':{'bundle':package}}})
         self.assertIn('来源实际期间：2025年度',html)
         self.assertIn('测试-v1',html)
@@ -349,7 +356,11 @@ class BindingHTTPTests(unittest.TestCase):
         self.assertEqual(report.status_code,200,report.text)
         url='/api/enterprise/input-tasks/'+task['id']+'/reports/'+str(report.json()['version'])
         html=self.client.get(url).text
-        self.assertIn('内部规则事实计算',html);self.assertIn('980000.00',html)
+        self.assertIn('数据计算结果：未满足筛查条件',html)
+        self.assertIn('规则审核与法规适用性仍需单独核实',html)
+        self.assertIn('暂无法完成本项检查',html)
+        self.assertIn('TaxRule 版本尚未审核',html)
+        self.assertIn('980000.00',html)
         self.login('other');self.assertEqual(self.client.get(url).status_code,404)
 
     def test_forged_values_foreign_rows_and_stale_revision_are_rejected(self):
