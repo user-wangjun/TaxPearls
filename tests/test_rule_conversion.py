@@ -88,10 +88,49 @@ class ConversionTests(unittest.TestCase):
         result=split_bundle(data,2200)
         self.assertGreater(result['part_count'],1)
         self.assertFalse(result['unsplittable'])
-        self.assertTrue(all(any(c['clause_id']=='required' for c in p['policy_leads']) for p in result['parts']))
+        self.assertTrue(all('required' in p['required_clause_ids'] for p in result['parts']))
         found={c['clause_id']:c['text'] for p in result['parts'] for c in p['policy_leads']}
         self.assertEqual(found,{c['clause_id']:c['text'] for c in data['policy_leads']})
         self.assertIn('retrieval_matches',data['policy_leads'][1])
+
+    def test_oversized_required_original_is_losslessly_split_by_category(self):
+        data={key:[] for key in ['facts','conditions','exceptions','gaps','relationships','policy_evidence','policy_leads']}
+        data.update(task={},check={},bundle_id='test')
+        data['policy_leads']=[{'clause_id':'required','required':True,'text':'必要原文'*1000}]+[
+            {'clause_id':str(i),'required':False,'text':'完整候选原文'+str(i)} for i in range(30)]
+        result=split_bundle(data,6000)
+        self.assertFalse(result['unsplittable'])
+        self.assertGreater(result['part_count'],1)
+        self.assertTrue(all(not p['over_budget'] and p['token_upper_bound']<=6000 for p in result['parts']))
+        pieces=[c for p in result['parts'] for c in p['policy_leads'] if c['clause_id']=='required']
+        self.assertEqual(''.join(p['text'] for p in pieces),data['policy_leads'][0]['text'])
+        self.assertTrue(all(p['partial_clause'] for p in pieces))
+        import hashlib
+        self.assertTrue(all(p['original_text_sha256']==hashlib.sha256(data['policy_leads'][0]['text'].encode()).hexdigest() for p in pieces))
+        self.assertEqual(pieces[0]['source_char_start'],0)
+        self.assertEqual(pieces[-1]['source_char_end'],len(data['policy_leads'][0]['text']))
+        self.assertTrue(all(p['batch_category']=='policy_lead' for p in result['parts']))
+
+    def test_batches_keep_material_classes_policy_documents_and_exception_links_separate(self):
+        data={key:[] for key in ['facts','conditions','exceptions','gaps','relationships','policy_evidence','policy_leads']}
+        data.update(task={},check={},bundle_id='categories',metric_definitions={})
+        for i in range(30):
+            mid=f'metric-{i}'
+            schema='Invoice' if i%2 else 'VATDeclaration'
+            data['metric_definitions'][mid]={'source_schema':schema}
+            data['facts'].append({'metric_id':mid,'name':'完整已核对指标'*8,'source_ids':[f'source-{i}'],'state':'unknown'})
+        data['exceptions']=[{'source_clause_id':'exception','exception_id':'ex'}]
+        data['policy_evidence']=[{'clause_id':'exception','policy_id':'p-ex','text':'完整排除例外。'*100,'required':True}]
+        data['policy_leads']=[{'clause_id':str(i),'policy_id':f'policy-{i%2}','text':'完整原文。'*90} for i in range(6)]
+        result=split_bundle(data,3000)
+        self.assertFalse(result['unsplittable'])
+        self.assertGreater(result['part_count'],1)
+        self.assertIn('policy_exception',{p['batch_category'] for p in result['parts']})
+        self.assertTrue({'发票资料','申报资料'}<={p['batch_group'] for p in result['parts']})
+        for part in result['parts']:
+            if part['batch_category'].startswith('policy_'):
+                self.assertLessEqual(len({c['policy_id'] for c in part['policy_evidence']+part['policy_leads']}),1)
+            self.assertEqual(part['exceptions'],data['exceptions'])
 
     def test_report_keeps_required_and_ai_cited_originals_and_human_source_coordinates(self):
         from webapp.core_reports import report_evidence,report_gaps,source_location
@@ -268,6 +307,27 @@ class BindingHTTPTests(unittest.TestCase):
         r=self.client.post('/api/enterprise/input-tasks/'+task['id']+'/metric-bindings',json={'expected_revision':task['revision'],'name':name,'record_ids':ids,'field':field,'aggregation':'sum','basis':'已核实同一主体同期不含税口径，收入剔除结转并包含所需科目。'})
         self.assertEqual(r.status_code,200,r.text)
         return r.json()
+
+    def test_enterprise_catalog_excludes_policy_candidates_and_obsolete_calculations(self):
+        from src import vat_reconciliation as vat
+        self.client.get('/api/knowledge/checks').raise_for_status()
+        with self.store.connect() as db:
+            db.executemany("INSERT INTO TaxRule(rule_id,rule_code,name,tax_type,rule_type,outcome_text) "
+                           "VALUES (?,?,?,'VAT','risk_screen','政策候选，尚无材料核对计算')",
+                           [(f'candidate-{i}',f'candidate-{i}',f'政策候选第{i}条') for i in range(1209)])
+            db.execute("INSERT INTO TaxRule(rule_id,rule_code,name,tax_type,rule_type,outcome_text,conversion_json) "
+                       "VALUES ('obsolete','obsolete','旧计算','VAT','risk_screen','旧版','{}')")
+        browse=self.client.get('/api/knowledge/checks').json()
+        self.assertIn('candidate-0',{r['rule_id'] for r in browse})
+        self.assertNotIn('obsolete',{r['rule_id'] for r in browse})
+        response=self.client.get('/api/knowledge/checks?enterprise=true')
+        self.assertEqual(response.status_code,200,response.text)
+        catalog=response.json()
+        self.assertEqual(len(catalog),25)
+        self.assertEqual(sum(bool(r['computation_converted']) for r in catalog),24)
+        self.assertIn(vat.RULE,{r['rule_id'] for r in catalog})
+        self.assertFalse(any(r['rule_id'].startswith('candidate-') for r in catalog))
+        self.assertTrue(all(r['review_status']=='candidate' for r in catalog))
 
     def test_uploaded_sources_compute_real_rule_without_fabricating_policy_approval(self):
         task=self.task()

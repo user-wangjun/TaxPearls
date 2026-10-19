@@ -79,10 +79,6 @@ def project(view):
         "id": view["id"],
         "revision": view["revision"],
         "files": view["files"],
-        "events": view["events"],
-        "versions": [
-            {"revision": v["revision"], "kind": v["kind"], "created_at": v["created_at"]} for v in view["versions"]
-        ],
     }
 
 

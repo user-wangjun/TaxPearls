@@ -1481,3 +1481,13 @@ html[data-theme=dark] #coreInputs .core-identity-different { color:#ff9b9b; }
 #coreInputs #coreClient { width: 100%; min-width: 0; min-height: 46px; box-sizing: border-box; }
 
 .core-check-result{margin:20px 0;padding:20px;border:1px solid var(--line,#64748b);border-radius:16px;scroll-margin-top:24px;overflow-wrap:anywhere}.core-check-result h3{margin-top:0}.core-check-result>.material-card{margin:12px 0}.core-check-result details>summary{cursor:pointer}.core-check-result details details{margin:12px 0}.core-check-result[hidden]{display:none}
+.core-check-disclosure>summary{position:relative;padding:10px 66px 10px 0;min-height:24px;line-height:1.6;touch-action:manipulation}
+.core-check-toggle{position:absolute;right:0;top:10px;font-size:14px;color:var(--ink-3);white-space:nowrap}
+.core-check-disclosure>summary:focus-visible{outline:2px solid var(--gold,#688aa6);outline-offset:3px;border-radius:4px}
+.core-report-actions{padding:16px 0;border-block:1px solid var(--line);margin:16px 0}
+.core-report-actions h4{margin:0 0 8px}
+.core-report-buttons{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.core-report-buttons .btn{margin:0;text-decoration:none}
+#coreInputs .core-check-pagination{display:grid;grid-template-columns:auto minmax(0,1fr) auto}
+#coreInputs .core-check-pagination>span{margin:0;text-align:center}
+@media(max-width:600px){#coreInputs .core-check-pagination{grid-template-columns:1fr 1fr}#coreInputs .core-check-pagination>span{grid-column:1/-1;grid-row:1}#coreInputs .core-check-pagination>button:first-child{justify-self:start}#coreInputs .core-check-pagination>button:last-child{justify-self:end}}

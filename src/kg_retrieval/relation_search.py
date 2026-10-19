@@ -89,14 +89,16 @@ def dependency_closure(db, clause_ids):
                 continue
             edges[edge["relationship_id"]] = edge
             if edge["review_status"] != "approved":
-                gaps.append({"code": "change_pending", "relationship_id": edge["relationship_id"], "clause_id": cid})
+                gaps.append({"code": "change_pending", "relationship_id": edge["relationship_id"], "clause_id": cid,
+                             "message": "政策变更或解释关系尚未审核，须核实后再判断适用依据。"})
             for direction in ("from", "to"):
                 if edge[direction + "_type"] == "Clause":
                     added.append(edge[direction + "_id"])
             if edge.get("evidence_clause_id"):
                 added.append(edge["evidence_clause_id"])
             else:
-                gaps.append({"code": "change_source_missing", "relationship_id": edge["relationship_id"]})
+                gaps.append({"code": "change_source_missing", "relationship_id": edge["relationship_id"],
+                             "message": "政策变更或解释关系缺少依据条款，须补充来源后复核。"})
         for item in added:
             if item not in required:
                 required.add(item)
