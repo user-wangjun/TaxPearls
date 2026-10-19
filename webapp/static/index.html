@@ -849,6 +849,7 @@
     </section>
 
     <section class="panel" id="historyPanel">
+      <div class="sheet" id="coreArchivedTasks" hidden></div>
       <div class="sheet" id="reportVerification"><h2>报告原件核验</h2><p class="muted">标识和水印可以被复制，不能单独证明文件真实。登录后核对服务器冻结原件；文件在本机计算 SHA-256，只提交指纹，不上传报告内容。不提供公开报告查询，不是第三方数字签名，也不能阻止转发。旧归档没有标识时保留旧文件，归档当前报告可生成带标识的新版本。</p>
         <div class="row verify-fields"><div class="field"><label for="verificationId">追溯标识</label><input id="verificationId" maxlength="44" placeholder="TPV- 后接 40 位小写十六进制"></div><div class="field"><label for="verificationFormat">文件类型</label><select id="verificationFormat"><option value="pdf">PDF 原件</option><option value="html">HTML 原件</option></select></div><div class="field"><label for="verificationFile">待核验文件（仅本机计算）</label><input id="verificationFile" type="file" accept=".pdf,.html"></div></div>
         <div class="row verify-actions"><button class="btn re" id="verificationLookup" type="button">查看登记信息</button><button class="btn pdf" id="verificationCheck" type="button">核验所选文件</button></div><p id="verificationStatus" class="muted" role="status"></p><p id="verificationDetails" class="muted" style="overflow-wrap:anywhere;white-space:pre-line"></p>
@@ -995,10 +996,10 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
-<script src="/core-inputs.js?v=20261019-7bd0854c69c3"></script>
+<script src="/core-inputs.js?v=20261019-22ec3d62c22c"></script>
 <script src="/enterprise.js?v=20261017-62c89aee0e75"></script>
 <script src="/ai-keys.js?v=20261017-live-balance-1"></script>
-<script src="/console.js?v=20261019-111bdfe63074"></script>
+<script src="/console.js?v=20261019-6903fd6f4ce8"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
 <script src="/graph.js?v=20261017-11967901ecc2"></script>

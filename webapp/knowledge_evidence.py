@@ -272,7 +272,7 @@ def register(app, get_store, get_user, allow):
         view = batches.read(store, user, task_id)
         if view["revision"] != body.expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
-        payload = deepcopy(core_inputs.latest(view))
+        payload = deepcopy(core_inputs.latest(view, writable=True))
         try:
             checked = vat.make_review(payload, body.model_dump(exclude={"expected_revision"}), user["id"], members.now())
             payload.setdefault("check_reviews", {})[vat.RULE] = checked
@@ -291,7 +291,7 @@ def register(app, get_store, get_user, allow):
         view = batches.read(store, user, task_id)
         if view["revision"] != body.expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
-        payload = deepcopy(core_inputs.latest(view))
+        payload = deepcopy(core_inputs.latest(view, writable=True))
         if not payload.get("tax_checks"):
             raise HTTPException(409, "尚无已保存项目，请先选择一项进行核查。")
         changed, reused = [], []
@@ -370,7 +370,7 @@ def register(app, get_store, get_user, allow):
             view = batches.read(store, user, body.task_id)
             if body.expected_revision != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
-            payload = deepcopy(core_inputs.latest(view))
+            payload = deepcopy(core_inputs.latest(view, writable=True))
             try:
                 core_inputs.require_scope(payload)
             except ValueError as exc:

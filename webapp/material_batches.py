@@ -285,7 +285,22 @@ def listing(store, actor, *, workflow='all', include_latest=False):
     return rows
 
 
-def _append(db, batch, actor, kind, payload, *, job_id=None):
+def _require_active_core(db, batch, *, reopening=False):
+    if batch['revision']:
+        previous = db.execute('SELECT r.kind,r.payload_cipher FROM material_revisions r JOIN core_input_tasks ci ON ci.id=r.batch_id WHERE r.batch_id=? AND r.revision=?',
+                              (batch['id'], batch['revision'])).fetchone()
+        if previous:
+            saved = json.loads(_open(previous['payload_cipher'], _context(
+                batch['org_id'], batch['id'], 'revision:' + previous['kind'], batch['revision'])))
+            if saved.get('completion') and not reopening:
+                raise AccessDenied('任务已完成并归档，请先重新打开任务。', 409)
+
+
+def _append(db, batch, actor, kind, payload, *, job_id=None, lifecycle=None):
+    _require_active_core(db, batch, reopening=lifecycle == 'reopen')
+    if lifecycle in {'complete', 'reopen'}:
+        # Lifecycle revisions preserve the exact checked evidence and frozen report.
+        return _save_revision(db, batch, actor, kind, payload, job_id=job_id, event_action="core_" + lifecycle)
     if payload.get('core_task'):
         from src.rule_bindings import restore
         restore(payload)
@@ -294,12 +309,16 @@ def _append(db, batch, actor, kind, payload, *, job_id=None):
         mark_stale(payload)
         from webapp.core_reports import summary
         payload['tax_check_summary'] = summary(payload['tax_checks'])
+    return _save_revision(db, batch, actor, kind, payload, job_id=job_id)
+
+
+def _save_revision(db, batch, actor, kind, payload, *, job_id=None, event_action=None):
     revision = batch['revision'] + 1
     cipher = _seal(_json(payload), _context(batch['org_id'], batch['id'], 'revision:' + kind, revision))
     db.execute('INSERT INTO material_revisions VALUES (?,?,?,?,?,?)',
                (batch['id'], revision, kind, cipher, actor['id'], members.now()))
     db.execute('UPDATE material_batches SET revision=? WHERE id=?', (revision, batch['id']))
-    _event(db, batch, actor, kind, {'revision': revision}, revision=revision,job_id=job_id,system=job_id is not None)
+    _event(db, batch, actor, event_action or kind, {'revision': revision}, revision=revision,job_id=job_id,system=job_id is not None)
     return revision
 
 
@@ -394,6 +413,7 @@ def delete_original(store, actor, batch_id, file_id, expected_revision):
         current_actor(db, actor, {'org_admin'})
         if type(expected_revision) is not int or batch['revision'] != expected_revision:
             raise AccessDenied('材料已变化，请重新查看删除影响。', 409)
+        _require_active_core(db, batch)
         row = db.execute('SELECT deleted_at FROM material_originals WHERE id=? AND batch_id=?', (file_id, batch_id)).fetchone()
         if not row:
             raise AccessDenied()

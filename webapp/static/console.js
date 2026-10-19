@@ -92,7 +92,7 @@ function switchPanel(id) {
 const dz = $("dropzone"), fi = $("fileInput");
 let materialDraft = null, materialCards = [], originalUrls = [];
 let materialRequest = 0;
-const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError, policyUI:()=>enterpriseMaterials.policyUI,
+const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError, policyUI:()=>enterpriseMaterials.policyUI,openTaskPanel:()=>switchPanel("uploadPanel"),
   continueCheck:id=>window.KnowledgeRetrieval?.openTask(id)});
 const enterpriseMaterials = createEnterpriseMaterials({api, el, $, user:()=>currentUser,
   clear:clearMaterials, showError, showResult:result=>{renderResult(result);switchPanel("auditPanel");},
@@ -1346,6 +1346,7 @@ function lookupVerification(){return performVerification(false);}
 $("verificationLookup").onclick=lookupVerification;$("verificationCheck").onclick=()=>performVerification(true);
 $("verificationId").oninput=invalidateVerification;$("verificationFormat").onchange=invalidateVerification;$("verificationFile").onchange=invalidateVerification;
 async function loadHistory(page = 1) {
+  void coreInputs.renderArchived();
   const request = ++historyRequest;
   $("historyPrev").disabled = $("historyNext").disabled = true;
   $("historyStatus").textContent = "正在检索……";
