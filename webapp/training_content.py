@@ -133,20 +133,15 @@ def _baseline_label(db, cert_id: str, year: int) -> str:
 def ensure_active_version(db, cert_id: str, rules: list[Any]) -> Any:
     """返回当前 active 版本；没有则建立仿真基线版本（须在 BEGIN IMMEDIATE 事务内调用）。"""
     active = resolve_active_version(db, cert_id)
+    if active:
+        if not active['rules_snapshot_json']:
+            raise _portal_error("当前教学版本缺少规则快照，请教师发布新版本后再开始练习。", 409)
+        return active
+    if db.execute('SELECT 1 FROM training_content_version WHERE certificate_id=?', (cert_id,)).fetchone():
+        raise _portal_error("当前证书没有启用的教学版本，请教师发布新版本后再开始练习。", 409)
     rule_ids = linked_rule_ids(db, cert_id)
     snapshot = json.dumps([asdict(r) for r in sorted(rules, key=lambda r: r.id)],
                           ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    if active:
-        covered = json.loads(active['rule_ids_json'] or '[]')
-        snapshot_matches = active['rules_snapshot_json'] == snapshot
-        if (active['rules_digest'] == _pack_digest(covered, rules)
-                and set(rule_ids) <= set(covered) and snapshot_matches):
-            return active
-        # Never retrofit an old content version with today's rules. New work
-        # receives a new version; existing attempts keep their original version.
-        db.execute("UPDATE training_content_version SET status='retired', updated_at=? WHERE id=?",
-                   (_now(), active['id']))
-        rule_ids = sorted((set(rule_ids) | set(covered)) & {r.id for r in rules})
     year = _today_cst().year
     now = _now()
     version_id = str(uuid.uuid4())
@@ -157,6 +152,7 @@ def ensure_active_version(db, cert_id: str, rules: list[Any]) -> Any:
         (version_id, cert_id, _baseline_label(db, cert_id, year), year,
          _pack_digest(rule_ids, rules), json.dumps(rule_ids, ensure_ascii=False), now, now))
     db.execute('UPDATE training_content_version SET rules_snapshot_json=? WHERE id=?', (snapshot, version_id))
+    _save_knowledge(db, version_id, rules, rule_ids)
     return db.execute("SELECT * FROM training_content_version WHERE id=?", (version_id,)).fetchone()
 
 
@@ -172,21 +168,55 @@ def attempt_rules(db, row, fallback):
     return fallback
 
 
-def _payload(db, row) -> dict[str, Any]:
+def _save_knowledge(db, version_id, rules, rule_ids):
+    from webapp.knowledge_sync import rule_references
+    snapshot = json.dumps(rule_references(db, rules, set(rule_ids)), ensure_ascii=False, sort_keys=True)
+    db.execute('UPDATE training_content_version SET knowledge_snapshot_json=? WHERE id=?', (snapshot, version_id))
+
+
+def teaching_rules(db, version, fallback):
+    """Restore the complete grading catalog frozen at publication."""
+    return attempt_rules(db, {'content_version_id': version['id']}, fallback) if version else fallback
+
+
+def update_status(db, version, rules):
+    from webapp.knowledge_sync import rule_references
+    covered = set(json.loads(version['rule_ids_json'] or '[]'))
+    linked = set(linked_rule_ids(db, version['certificate_id']))
+    saved = {r.id: r for r in teaching_rules(db, version, [])}
+    current = {r.id: r for r in rules}
+    changed = sorted(rid for rid in covered & linked
+                     if rid not in saved or rid not in current or asdict(saved[rid]) != asdict(current[rid]))
+    knowledge = rule_references(db, rules, covered & linked)
+    frozen_knowledge = json.loads(version['knowledge_snapshot_json'] or '[]')
+    frozen_knowledge = [r for r in frozen_knowledge if r['rule_code'] in covered & linked]
+    evidence_changed = (not version['knowledge_snapshot_json'] or
+                        frozen_knowledge != knowledge)
+    pending = bool(changed or covered != linked or evidence_changed)
+    return {'pending': pending, 'changed_rule_ids': changed,
+            'added_rule_ids': sorted(linked - covered), 'removed_rule_ids': sorted(covered - linked),
+            'evidence_changed': evidence_changed,
+            'notice': ('公共知识或课程关联已有更新；当前练习继续使用已发布版本。请核对后发布新教学版本。'
+                       if pending else None)}
+
+
+def _payload(db, row, rules=None) -> dict[str, Any]:
     return dict(row) | {
         "rule_ids": json.loads(row["rule_ids_json"] or "[]"),
         "source_type_label": SOURCE_LABELS.get(row["source_type"], row["source_type"]),
+        "knowledge_update": update_status(db, row, rules) if rules is not None and row['status'] == 'active' else None,
     }
 
 
 def list_versions(store, cert_id: str) -> list[dict[str, Any]]:
+    rules = load_rules(store)
     with store.connect() as db:
         if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
             raise _portal_error("证书不存在。", 404)
         rows = db.execute(
             "SELECT * FROM training_content_version WHERE certificate_id=?"
             " ORDER BY created_at DESC", (cert_id,)).fetchall()
-        return [_payload(db, r) for r in rows]
+        return [_payload(db, r, rules) for r in rows]
 
 
 def create_version(store, staff: dict, cert_id: str, *, label: str, source_type: str = "simulated",
@@ -242,6 +272,7 @@ def create_version(store, staff: dict, cert_id: str, *, label: str, source_type:
         db.execute('UPDATE training_content_version SET rules_snapshot_json=? WHERE id=?',
                    (json.dumps([asdict(r) for r in sorted(rules, key=lambda r: r.id)],
                                ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str), version_id))
+        _save_knowledge(db, version_id, rules, final_ids)
         row = db.execute("SELECT * FROM training_content_version WHERE id=?", (version_id,)).fetchone()
         return _payload(db, row)
 

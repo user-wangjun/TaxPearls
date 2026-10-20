@@ -109,11 +109,18 @@ class TrainingGraphTests(unittest.TestCase):
         self.assertEqual(len(listing["relations"]), 1)
         self.assertEqual(listing["relations"][0]["to_kp"]["code"], "KP-B")
         self.assertEqual(listing["relations"][0]["relation_type_label"], "前置知识")
-        # 学生视角：KP-A 的前置是 KP-B；KP-B 的被依赖关系在学生载荷中对称聚合为前置
+        # A 依赖 B；B 的被依赖关系不能反向显示为前置。
         kps = self.client.get(f"/api/training/staff/certificates/{self.cert}/knowledge-points").json()
         by_code = {k["code"]: k for k in kps["knowledge_points"]}
         self.assertEqual(by_code["KP-A"]["relations"]["prerequisite"][0]["code"], "KP-B")
-        self.assertEqual(by_code["KP-B"]["relations"]["prerequisite"][0]["code"], "KP-A")
+        self.assertEqual(by_code["KP-B"]["relations"]["prerequisite"], [])
+        self.assertEqual(by_code["KP-B"]["incoming_prerequisite"][0]["code"], "KP-A")
+        self.assertEqual(by_code["KP-A"]["relations"]["prerequisite"][0]["basis_ref"], "考纲第二章")
+        self.assertEqual(self._create(self.kpb, self.kpc, 'concept').status_code, 200)
+        kps = self.client.get(f"/api/training/staff/certificates/{self.cert}/knowledge-points").json()
+        by_code = {k['code']: k for k in kps['knowledge_points']}
+        self.assertEqual(by_code['KP-B']['relations']['concept'][0]['code'], 'KP-C')
+        self.assertEqual(by_code['KP-C']['relations']['concept'][0]['code'], 'KP-B')
 
     def test_delete_relation(self):
         self._staff_login()

@@ -9,6 +9,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 import uuid
+from dataclasses import replace
+from unittest.mock import patch
 from pathlib import Path
 
 from argon2 import PasswordHasher
@@ -19,6 +21,7 @@ from src import settings  # noqa: F401 - 先加载 .env，Store 需要 FIELD_KEY
 from src import engine
 from webapp.storage import Store
 from webapp.training_content import register as register_content
+from webapp import training_content as content
 from webapp.training_portal import RULES_DIR, register
 
 _passwords = PasswordHasher()
@@ -183,6 +186,10 @@ class TrainingContentVersionTests(unittest.TestCase):
         self.assertEqual(detail["content_version"]["status"], "retired")
         self.assertIsNone(detail["applicability"]["current_version"])
         self.assertIn("退役", detail["applicability"]["notice"])
+        self.assertEqual(self._start().status_code, 409)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM training_content_version WHERE certificate_id=?',
+                                       (self.cert,)).fetchone()[0], 1)
 
     def test_legacy_attempt_without_version_degrades_honestly(self):
         self._staff_login()
@@ -200,6 +207,62 @@ class TrainingContentVersionTests(unittest.TestCase):
         self.assertIsNone(detail["content_version"])
         self.assertIsNone(detail["applicability"]["attempt_version"])
         self.assertIn("早于内容版本管理", detail["applicability"]["notice"])
+
+    def test_unrelated_rule_change_does_not_rotate_or_raise_update_notice(self):
+        self._staff_login(); self._link(); self._student_login()
+        attempt = self._start(seed=42).json()['attempt']
+        newer = [replace(r, version='99.0') if r.id != self.rule_id else r for r in self.rules]
+        with patch('webapp.training_portal._load_rules', return_value=newer):
+            repeated = self._start(seed=42).json()['attempt']
+            points = self.client.get(f'/api/training/my/knowledge-points?certificate_id={self.cert}').json()['knowledge_points']
+        self.assertEqual(attempt['content_version']['id'], repeated['content_version']['id'])
+        self.assertEqual(attempt['materials'], repeated['materials'])
+        self.assertFalse(points[0]['knowledge_update']['pending'])
+
+    def test_related_change_is_adopted_only_by_publishing(self):
+        self._staff_login(); self._link(); self._student_login()
+        first = self._start(seed=42).json()['attempt']
+        newer = [replace(r, version='99.0', threshold_basis='测试更新口径')
+                 if r.id == self.rule_id else r for r in self.rules]
+        with patch('webapp.training_portal._load_rules', return_value=newer), \
+                patch('webapp.training_content.load_rules', return_value=newer):
+            self.assertEqual(self._start(seed=42).json()['attempt']['content_version']['id'], first['content_version']['id'])
+            self._staff_login()
+            versions = self.client.get(f'/api/training/staff/certificates/{self.cert}/content-versions').json()['versions']
+            self.assertEqual(versions[0]['knowledge_update']['changed_rule_ids'], [self.rule_id])
+            published = self._create_version('采用公共知识更新').json()['content_version']
+            fresh = self._start(seed=42).json()['attempt']
+            self.assertEqual(fresh['content_version']['id'], published['id'])
+            self.assertNotEqual(first['content_version']['id'], fresh['content_version']['id'])
+            old = self.client.post(f"/api/training/my/practice/{first['id']}/submit", json={'selected_rule_ids': [self.rule_id]})
+            self.assertEqual(old.status_code, 200, old.text)
+
+    def test_new_link_waits_for_publication_and_cannot_be_selected_explicitly(self):
+        self._staff_login(); self._link(); self._student_login()
+        self._start()
+        added = self.rules[1].id
+        self._staff_login()
+        response = self.client.post(f'/api/training/staff/knowledge-points/{self.kp}/links',
+                                    json={'target_type': 'rule', 'target_id': added})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(self._start(rule_id=added).status_code, 409)
+        self._create_version('纳入新关联')
+        self.assertEqual(self._start(rule_id=added).status_code, 200)
+
+    def test_additive_knowledge_migration_does_not_rewrite_existing_version(self):
+        self._staff_login(); self._link(); self._student_login()
+        attempt = self._start().json()['attempt']
+        with self.store.connect() as db:
+            before = db.execute('SELECT rules_snapshot_json FROM training_content_version WHERE id=?',
+                                (attempt['content_version']['id'],)).fetchone()[0]
+            db.execute('ALTER TABLE training_content_version DROP COLUMN knowledge_snapshot_json')
+        migrated = Store(self.store.path)
+        with migrated.connect() as db:
+            version = content.resolve_active_version(db, self.cert)
+            self.assertEqual(version['rules_snapshot_json'], before)
+            self.assertIsNone(version['knowledge_snapshot_json'])
+            self.assertTrue(content.update_status(db, version, self.rules)['pending'])
+            self.assertEqual(db.execute('SELECT count(*) FROM training_self_practice_attempts').fetchone()[0], 1)
 
 
 if __name__ == "__main__":
