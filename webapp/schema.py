@@ -815,3 +815,9 @@ def initialize(store) -> None:
         policy_graph.migrate(db)
         from src import vat_reconciliation
         vat_reconciliation.initialize(db)
+        from webapp import university_members
+        university_members.migrate(db)
+        if 'student_seats' not in {r['name'] for r in db.execute('PRAGMA table_info(invite_codes)')}:
+            db.execute('ALTER TABLE invite_codes ADD COLUMN student_seats INTEGER NOT NULL DEFAULT 0')
+        if 'code_secret' not in {r['name'] for r in db.execute('PRAGMA table_info(member_invitations)')}:
+            db.execute('ALTER TABLE member_invitations ADD COLUMN code_secret TEXT')

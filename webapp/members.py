@@ -77,7 +77,8 @@ def overview(store, actor, org_id):
             LEFT JOIN invite_codes i ON i.redeemed_by=u.id
             LEFT JOIN member_invitations mi ON mi.id=m.credential_id AND mi.org_id=u.org_id
             WHERE u.org_id=? AND u.role!='platform_admin' ORDER BY u.created_at,u.id''',(org_id,)).fetchall()
-        return {'org_id':org_id,'quota':quota(db,org_id),'members':[dict(row) for row in rows]}
+        category=db.execute('SELECT org_type FROM org_settings WHERE org_id=?',(org_id,)).fetchone()
+        return {'org_id':org_id,'org_type':category[0] if category else None,'quota':quota(db,org_id),'members':[dict(row) for row in rows]}
 
 
 def set_quota(store, actor, org_id, seats, revision):
@@ -113,14 +114,18 @@ def set_active(store, actor, org_id, user_id, active, expected_active):
             raise AccessDenied('成员状态已变化，请刷新后重试。',409)
         if bool(target['active'])==active:
             return {'id':user_id,'active':active,'quota':quota(db,org_id)}
-        if active:
+        from webapp.university_members import set_identity_active
+        linked_identity=set_identity_active(db,user_id,active)
+        if active and not linked_identity:
             require_slot(db,org_id)
-        elif target['role']=='org_admin' and db.execute("SELECT COUNT(*) FROM users WHERE org_id=? AND role='org_admin' AND active=1",(org_id,)).fetchone()[0]<=1:
+        elif not active and target['role']=='org_admin' and db.execute("SELECT COUNT(*) FROM users WHERE org_id=? AND role='org_admin' AND active=1",(org_id,)).fetchone()[0]<=1:
             raise AccessDenied('不能停用机构最后一位有效管理员。',409)
         db.execute('UPDATE users SET active=? WHERE id=?',(int(active),user_id))
         # Re-enable must never revive any pre-disable cookie, including tokens
         # left by an older deployment. Login serializes with this transaction.
         db.execute('DELETE FROM sessions WHERE user_id=?',(user_id,))
+        from webapp.university_members import revoke_identity
+        revoke_identity(db,user_id)
         from webapp import oauth
         # Also invalidate requests started while disabled; restoring the member
         # must require a new provider authorization rather than revive those.

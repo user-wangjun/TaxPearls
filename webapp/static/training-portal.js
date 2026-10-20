@@ -1,3 +1,7 @@
+"use strict";
+window.createTrainingStudent = function(document = window.document, {embedded=false} = {}) {
+let disposed=false;const requests=new AbortController();
+/* controller body */
 /* 考证备考学生端（FR-K01/K02）：证书目录、学习目标与考试倒计时。 */
 "use strict";
 
@@ -11,13 +15,16 @@ function esc(value) {
 }
 
 async function api(path, options = {}) {
+  if(disposed)throw new DOMException("视图已关闭","AbortError");
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
     ...options,
+    signal:requests.signal,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `请求失败（${res.status}）`);
+  if(disposed)throw new DOMException("视图已关闭","AbortError");
+  if (!res.ok) {const error=new Error(data.detail || `请求失败（${res.status}）`);error.status=res.status;throw error;}
   return data;
 }
 
@@ -138,7 +145,8 @@ function todayISO() {
 /* ---------- 行为 ---------- */
 
 function flash(message, isError = false) {
-  const box = document.getElementById(isError ? "login-error" : "goal-msg");
+  if(disposed)return;
+  const box = document.getElementById(isError ? "app-error" : "goal-msg");
   if (isError) box.textContent = message || "";
   else box.textContent = message || "";
   if (message && !isError) setTimeout(() => { box.textContent = ""; }, 4000);
@@ -390,7 +398,8 @@ async function startPractice(body) {
 }
 
 function showApp(loggedIn) {
-  document.getElementById("login-view").hidden = loggedIn;
+  if(disposed)return;
+  if(!loggedIn){state.student=null;location.replace("/");return;}
   document.getElementById("app-view").hidden = !loggedIn;
   document.getElementById("who").textContent = loggedIn
     ? `${state.student.name}（${state.student.student_no}${state.student.college ? " · " + state.student.college : ""}）` : "";
@@ -405,12 +414,14 @@ function closePassModal() {
 
 async function boot() {
   try {
-    const me = await api("/api/training/auth/me");
+    let me;
+    try{me=await api("/api/training/auth/me");}catch{await api("/api/training/membership/session",{method:"POST"});me=await api("/api/training/auth/me");}
     state.student = me.student;
     showApp(true);
     await refresh();
-  } catch {
-    showApp(false);
+  } catch (error) {
+    if(disposed)return;
+    if(error.status===401||error.status===403)showApp(false);else flash(error.message,true);
   }
 }
 
@@ -438,7 +449,7 @@ document.getElementById("save-pass").addEventListener("click", async () => {
     closePassModal();
     state.student = null;
     showApp(false);
-    document.getElementById("login-error").textContent = "密码已修改，请用新密码重新登录。";
+
   } catch (err) {
     box.textContent = err.message;
   }
@@ -448,27 +459,6 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
   try { await api("/api/training/auth/logout", { method: "POST" }); } catch { /* 会话已失效即可 */ }
   state.student = null;
   showApp(false);
-});
-
-document.getElementById("login-btn").addEventListener("click", async () => {
-  const box = document.getElementById("login-error");
-  box.textContent = "";
-  try {
-    const data = await api("/api/training/auth/login", {
-      method: "POST",
-      body: {
-        student_no: document.getElementById("student-no").value.trim(),
-        password: document.getElementById("password").value,
-        college: document.getElementById("college").value.trim() || null,
-        remember: document.getElementById("remember").checked,
-      },
-    });
-    state.student = data.student;
-    showApp(true);
-    await refresh();
-  } catch (err) {
-    box.textContent = err.message;
-  }
 });
 
 document.getElementById("app-view").addEventListener("click", async (event) => {
@@ -824,4 +814,8 @@ async function toggleKpHistory(btn, scope, kpId) {
   }
 }
 
-boot();
+const ready=boot();
+
+/* controller end */
+return {ready,destroy(){disposed=true;requests.abort();}};
+};

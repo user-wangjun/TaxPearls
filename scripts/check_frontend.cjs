@@ -152,7 +152,7 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 // Refresh restores the actual selected workspace view, while role-hidden views stay unavailable.
 {
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
-  const code = source.slice(source.indexOf("function defaultWorkspacePanel()"), source.indexOf("/* ---------- 多材料上传"));
+  const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("/* ---------- 多材料上传"));
   const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel"];
   const permitted = {
     org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel"].includes(id)),
@@ -229,7 +229,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
     const code = source.slice(source.indexOf("function inviteOrgTypeLabel("), source.indexOf('$("btnCreateClient").addEventListener'));
     const nodes = new Map(), handlers = new Map(), writes = [], errors = [], toasts = [];
     const node = id => {
-      if(!nodes.has(id))nodes.set(id,{value:"",textContent:"",hidden:false,disabled:false,
+      if(!nodes.has(id))nodes.set(id,{value:"",textContent:"",hidden:false,disabled:false,dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},
         addEventListener:(_event,handler)=>handlers.set(id,handler)});
       return nodes.get(id);
     };
@@ -279,7 +279,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   // in application code; this tiny boundary provides only the needed DOM/API.
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
   // Settings reuses self-only preferences; stale reads/writes may not alter another view/account.
-  const settingsCode = source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
+  const settingsCode = source.slice(source.indexOf("function isCampusUser("), source.indexOf("async function teachingRequest("))+source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
   function settingsBoundary(role = "accountant") {
     const nodes = new Map(), calls = [], navigated = []; let active = true;
     const user = {id:"settings-user", role, username:"<account>", display_name:"<name>", created_at:"2026-10-01T00:00:00+00:00"};

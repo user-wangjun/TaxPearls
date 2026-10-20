@@ -434,6 +434,7 @@ class InviteBody(BaseModel):
     org_name: str = Field(min_length=1, max_length=120)
     org_type: Literal['enterprise', 'university']
     seats: int = Field(default=5, ge=1, le=200)
+    student_seats: int = Field(default=0, ge=0, le=100000)
     bound_email: str = ""
     expires_days: int = Field(default=7, ge=1, le=30)
 
@@ -736,7 +737,7 @@ def index() -> FileResponse:
 def member_invitation_landing(code: str) -> FileResponse:
     # This route never authenticates or reveals an institution. Full-hash
     # validation happens only after email proof in the registration transaction.
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html",
+    return FileResponse(STATIC_DIR / "join.html", media_type="text/html",
                         headers={"Cache-Control":"no-store","Referrer-Policy":"no-referrer",
                                  "X-Robots-Tag":"noindex, nofollow"})
 
@@ -789,8 +790,9 @@ def mistake_book_script() -> FileResponse:
 
 
 @app.get("/training-certificates")
-def training_portal_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "training-portal.html", media_type="text/html")
+def training_portal_page(request: Request) -> FileResponse:
+    from webapp.university_members import teaching_page
+    return teaching_page(store,request)
 
 
 @app.get("/training-portal.js")
@@ -860,8 +862,9 @@ def knowledge(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> 
 
 
 @app.get("/api/status")
-def status(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    return {"needs_setup": not store.has_users(), "user": store.user_for_token(session)}
+def status(request: Request) -> dict[str, Any]:
+    from webapp.university_members import session_identity
+    return {"needs_setup": not store.has_users(), "user": session_identity(store,request)}
 
 
 class GraphQuestion(BaseModel):
@@ -1117,37 +1120,52 @@ def setup(body: SetupBody) -> dict[str, Any]:
 
 @app.post("/api/login")
 def login(body: LoginBody, request: Request) -> Response:
+    from webapp.university_members import authenticate_legacy,attach_platform_session,attach_session,user_context
     ip = request.client.host if request.client else "unknown"
     with login_guard.reserve(body.username, ip) as wait:
         if wait:
             return JSONResponse(status_code=429, content={"detail": "登录尝试过于频繁，请稍后重试。"},
                                 headers={"Retry-After": str(wait)})
         result = store.authenticate(body.username, body.password, remember=body.remember)
-        if not result:
+        context=user_context(store,result[0]) if result else None
+        if result and not context:
+            store.logout(result[1])
+            result=None
+        try:
+            legacy=authenticate_legacy(store,body.username,body.password,body.remember) if not result else None
+        except ValueError as exc:
+            login_guard.record_failure(body.username,ip)
+            return _err(409,str(exc))
+        if not result and not legacy:
             count = login_guard.record_failure(body.username, ip)
             store.log(None, "login_failed", "account_hash", login_guard.fingerprint(body.username.strip().lower()),
                       f"ip_hash={login_guard.fingerprint(ip)};failure_count={count}")
             return _err(401, "邮箱、用户名或密码错误。")
-        user, token = result
+        user, token = (context,result[1]) if result else (legacy['user'],legacy['token'])
         login_guard.record_success(body.username)
-    store.log(user, "login", "session", user["id"])
+    store.log(user if result else None, "login", "session", user["id"])
     response = JSONResponse({"user": user})
+    cookie=COOKIE_NAME
+    if result:
+        attach_session(store,response,user,remember=body.remember)
+    else:
+        attach_platform_session(store,response,legacy['profile']['id'],staff=legacy['staff'],remember=body.remember)
+        cookie='taxpearls_staff_session' if legacy['staff'] else 'taxpearls_training_session'
     response.set_cookie(
-        COOKIE_NAME, token, max_age=session_max_age(body.remember), httponly=True,
+        cookie, token, max_age=session_max_age(body.remember), httponly=True,
         samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1",
     )
     return response
 
 
 @app.post("/api/logout")
-def logout(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
+def logout(request: Request, session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
     user = store.user_for_token(session)
     if user:
         store.log(user, "logout", "session", user["id"])
-    store.logout(session)
     response = JSONResponse({"ok": True})
-    response.delete_cookie(COOKIE_NAME)
-    response.delete_cookie(EMAIL_COOKIE_NAME)
+    from webapp.university_members import logout_browser
+    logout_browser(store,request,response)
     return response
 
 
@@ -1178,7 +1196,13 @@ def _email_browser_response(content, browser):
 
 
 def _email_login_response(user, token):
+    from webapp.university_members import attach_session,user_context
+    user=user_context(store,user)
+    if not user:
+        store.logout(token)
+        return _err(401,'账号未关联有效身份，请联系管理员核对。')
     response=JSONResponse({'user':user,'purpose':'login'})
+    attach_session(store,response,user)
     response.set_cookie(COOKIE_NAME,token,max_age=12*3600,httponly=True,samesite='strict',
                         secure=os.environ.get('TAXPEARLS_COOKIE_SECURE')=='1')
     return response
@@ -1309,6 +1333,8 @@ def register_complete(body: RegisterCompleteBody, request: Request) -> Response:
             raise HTTPException(status_code=409, detail="该邮箱已注册，请直接登录。") from None
         raise HTTPException(status_code=409, detail="账号与现有数据冲突。") from None
     response = JSONResponse({"user": user, "org_id": user["org_id"]})
+    from webapp.university_members import attach_session
+    attach_session(store,response,user)
     response.set_cookie(
         COOKIE_NAME, token, max_age=12 * 3600, httponly=True,
         samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1",
@@ -1323,7 +1349,7 @@ def create_invite(body: InviteBody, session: str | None = Cookie(default=None, a
     _allow(actor, "platform_admin")
     try:
         invite = store.create_invite_code(actor, body.org_name, body.seats,
-                                          body.bound_email, body.expires_days, org_type=body.org_type)
+                                          body.bound_email, body.expires_days, org_type=body.org_type,student_seats=body.student_seats)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return invite
@@ -1337,8 +1363,12 @@ def list_invites(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) 
 
 
 @app.get("/api/me")
-def me(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    return _user(session)
+def me(request: Request) -> dict[str, Any]:
+    from webapp.university_members import session_identity
+    user=session_identity(store,request)
+    if not user:
+        raise HTTPException(401,'请先登录。')
+    return user
 
 
 @app.get("/api/notifications/preferences")
@@ -1561,6 +1591,8 @@ from webapp import rule_bindings as rule_binding_routes
 rule_binding_routes.register(app,lambda:store,_user,_allow,_effective_rules)
 from webapp.training_portal import register as register_training_portal
 register_training_portal(app, lambda: store, "taxpearls_training_session")
+from webapp import university_members
+university_members.register(app,lambda: store,_user)
 from webapp.training_content import register as register_training_content
 register_training_content(app, lambda: store)
 from webapp.training_graph import register as register_training_graph

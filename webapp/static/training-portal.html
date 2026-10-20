@@ -18,24 +18,8 @@
   </div>
 </header>
 <main>
-  <section id="login-view" class="card" style="max-width:420px;margin:40px auto;">
-    <h2>学生登录</h2>
-    <label for="college">院校（选填，学号跨校重复时必填）</label>
-    <input id="college" placeholder="如：示例大学">
-    <label for="student-no">学号</label>
-    <input id="student-no" autocomplete="username">
-    <label for="password">密码</label>
-    <input id="password" type="password" autocomplete="current-password">
-    <label style="display:flex;align-items:center;gap:6px;margin-top:12px;">
-      <input type="checkbox" id="remember" style="width:auto;"> 保持登录 30 天
-    </label>
-    <div class="row" style="margin-top:14px;">
-      <button class="primary" id="login-btn" style="flex:1;">登录</button>
-    </div>
-    <div class="error" id="login-error"></div>
-  </section>
-
   <section id="app-view" hidden>
+    <div class="error" id="app-error" role="alert"></div>
     <div class="card" id="workbench-card">
       <h2>我的备考工作台</h2>
       <div id="wb-body"></div>
@@ -85,10 +69,11 @@
 <div id="pass-modal" hidden style="position:fixed;inset:0;background:rgba(4,10,20,.6);display:flex;align-items:center;justify-content:center;z-index:50;">
   <div class="card" style="width:340px;margin:0;">
     <h2>修改密码</h2>
+    <p class="muted" id="student-password-rule">密码须为 10–128 位，包含大写字母、小写字母、数字、符号中的至少三类；不能使用常见弱口令或包含邮箱 @ 前部分。</p>
     <label for="old-pass">当前密码</label>
     <input id="old-pass" type="password" autocomplete="current-password">
-    <label for="new-pass">新密码（至少 8 位）</label>
-    <input id="new-pass" type="password" autocomplete="new-password">
+    <label for="new-pass">新密码（10–128 位）</label>
+    <input id="new-pass" aria-describedby="student-password-rule" type="password" autocomplete="new-password">
     <label for="new-pass2">确认新密码</label>
     <input id="new-pass2" type="password" autocomplete="new-password">
     <div class="row" style="margin-top:14px;">
@@ -98,6 +83,6 @@
     <div class="error" id="pass-error"></div>
   </div>
 </div>
-<script src="/training-portal.js?v=20261017-26de5f63700c"></script>
+<script src="/training-portal.js?v=20261020-auth-3"></script>
 </body>
 </html>

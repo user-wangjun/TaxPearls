@@ -82,9 +82,10 @@ def credential(db, org_id):
 
 
 def ledger(db, org_id):
-    rows = db.execute('''SELECT id,role,active,revision,used_count,last_used_at,created_at,updated_at
+    rows = db.execute('''SELECT id,role,active,revision,used_count,last_used_at,created_at,updated_at,code_secret
         FROM member_invitations WHERE org_id=? ORDER BY role''', (org_id,)).fetchall()
-    return {'links': [dict(row) for row in rows], 'policy': policy(db,org_id),
+    return {'links': [{k:row[k] for k in row.keys() if k!='code_secret'} |
+                      {'path':'/p/'+row['code_secret'] if row['code_secret'] else None} for row in rows], 'policy': policy(db,org_id),
             'quota': members.quota(db,org_id)}
 
 
@@ -101,13 +102,19 @@ def issue(store, actor, org_id, role):
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         members.authorize(db,actor,org_id)
+        category = db.execute('SELECT org_type FROM org_settings WHERE org_id=?',(org_id,)).fetchone()
+        if category and category[0]=='enterprise' and role!='accountant':
+            raise AccessDenied('企业只能签发员工邀请链接。',422)
+        if category and category[0]=='university':
+            raise AccessDenied('请在高校工作台管理教师和本人学生的邀请链接。',422)
         if db.execute('SELECT 1 FROM member_invitations WHERE org_id=? AND role=?', (org_id,role)).fetchone():
             raise AccessDenied('该角色已有邀请链接，请刷新或调整状态。',409)
         code, digest = credential(db,org_id)
         link_id, stamp = secrets.token_hex(12), members.now()
         db.execute('''INSERT INTO member_invitations
-            (id,org_id,role,token_hash,created_by,created_at,updated_at) VALUES (?,?,?,?,?,?,?)''',
-                   (link_id,org_id,role,digest,actor['id'],stamp,stamp))
+            (id,org_id,role,token_hash,created_by,created_at,updated_at,code_secret) VALUES (?,?,?,?,?,?,?,?)''',
+                   (link_id,org_id,role,digest,actor['id'],stamp,stamp,
+                    db.field_codec.seal(code,'member_invitations','code_secret',link_id)))
         members.log(db,{**actor,'org_id':org_id},'issue_member_invitation','member_invitation',link_id,f'role={role};revision=1')
         return {'id':link_id,'code':code,'path':'/p/'+code,'revision':1,'active':True}
 
@@ -129,8 +136,9 @@ def change(store, actor, org_id, link_id, revision, *, active=None):
         if active is None:
             code,digest = credential(db,org_id)
             result.update(code=code,path='/p/'+code)
-        db.execute('UPDATE member_invitations SET token_hash=?,active=?,revision=revision+1,updated_at=? WHERE id=?',
-                   (digest,int(result['active']),members.now(),link_id))
+        db.execute('UPDATE member_invitations SET token_hash=?,active=?,revision=revision+1,updated_at=?,code_secret=? WHERE id=?',
+                   (digest,int(result['active']),members.now(),
+                    db.field_codec.seal(code if active is None else row['code_secret'],'member_invitations','code_secret',link_id),link_id))
         members.log(db,{**actor,'org_id':org_id},'refresh_member_invitation' if active is None else 'set_member_invitation_state',
                     'member_invitation',link_id,f'revision={revision+1};active={int(result["active"])}')
         return result
@@ -161,6 +169,9 @@ def resolve(db, digest, address):
         return None
     if not row['active'] or row['role'] not in MEMBER_ROLES:
         raise ValueError('邀请码无效或已停用。')
+    category=db.execute('SELECT org_type FROM org_settings WHERE org_id=?',(row['org_id'],)).fetchone()
+    if category and ((category[0]=='enterprise' and row['role']!='accountant') or category[0]=='university'):
+        raise ValueError('邀请类型与机构不符，请联系管理员使用当前邀请链接。')
     state = policy(db,row['org_id'])
     if state['enabled'] and domain(address.rpartition('@')[2]) not in state['domains']:
         raise ValueError('该邮箱域名不在机构允许的注册范围内。')

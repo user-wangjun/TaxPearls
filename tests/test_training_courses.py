@@ -230,11 +230,11 @@ class CourseManagementTests(unittest.TestCase):
         self.assertEqual(
             self.client.get(f"/api/training/staff/overview?college={COLLEGE}").status_code, 200)
         self.assertEqual(self.client.get("/api/training/staff/teachers").status_code, 200)
-        # 但不可导入账号（导入仅 admin）
+        # 校级管理员可管理本校成员。
         res = self.client.post("/api/training/staff/teachers/import", json={
             "college": COLLEGE, "default_password": "Teach2026!",
             "rows": [{"username": "t9", "display_name": "新教师"}]})
-        self.assertEqual(res.status_code, 403, res.text)
+        self.assertEqual(res.status_code, 200, res.text)
 
     def test_import_rejects_admin_role(self):
         self._staff_login()

@@ -59,7 +59,7 @@ class MemberInvitationTests(unittest.TestCase):
             state = invitations.overview(self.store,self.owner,'alpha')
             record = next(row for row in state['links'] if row['id']==link['id'])
             self.assertEqual(record['used_count'],2); self.assertIsNotNone(record['last_used_at'])
-            self.assertNotIn(link['code'],json.dumps(state)); self.assertNotIn('token_hash',json.dumps(state))
+            self.assertEqual(record['path'],link['path']); self.assertNotIn('token_hash',json.dumps(state))
             with self.store.connect() as db:
                 dump = '\n'.join(db.iterdump())
             self.assertNotIn(link['code'],dump)

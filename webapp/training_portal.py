@@ -32,8 +32,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from webapp.login_guard import LoginGuard
-from webapp import code_sandbox
-from webapp.storage import _hash_token, _now, session_max_age
+from webapp import code_sandbox, university_members
+from webapp.storage import _hash_token, _now, _validate_password, session_max_age
 from webapp.training_content import (applicability, ensure_active_version,
                                      resolve_active_version, version_brief)
 from webapp.training_graph import relations_payload
@@ -89,9 +89,9 @@ def login_student(store, student_no: str, password: str, college: str | None = N
                   remember: bool = False) -> dict[str, Any] | None:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        rows = db.execute(
-            "SELECT * FROM student_info WHERE student_no=? AND active=1", (student_no.strip(),)
-        ).fetchall()
+        identifier = student_no.strip()
+        column, value = ('lower(email)', identifier.lower()) if '@' in identifier else ('student_no', identifier)
+        rows = db.execute(f"SELECT * FROM student_info WHERE {column}=? AND active=1", (value,)).fetchall()
         if college:
             rows = [r for r in rows if r["college"] == college.strip()]
         if not rows:
@@ -99,8 +99,10 @@ def login_student(store, student_no: str, password: str, college: str | None = N
         # 先验密码再谈歧义：全部失败一律 401，不泄露学号存在性
         verified = []
         for row in rows:
+            if not university_members.identity_active(db,student_id=row["id"]):
+                continue
             try:
-                _passwords.verify(row["password_hash"], password)
+                _passwords.verify(university_members.identity_hash(db,row["password_hash"],student_id=row["id"]), password)
                 verified.append(row)
             except (VerifyMismatchError, InvalidHashError):
                 continue
@@ -127,6 +129,8 @@ def student_for_token(store, token: str | None) -> dict[str, Any] | None:
                WHERE t.token_hash=? AND t.expires_at>=?""",
             (_hash_token(token), _now()),
         ).fetchone()
+        if row and not university_members.identity_active(db,student_id=row["id"]):
+            return None
     if not row or not row["active"]:
         return None
     return _student_public(row)
@@ -140,14 +144,13 @@ def logout_student(store, token: str | None) -> None:
 
 def change_staff_password(store, staff: dict[str, Any], old_password: str, new_password: str) -> dict[str, Any]:
     """教师本人修改密码：验证当前密码，更新后清除自己全部会话（需重新登录）。"""
-    new_password = (new_password or "").strip()
-    if len(new_password) < _MIN_PASSWORD_LEN:
-        raise TrainingPortalError(f"新密码至少 {_MIN_PASSWORD_LEN} 位。")
+    new_password = _validate_training_password(new_password)
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT * FROM college_user WHERE id=? AND active=1", (staff["id"],)).fetchone()
         if not row:
             raise TrainingPortalError("账号不存在或已停用。", 404)
+        _validate_training_password(new_password, row["email"] or "")
         try:
             _passwords.verify(row["password_hash"], old_password or "")
         except (VerifyMismatchError, InvalidHashError):
@@ -156,6 +159,7 @@ def change_staff_password(store, staff: dict[str, Any], old_password: str, new_p
             raise TrainingPortalError("新密码不能与当前密码相同。")
         db.execute("UPDATE college_user SET password_hash=? WHERE id=?",
                    (_passwords.hash(new_password), row["id"]))
+        university_members.sync_password(db,db.execute("SELECT password_hash FROM college_user WHERE id=?",(row["id"],)).fetchone()[0],staff_id=row["id"])
         db.execute("DELETE FROM training_staff_sessions WHERE staff_id=?", (row["id"],))
     return {"password_changed": True}
 
@@ -164,15 +168,15 @@ def change_student_password(store, student: dict[str, Any], old_password: str,
                             new_password: str) -> dict[str, Any]:
     """学生本人修改密码：验证当前密码，更新后清除本人全部会话（需重新登录）。
 
-    与教师改密同口径；学生初始密码为默认口令（Tp#学号2026），首登改密即
-    消除默认口令风险。教师重置入口保留（不验证旧密码，属管理员动作）。"""
-    new_password = _validate_student_password(new_password)
+    与教师及平台账号共用密码规则。教师重置入口保留（不验证旧密码，属管理员动作）。"""
+    new_password = _validate_training_password(new_password)
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT * FROM student_info WHERE id=? AND active=1",
                          (student["id"],)).fetchone()
         if not row:
             raise TrainingPortalError("学生账号不存在或已停用。", 404)
+        _validate_training_password(new_password, row["email"] or "")
         try:
             _passwords.verify(row["password_hash"], old_password or "")
         except (VerifyMismatchError, InvalidHashError):
@@ -181,6 +185,7 @@ def change_student_password(store, student: dict[str, Any], old_password: str,
             raise TrainingPortalError("新密码不能与当前密码相同。")
         db.execute("UPDATE student_info SET password_hash=? WHERE id=?",
                    (_passwords.hash(new_password), row["id"]))
+        university_members.sync_password(db,db.execute("SELECT password_hash FROM student_info WHERE id=?",(row["id"],)).fetchone()[0],student_id=row["id"])
         db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (row["id"],))
     return {"password_changed": True}
 
@@ -190,36 +195,42 @@ def change_student_password(store, student: dict[str, Any], old_password: str,
 # ---------------------------------------------------------------------------
 
 _STUDENT_COLS = "id, college, student_no, name, class_name, active, created_at"
-_MIN_PASSWORD_LEN = 8
 
 
-def _validate_student_password(password: str) -> str:
-    password = (password or "").strip()
-    if len(password) < _MIN_PASSWORD_LEN:
-        raise TrainingPortalError(f"密码至少 {_MIN_PASSWORD_LEN} 位。")
+def _validate_training_password(password: str, email: str = "") -> str:
+    """Reuse the platform policy without changing the password that is hashed."""
+    try:
+        _validate_password(password, email)
+    except ValueError as exc:
+        raise TrainingPortalError(str(exc)) from None
     return password
 
 
-def list_students(store, college: str, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+def list_students(store, college: str, *, include_inactive: bool = True, teacher_id: str | None = None) -> list[dict[str, Any]]:
     with store.connect() as db:
         where = "" if include_inactive else " AND active=1"
         rows = db.execute(
-            f"SELECT {_STUDENT_COLS} FROM student_info WHERE college=?{where} ORDER BY student_no", (college,)
+            f"SELECT {_STUDENT_COLS} FROM student_info WHERE college=?{where}"
+            + (" AND id IN (SELECT student_id FROM student_teacher_memberships WHERE teacher_id=?)" if teacher_id else "")
+            + " ORDER BY student_no", (college,teacher_id) if teacher_id else (college,)
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def create_student(store, college: str, student_no: str, name: str, *,
                    class_name: str | None = None, initial_password: str | None = None,
-                   email: str | None = None) -> dict[str, Any]:
+                   email: str | None = None, teacher_id: str | None = None) -> dict[str, Any]:
     college = (college or "").strip()
     student_no = (student_no or "").strip()
     name = (name or "").strip()
     if not college or not student_no or not name:
         raise TrainingPortalError("院校、学号、姓名均不能为空。")
-    password = _validate_student_password(initial_password or f"Tp#{student_no}2026")
+    password = _validate_training_password(
+        initial_password if initial_password is not None else f"Tp#{student_no}2026", email or "")
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
+        if teacher_id:
+            university_members.require_student_slot(db,teacher_id,college)
         require_student_slot(db, college)  # FR-U06：事务内核销，并发不绕过
         dup = db.execute(
             "SELECT id FROM student_info WHERE college=? AND student_no=?", (college, student_no)
@@ -234,14 +245,16 @@ def create_student(store, college: str, student_no: str, name: str, *,
             (sid, college, student_no, name, (class_name or "").strip() or None,
              _passwords.hash(password), (email or "").strip() or None, _now()),
         )
+        if teacher_id:
+            db.execute("INSERT INTO student_teacher_memberships VALUES (?,?,?)",(sid,teacher_id,college))
         row = db.execute(f"SELECT {_STUDENT_COLS} FROM student_info WHERE id=?", (sid,)).fetchone()
     return dict(row)
 
 
 def import_students(store, college: str, rows: list[dict[str, Any]], *,
-                    default_password: str, default_class_name: str | None = None) -> dict[str, Any]:
+                    default_password: str, default_class_name: str | None = None, teacher_id: str | None = None) -> dict[str, Any]:
     """逐行导入学生；单行失败不中断整批，返回 created/skipped 明细。"""
-    _validate_student_password(default_password)
+    _validate_training_password(default_password)
     created: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for index, row in enumerate(rows, start=1):
@@ -250,8 +263,8 @@ def import_students(store, college: str, rows: list[dict[str, Any]], *,
             created.append(create_student(
                 store, college, student_no, str(row.get("name") or ""),
                 class_name=row.get("class_name") or default_class_name,
-                initial_password=default_password))
-        except TrainingPortalError as exc:
+                initial_password=default_password,teacher_id=teacher_id))
+        except (TrainingPortalError, university_members.AccessDenied) as exc:
             skipped.append({"line": index, "student_no": student_no, "reason": str(exc)})
     return {"created": created, "skipped": skipped}
 
@@ -329,25 +342,42 @@ def parse_student_xlsx(data: bytes, *,
         workbook.close()
 
 
-def reset_student_password(store, student_id: str, new_password: str, *, college: str) -> dict[str, Any]:
-    password = _validate_student_password(new_password)
+def reset_student_password(store, student_id: str, new_password: str, *, college: str, actor=None) -> dict[str, Any]:
+    password = _validate_training_password(new_password)
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT id FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
+        if actor:
+            university_members.student_scope(db,actor,student_id)
+        row = db.execute("SELECT id,email FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
         if not row:
             raise TrainingPortalError("学生不存在。", 404)
+        _validate_training_password(password, row["email"] or "")
         db.execute("UPDATE student_info SET password_hash=? WHERE id=?",
                    (_passwords.hash(password), student_id))
+        university_members.sync_password(db,db.execute("SELECT password_hash FROM student_info WHERE id=?",(student_id,)).fetchone()[0],student_id=student_id)
         db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (student_id,))
     return {"id": student_id, "password_reset": True}
 
 
-def set_student_active(store, student_id: str, active: bool, *, college: str) -> dict[str, Any]:
+def set_student_active(store, student_id: str, active: bool, *, college: str, actor=None) -> dict[str, Any]:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT id FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
+        if actor:
+            university_members.student_scope(db,actor,student_id)
+        row = db.execute("SELECT id,active FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
         if not row:
             raise TrainingPortalError("学生不存在。", 404)
+        if active and not row["active"]:
+            owner=db.execute("SELECT teacher_id FROM student_teacher_memberships WHERE student_id=?",(student_id,)).fetchone()
+            if owner:
+                university_members.require_student_slot(db,owner[0],college)
+            else:
+                require_student_slot(db,college)
+        linked=db.execute("SELECT user_id FROM university_identity_links WHERE student_id=?",(student_id,)).fetchone()
+        if linked:
+            db.execute("UPDATE users SET active=? WHERE id=?",(int(active),linked[0]))
+            db.execute("DELETE FROM sessions WHERE user_id=?",(linked[0],))
+            university_members.revoke_identity(db,linked[0])
         db.execute("UPDATE student_info SET active=? WHERE id=?", (1 if active else 0, student_id))
         if not active:
             db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (student_id,))
@@ -1419,7 +1449,7 @@ def college_quota_state(db, college: str) -> dict[str, Any]:
     row = db.execute("SELECT teacher_quota, student_quota, revision FROM college_quota"
                      " WHERE college=?", (college,)).fetchone()
     teachers = db.execute("SELECT count(*) FROM college_user"
-                          " WHERE college=? AND active=1 AND role='teacher'",
+                          " WHERE college=? AND active=1",
                           (college,)).fetchone()[0]
     students = db.execute("SELECT count(*) FROM student_info WHERE college=? AND active=1",
                           (college,)).fetchone()[0]
@@ -1460,7 +1490,12 @@ def college_quota_overview(store, college: str, *, history_limit: int = 10) -> d
                FROM college_quota_history h LEFT JOIN college_user u ON u.id=h.changed_by
                WHERE h.college=? ORDER BY h.created_at DESC, h.rowid DESC LIMIT ?""",
             (college, max(1, min(int(history_limit), 50)))).fetchall()]
-    state["history"] = hist
+        hist.extend(dict(r) for r in db.execute("""SELECT e.old_staff_seats AS old_teacher_quota,
+            e.old_student_seats AS old_student_quota,e.staff_seats AS new_teacher_quota,
+            e.student_seats AS new_student_quota,e.created_at,u.display_name AS changed_by_name
+            FROM university_capacity_events e JOIN users u ON u.id=e.actor_id
+            WHERE e.college=? ORDER BY e.rowid DESC LIMIT ?""",(college,max(1,min(int(history_limit),50)))))
+    state["history"] = sorted(hist,key=lambda r:r['created_at'],reverse=True)[:max(1,min(int(history_limit),50))]
     return state
 
 
@@ -1582,7 +1617,7 @@ def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
 
     逐行导入，单行失败不中断整批；重复/错误行带原因返回，不部分静默成功。
     role 限 teacher / school_admin；admin 账号仍走人工建立，避免批量提权。"""
-    _validate_student_password(default_password)
+    _validate_training_password(default_password)
     if role not in ("teacher", "school_admin"):
         raise TrainingPortalError("role 仅支持 teacher 或 school_admin（admin 走人工建立）。")
     college = (college or "").strip()
@@ -1602,6 +1637,7 @@ def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
             skipped.append({"line": index, "username": line_no, "reason": "姓名必填。"})
             continue
         try:
+            _validate_training_password(default_password, str(row.get("email") or ""))
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 require_teacher_slot(db, college)  # FR-U06：事务内核销，并发不绕过（教师/校级管理员同槽）
@@ -1785,14 +1821,23 @@ def _staff_public(row: sqlite3.Row) -> dict[str, Any]:
 def login_staff(store, username: str, password: str, remember: bool = False) -> dict[str, Any] | None:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT * FROM college_user WHERE username=? AND active=1",
-                         (username.strip(),)).fetchone()
-        if not row:
+        identifier = username.strip()
+        rows = db.execute("SELECT * FROM college_user WHERE (username=? OR lower(email)=?) AND active=1",
+                          (identifier, identifier.lower())).fetchall()
+        verified = []
+        for candidate in rows:
+            if not university_members.identity_active(db,staff_id=candidate["id"]):
+                continue
+            try:
+                _passwords.verify(university_members.identity_hash(db,candidate["password_hash"],staff_id=candidate["id"]), password)
+                verified.append(candidate)
+            except (VerifyMismatchError, InvalidHashError):
+                continue
+        if not verified:
             return None
-        try:
-            _passwords.verify(row["password_hash"], password)
-        except (VerifyMismatchError, InvalidHashError):
-            return None
+        if len(verified) > 1:
+            raise TrainingPortalError('该邮箱对应多个教学档案，请使用唯一用户名登录。')
+        row = verified[0]
         token = secrets.token_urlsafe(32)
         expires = (datetime.now(UTC) + timedelta(seconds=session_max_age(remember))).isoformat(timespec="seconds")
         db.execute("DELETE FROM training_staff_sessions WHERE expires_at < ?", (_now(),))
@@ -1811,6 +1856,8 @@ def staff_for_token(store, token: str | None) -> dict[str, Any] | None:
                WHERE t.token_hash=? AND t.expires_at>=?""",
             (_hash_token(token), _now()),
         ).fetchone()
+        if row and not university_members.identity_active(db,staff_id=row["id"]):
+            return None
     if not row or not row["active"] or row["role"] not in ("teacher", "admin", "school_admin"):
         return None
     return _staff_public(row)
@@ -3505,6 +3552,10 @@ def _patch_fields(body) -> dict[str, Any]:
 
 
 def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
+    if university_members.AccessDenied not in app.exception_handlers:
+        async def member_access_error(_request, exc):
+            return JSONResponse({'detail':str(exc)},status_code=exc.status)
+        app.add_exception_handler(university_members.AccessDenied,member_access_error)
     def response(body: Any) -> JSONResponse:
         return JSONResponse(body, headers={"Cache-Control": "private, no-store"})
 
@@ -3540,6 +3591,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                 raise HTTPException(status_code=401, detail="学号或密码不正确。")
             login_guard.record_success(body.student_no)
         resp = response({"student": result["student"]})
+        from webapp.university_members import attach_platform_session
+        attach_platform_session(store_provider(),resp,result['student']['id'],remember=body.remember,student_cookie=cookie_name)
         resp.set_cookie(
             cookie_name, result["token"], max_age=session_max_age(body.remember), httponly=True,
             samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1", path="/",
@@ -3547,10 +3600,10 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return resp
 
     @app.post("/api/training/auth/logout")
-    def training_logout(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
-        logout_student(store_provider(), session)
+    def training_logout(request: Request) -> Response:
         resp = response({"ok": True})
-        resp.delete_cookie(cookie_name, path="/")
+        from webapp.university_members import logout_browser
+        logout_browser(store_provider(),request,resp,cookie_name)
         return resp
 
     @app.get("/api/training/auth/me")
@@ -3762,7 +3815,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
 
     def admin(session: str | None, college: str | None = None) -> dict[str, Any]:
         who = staff(session, college)
-        if who.get("role") != "admin":
+        if who.get("role") not in {"admin", "school_admin"}:
             raise HTTPException(status_code=403, detail="该操作仅限实训管理员。")
         return who
 
@@ -3789,6 +3842,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                 raise HTTPException(status_code=401, detail="用户名或密码不正确。")
             staff_login_guard.record_success(body.username)
         resp = response({"staff": result["staff"]})
+        from webapp.university_members import attach_platform_session
+        attach_platform_session(store_provider(),resp,result['staff']['id'],staff=True,remember=body.remember)
         resp.set_cookie(
             STAFF_COOKIE, result["token"], max_age=session_max_age(body.remember), httponly=True,
             samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1", path="/",
@@ -3796,10 +3851,10 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return resp
 
     @app.post("/api/training/staff/auth/logout")
-    def staff_logout(session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        logout_staff(store_provider(), session)
+    def staff_logout(request: Request) -> Response:
         resp = response({"ok": True})
-        resp.delete_cookie(STAFF_COOKIE, path="/")
+        from webapp.university_members import logout_browser
+        logout_browser(store_provider(),request,resp)
         return resp
 
     @app.get("/api/training/staff/auth/me")
@@ -3952,28 +4007,28 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def staff_student_list(include_inactive: bool = True,
                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         who = staff(session)
-        return response({"students": list_students(store_provider(), who["college"], include_inactive=include_inactive)})
+        return response({"students": list_students(store_provider(), who["college"], include_inactive=include_inactive,teacher_id=who["id"] if who["role"]=="teacher" else None)})
 
     @app.post("/api/training/staff/students")
     @guarded
     def staff_student_create(body: StudentCreate,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session, body.college)
+        who = staff(session, body.college)
         return response({"student": create_student(
             store_provider(), body.college, body.student_no, body.name,
             class_name=body.class_name, initial_password=body.initial_password,
-            email=body.email)})
+            email=body.email,teacher_id=who["id"])})
 
     @app.post("/api/training/staff/students/import")
     @guarded
     def staff_student_import(body: StudentImportBody,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session, body.college)
+        who = staff(session, body.college)
         return response({"import": import_students(
             store_provider(), body.college,
             [r.model_dump() for r in body.rows],
             default_password=body.default_password,
-            default_class_name=body.default_class_name)})
+            default_class_name=body.default_class_name,teacher_id=who["id"])})
 
     @app.post("/api/training/staff/students/import-xlsx")
     @guarded
@@ -3987,26 +4042,26 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         与文本导入共用 import_students 下游（逐行导入、重复/错误行带原因返回、
         不部分静默成功）；解析边界见 parse_student_xlsx（只读缓存值、不执行
         公式、表头识别、不按列序猜测）。"""
-        staff(session, college)
+        who = staff(session, college)
         rows = parse_student_xlsx(file.file.read())
         return response({"import": import_students(
             store_provider(), college, rows,
             default_password=default_password,
-            default_class_name=(default_class_name or "").strip() or None)})
+            default_class_name=(default_class_name or "").strip() or None,teacher_id=who["id"])})
 
     @app.post("/api/training/staff/students/{student_id}/reset-password")
     @guarded
     def staff_student_reset_password(student_id: str, body: StudentPasswordReset,
                                      session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         who = staff(session)
-        return response(reset_student_password(store_provider(), student_id, body.new_password, college=who["college"]))
+        return response(reset_student_password(store_provider(), student_id, body.new_password, college=who["college"],actor=who))
 
     @app.post("/api/training/staff/students/{student_id}/toggle")
     @guarded
     def staff_student_toggle(student_id: str, body: StudentToggle,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         who = staff(session)
-        return response({"student": set_student_active(store_provider(), student_id, body.active, college=who["college"])})
+        return response({"student": set_student_active(store_provider(), student_id, body.active, college=who["college"],actor=who)})
 
     @app.get("/api/training/staff/teachers")
     @guarded
@@ -4361,10 +4416,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_quota_update(body: OrgQuotaPatch,
                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = admin(session, body.college)
-        return response({"quota": set_college_quota(
-            store_provider(), who["id"], body.college,
-            body.teacher_quota, body.student_quota, body.revision)})
+        staff(session, body.college)
+        raise HTTPException(403, "学校总额度只能由平台顶级管理员调整。")
 
     @app.post("/api/training/staff/org/terms/{term_id}/roster-snapshot")
     @guarded
@@ -4393,8 +4446,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
             role=body.role)})
 
     @app.get("/training-certificates")
-    def training_portal_page() -> FileResponse:
-        return FileResponse(STATIC_DIR / "training-portal.html", media_type="text/html")
+    def training_portal_page(request: Request) -> FileResponse:
+        return university_members.teaching_page(store_provider(),request,student_cookie=cookie_name)
 
     @app.get("/training-portal.js")
     def training_portal_script() -> FileResponse:
@@ -4405,8 +4458,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return FileResponse(STATIC_DIR / "training-dark.css", media_type="text/css")
 
     @app.get("/training-staff")
-    def training_staff_page() -> FileResponse:
-        return FileResponse(STATIC_DIR / "training-staff.html", media_type="text/html")
+    def training_staff_page(request: Request) -> FileResponse:
+        return university_members.teaching_page(store_provider(),request,staff=True)
 
     @app.get("/training-staff.js")
     def training_staff_script() -> FileResponse:
