@@ -54,6 +54,48 @@ def migrate(db):
     for column in ("old_staff_seats", "old_student_seats"):
         if column not in columns:
             db.execute(f"ALTER TABLE university_capacity_events ADD COLUMN {column} INTEGER")
+    backfill_existing_organizations(db)
+
+
+def backfill_existing_organizations(db):
+    """Upgrade explicitly classified institutions without matching legacy names.
+
+    Older installations stored the administrator-selected type in org_profiles.
+    Existing account IDs, credentials and declared staff seats remain authoritative.
+    A pre-existing teaching namespace requires an explicit link, never a name match.
+    """
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='org_profiles'").fetchone():
+        return
+    if not db.in_transaction:
+        db.execute('BEGIN IMMEDIATE')
+    for profile in db.execute("SELECT org_id,org_type FROM org_profiles WHERE org_type IN ('enterprise','university')").fetchall():
+        org_id, org_type = profile['org_id'], profile['org_type']
+        db.execute("INSERT OR IGNORE INTO org_settings(org_id,org_type,updated_at) VALUES (?,?,?)", (org_id, org_type, now()))
+        db.execute("UPDATE org_settings SET org_type=? WHERE org_id=? AND org_type IS NULL", (org_type, org_id))
+        current = db.execute("SELECT org_type FROM org_settings WHERE org_id=?", (org_id,)).fetchone()
+        if org_type != 'university' or current[0] != 'university':
+            continue
+        if db.execute("SELECT 1 FROM university_organizations WHERE org_id=? OR college=?", (org_id, org_id)).fetchone():
+            continue
+        if any(db.execute(f"SELECT 1 FROM {table} WHERE college=? LIMIT 1", (org_id,)).fetchone()
+               for table in ('college_user', 'student_info', 'college_quota', 'course')):
+            continue
+        administrators = db.execute("SELECT * FROM users WHERE org_id=? AND role='org_admin' AND active=1 ORDER BY id", (org_id,)).fetchall()
+        quota = db.execute("SELECT seats FROM org_quota WHERE org_id=?", (org_id,)).fetchone()
+        if not administrators or not quota or quota[0] < len(administrators):
+            continue
+        if any(db.execute("SELECT 1 FROM college_user WHERE username=?", (user['username'],)).fetchone()
+               or db.execute("SELECT 1 FROM university_identity_links WHERE user_id=?", (user['id'],)).fetchone()
+               for user in administrators):
+            continue
+        provision_founder(db, administrators[0]['id'], org_id, quota[0], 0)
+        for user in administrators[1:]:
+            staff_id = secrets.token_hex(16)
+            db.execute("""INSERT INTO college_user
+                (id,username,password_hash,display_name,college,email,role,active,created_at)
+                VALUES (?,?,?,?,?,?,'admin',1,?)""",
+                (staff_id, user['username'], user['password_hash'], user['display_name'], org_id, user['email'], now()))
+            db.execute("INSERT INTO university_identity_links VALUES (?,?,NULL)", (user['id'], staff_id))
 
 
 def now():
@@ -663,19 +705,27 @@ def profile_context(profile, staff):
 
 
 def session_identity(store, request):
+    return resolve_browser_identity(store, request)[0]
+
+
+def resolve_browser_identity(store, request):
     user = store.user_for_token(request.cookies.get("taxpearls_session"))
-    if user:
-        return user_context(store, user)
     from webapp.training_portal import staff_for_token, student_for_token
 
     staff = staff_for_token(store, request.cookies.get("taxpearls_staff_session"))
     student = student_for_token(store, request.cookies.get("taxpearls_training_session"))
+    if user:
+        with store.connect() as db:
+            link = db.execute("SELECT staff_id,student_id FROM university_identity_links WHERE user_id=?", (user['id'],)).fetchone()
+        conflict = bool((staff and (not link or link['staff_id'] != staff['id'])) or
+                        (student and (not link or link['student_id'] != student['id'])))
+        return (None, True) if conflict else (user_context(store, user), False)
     if bool(staff) == bool(student):
-        return None
-    return profile_context(staff or student, bool(staff))
+        return None, bool(staff)
+    return profile_context(staff or student, bool(staff)), False
 
 
-def authenticate_legacy(store, identifier, password, remember=False):
+def authenticate_legacy(store, identifier, password, remember=False, *, college=None):
     """Resolve older teaching credentials through the same login API, without role input."""
     from webapp.storage import _passwords
     from webapp.training_portal import login_staff, login_student
@@ -692,6 +742,8 @@ def authenticate_legacy(store, identifier, password, remember=False):
                 (identifier.strip(), normalized),
             ).fetchall()
             for row in rows:
+                if college and row['college'] != college.strip():
+                    continue
                 scope = {"staff_id" if staff else "student_id": row["id"]}
                 if not identity_active(db, **scope):
                     continue
@@ -701,7 +753,7 @@ def authenticate_legacy(store, identifier, password, remember=False):
                     continue
                 verified.append((staff, dict(row)))
     if len(verified) > 1:
-        raise ValueError("账号对应多个教学档案，请使用唯一邮箱或联系管理员核对。")
+        raise ValueError("账号对应多个教学档案，请填写院校名称或联系管理员核对。")
     if not verified:
         return None
     staff, profile = verified[0]

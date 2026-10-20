@@ -221,7 +221,7 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 
 // Run the actual role-selection function with a small API/DOM boundary.
 const graph = fs.readFileSync("webapp/static/graph.js", "utf8");
-const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), graph.indexOf("async function loadGraph()"));
+const selection = graph.slice(graph.indexOf("async function loadKnowledge("), graph.indexOf("async function loadGraph("));
 (async () => {
   // Empty/hidden founder results must never overwrite the clipboard or claim success.
   {
@@ -353,7 +353,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
     classList:{contains:()=>true}, replaceChildren(){this.children=[];},
     append(...items){this.children.push(...items);}, get childElementCount(){return this.children.length;}});
   const graphNodes=new Map(),graphCalls=[],graphDraws=[];
-  const graphCtx={currentUser:{id:'owner',role:'org_admin'},graphCanvas:{...node(),style:{},setAttribute(){}},
+  const graphCtx={graphKinds:{},currentUser:{id:'owner',role:'org_admin'},graphCanvas:{...node(),style:{},setAttribute(){}},
     URLSearchParams,
     $:id=>{if(!graphNodes.has(id))graphNodes.set(id,{...node(),value:'',style:{},addEventListener(){}});return graphNodes.get(id);},
     option:(select,value)=>select.append(value),updateAIContext(){},
@@ -551,3 +551,52 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   for(const role of ["accountant","teacher","platform_admin"]){ctx.currentUser.role=role;ctx.renderAdminLogs(rows,()=>true);assert.equal(button(),undefined);}
   console.log("Admin material trace: on-demand query, close/reopen authorization, failure and stale-session guards passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Identity and workspace selection come from the authenticated server record.
+{
+  const nodes = new Map();
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id,{value:"",dataset:{view:"login",setup:"0"},hidden:false,disabled:false,addEventListener(){}});
+    return nodes.get(id);
+  };
+  const ctx={window:{},document:{getElementById:node}};vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync("webapp/static/university-workspace.js","utf8"),ctx);
+  const workspace=ctx.window.universityWorkspace;
+  assert.ok(workspace.viewsFor("student","student").some(v=>v[0]==="tasks"));
+  for(const workspaceValue of ["/training-staff","university",null]){
+    const user=workspace.resolveIdentity({id:"campus",org_type:"university",workspace:workspaceValue,role:"org_admin",education_role:"admin"});
+    assert.equal(user.workspace,"university");assert.equal(user.role,"admin");
+  }
+  const unlinked=workspace.resolveIdentity({org_type:"university",role:"org_admin"});
+  assert.equal(unlinked.role,"unlinked","Unlinked university accounts must never fall through to enterprise menus");
+  assert.equal(workspace.resolveIdentity({org_type:"enterprise",role:"org_admin"}),null);
+  const teacher=workspace.viewsFor("staff","admin").map(v=>v[0]);
+  for(const key of ["home","tasks","statistics","knowledge","archives"])assert.ok(teacher.includes(key));
+  const school=workspace.viewsFor("staff","school_admin").map(v=>v[0]);
+  assert.ok(school.includes("home")&&!school.includes("content")&&!school.includes("judge"));
+  workspace.updateLogin();
+  assert.equal(node("loginCollegeField").hidden,true);
+  assert.equal(node("loginCollege").disabled,true);
+  node("loginCollege").dataset.needed="1";workspace.updateLogin();
+  assert.equal(node("loginCollegeField").hidden,false);
+  assert.equal(node("loginCollege").required,true);
+  node("authForm").dataset.view="signup";workspace.updateLogin();
+  assert.equal(node("loginCollege").disabled,true,"disambiguation must not block registration or reset");
+  console.log("University navigation and conditional ownership disambiguation passed.");
+}
+
+// A late profile refresh must preserve open note drafts, scoped to the same point.
+{
+  const source=fs.readFileSync("webapp/static/training-portal.js","utf8");
+  const ctx={};vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf("function noteDrafts("),source.indexOf("function renderProfile(")),ctx);
+  const item=(id,text,hidden=false)=>{const textarea={value:text},editor={hidden,querySelector:()=>textarea};return {id,querySelector:()=>editor,editor,textarea};};
+  const old=[item("point-a","unsaved draft"),item("point-b","cancelled",true)];
+  const drafts=ctx.noteDrafts({querySelectorAll:()=>old});
+  assert.equal(drafts.length,1);
+  const fresh=[item("point-a","server note",true),item("point-c","other point",true)];
+  ctx.restoreNoteDrafts({querySelectorAll:()=>fresh},drafts);
+  assert.equal(fresh[0].textarea.value,"unsaved draft");assert.equal(fresh[0].editor.hidden,false);
+  assert.equal(fresh[1].textarea.value,"other point");assert.equal(fresh[1].editor.hidden,true);
+  console.log("Profile refresh preserves open drafts and does not transfer drafts across knowledge points.");
+}

@@ -146,6 +146,7 @@ function todayISO() {
 
 function flash(message, isError = false) {
   if(disposed)return;
+  if(embedded){window.universityWorkspace?.notify(message,isError);return;}
   const box = document.getElementById(isError ? "app-error" : "goal-msg");
   if (isError) box.textContent = message || "";
   else box.textContent = message || "";
@@ -161,8 +162,8 @@ async function refresh() {
   state.goals = goals.goals;
   renderGoals();
   renderCerts();
-  await refreshPractice().catch((err) => flash(err.message, true));
-  await refreshProfile().catch(() => {});
+  await refreshPractice();
+  await refreshProfile({strict: true});
 }
 
 /* ---------- 自主练习（FR-K05/K06） ---------- */
@@ -285,7 +286,9 @@ function renderWorkbench() {
   const dash = state.dashboard;
   if (!dash) { box.innerHTML = ""; return; }
   if (!dash.goals.length) {
-    box.innerHTML = `<p class="muted">${esc(dash.hint)}</p>`;
+    const hosted = typeof window !== "undefined" && window.universityWorkspace;
+    const hint = hosted ? dash.hint.replace("下方证书目录", "侧栏的考证目标") : dash.hint;
+    box.innerHTML = `<p class="muted">${esc(hint)}</p>${hosted ? '<button class="btn pdf" data-act="workspace-goals">设置考证目标</button>' : ""}`;
     return;
   }
   box.innerHTML = dash.goals.map((g) => {
@@ -430,6 +433,7 @@ async function boot() {
     await refresh();
   } catch (error) {
     if(disposed)return;
+    if(embedded)throw error;
     if(error.status===401||error.status===403)showApp(false);else flash(error.message,true);
   }
 }
@@ -457,6 +461,7 @@ document.getElementById("save-pass").addEventListener("click", async () => {
     });
     closePassModal();
     state.student = null;
+    if (typeof window !== "undefined" && window.universityWorkspace) { window.universityWorkspace.expired("密码已修改，请用新密码重新登录。"); return; }
     showApp(false);
 
   } catch (err) {
@@ -610,10 +615,26 @@ document.getElementById("wb-body").addEventListener("click", async (event) => {
 
 /* ---------- 学习档案与知识库 ---------- */
 
+function noteDrafts(list) {
+  return Array.from(list.querySelectorAll(".item[id]"), item => {
+    const editor = item.querySelector('[data-role="note-edit"]');
+    return editor && !editor.hidden ? [item.id, editor.querySelector("textarea").value] : null;
+  }).filter(Boolean);
+}
+
+function restoreNoteDrafts(list, drafts) {
+  for (const [id, text] of drafts) {
+    const item = Array.from(list.querySelectorAll(".item[id]")).find(item => item.id === id);
+    const editor = item?.querySelector('[data-role="note-edit"]');
+    if (editor) { editor.hidden = false; editor.querySelector("textarea").value = text; }
+  }
+}
+
 function renderProfile() {
   const p = state.profile;
   const sum = document.getElementById("pf-summary");
   const list = document.getElementById("pf-list");
+  const drafts = noteDrafts(list);
   if (!p) {
     sum.innerHTML = `<p class="muted">选择证书后加载档案。</p>`;
     list.innerHTML = "";
@@ -673,9 +694,10 @@ function renderProfile() {
       ${tutorBlock}
     </div>`;
   }).join("");
+  restoreNoteDrafts(list, drafts);
 }
 
-async function refreshProfile() {
+async function refreshProfile({strict = false} = {}) {
   const sel = document.getElementById("pf-cert");
   sel.innerHTML = state.certificates.map((c) =>
     `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
@@ -691,6 +713,7 @@ async function refreshProfile() {
   } catch (err) {
     flash(err.message, true);
     state.profile = null;
+    if (strict) throw err;
   }
   renderProfile();
 }
@@ -742,6 +765,7 @@ document.getElementById("pf-list").addEventListener("click", async (event) => {
       await api(`/api/training/my/knowledge-points/${btn.dataset.id}/note`,
                 { method: "PUT", body: { content } });
       flash("笔记已保存（仅本人可见，教师无访问入口）。");
+      scope.querySelector('[data-role="note-edit"]').hidden = true;
       await refreshProfile();
     } catch (err) { flash(err.message, true); }
   } else if (act === "delete-note") {
@@ -826,5 +850,5 @@ async function toggleKpHistory(btn, scope, kpId) {
 const ready=boot();
 
 /* controller end */
-return {ready,destroy(){disposed=true;requests.abort();}};
+return {ready,refresh,destroy(){disposed=true;requests.abort();}};
 };

@@ -9,6 +9,7 @@ import tempfile
 import subprocess
 import unittest
 import uuid
+from unittest.mock import patch
 from datetime import timedelta
 from pathlib import Path
 from html.parser import HTMLParser
@@ -72,6 +73,140 @@ class TrainingStaffTests(unittest.TestCase):
         return res
 
     # ---- 教师认证 -------------------------------------------------------
+
+    def test_existing_university_registry_backfill_preserves_account_and_quota(self):
+        from webapp import university_members as service
+        user = self.store.create_user("existing-campus", "Strong@2026Pass", "高校管理员", "org_admin", "existing-school")
+        with self.store.connect() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS org_profiles(org_id TEXT PRIMARY KEY,org_type TEXT)")
+            db.execute("INSERT INTO org_profiles VALUES ('existing-school','university')")
+            db.execute("INSERT INTO org_settings(org_id,display_name,updated_at) VALUES ('existing-school','原高校',?)", (NOW,))
+            db.execute("INSERT INTO org_quota(org_id,seats,revision,updated_at) VALUES ('existing-school',5,1,?)", (NOW,))
+            service.backfill_existing_organizations(db)
+            service.backfill_existing_organizations(db)
+            link = db.execute("SELECT * FROM university_identity_links WHERE user_id=?", (user['id'],)).fetchone()
+            self.assertIsNotNone(link)
+            self.assertEqual(db.execute("SELECT count(*) FROM users WHERE org_id='existing-school'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM college_user WHERE college='existing-school'").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT teacher_quota,student_quota FROM college_quota WHERE college='existing-school'").fetchone()[:], (5, 0))
+        context = service.user_context(self.store, user)
+        self.assertEqual((context['id'], context['workspace'], context['education_role']), (user['id'], '/training-staff', 'admin'))
+        from webapp import app as main
+        from webapp.login_guard import LoginGuard
+        with patch.object(main, "store", self.store), patch.object(main, "login_guard", LoginGuard()):
+            client = TestClient(main.app)
+            signed = client.post('/api/login', json={'username':user['username'], 'password':'Strong@2026Pass'})
+            self.assertEqual(signed.status_code, 200, signed.text)
+            self.assertEqual(signed.json()['user']['id'], user['id'])
+            created = client.post('/api/training/staff/courses', json={'college':'existing-school', 'name':'数据联通验证课程', 'teacher_id':link['staff_id']})
+            self.assertEqual(created.status_code, 200, created.text)
+            self.assertEqual(len(client.get('/api/training/staff/courses').json()['courses']), 1)
+            denied = client.post('/api/training/staff/courses', json={'college':'示例大学', 'name':'跨院校课程'})
+            self.assertEqual(denied.status_code, 403)
+
+    def test_existing_registry_backfill_does_not_match_legacy_profiles_by_name(self):
+        from webapp import university_members as service
+        user = self.store.create_user("unlinked-campus", "Strong@2026Pass", "管理员", "org_admin", "示例大学")
+        with self.store.connect() as db:
+            db.execute("CREATE TABLE IF NOT EXISTS org_profiles(org_id TEXT PRIMARY KEY,org_type TEXT)")
+            db.execute("INSERT INTO org_profiles VALUES ('示例大学','university')")
+            db.execute("INSERT INTO org_settings(org_id,display_name,updated_at) VALUES ('示例大学','示例大学',?)", (NOW,))
+            service.backfill_existing_organizations(db)
+            self.assertIsNone(db.execute("SELECT * FROM university_identity_links WHERE user_id=?", (user['id'],)).fetchone())
+
+    def test_university_workspace_assets_and_main_entry(self):
+        # One login entry; account ownership is resolved on the server.
+        from webapp import app as main_app
+        page = (Path(main_app.STATIC_DIR) / "index.html").read_text(encoding="utf-8")
+        self.assertNotIn('id="loginAccountType"', page)
+        self.assertIn('id="universityPanel"', page)
+        for asset in ("university-workspace.js", "university.css"):
+            response = self.client.get("/" + asset)
+            self.assertEqual(response.status_code, 200, asset)
+            self.assertIn(asset, page)
+
+    def test_main_login_routes_by_stored_identity_and_replaces_browser_session(self):
+        from webapp import app as main
+        from webapp.login_guard import LoginGuard
+        with patch.object(main, "store", self.store), patch.object(main, "login_guard", LoginGuard()):
+            client = TestClient(main.app)
+            staff = client.post("/api/login", json={"username": "admin1", "password": "staff-pass"})
+            self.assertEqual(staff.status_code, 200, staff.text)
+            self.assertEqual(staff.json()["user"]["workspace"], "/training-staff")
+            self.assertEqual(client.get("/api/status").json()["user"]["id"], "staff-" + self.staff_id)
+            self.assertEqual(client.get("/api/training/staff/auth/me").status_code, 200)
+            student = client.post("/api/login", json={"username": "2026001", "password": "study-pass"})
+            self.assertEqual(student.status_code, 200, student.text)
+            self.assertEqual(student.json()["user"]["role"], "student")
+            self.assertEqual(client.get("/api/training/staff/auth/me").status_code, 401)
+            self.assertEqual(client.get("/api/status").json()["user"]["id"], "student-" + self.student_id)
+            platform = self.store.create_user("business", "Strong@2026Pass", "企业成员", "accountant", "org-business")
+            result = client.post("/api/login", json={"username": "business", "password": "Strong@2026Pass"})
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(result.json()["user"]["id"], platform["id"])
+            self.assertEqual(client.get("/api/training/auth/me").status_code, 401)
+            self.assertEqual(client.get("/api/me").status_code, 200)
+
+    def test_unified_login_never_guesses_duplicate_ownership_or_mints_failed_sessions(self):
+        from webapp import app as main
+        from webapp.login_guard import LoginGuard
+        other = uuid.uuid4().hex
+        with self.store.connect() as db:
+            db.execute("INSERT INTO student_info VALUES (?,?,?,?,?,?,?,1,?)",
+                       (other, "其他大学", "2026001", "同学", None,
+                        _passwords.hash("study-pass"), None, NOW))
+        with patch.object(main, "store", self.store), patch.object(main, "login_guard", LoginGuard()):
+            client = TestClient(main.app)
+            wrong = client.post("/api/login", json={"username": "2026001", "password": "wrong"})
+            self.assertEqual(wrong.status_code, 401)
+            ambiguous = client.post("/api/login", json={"username": "2026001", "password": "study-pass"})
+            self.assertEqual(ambiguous.status_code, 409, ambiguous.text)
+            self.assertTrue(ambiguous.json()["requires_college"])
+            self.assertNotIn("set-cookie", ambiguous.headers)
+            with self.store.connect() as db:
+                self.assertEqual(db.execute("SELECT count(*) FROM training_student_sessions").fetchone()[0], 0)
+            chosen = client.post("/api/login", json={"username": "2026001", "password": "study-pass", "college": "其他大学"})
+            self.assertEqual(chosen.status_code, 200, chosen.text)
+            self.assertEqual(chosen.json()["user"]["id"], "student-" + other)
+
+    def test_unified_login_email_precedence_roles_and_inactive_records(self):
+        from webapp import app as main
+        from webapp.login_guard import LoginGuard
+        self.store.create_user("mail-owner", "Strong@2026Pass", "邮箱归属", "accountant", "business", "bound@example.com")
+        with self.store.connect() as db:
+            db.execute("UPDATE college_user SET username='bound@example.com', email='staff@example.com' WHERE id=?", (self.staff_id,))
+            db.execute("UPDATE users SET active=0 WHERE username='mail-owner'")
+        with patch.object(main, "store", self.store), patch.object(main, "login_guard", LoginGuard()):
+            client = TestClient(main.app)
+            disabled = client.post("/api/login", json={"username": "bound@example.com", "password": "staff-pass"})
+            self.assertEqual(disabled.status_code, 401, "disabled email owner must not fall back to another account's username")
+            staff = client.post("/api/login", json={"username": "STAFF@example.com", "password": "staff-pass", "role": "platform_admin", "remember": True})
+            self.assertEqual(staff.status_code, 200, staff.text)
+            self.assertEqual(staff.json()["user"]["education_role"], "admin")
+            self.assertIn("Max-Age=2592000", staff.headers["set-cookie"])
+            with self.store.connect() as db:
+                db.execute("UPDATE college_user SET active=0 WHERE id=?", (self.staff_id,))
+            self.assertIsNone(client.get("/api/status").json()["user"])
+
+    def test_legacy_mixed_sessions_require_login_instead_of_picking_a_role(self):
+        from webapp import app as main
+        from webapp.login_guard import LoginGuard
+        with patch.object(main, "store", self.store), patch.object(main, "login_guard", LoginGuard()):
+            client = TestClient(main.app)
+            signed = client.post("/api/training/staff/auth/login", json={"username": "admin1", "password": "staff-pass"})
+            self.assertEqual(signed.status_code, 200)
+            self.assertEqual(client.post("/api/training/auth/login", json={"student_no": "2026001", "password": "study-pass"}).status_code, 200)
+            # Current entry points clear other cookies. Reproduce an older browser
+            # that still presents both valid identities explicitly.
+            from webapp.training_portal import login_staff
+            previous_staff_token = login_staff(self.store, "admin1", "staff-pass")['token']
+            client.cookies.set("taxpearls_staff_session", previous_staff_token, domain="testserver.local", path="/")
+            result = client.get("/api/status").json()
+            self.assertTrue(result["session_conflict"])
+            self.assertIsNone(result["user"])
+            self.assertEqual(client.post("/api/login", json={"username": "2026001", "password": "study-pass"}).status_code, 200)
+            self.assertFalse(client.get("/api/status").json()["session_conflict"])
+            self.assertEqual(client.get("/api/status").json()["user"]["id"], "student-" + self.student_id)
 
     def test_staff_login_me_logout(self):
         self._staff_login()

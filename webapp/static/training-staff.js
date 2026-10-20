@@ -30,6 +30,7 @@ async function api(path, options = {}) {
 
 function flash(message, isError = false) {
   if(disposed)return;
+  if(embedded){window.universityWorkspace?.notify(message,isError);return;}
   const box = document.getElementById(isError ? "app-error" : "app-error");
   box.textContent = message || "";
   if (message) setTimeout(() => { if (box.textContent === message) box.textContent = ""; }, 5000);
@@ -393,7 +394,7 @@ function renderAll() {
 
 let membershipUI=null;
 async function load() {
-  if(!embedded&&!membershipUI&&state.staff){const id=state.staff.id;membershipUI=TPMemberLinks.school(document.getElementById("school-membership"),{request:api,valid:()=>state.staff?.id===id,afterChange:async()=>{await loadStudents();}});}
+  if(!membershipUI&&state.staff&&state.staff.role!=="school_admin"&&document.getElementById("school-membership")){const id=state.staff.id;membershipUI=TPMemberLinks.school(document.getElementById("school-membership"),{request:api,valid:()=>!disposed&&state.staff?.id===id,afterChange:async()=>{await loadStudents();}});}
   const data = await api("/api/training/staff/certificates?include_inactive=true");
   state.certificates = data.certificates;
   if (!state.certificates.find((c) => c.id === state.currentId)) {
@@ -407,17 +408,18 @@ async function load() {
     const vs = await api(`/api/training/staff/certificates/${state.currentId}/content-versions`);
     state.versions = vs.versions;
   }
-  try { state.rules = (await api("/api/training/staff/rules")).rules; } catch (err) { state.rules = []; }
-  await loadStudents().catch(() => { state.students = []; });
-  await loadCourses().catch(() => { state.courses = []; state.teachers = []; });
-  if (state.staff && state.staff.role === "admin") {
+  state.rules = (await api("/api/training/staff/rules")).rules;
+  await loadStudents();
+  await loadCourses();
+  if (state.staff && ["admin", "school_admin"].includes(state.staff.role)) {
     document.getElementById("overview-card").hidden = false;
-    await loadOverview().catch(() => {});
+    await loadOverview();
   }
   renderAll();
-  await loadMarkStats().catch(() => {});
-  await loadRoster().catch(() => { state.classes = []; state.classHistory = []; renderRoster(); });
-  await loadOrg().catch(() => { state.departments = []; state.terms = []; state.orgClasses = []; renderOrg(); });
+  await loadMarkStats();
+  await loadRoster();
+  await loadOrg();
+  renderStaffWorkbench();
 }
 
 /* ---------- 班级与教师名册（FR-U03） ---------- */
@@ -576,7 +578,7 @@ function parseStudentRows(text) {
 
 async function loadCourses() {
   state.courses = (await api("/api/training/staff/courses")).courses;
-  try { state.teachers = (await api("/api/training/staff/teachers")).teachers; } catch (err) { state.teachers = []; }
+  state.teachers = (await api("/api/training/staff/teachers")).teachers;
   renderCourses();
 }
 
@@ -670,7 +672,7 @@ async function loadOverview() {
   document.getElementById("overview-body").innerHTML = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
       <span class="badge">在读学生 ${o.students.active}/${o.students.total}</span>
-      <span class="badge">在职教师 ${o.teachers}</span>
+      <span class="badge">教职账号 ${o.teachers}</span>
       <span class="badge">班级 ${o.classes.length}</span>
       <span class="badge">课程 ${o.courses.length}</span>
       <span class="badge gray">考证知识点 ${o.content.knowledge_points}（已挂规则 ${o.content.linked_points} · 高频标注 ${o.content.high_freq_marks}）</span>
@@ -681,7 +683,7 @@ async function loadOverview() {
       <tbody>${cls}</tbody>
     </table>
     ${courses}
-    <p class="muted">${esc(o.scope_note)}</p>`;
+    <p class="muted">${esc(o.scope_note.replace(/（FR-U\d+）/g, ""))}</p>`;
 }
 
 /* ---------- 事件 ---------- */
@@ -801,6 +803,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
           q("#pw-old").value = ""; q("#pw-new").value = ""; q("#pw-new2").value = "";
           q("#pass-form").hidden = true;
           flash("密码已修改，请用新密码重新登录。");
+          if (window.universityWorkspace) { window.universityWorkspace.expired("密码已修改，请用新密码重新登录。"); return; }
           showApp(false);
         } catch (err) {
           flash(err.message, true);
@@ -1249,9 +1252,11 @@ async function boot() {
     try{me=await api("/api/training/staff/auth/me");}catch{await api("/api/training/membership/session",{method:"POST"});me=await api("/api/training/staff/auth/me");}
     state.staff = me.staff;
     showApp(true);
+    document.getElementById("pass-form").hidden = false;
     await load();
   } catch (error) {
     if(disposed)return;
+    if(embedded)throw error;
     if(error.status===401||error.status===403)showApp(false);else flash(error.message,true);
   }
 }
@@ -1432,6 +1437,17 @@ document.getElementById("judge-task-state").addEventListener("change", () =>
   if (state.staff&&!disposed) { try { await loadJudgeProblems(); } catch { /* 忽略 */ } }
 })();
 
+function renderStaffWorkbench() {
+  const box = document.getElementById("staff-workbench-body");
+  if (!box) return;
+  const count = (label, value, unit) => `<div class="kpi"><div>${esc(label)}</div><div class="value">${esc(value)}<span class="unit">${esc(unit)}</span></div></div>`;
+  box.innerHTML = `<p class="muted">${esc(state.staff.college)} · ${esc(state.staff.display_name)}，从这里继续教学与管理。</p>
+    <div class="kpi-grid">${count("在读学生", state.students.filter(s => s.active).length, "人")}${count("名册班级", state.classes.length, "个")}${count("课程", state.courses.length, "门")}${count("上架证书", state.certificates.filter(c => c.active).length, "项")}</div>
+    <p class="muted">师生、班级和课程按本院校统计；考证内容为共享教学资源。这里不将资源数量当作学习成绩。</p>
+    <div class="university-home-actions"><button data-workspace-view="students">查看师生与班级</button><button data-workspace-view="courses">查看课程</button><button data-workspace-view="organization">查看组织与学期</button></div>`;
+  box.querySelectorAll("[data-workspace-view]").forEach(button => button.addEventListener("click", () => window.universityWorkspace.choose(button.dataset.workspaceView)));
+}
+
 /* controller end */
-return {ready,destroy(){disposed=true;requests.abort();membershipUI?.destroy();}};
+return {ready,refresh:async()=>{await load();await membershipUI?.load();},destroy(){disposed=true;requests.abort();membershipUI?.destroy();}};
 };

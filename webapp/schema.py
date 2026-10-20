@@ -819,6 +819,8 @@ def initialize(store) -> None:
         vat_reconciliation.initialize(db)
         from webapp import university_members
         university_members.migrate(db)
+        from webapp import university_workspace
+        university_workspace.migrate(db)
         if 'student_seats' not in {r['name'] for r in db.execute('PRAGMA table_info(invite_codes)')}:
             db.execute('ALTER TABLE invite_codes ADD COLUMN student_seats INTEGER NOT NULL DEFAULT 0')
         if 'code_secret' not in {r['name'] for r in db.execute('PRAGMA table_info(member_invitations)')}:

@@ -40,7 +40,7 @@ async function api(url, options = {}) {
   if (!r.ok) {
     const detail = body?.detail;
     const message = Array.isArray(detail) ? detail.map(e=>e.msg||"字段校验失败").join("；") : detail;
-    const error = new Error(message || (typeof body === "string" && body ? body : "") || `请求失败（${r.status}）`); error.status=r.status; throw error;
+    const error = new Error(message || (typeof body === "string" && body ? body : "") || `请求失败（${r.status}）`); error.status=r.status; error.requiresCollege=body?.requires_college===true; throw error;
   }
   return body;
 }
@@ -102,6 +102,7 @@ function rememberWorkspacePanel(id) {
 
 function switchPanel(id) {
   if (!currentUser) return;
+  if (currentUser.workspace === "university") { universityWorkspace.choose(({userSettingsPanel:"settings",trainingPanel:"tasks",knowledgePanel:"knowledge"})[id] || "home"); return; }
   if (!canOpenWorkspacePanel(id)) id = defaultWorkspacePanel();
   if(currentUser?.role==="platform_admin" && !["adminPanel","aiKeysPanel","knowledgePanel","userSettingsPanel"].includes(id)) id="adminPanel";
   if (id !== "notificationPanel") noticeRequest++;
@@ -724,10 +725,13 @@ async function bootstrap() {
   $("authForm").dataset.setup = setup ? "1" : "0";
   $("loginPass").autocomplete = setup ? "new-password" : "current-password";
   if (pendingEmailToken && !setup) return showAuthView("emailMagic");
-  const signedUser=s.user?await api("/api/me"):null;
+  const signedUser=s.user;
   if(signedUser)return enterApp(signedUser);
   if (inviteCode && !setup) return showAuthView("signup");
   showAuthView("login");
+  const notice = params.get("notice");
+  if (notice) showToast(notice);
+  if (s.session_conflict) showToast("检测到多个登录状态，请重新登录以确认当前账号。");
 }
 
 const authViews = ["viewLogin", "viewForgot", "viewReset", "viewSignup", "viewEmailLogin", "viewEmailMagic"];
@@ -810,6 +814,7 @@ function showAuthView(view) {
   }
   updateSignupPasswordValidation();
   if(view==="emailLogin"||(view==="signup"&&!verified))loadCaptcha();
+  universityWorkspace.updateLogin();
 }
 for (const id of ["signupPass", "signupPass2"]) {
   $(id).addEventListener("input", updateSignupPasswordValidation);
@@ -946,13 +951,19 @@ $("authForm").addEventListener("submit", async (e) => {
     }
     const setup = form.dataset.setup === "1";
     const body = {username: $("loginUser").value.trim(), password: $("loginPass").value, remember: !setup && $("loginRemember").checked};
+    if (!setup && $("loginCollege").dataset.needed === "1") body.college = $("loginCollege").value.trim();
     if (setup) body.display_name = body.username;
-    await api(setup ? "/api/setup" : "/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
-    if (setup) { form.dataset.setup = "0"; await api("/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({username:body.username,password:body.password})}); }
-    const user = await api("/api/me");
+    let loginResult = await api(setup ? "/api/setup" : "/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    if (setup) { form.dataset.setup = "0"; loginResult = await api("/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({username:body.username,password:body.password})}); }
+    const user = loginResult.user;
     $("loginPass").value = "";
     if(version===authViewVersion)enterApp(user);
-  } catch (err) { if(version===authViewVersion)showToast(err.message); }
+  } catch (err) {
+    if (version === authViewVersion) {
+      if (err.requiresCollege) { $("loginCollege").dataset.needed = "1"; universityWorkspace.updateLogin(); $("loginCollege").focus(); }
+      showToast(err.message);
+    }
+  }
   finally{authSubmitBusy=false;$("authSubmit").disabled=false;if(version===authViewVersion)$("authSubmit").textContent=submitLabel;}
 });
 
@@ -964,7 +975,10 @@ function enterApp(user) {
   trainingLoadRequest++; exerciseOpenRequest++; sandboxFeedbackRequest++; openAssignmentId=null;
   clearTimeout(exerciseDeadlineTimer); classroomUI.reset(); $("exerciseBox").style.display="none";
   $("exerciseGenerationResult").textContent=""; $("exerciseGenerationResult").hidden=true;
-  currentUser = user;
+  const campusIdentity=universityWorkspace.resolveIdentity(user);
+  currentUser=campusIdentity?{...user,workspace:"university",role:campusIdentity.role==="admin"?"teacher":user.role}:user;
+  $("loginCollege").value="";delete $("loginCollege").dataset.needed;$("loginCollegeField").hidden=true;$("loginCollege").disabled=true;
+  if(campusIdentity){universityWorkspace.enter(campusIdentity);return;}
   settingsRequest++; settingsReady = false;
   memberRequest++; memberSnapshot=null; $("memberOrg").textContent=""; $("userList").textContent="";
   clearMemberInvitations(); $("signupCode").value=""; delete $("authForm").dataset.inviteCode;
@@ -1019,7 +1033,7 @@ function enterApp(user) {
   switchPanel(initialWorkspacePanel());
 }
 
-$("btnLogout").addEventListener("click", async () => { await api("/api/logout", {method:"POST"}); location.reload(); });
+$("btnLogout").addEventListener("click", async () => { if (currentUser?.workspace === "university") { try { await universityWorkspace.logout(); } catch (err) { showToast(err.message); } return; } await api("/api/logout", {method:"POST"}); location.reload(); });
 document.querySelectorAll("#nav [data-panel]").forEach((b) => b.addEventListener("click", () => switchPanel(b.dataset.panel)));
 
 /* ---------- 用户设置：复用本人通知偏好与现有报告入口 ---------- */
@@ -1544,21 +1558,28 @@ function updateExerciseDeadline(a) {
   $("btnSubmitExercise").disabled=!a.can_submit || !!expired;
   if(a.deadline_at && !expired)exerciseDeadlineTimer=setTimeout(()=>{if(openAssignmentId===a.id)updateExerciseDeadline(a);},Math.min(60000,Math.max(100,Date.parse(a.deadline_at)-Date.now())));
 }
-async function loadAssignments() {
+async function loadAssignments({throwOnError=false}={}) {
   const request=++trainingLoadRequest,uid=currentUser?.id,isTeacher=currentUser?.role==="teacher";
   classroomUI.invalidatePending();
   try {
-    const [rows,classes,papers,students,audits,submissions]=await Promise.all([
+    const [rows,classes,papers,students,audits,submissions,courses]=await Promise.all([
       api("/api/assignments"),api("/api/classes"),api("/api/papers"),
-      isTeacher?api("/api/classes/students"):[],isTeacher?api("/api/audits"):[],isTeacher?api("/api/submissions"):[]
+      isTeacher?api("/api/classes/students"):[],isTeacher?api(currentUser.org_type==="university"?"/api/teaching/cases":"/api/audits"):[],isTeacher?api("/api/submissions"):[],isTeacher&&currentUser.org_type==="university"?api("/api/teaching/courses"):[]
     ]);
     if(request!==trainingLoadRequest||uid!==currentUser?.id)return;
     classroomUI.render({classes,papers,students,audits});
+    for(const [id, classId]of [["assignmentCourse","assignmentClass"],["paperCourse","paperClass"]]){
+      const select=$(id);if(!select)continue;const previous=select.value;select.replaceChildren(new Option("独立作业 / 不关联课程",""));
+      for(const course of courses)select.append(new Option(course.name,course.id));select.value=courses.some(c=>c.id===previous)?previous:"";
+      select.onchange=()=>{const course=courses.find(c=>c.id===select.value),classSelect=$(classId);for(const option of classSelect.options)option.disabled=!!course&&!course.class_ids.includes(option.value);if(course&&!course.class_ids.includes(classSelect.value))classSelect.value="";};select.onchange();
+    }
+
     if(openAssignmentId){const current=rows.find(a=>a.id===openAssignmentId);if(current)updateExerciseDeadline(current);else{openAssignmentId=null;exerciseOpenRequest++;sandboxFeedbackRequest++;clearTimeout(exerciseDeadlineTimer);$("exerciseBox").style.display="none";$("exerciseData").textContent="";$("scoreResult").textContent="";}}
     const box = $("assignmentList"); box.textContent = "";
     const singles=rows.filter(row=>!row.paper_id);
     for (const row of singles) {
       const item = el("div","training-card"); item.appendChild(el("h3",null,row.title));
+      if(row.course_name)item.append(el("p","muted","课程："+row.course_name));
       item.append(el("p","muted",classroomUI.status(row)+" · 截止："+classroomUI.dueText(row.deadline_at)));
       const btn = el("button",null,currentUser.role === "student" ? "开始 / 查看评分" : "查看");
       btn.addEventListener("click",() => openExercise(row.id)); item.appendChild(btn);
@@ -1573,13 +1594,13 @@ async function loadAssignments() {
       for(const s of submissions){const item=el("div","data-item");const shown=s.adjusted_score===null?s.score:s.adjusted_score;item.appendChild(el("span",null,s.display_name+" · "+s.title+" · "+shown+" 分"));const b=el("button",null,"复核调整");b.addEventListener("click",async()=>{try{const value=window.prompt("调整后分数（0-100）",String(shown));if(value===null)return;const feedback=window.prompt("教师评语",s.feedback||"")||"";await api("/api/submissions/"+s.id+"/review",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({adjusted_score:Number(value),feedback})});await loadAssignments();}catch(error){showError(error.message);}});item.appendChild(b);sb.appendChild(item);}if(!submissions.length)sb.appendChild(el("div","data-item","暂无学生提交。"));
       if(exerciseRulesYear===null)await refreshExerciseRules();
     }
-  } catch (err) { if(request===trainingLoadRequest&&uid===currentUser?.id)showError(err.message); }
+  } catch (err) { if(request===trainingLoadRequest&&uid===currentUser?.id){showError(err.message);if(throwOnError)throw err;} }
 }
 
 $("btnAssignment").addEventListener("click", async () => {
   const button=$("btnAssignment");if(button.disabled)return;button.disabled=true;
   try {
-    await api("/api/assignments", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:$("assignmentTitle").value,audit_id:$("assignmentAudit").value,false_positive_penalty:Number($("assignmentPenalty").value),published:$("assignmentPublished").checked,class_id:$("assignmentClass").value||null,deadline_at:classroomUI.deadlineInput($("assignmentDeadline"))})});
+    await api("/api/assignments", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:$("assignmentTitle").value,audit_id:$("assignmentAudit").value,false_positive_penalty:Number($("assignmentPenalty").value),published:$("assignmentPublished").checked,class_id:$("assignmentClass").value||null,course_id:$("assignmentCourse")?.value||null,deadline_at:classroomUI.deadlineInput($("assignmentDeadline"))})});
     await loadAssignments();
   } catch (err) { showError(err.message); } finally {button.disabled=false;}
 });
