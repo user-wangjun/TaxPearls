@@ -35,7 +35,7 @@ from webapp.login_guard import LoginGuard
 from webapp import code_sandbox
 from webapp.storage import _hash_token, _now, session_max_age
 from webapp.training_content import (applicability, ensure_active_version,
-                                     resolve_active_version, version_brief)
+                                     resolve_active_version, version_brief, teaching_rules, update_status)
 from webapp.training_graph import relations_payload
 from webapp.training_content import attempt_rules
 
@@ -2512,15 +2512,19 @@ def delete_link(store, staff: dict, link_id: str) -> dict[str, Any]:
 
 def student_knowledge_points(store, student_id: str, cert_id: str) -> list[dict[str, Any]]:
     """学生视角的知识点清单：启用知识点 + 高频标注（带依据）+ 规则关联数 + 本人覆盖统计。"""
+    current_rules = _load_rules(store)
     with store.connect() as db:
         if not db.execute("SELECT 1 FROM certificate WHERE id=? AND active=1", (cert_id,)).fetchone():
             raise TrainingPortalError("证书不存在或已下架。", 404)
         rows = db.execute(
             "SELECT * FROM knowledge_point WHERE certificate_id=? AND active=1 ORDER BY code",
             (cert_id,)).fetchall()
+        version = resolve_active_version(db, cert_id)
+        rules = teaching_rules(db, version, current_rules)
+        knowledge_update = update_status(db, version, current_rules) if version else None
         rule_counts = {r["knowledge_point_id"]: r["n"] for r in db.execute(
             "SELECT knowledge_point_id, count(*) n FROM knowledge_point_link"
-            " WHERE target_type='rule' AND knowledge_point_id IN (SELECT id FROM knowledge_point"
+            " WHERE target_type='rule' AND active=1 AND knowledge_point_id IN (SELECT id FROM knowledge_point"
             " WHERE certificate_id=?) GROUP BY knowledge_point_id", (cert_id,)).fetchall()}
         coverage: dict[str, dict[str, int]] = {}
         for r in db.execute(
@@ -2544,7 +2548,9 @@ def student_knowledge_points(store, student_id: str, cert_id: str) -> list[dict[
             item["rule_links"] = rule_counts.get(row["id"], 0)
             item["relations"] = relations_payload(db, row["id"])
             from webapp.knowledge_sync import rule_knowledge
-            item['knowledge'] = rule_knowledge(db, row['id'], _load_rules(store))
+            item['knowledge'] = rule_knowledge(db, row['id'], rules, version)
+            item['knowledge_update'] = knowledge_update
+            item['content_version'] = version_brief(db, version['id']) if version else None
             stat = coverage.get(row["id"], {"attempts": 0, "perfect": 0})
             item["attempts"] = stat["attempts"]
             item["perfect"] = stat["perfect"]
@@ -2589,11 +2595,14 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
     if mode == "redo_same" and (rule_id is None or seed is None):
         raise TrainingPortalError("原题重做必须显式提供规则与种子。")
     rules = _load_rules(store)
-    by_id = {r.id: r for r in rules}
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         if not db.execute("SELECT 1 FROM certificate WHERE id=? AND active=1", (cert_id,)).fetchone():
             raise TrainingPortalError("证书不存在或已下架。", 404)
+        version = ensure_active_version(db, cert_id, rules)
+        rules = teaching_rules(db, version, rules)
+        by_id = {r.id: r for r in rules}
+        covered = set(json.loads(version['rule_ids_json'] or '[]'))
         if kp_id:
             kp = db.execute("SELECT certificate_id, active FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
             if not kp or kp["certificate_id"] != cert_id or not kp["active"]:
@@ -2611,13 +2620,13 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
                         (student_id, kp_id, rule_id)).fetchone()
                     if not prior:
                         raise TrainingPortalError("该规则未关联到此知识点，请从关联规则中练习。")
+            if rule_id not in covered:
+                raise TrainingPortalError("该规则尚未纳入当前教学版本，请等待教师发布新版本。", 409)
         else:
-            candidates = [c for c in _candidate_rules(db, cert_id, kp_id) if c in by_id]
+            candidates = [c for c in _candidate_rules(db, cert_id, kp_id) if c in by_id and c in covered]
             if not candidates:
                 raise TrainingPortalError("该范围还没有可练题目：知识点尚未关联规则，请等待教师配置。")
             rule_id = secrets.choice(candidates)
-        # 绑定当前内容版本（FR-K08）：证书尚无版本时自动建立仿真基线版本。
-        version = ensure_active_version(db, cert_id, rules)
     if seed is None:
         seed = secrets.randbelow(2147483648)
     exercise = _generate(rules, rule_id, seed)
