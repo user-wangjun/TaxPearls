@@ -696,7 +696,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     }
     const actions=el("div","core-actions");actions.append(button("重新读取任务",()=>action(()=>api(base+"/"+current.id))));
     actions.append(button("保存企业与检查区间",()=>{if(dirty){showError("请先保存资料口径核对，再保存企业与检查区间。");return;}return action(()=>saveScope(),true);}));
-    const next=button("开始检查",startCheck);actions.append(next);root.append(actions,el("p","muted","点击开始检查后，自动检索知识依据、整理材料上下文并调用已配置的 AI，在本页展示结果。"));
+    const next=button("开始检查",startCheck);actions.append(next);root.append(el("p","muted","开始检查前，请确保各资料栏上传的文件与对应资料类型一致。"),actions,el("p","muted","点击开始检查后，自动检索知识依据、整理材料上下文并调用已配置的 AI，在本页展示结果。"));
     if(user()?.role==="org_admin"){const remove=button("删除本次任务",removeCurrent);remove.style.color="var(--red,#b42318)";actions.append(remove);}
     const origins=task.scope_origins||{};for(const [key,origin] of Object.entries(origins))if(origin.kind==="file"&&["company_name","tax_no"].includes(key))root.append(el("p","muted",`${{company_name:"企业名称",tax_no:"税号"}[key]}已从文件读取：${(origin.sources||[]).map(s=>`${current.documents.find(d=>d.id===s.file_id)?.name||s.file_id} · ${s.position}`).join("；")}，请核对后开始检查。`));
     displayErrors(attempted?current.scope_errors||{}:Object.fromEntries(Object.entries(current.scope_errors||{}).filter(([key])=>scopeRead()[key])));
