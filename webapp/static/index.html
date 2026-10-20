@@ -443,6 +443,7 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
+<link rel="stylesheet" href="/university.css?v=university-personal-12">
 <link rel="stylesheet" href="/workspace.css?v=native-20261020-4-20261019-312820fc14e8">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
@@ -466,6 +467,7 @@
         <div class="auth-remember-row"><label><input id="loginRemember" name="remember" type="checkbox" aria-describedby="loginRememberHint">保持登录 30 天</label><button type="button" class="auth-link" id="forgotLink">忘记密码？</button></div>
         <p id="loginRememberHint">公共电脑请勿勾选</p>
       </div>
+      <div class="field" id="loginCollegeField" hidden><label for="loginCollege">院校（学号跨校重复时填写）</label><input id="loginCollege" maxlength="200" autocomplete="organization" disabled></div>
       <div id="viewForgot" style="display:none">
         <div class="field"><label for="resetEmail">账号绑定的邮箱</label><input id="resetEmail" type="email" autocomplete="email" placeholder="name@example.com" required></div>
         <p class="muted" style="font-size:14px;margin-top:0">我们将向该邮箱发送重置链接，请在发起请求的同一浏览器打开并确认，10 分钟内有效、只能使用一次。</p>
@@ -537,6 +539,7 @@
       <div class="nav-brand"><img class="nav-brand-logo" src="/logo" alt="税海拾珠" draggable="false"><img class="nav-brand-wordmark" src="/auth-wordmark.png" alt="" draggable="false"></div>
       <div class="nav-heading"><div class="nav-caption">企业工作空间</div><button type="button" id="navToggle" aria-controls="nav" aria-expanded="false" aria-label="展开侧边栏" title="展开侧边栏"><span class="nav-toggle-direction" aria-hidden="true"><span class="nav-toggle-track"><span class="nav-toggle-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></span><span class="nav-toggle-arrow"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg></span></span></span></button></div>
       <button data-panel="notificationPanel" aria-label="通知订阅" title="通知订阅"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a6 6 0 0 0-6 6v5l-2 4h16l-2-4V8a6 6 0 0 0-6-6Zm-3 17h6a3 3 0 0 1-6 0Z"/></svg><span class="nav-label">通知订阅</span></button>
+      <div id="universityNav" hidden></div>
       <button data-panel="dashboardPanel" class="business-nav" aria-label="工作台" title="工作台"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="8" height="10" rx="2"/><rect x="13" y="3" width="8" height="6" rx="2"/><rect x="3" y="15" width="8" height="6" rx="2"/><rect x="13" y="11" width="8" height="10" rx="2"/></svg><span class="nav-label">工作台</span></button>
       <button data-panel="uploadPanel" class="business-nav" aria-label="上传材料" title="上传材料"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M11 15V7.4L8.7 9.7 7.3 8.3 12 3.6l4.7 4.7-1.4 1.4L13 7.4V15zM4 13h4v4h8v-4h4v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span class="nav-label">上传材料</span></button>
       <button data-panel="auditPanel" class="business-nav" aria-label="审计详情" title="审计详情"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 2v5h5Zm2.2 8.3-4.7 4.8-2.7-2.7-1.4 1.4 4.1 4.1 6.1-6.2Z"/></svg><span class="nav-label">审计详情</span></button>
@@ -565,6 +568,11 @@
       </div></div>
     </div>
 
+    <section class="panel university-workspace" id="universityPanel">
+      <div class="page-head"><div><div class="eyebrow" id="universityEyebrow">高校工作空间</div><h2 id="universityTitle">学习概览</h2><p class="muted" id="universitySubtitle"></p></div><button class="btn pdf" id="universityRefresh" type="button">刷新数据</button></div>
+      <div class="university-load-status" role="status" aria-live="polite"><span id="universityStatus" class="muted"></span><button id="universityRetry" type="button" hidden>重新加载</button></div>
+      <div id="universityContent"></div>
+    </section>
     <section class="panel" id="dashboardPanel">
       <div class="page-head"><div><p class="eyebrow">BUSINESS OVERVIEW</p><h2>工作台</h2><p class="muted">从企业业务数据出发，了解经营表现与税务风险。</p></div><button class="btn pdf" id="dashboardUpload">上传材料 ↗</button></div>
       <div class="sheet row" id="dashboardFilters"><div class="field"><label for="dashboardCompany">企业</label><select id="dashboardCompany"></select></div><div class="field"><label for="dashboardPeriod">所属期间</label><select id="dashboardPeriod"></select></div><p class="muted" id="dashboardUpdated"></p></div>
@@ -1001,7 +1009,7 @@
 </footer>
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
-<script src="/classroom.js?v=teaching-storage-1"></script>
+<script src="/classroom.js?v=university-personal-12"></script>
 <script src="/core-inputs.js?v=20261019-2e461e9cdcc1"></script>
 <script src="/enterprise.js?v=20261017-62c89aee0e75"></script>
 <script src="/ai-keys.js?v=20261020-custom-endpoint-1"></script>
@@ -1009,10 +1017,11 @@
 <script src="/training-workspace.js?v=20261020-native-1"></script>
 <script src="/training-staff.js?v=20261020-platform-teaching-1"></script>
 <script src="/training-portal.js?v=20261020-platform-teaching-1"></script>
-<script src="/console.js?v=20261020-native-3"></script>
+<script src="/university-workspace.js?v=university-personal-12"></script>
+<script src="/console.js?v=university-personal-12"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261020-native-1"></script>
-<script src="/graph.js?v=20261017-11967901ecc2"></script>
+<script src="/graph.js?v=university-personal-12"></script>
 <script src="/rule-bindings.js?v=20261016"></script>
 <script src="/knowledge-retrieval.js?v=20261018-32580db4e0ef"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
