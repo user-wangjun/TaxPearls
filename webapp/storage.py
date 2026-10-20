@@ -197,25 +197,31 @@ class Store:
 
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
-        try:
-            sensitive_storage.attach(db, self._field_codec)
-            if not self._fields_ready:
-                db.row_factory = sqlite3.Row
-            else:
-                sensitive_storage.verify_state(db, self._field_codec)
-                deployment.verify(db, self.deployment, self._field_codec, require_bound=True)
-            db.execute("PRAGMA foreign_keys=ON")
-            # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
-            # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
-            # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
-            yield db
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+        # 连接全生命周期（开→用→关）在模块级锁内进行：除 Store 方法外，material_jobs
+        # 等模块级函数与后台线程也直接调用 connect，若不持锁，一个连接的关闭触发
+        # WAL -shm/-wal 删除重建，与另一连接的映射重叠时在 Windows 上以
+        # SQLITE_READONLY 的面目打断写事务（test_training_profiles/stats 稳定复现）。
+        # RLock 可重入，Store 写方法外层已持锁再调此方法无死锁风险。
+        with self._lock:
+            db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
+            try:
+                sensitive_storage.attach(db, self._field_codec)
+                if not self._fields_ready:
+                    db.row_factory = sqlite3.Row
+                else:
+                    sensitive_storage.verify_state(db, self._field_codec)
+                    deployment.verify(db, self.deployment, self._field_codec, require_bound=True)
+                db.execute("PRAGMA foreign_keys=ON")
+                # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
+                # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
+                # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
+                yield db
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
     def _init_schema(self) -> None:
         from webapp.schema import initialize
