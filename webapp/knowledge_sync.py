@@ -99,7 +99,12 @@ def teaching(db, rules):
                 VALUES (?,?,?,'concept',?,?,?)''',
                        (key, PREFIX + left.id, PREFIX + right.id, '共同取数指标：' + '、'.join(shared), version, now))
             relation_count += 1
-    content = training_content.ensure_active_version(db, cert_id, rules)
+    content = training_content.resolve_active_version(db, cert_id)
+    if content is None:
+        content = db.execute('SELECT * FROM training_content_version WHERE certificate_id=? ORDER BY created_at DESC,id LIMIT 1',
+                             (cert_id,)).fetchone()
+    if content is None:
+        content = training_content.ensure_active_version(db, cert_id, rules)
     return {'certificate_id': cert_id, 'knowledge_points': len(expected), 'rule_links': len(mapped),
             'relations': relation_count, 'content_version_id': content['id'], 'rules_fingerprint': version}
 
@@ -110,33 +115,61 @@ def synchronize(db, rules, plan, originals):
     ids = {r.id: rule_conversion.compile_rule(r)['rule_id'] for r in rules}
     corpus = policy_corpus.import_plan(db, plan, originals, rule_ids=ids)
     education = teaching(db, rules)
-    # Existing certificates also receive new versions if their linked rule
-    # definitions changed. No attempt, score or official examination date changes.
+    # Initialize missing baselines; existing teaching versions remain pinned
+    # until a teacher explicitly publishes a replacement.
     for row in db.execute("SELECT id FROM certificate WHERE active=1 AND id<>?", (education['certificate_id'],)):
-        if training_content.linked_rule_ids(db, row['id']):
+        if (training_content.linked_rule_ids(db, row['id']) and not db.execute(
+                'SELECT 1 FROM training_content_version WHERE certificate_id=?', (row['id'],)).fetchone()):
             training_content.ensure_active_version(db, row['id'], rules)
     return {'corpus': corpus, 'teaching': education, 'current_rule_count': len(ids),
             'manifest_sha256': plan['manifest_sha256'], 'formal_approvals': 0, 'external_ai_calls': 0}
 
 
-def rule_knowledge(db, kp_id, rules):
-    """Public source/version references for a teaching point; no student answers."""
-    linked = {r['target_id'] for r in db.execute(
-        "SELECT target_id FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule' AND active=1", (kp_id,))}
+def rule_references(db, rules, linked):
+    """Read shared public knowledge by exact rule version; never enterprise facts."""
     result = []
-    for rule in rules:
+    for rule in sorted(rules, key=lambda item: item.id):
         if rule.id not in linked:
             continue
         compiled = rule_conversion.compile_rule(rule)
         current = db.execute('SELECT review_status FROM TaxRule WHERE rule_id=?', (compiled['rule_id'],)).fetchone()
         sources = db.execute('''SELECT DISTINCT p.policy_id,p.title,p.source_url,p.validity_status,
-            c.clause_id,c.clause_label,c.extraction_status
+            p.issuer,p.region_code,p.publish_date,p.effective_from,p.effective_to,
+            c.clause_id,c.clause_label,c.extraction_status,c.content,c.source_location,
+            c.effective_from AS clause_effective_from,c.effective_to AS clause_effective_to
             FROM Relationship r JOIN Clause c ON r.from_type='Clause' AND r.from_id=c.clause_id
             JOIN Policy p ON c.policy_id=p.policy_id
             WHERE r.to_type='TaxRule' AND r.to_id=? AND r.relation_type='PROVIDES_CONTEXT'
             ORDER BY p.title,c.sort_index''', (compiled['rule_id'],)).fetchall()
         result.append({'rule_code': rule.id, 'rule_version': rule.version, 'rule_id': compiled['rule_id'],
                        'fingerprint': compiled['fingerprint'], 'sources': [dict(s) for s in sources],
+                       'name': rule.name, 'inputs': rule.inputs, 'logic': rule.logic,
+                       'scope': rule.scope, 'effective_from': rule.effective_from, 'effective_to': rule.effective_to,
                        'review_status': current['review_status'] if current else 'not_synced',
                        'threshold_basis': rule.threshold_basis})
     return result
+
+
+def rule_knowledge(db, kp_id, rules, version=None):
+    """Teaching references use the published snapshot when one is available."""
+    linked = {r['target_id'] for r in db.execute(
+        "SELECT target_id FROM knowledge_point_link WHERE knowledge_point_id=? AND target_type='rule' AND active=1", (kp_id,))}
+    if version is not None:
+        linked &= set(json.loads(version['rule_ids_json'] or '[]'))
+    return version_references(db, version, rules, linked)
+
+
+def version_references(db, version, rules, linked):
+    if version is not None:
+        if version['knowledge_snapshot_json']:
+            result = [r for r in json.loads(version['knowledge_snapshot_json']) if r['rule_code'] in linked]
+            for reference in result:
+                for source in reference['sources']:
+                    latest = db.execute('''SELECT p.validity_status,c.extraction_status FROM Clause c
+                        JOIN Policy p ON p.policy_id=c.policy_id WHERE c.clause_id=?''',
+                                        (source['clause_id'],)).fetchone()
+                    source['current_validity_status'] = latest['validity_status'] if latest else 'missing'
+                    source['current_extraction_status'] = latest['extraction_status'] if latest else 'missing'
+                    source['snapshot_status'] = 'published'
+            return result
+    return rule_references(db, rules, linked)
