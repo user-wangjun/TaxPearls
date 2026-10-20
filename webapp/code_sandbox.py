@@ -14,6 +14,9 @@ import 守卫 + 文件路径检查）基础上强化：
   网络约束升为 OS 权限；启动失败按判题失败处理（fail-closed）。账号创建见
   scripts/setup_sandbox_user.py（需管理员运行一次；未配置时回退普通路径，
   功能可用但边界同 v2）。
+- **输出比对（v3.1 新增）**：exact（默认归一逐字符）| float（数值 token 按相对
+  容差比对，浮点容差已实现）| any_of（多解判定：多候选任一命中即通过），
+  见 compare_output；匹配模式与容差按用例配置（code_test_case.match_mode）。
 
 边界如实声明（醒目）：**进程内守卫 + OS 资源限制的教学强化级，不是容器级
 安全边界**。守卫目标是把"无意越界"拦下、把"有意越界"留痕；生产判题仍须
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -470,5 +474,67 @@ def _run_case_restricted(code: str, input_text: str, workdir: str,
 
 
 def judge_output(actual: str, expected_output: str) -> bool:
-    """v1 比对：归一化后逐行一致即通过（浮点容差/多解判定未实现，如实标注）。"""
-    return _normalize(actual) == _normalize(expected_output)
+    """缺省 exact 比对（旧签名兼容）：归一化后逐行一致即通过。"""
+    return compare_output(actual, expected_output, mode="exact")
+
+
+# ---- 输出比对（v3.1）：exact | float（浮点容差）| any_of（多解判定）----
+
+MATCH_MODES = ("exact", "float", "any_of")
+DEFAULT_FLOAT_TOLERANCE = 1e-6
+_NUMBER_RE = re.compile(
+    r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")  # 12 / 3.14 / 1e-6 / .5 等
+
+
+def _line_matches(actual_line: str, expected_line: str, *, mode: str,
+                  tolerance: float) -> bool:
+    """单行比对：exact 逐 token 一致；float 数值 token 按容差、其余逐字符。
+
+    行首尾空白已在 _normalize 去除；行内按空白切 token，token 数须一致；
+    两个 token 都是数字（含符号/科学计数法）时按相对容差判等
+    （|a-e| <= tolerance*max(1,|e|)，容差锚定在期望值上），否则逐字符一致。"""
+    if mode == "exact" or actual_line == expected_line:
+        return actual_line == expected_line
+    a_tokens = actual_line.split()
+    e_tokens = expected_line.split()
+    if len(a_tokens) != len(e_tokens):
+        return False
+    for a, e in zip(a_tokens, e_tokens):
+        if a == e:
+            continue
+        if _NUMBER_RE.fullmatch(a) and _NUMBER_RE.fullmatch(e):
+            av, ev = float(a), float(e)
+            if abs(av - ev) <= tolerance * max(1.0, abs(ev)):
+                continue
+        return False
+    return True
+
+
+def compare_output(actual: str, expected_output: str, *, mode: str = "exact",
+                   tolerance: float | None = None,
+                   alternatives: list[str] | None = None) -> bool:
+    """按用例匹配模式比对输出（v3.1）。
+
+    - exact：归一化后逐行逐字符一致（默认）；
+    - float：逐行比对，数值 token 误差 <= tolerance*max(1,|期望|) 即相等
+      （缺省容差 1e-6；非数值部分仍须逐字符一致）；
+    - any_of：expected_output 与 alternatives 中任一候选匹配即通过
+      （候选同样按 mode/tolerance 比对，可与 float 组合实现"多解+容差"）。
+    mode 非法或容差越界（0,0.5] 之外一律不通过（fail-closed）。"""
+    if mode not in MATCH_MODES:
+        return False
+    tol = DEFAULT_FLOAT_TOLERANCE if tolerance is None else float(tolerance)
+    if not (0 < tol <= 0.5):
+        return False
+    candidates = [expected_output]
+    if mode == "any_of":
+        candidates.extend(alternatives or [])
+    actual_lines = _normalize(actual)
+    for candidate in candidates:
+        expected_lines = _normalize(candidate)
+        if len(actual_lines) != len(expected_lines):
+            continue
+        if all(_line_matches(a, e, mode=mode, tolerance=tol)
+               for a, e in zip(actual_lines, expected_lines)):
+            return True
+    return False

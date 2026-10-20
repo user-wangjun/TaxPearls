@@ -28,7 +28,10 @@ class RegistrationTests(unittest.TestCase):
         self._restore = (app_module.store, app_module.login_guard, app_module.reset_limiter,
                          app_module.register_code_limiter, app_module.send_registration_code_email,
                          app_module.register_complete_limiter)
-        app_module.store = Store(Path(self._directory.name) / "register.db")
+        # 主 Store 开哨兵：WAL 辅助文件常驻，消除 Windows 上连接全关后
+        # 删建 -shm/-wal 与并发重叠的 SQLITE_READONLY 抖动（同 storage.py 哨兵注释）。
+        app_module.store = Store(Path(self._directory.name) / "register.db", keepalive=True)
+        self.addCleanup(app_module.store.close)
         app_module.login_guard = LoginGuard()
         app_module.reset_limiter = RateLimiter({"email": (50, 15 * 60), "ip": (500, 60 * 60)})
         app_module.register_code_limiter = RateLimiter({"email": (50, 15 * 60), "ip": (500, 60 * 60)})

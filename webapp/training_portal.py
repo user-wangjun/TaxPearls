@@ -33,6 +33,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from webapp.login_guard import LoginGuard
+from webapp import code_sandbox
 from webapp.storage import _hash_token, _now, session_max_age
 from webapp.training_content import (applicability, ensure_active_version,
                                      resolve_active_version, version_brief)
@@ -441,12 +442,20 @@ def update_code_problem(store, problem_id: str, fields: dict[str, Any],
             "SELECT count(*) n FROM code_test_case WHERE problem_id=?",
             (problem_id,)).fetchone()["n"]
         payload["cases"] = [dict(r) for r in db.execute(
-            "SELECT seq, input_text, expected_output, weight, sample FROM code_test_case"
+            "SELECT seq, input_text, expected_output, weight, sample, match_mode,"
+            " float_tolerance, alternatives_json FROM code_test_case"
             " WHERE problem_id=? ORDER BY seq", (problem_id,)).fetchall()]
     return payload
 
 
 def _clean_test_cases(cases: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """用例清洗（v3.1）：match_mode/float_tolerance/alternatives 校验。
+
+    - match_mode: exact|float|any_of（缺省 exact）；
+    - float_tolerance: (0, 0.5] 开区间内（缺省 None → 引擎用 1e-6），
+      仅 float/any_of 模式允许给；exact 模式给了也忽略并存原值；
+    - alternatives: 仅 any_of 使用，非空字符串列表（≤20 条，单条 ≤4096 字符）；
+      exact 模式给 alternatives 视为配置错误（避免教师误配静默失效）。"""
     cleaned = []
     for i, c in enumerate(cases or [], start=1):
         input_text = str(c.get("input_text") or "")
@@ -455,8 +464,36 @@ def _clean_test_cases(cases: list[dict[str, Any]] | None) -> list[dict[str, Any]
         weight = 1.0 if raw_weight is None else float(raw_weight)
         if weight <= 0:
             raise TrainingPortalError(f"第 {i} 个用例权重必须为正数。")
+        mode = str(c.get("match_mode") or "exact").strip().lower()
+        if mode not in code_sandbox.MATCH_MODES:
+            raise TrainingPortalError(
+                f"第 {i} 个用例 match_mode 须为 {'/'.join(code_sandbox.MATCH_MODES)}。")
+        raw_tol = c.get("float_tolerance")
+        tolerance = None if raw_tol in (None, "") else float(raw_tol)
+        if tolerance is not None and not (0 < tolerance <= 0.5):
+            raise TrainingPortalError(f"第 {i} 个用例容差须在 (0, 0.5] 之间。")
+        alternatives = c.get("alternatives")
+        if alternatives is not None and mode != "any_of":
+            raise TrainingPortalError(
+                f"第 {i} 个用例只有 any_of 模式可配置多解候选。")
+        alt_list: list[str] = []
+        if mode == "any_of":
+            for alt in (alternatives or []):
+                text = str(alt)
+                if not text.strip():
+                    raise TrainingPortalError(f"第 {i} 个用例多解候选不能为空串。")
+                if len(text) > 4096:
+                    raise TrainingPortalError(f"第 {i} 个用例多解候选超长（≤4096 字符）。")
+                alt_list.append(text)
+            if len(alt_list) > 20:
+                raise TrainingPortalError(f"第 {i} 个用例多解候选最多 20 条。")
+            if not alt_list:
+                raise TrainingPortalError(
+                    f"第 {i} 个用例 any_of 模式须至少给 1 条多解候选。")
         cleaned.append({"seq": i, "input_text": input_text, "expected_output": expected,
-                        "weight": weight, "sample": 1 if c.get("sample") else 0})
+                        "weight": weight, "sample": 1 if c.get("sample") else 0,
+                        "match_mode": mode, "float_tolerance": tolerance,
+                        "alternatives": alt_list})
     return cleaned
 
 
@@ -464,10 +501,15 @@ def _insert_test_cases(db, problem_id: str, cases: list[dict[str, Any]]) -> None
     for c in cases:
         db.execute(
             """INSERT INTO code_test_case (id, problem_id, seq, input_text,
-                                           expected_output, weight, sample, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                                           expected_output, weight, sample,
+                                           match_mode, float_tolerance, alternatives_json,
+                                           created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (str(uuid.uuid4()), problem_id, c["seq"], c["input_text"],
-             c["expected_output"], c["weight"], c["sample"], _now()))
+             c["expected_output"], c["weight"], c["sample"],
+             c["match_mode"], c["float_tolerance"],
+             json.dumps(c["alternatives"], ensure_ascii=False) if c["alternatives"] else None,
+             _now()))
 
 
 
@@ -535,14 +577,32 @@ def submit_code(store, problem_id: str, student_id: str, code_text: str) -> dict
             (sid, problem_id, student_id, problem["language"],
              db.field_codec.seal(code_text, "code_submission", "code_text", sid),
              _now()))
+    # FR-J05：队列模式（TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1）提交入队，
+    # 由 worker 后台判题；默认仍同步判题（契约不变，测试与单机课堂直接出分）。
+    from webapp import code_judge_queue
+    if code_judge_queue.queue_enabled():
+        task_id = code_judge_queue.enqueue(store, sid)
+        return {"submission_id": sid, "task_id": task_id, "status": "pending",
+                "queued": True, "sandbox_notice": code_sandbox_notice()}
     return judge_submission(store, sid)
 
 
-def judge_submission(store, submission_id: str) -> dict[str, Any]:
-    """教学级判题（J04 v1）：逐用例受限运行并加权计分。
+def code_sandbox_notice() -> str:
+    from webapp import code_sandbox
+    return code_sandbox.SANDBOX_NOTICE
 
-    边界：单进程同步执行（J05 异步队列待专项）；逐字节级比对归一化后
-    进行，浮点容差/多解判定未实现；判题器边界见 code_sandbox.SANDBOX_NOTICE。"""
+
+def code_judge_queue_retry(store, task_id: str) -> dict[str, Any]:
+    from webapp import code_judge_queue
+    return code_judge_queue.retry_task(store, task_id)
+
+
+def judge_submission(store, submission_id: str) -> dict[str, Any]:
+    """教学级判题（J04 v3.1）：逐用例受限运行并加权计分。
+
+    边界：单进程同步执行（J05 队列可选异步）；比对按用例 match_mode
+    （exact/float 浮点容差/any_of 多解判定，见 code_sandbox.compare_output）；
+    判题器边界见 code_sandbox.SANDBOX_NOTICE。"""
     from webapp import code_sandbox
     with store.connect() as db:
         submission = db.execute(
@@ -554,7 +614,8 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
             (submission["problem_id"],)).fetchone()
         code = submission["code_text"]  # 行工厂（attach row handler）已按身份校验并解密
         cases = [dict(r) for r in db.execute(
-            "SELECT seq, input_text, expected_output, weight FROM code_test_case"
+            "SELECT seq, input_text, expected_output, weight, match_mode,"
+            " float_tolerance, alternatives_json FROM code_test_case"
             " WHERE problem_id=? ORDER BY seq", (submission["problem_id"],)).fetchall()]
         detail: list[dict[str, Any]] = []
         passed_weight = 0.0
@@ -565,8 +626,15 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
         for case in cases:
             run = code_sandbox.run_case(code, case["input_text"],
                                         time_limit_ms=problem["time_limit_ms"])
-            ok = run["status"] == "ok" and code_sandbox.judge_output(
-                run["output"], case["expected_output"])
+            try:
+                alternatives = json.loads(case["alternatives_json"] or "[]")
+            except (TypeError, ValueError):
+                alternatives = []
+            ok = run["status"] == "ok" and code_sandbox.compare_output(
+                run["output"], case["expected_output"],
+                mode=case["match_mode"] or "exact",
+                tolerance=case["float_tolerance"],
+                alternatives=alternatives)
             total_weight += float(case["weight"])
             if ok:
                 passed_weight += float(case["weight"])
@@ -590,6 +658,10 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
             detail = [{"error": "题目没有配置测试用例，无法判题。"}]
         rid = str(uuid.uuid4())
         db.execute("BEGIN IMMEDIATE")
+        # 队列重试（J05）会对同一提交重判：替换旧判题结果与评分记录
+        # （正常流一次性，历史提交行不被覆盖的惯例只针对提交本身）。
+        db.execute("DELETE FROM code_score_record WHERE submission_id=?", (submission_id,))
+        db.execute("DELETE FROM code_judge_result WHERE submission_id=?", (submission_id,))
         db.execute(
             """INSERT INTO code_judge_result (id, submission_id, status, total_score,
                                               passed_count, case_count, detail_json, judged_at)
@@ -598,8 +670,95 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
              len(cases), json.dumps(detail, ensure_ascii=False), _now()))
         db.execute("UPDATE code_submission SET status='judged' WHERE id=?", (submission_id,))
         row = db.execute("SELECT * FROM code_judge_result WHERE id=?", (rid,)).fetchone()
+        # FR-J07/J08：质量分与评分桥接与判题同事务落库。质量分是辅助维度
+        # （不改判对错）；code_score_record 把判题客观分作为评分体系的事实
+        # 来源，教师可后续调分（adjust_code_score）。
+        # 质量评估用纯函数 assess（不开新连接），插入走本事务，避免嵌套写锁。
+        from webapp import code_quality
+        quality = None
+        if submission["language"] == "python":
+            quality = code_quality.assess(code)
+            db.execute("DELETE FROM code_quality_result WHERE submission_id=?", (submission_id,))
+            db.execute(
+                """INSERT INTO code_quality_result (id, submission_id, score, detail_json, checked_at)
+                   VALUES (?,?,?,?,?)""",
+                (str(uuid.uuid4()), submission_id, quality["score"],
+                 json.dumps(quality["checks"], ensure_ascii=False), _now()))
+        if final_status != "judgement_failed":
+            db.execute("DELETE FROM code_score_record WHERE submission_id=?", (submission_id,))
+            db.execute(
+                """INSERT INTO code_score_record (id, submission_id, judge_result_id,
+                                                  auto_score, adjusted_score, adjust_reason,
+                                                  adjust_log_json, adjusted_by, updated_at)
+                   VALUES (?,?,?,?,NULL,'','[]',NULL,?)""",
+                (str(uuid.uuid4()), submission_id, rid, total_score, _now()))
     return {**dict(row), "detail": json.loads(row["detail_json"]),
+            "quality": quality,
             "sandbox_notice": code_sandbox.SANDBOX_NOTICE}
+
+
+# ---- J08 判题分接入评分体系：教师调分与明细查看 ----
+
+def code_submission_college(store, submission_id: str) -> str | None:
+    """提交所属院校（经题目归属；code_submission 本身无 college 列）。"""
+    with store.connect() as db:
+        row = db.execute(
+            """SELECT p.college FROM code_submission s
+               JOIN code_problem p ON p.id=s.problem_id WHERE s.id=?""",
+            (submission_id,)).fetchone()
+    return row["college"] if row else None
+
+def get_code_score(store, submission_id: str) -> dict[str, Any]:
+    """一份提交的评分记录：判题客观分 + 教师调分 + 生效分 + 质量分。"""
+    from webapp import code_quality
+    with store.connect() as db:
+        row = db.execute(
+            """SELECT r.id AS record_id, r.auto_score, r.adjusted_score, r.adjust_reason,
+                      r.adjust_log_json, r.adjusted_by, r.updated_at,
+                      j.status AS judge_status, j.total_score, j.passed_count, j.case_count,
+                      j.judged_at
+               FROM code_score_record r
+               JOIN code_judge_result j ON j.id=r.judge_result_id
+               WHERE r.submission_id=?""", (submission_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("该提交尚未完成判题，暂无评分记录。", 404)
+    payload = dict(row)
+    payload["adjust_log"] = json.loads(row["adjust_log_json"] or "[]")
+    payload["effective_score"] = (row["adjusted_score"]
+                                  if row["adjusted_score"] is not None else row["auto_score"])
+    payload["quality"] = code_quality.get_quality(store, submission_id)
+    payload.pop("adjust_log_json", None)
+    return payload
+
+
+def adjust_code_score(store, submission_id: str, new_score: float, reason: str,
+                      operator_id: str) -> dict[str, Any]:
+    """教师调分（J08）：沿用评分框架的留痕惯例，全部调整入 adjust_log。"""
+    new_score = round(float(new_score), 2)
+    if not (0.0 <= new_score <= 100.0):
+        raise TrainingPortalError("调分须在 0~100 之间。")
+    reason = (reason or "").strip()
+    if not reason:
+        raise TrainingPortalError("调分必须填写理由（留痕要求）。")
+    now = _now()
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT auto_score, adjusted_score, adjust_log_json FROM code_score_record"
+            " WHERE submission_id=?", (submission_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("该提交尚未完成判题，暂无评分记录。", 404)
+        previous = (row["adjusted_score"] if row["adjusted_score"] is not None
+                    else row["auto_score"])
+        log = json.loads(row["adjust_log_json"] or "[]")
+        log.append({"at": now, "operator_id": operator_id, "from": previous,
+                    "to": new_score, "reason": reason})
+        db.execute(
+            """UPDATE code_score_record SET adjusted_score=?, adjust_reason=?,
+                   adjust_log_json=?, adjusted_by=?, updated_at=? WHERE submission_id=?""",
+            (new_score, reason, json.dumps(log, ensure_ascii=False), operator_id, now,
+             submission_id))
+    return get_code_score(store, submission_id)
 
 
 def _submission_view(row: sqlite3.Row, include_code: bool = False) -> dict[str, Any]:
@@ -625,9 +784,11 @@ def list_code_submissions(store, *, problem_id: str | None = None,
     with store.connect() as db:
         rows = db.execute(
             f"""SELECT s.*, r.status AS judge_status, r.total_score,
-                       r.passed_count, r.case_count, r.judged_at
+                       r.passed_count, r.case_count, r.judged_at,
+                       sc.adjusted_score, sc.auto_score
                 FROM code_submission s
                 LEFT JOIN code_judge_result r ON r.submission_id = s.id
+                LEFT JOIN code_score_record sc ON sc.submission_id = s.id
                 {where} ORDER BY s.submitted_at DESC LIMIT ?""", params).fetchall()
         for row in rows:
             view = {key: row[key] for key in
@@ -636,6 +797,13 @@ def list_code_submissions(store, *, problem_id: str | None = None,
                 "status": row["judge_status"], "total_score": row["total_score"],
                 "passed_count": row["passed_count"], "case_count": row["case_count"],
                 "judged_at": row["judged_at"]}
+            # J08：生效分 = 教师调分（未调 = 判题客观分）；未判题无评分。
+            if row["judge_status"] is None:
+                view["effective_score"] = None
+            else:
+                view["effective_score"] = (row["adjusted_score"]
+                                           if row["adjusted_score"] is not None
+                                           else row["auto_score"])
             if include_code:
                 view["code_text"] = row["code_text"]  # 行工厂（attach row handler）已解密
             out.append(view)
@@ -3364,11 +3532,26 @@ class CodeTestCaseIn(BaseModel):
     expected_output: str = ""
     weight: float = 1.0
     sample: bool = False
+    match_mode: str = Field(default="exact",
+                            pattern="^(exact|float|any_of)$")  # v3.1 比对模式
+    float_tolerance: float | None = Field(default=None, gt=0.0, le=0.5)
+    alternatives: list[str] | None = None  # any_of 多解候选
 
 
 class CodeSubmitBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code_text: str = Field(min_length=1)
+
+
+class PlagiarismScanBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+
+
+class CodeScoreAdjustBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    score: float = Field(ge=0.0, le=100.0)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class CodeProblemCreate(BaseModel):
@@ -4221,6 +4404,88 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         who = student(session)
         return response({"submissions": list_code_submissions(
             store_provider(), problem_id=problem_id, student_id=who["id"])})
+
+    # ---- 判题队列 / 查重 / 质量分 / 评分对接（FR-J05～J08，教师端） ----
+
+    @app.get("/api/training/staff/code-judge/tasks")
+    @guarded
+    def staff_code_judge_tasks(state: str | None = None, limit: int = 50,
+                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """判题队列视图（J05）：排队/运行/失败任务与最近错误，供教师核查。"""
+        who = staff(session)
+        from webapp import code_judge_queue
+        tasks = code_judge_queue.list_tasks(store_provider(), state=state, limit=limit,
+                                            college=who["college"])
+        return response({"tasks": tasks})
+
+    @app.post("/api/training/staff/code-judge/tasks/{task_id}/retry")
+    @guarded
+    def staff_code_judge_retry(task_id: str,
+                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """失败/卡死任务手动重试（J05）：置回 queued，由 worker 或 run_pending 消化。"""
+        who = staff(session)
+        store = store_provider()
+        task = code_judge_queue_retry(store, task_id)
+        with store.connect() as db:
+            row = db.execute(
+                """SELECT st.college FROM code_judge_task t
+                   JOIN code_submission s ON s.id=t.submission_id
+                   JOIN student_info st ON st.id=s.student_id WHERE t.id=?""",
+                (task_id,)).fetchone()
+        if not row or row["college"] != who["college"]:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        return response({"task": task})
+
+    @app.post("/api/training/staff/code-problems/{problem_id}/plagiarism-scan")
+    @guarded
+    def staff_code_plagiarism_scan(problem_id: str, body: PlagiarismScanBody,
+                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """同题跨学生查重扫描（J06）：每个学生最新提交两两 Jaccard 比对，落标记。"""
+        college_record(staff(session), "code_problem", problem_id)
+        from webapp import code_plagiarism
+        return response({"scan": code_plagiarism.scan_problem(
+            store_provider(), problem_id, threshold=body.threshold)})
+
+    @app.get("/api/training/staff/code-problems/{problem_id}/plagiarism")
+    @guarded
+    def staff_code_plagiarism_list(problem_id: str,
+                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        college_record(staff(session), "code_problem", problem_id)
+        from webapp import code_plagiarism
+        return response({"flags": code_plagiarism.list_flags(store_provider(), problem_id)})
+
+    @app.get("/api/training/staff/code-submissions/{submission_id}/score")
+    @guarded
+    def staff_code_score_get(submission_id: str,
+                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """评分记录（J08）：判题客观分 + 质量分 + 教师调分留痕 + 生效分。"""
+        who = staff(session)
+        if code_submission_college(store_provider(), submission_id) != who["college"]:
+            raise HTTPException(status_code=404, detail="提交不存在。")
+        return response({"score": get_code_score(store_provider(), submission_id)})
+
+    @app.put("/api/training/staff/code-submissions/{submission_id}/score")
+    @guarded
+    def staff_code_score_adjust(submission_id: str, body: CodeScoreAdjustBody,
+                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """教师调分（J08）：生效分改为教师给定值，全部调整留痕。"""
+        who = staff(session)
+        if code_submission_college(store_provider(), submission_id) != who["college"]:
+            raise HTTPException(status_code=404, detail="提交不存在。")
+        return response({"score": adjust_code_score(
+            store_provider(), submission_id, body.score, body.reason, who["id"])})
+
+    @app.get("/api/training/staff/code-submissions/{submission_id}/quality")
+    @guarded
+    def staff_code_quality_get(submission_id: str,
+                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """质量分明细（J07）：逐检查项扣分说明。"""
+        who = staff(session)
+        if code_submission_college(store_provider(), submission_id) != who["college"]:
+            raise HTTPException(status_code=404, detail="提交不存在。")
+        from webapp import code_quality
+        quality = code_quality.get_quality(store_provider(), submission_id)
+        return response({"quality": quality})
 
     # ---- 班级与教师名册（FR-U03 第一期） ----
 

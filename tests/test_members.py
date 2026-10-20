@@ -22,7 +22,8 @@ class MemberTests(unittest.TestCase):
         self.tmp=TemporaryDirectory();self.old=module.store
         self.env=patch.dict(os.environ,{'TAXPEARLS_AI_ENABLED':'0','TAXPEARLS_NOTIFICATION_EMAIL_ENABLED':'0'})
         self.env.start()
-        self.store=Store(Path(self.tmp.name)/'members.db');module.store=self.store
+        # 主 Store 开哨兵：WAL 辅助文件常驻，消除 Windows 上 SQLITE_READONLY 抖动。
+        self.store=Store(Path(self.tmp.name)/'members.db',keepalive=True);module.store=self.store
         self.password='Member-review-2026!'
         self.root=self.person('platform','platform_admin','platform')
         self.owner=self.person('owner','org_admin','alpha')
@@ -32,7 +33,7 @@ class MemberTests(unittest.TestCase):
 
     def tearDown(self):
         self.client.__exit__(None,None,None);module.store=self.old
-        self.env.stop();self.tmp.cleanup()
+        self.store.close();self.env.stop();self.tmp.cleanup()
 
     def person(self,name,role,org):
         return self.store.create_user(name,self.password,name,role,org)

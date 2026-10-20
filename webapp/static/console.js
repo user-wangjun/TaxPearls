@@ -92,7 +92,7 @@ function switchPanel(id) {
 const dz = $("dropzone"), fi = $("fileInput");
 let materialDraft = null, materialCards = [], originalUrls = [];
 let materialRequest = 0;
-const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError, policyUI:()=>enterpriseMaterials.policyUI,
+const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError, policyUI:()=>enterpriseMaterials.policyUI,openTaskPanel:()=>switchPanel("uploadPanel"),
   continueCheck:id=>window.KnowledgeRetrieval?.openTask(id)});
 const enterpriseMaterials = createEnterpriseMaterials({api, el, $, user:()=>currentUser,
   clear:clearMaterials, showError, showResult:result=>{renderResult(result);switchPanel("auditPanel");},
@@ -1346,6 +1346,7 @@ function lookupVerification(){return performVerification(false);}
 $("verificationLookup").onclick=lookupVerification;$("verificationCheck").onclick=()=>performVerification(true);
 $("verificationId").oninput=invalidateVerification;$("verificationFormat").onchange=invalidateVerification;$("verificationFile").onchange=invalidateVerification;
 async function loadHistory(page = 1) {
+  void coreInputs.renderArchived();
   const request = ++historyRequest;
   $("historyPrev").disabled = $("historyNext").disabled = true;
   $("historyStatus").textContent = "正在检索……";
@@ -1826,6 +1827,38 @@ $("btnSaveMemberQuota").addEventListener("click",async()=>{
   finally{if(memberCurrent(uid,org))await loadMembers();}
 });
 
+function renderAdminLogs(logs,current){
+  const root=$("logList");root.replaceChildren();
+  const localTime=value=>{const time=new Date(value);return Number.isNaN(time.getTime())?"时间未记录":new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).format(time);};
+  const kinds={analysis:"资料分析快照",edit:"保存资料核对",confirmation:"确认检查结果",material_change:"材料变更"};
+  for(const log of logs.slice(0,80)){
+    const row=el("div","data-item"),content=el("div");
+    content.append(el("p","",`${localTime(log.created_at)}（北京时间） · ${log.action} · ${log.target_type} ${log.target_id}`));row.append(content);root.append(row);
+    if(currentUser?.role!=="org_admin"||log.target_type!=="material_batch")continue;
+    const trace=el("div");trace.hidden=true;
+    const button=el("button","btn re","查看材料追溯");button.type="button";
+    const valid=()=>current()&&currentUser?.role==="org_admin";
+    button.onclick=async()=>{
+      if(!valid())return;
+      if(!trace.hidden){trace.hidden=true;button.textContent="查看材料追溯";return;}
+      trace.hidden=false;trace.replaceChildren(el("p","muted","正在查询材料追溯…"));button.disabled=true;
+      try{
+        const result=await api("/api/enterprise/materials/"+encodeURIComponent(log.target_id)+"/trace");
+        if(!valid())return;
+        trace.replaceChildren(el("p","muted",`材料任务 ${result.id} · 当前版本 ${result.revision}`));
+        for(const version of [...(result.versions||[])].reverse()){
+          trace.append(el("p","",`第 ${version.revision} 版 · ${kinds[version.kind]||version.kind} · ${localTime(version.created_at)}（北京时间） · 操作人 ${version.created_by||"未记录"}`));
+        }
+        const events=el("details");events.append(el("summary","",`上传、核对与访问记录（${result.events?.length||0} 条）`));
+        for(const event of [...(result.events||[])].reverse())events.append(el("p","muted",`${localTime(event.created_at)}（北京时间） · ${event.action} · 操作人 ${event.actor_id||"系统"} · 版本 ${event.revision??"未记录"}`));
+        trace.append(events);button.textContent="收起材料追溯";
+      }catch(error){if(valid()){trace.replaceChildren(el("p","material-note","查询失败："+error.message));button.textContent="收起材料追溯";}}
+      finally{if(valid())button.disabled=false;}
+    };
+    content.append(button,trace);
+  }
+}
+
 async function loadAdmin() {
   const request=++adminRequest,owner=currentUser?.id;
   const current=()=>request===adminRequest&&currentUser?.id===owner&&$("adminPanel").classList.contains("active");
@@ -1867,7 +1900,7 @@ async function loadAdmin() {
     for(const r of ruleCatalog){const item=el("div","data-item"),text=el("div");text.append(el("div",null,r.id+" "+r.name+" · v"+r.version),el("p","muted",r.category+(r.customized?" · 已配置参数":" · 基础参数")));const actions=el("div","row"),chip=el("span","role-chip",r.enabled?"已启用":"已停用"),edit=el("button",null,currentUser.role==="platform_admin"?"配置规则":"配置 / 试跑");edit.addEventListener("click",()=>openRuleEditor(r));actions.append(chip,edit);if(currentUser.role==="platform_admin"){const toggle=el("button",null,r.enabled?"停用":"启用");toggle.addEventListener("click",async()=>{await api("/api/rules/"+r.id+"/state",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!r.enabled})});await loadAdmin();});actions.append(toggle);}item.append(text,actions);rb.append(item);}
     // Keep unsaved drafts intact. Selecting a rule explicitly reloads its version.
     if(editingRule)loadRuleVersionHistory(editingRule.id);
-    if(["platform_admin","org_admin","teacher"].includes(currentUser.role)){const logs=await api("/api/audit-log");const lb=$("logList");lb.textContent="";for(const l of logs.slice(0,80))lb.appendChild(el("div","data-item",l.created_at+" · "+l.action+" · "+l.target_type+" "+l.target_id));}
+    if(["platform_admin","org_admin","teacher"].includes(currentUser.role)){const logs=await api("/api/audit-log");if(current())renderAdminLogs(logs,current);}
   } catch(err){if(current())showError(err.message);}
 }
 
