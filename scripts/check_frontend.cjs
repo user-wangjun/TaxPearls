@@ -152,7 +152,7 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 // Refresh restores the actual selected workspace view, while role-hidden views stay unavailable.
 {
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
-  const code = source.slice(source.indexOf("function defaultWorkspacePanel()"), source.indexOf("/* ---------- 多材料上传"));
+  const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("/* ---------- 多材料上传"));
   const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel"];
   const permitted = {
     org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel"].includes(id)),
@@ -223,6 +223,40 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 const graph = fs.readFileSync("webapp/static/graph.js", "utf8");
 const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), graph.indexOf("async function loadGraph()"));
 (async () => {
+  // Empty/hidden founder results must never overwrite the clipboard or claim success.
+  {
+    const source = fs.readFileSync("webapp/static/console.js", "utf8");
+    const code = source.slice(source.indexOf("function inviteOrgTypeLabel("), source.indexOf('$("btnCreateClient").addEventListener'));
+    const nodes = new Map(), handlers = new Map(), writes = [], errors = [], toasts = [];
+    const node = id => {
+      if(!nodes.has(id))nodes.set(id,{value:"",textContent:"",hidden:false,disabled:false,dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},
+        addEventListener:(_event,handler)=>handlers.set(id,handler)});
+      return nodes.get(id);
+    };
+    const context = {$:node, showError:message=>errors.push(message),showToast:message=>toasts.push(message),
+      navigator:{clipboard:{writeText:async value=>{writes.push(value);}}},
+      api:async()=>({code:"ABCD2345EFGH",org_name:"测试高校",org_type:"university",seats:20}),loadAdmin:async()=>{}};
+    vm.createContext(context);vm.runInContext(code,context);
+    for(const [hidden,value] of [[false,""],[false,"   "],[true,"ABCD2345EFGH"]]){
+      node("inviteReveal").hidden=hidden;node("inviteRevealCode").textContent=value;
+      await handlers.get("btnCopyInvite")();
+      assert.equal(writes.length,0);assert.equal(toasts.length,0);
+    }
+    node("inviteOrgName").value="测试高校";node("inviteOrgType").value="university";node("inviteSeats").value="20";
+    node("btnCopyInvite").disabled=true;
+    await handlers.get("btnCreateInvite")();
+    assert.equal(node("btnCopyInvite").disabled,false);
+    await handlers.get("btnCopyInvite")();
+    assert.deepEqual(writes,["ABCD2345EFGH"]);assert.equal(toasts.length,1);
+    context.navigator.clipboard.writeText=async()=>{throw new Error("denied");};
+    await handlers.get("btnCopyInvite")();
+    assert.equal(toasts.length,1);assert.ok(errors.length>=4);
+    handlers.get("btnHideInvite")();
+    assert.equal(node("inviteReveal").hidden,true);assert.equal(node("btnCopyInvite").disabled,true);
+    assert.equal(node("inviteRevealCode").textContent,"");
+    await handlers.get("btnCopyInvite")();
+    assert.deepEqual(writes,["ABCD2345EFGH"]);assert.equal(toasts.length,1);
+  }
   for (const role of ["platform_admin", "student", "org_admin", "accountant", "teacher"]) {
     const calls = [], errors = [], choices = [], nodes = new Map();
     const context = {currentUser:{id:'user',role}, graphRequest:0, graphScopes:new Map(), graphCurrent:()=>true, clearGraph(){},
@@ -245,7 +279,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   // in application code; this tiny boundary provides only the needed DOM/API.
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
   // Settings reuses self-only preferences; stale reads/writes may not alter another view/account.
-  const settingsCode = source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
+  const settingsCode = source.slice(source.indexOf("function isCampusUser("), source.indexOf("async function teachingRequest("))+source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
   function settingsBoundary(role = "accountant") {
     const nodes = new Map(), calls = [], navigated = []; let active = true;
     const user = {id:"settings-user", role, username:"<account>", display_name:"<name>", created_at:"2026-10-01T00:00:00+00:00"};
