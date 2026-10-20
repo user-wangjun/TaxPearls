@@ -20,17 +20,17 @@
 <main>
   <section id="app-view" hidden>
     <div class="error" id="app-error" role="alert"></div>
-    <div class="card" id="workbench-card">
+    <div class="card" id="workbench-card" data-university-view="home">
       <h2>我的备考工作台</h2>
       <div id="wb-body"></div>
     </div>
 
-    <div class="card">
+    <div class="card" data-university-view="goals">
       <h2>我的考证目标</h2>
       <div id="goals"></div>
       <div class="ok" id="goal-msg"></div>
     </div>
-    <div class="card" id="pr-card">
+    <div class="card" id="pr-card" data-university-view="practice">
       <h2>税务案例训练与刷题</h2>
       <p class="muted">仿真题为规则生成的企业案例（识别涉税风险）；真题/回忆题/模拟题为教师在授权下导入并审核上线的客观题（选项作答，判分后开放解析）。两类都不冒充真题，题源在题目标签上明示。</p>
       <div class="row">
@@ -50,11 +50,13 @@
       <div id="pr-kps"></div>
       <div id="pr-open"></div>
       <div id="pr-attempt" style="margin-top:14px;"></div>
-      <h2 style="margin-top:18px;">错题重练</h2>
-      <div id="pr-wrong"></div>
+      <section id="pr-wrong-section">
+        <h2 style="margin-top:18px;">考证错题重练</h2>
+        <div id="pr-wrong"></div>
+      </section>
     </div>
 
-    <div class="card" id="feedback-card">
+    <div class="card" id="feedback-card" data-university-view="practice settings">
       <h2>试用反馈</h2>
       <p class="muted" style="margin-top:-6px;">试用期遇到缺陷、想要的功能或内容错误，可以直接反馈给本校教师。只有你自己和本校教师能看到内容，记录仅本人可见。</p>
       <div class="row">
@@ -71,13 +73,13 @@
       <div id="fb-mine" class="muted"></div>
     </div>
 
-    <div class="card">
+    <div class="card" data-university-view="catalog goals">
       <h2>证书目录</h2>
       <p class="muted" style="margin-top:-6px;">选择要考的证书，设定考试日期后即可开始备考倒计时。</p>
       <div id="certs"></div>
     </div>
 
-    <div class="card" id="profile-card">
+    <div class="card" id="profile-card" data-university-view="profile">
       <h2>学习档案与知识库
         <select id="pf-cert" style="width:auto;min-width:200px;"></select>
         <button class="small" id="load-profile">刷新档案</button>
@@ -88,6 +90,7 @@
       <div id="pf-list"></div>
     </div>
 
+    <div class="card" data-university-view="settings"><h2>账号安全</h2><p class="muted">学习档案、笔记与答疑记录按本人保存。修改密码后需要重新登录。</p><button type="button" id="workspace-change-password">修改密码</button></div>
   </section>
 </main>
 <div id="pass-modal" hidden style="position:fixed;inset:0;background:rgba(4,10,20,.6);display:flex;align-items:center;justify-content:center;z-index:50;">

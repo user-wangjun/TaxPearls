@@ -79,6 +79,10 @@ def decorate(db, item):
         item.update({k:v for k,v in dict(row).items() if k != "assignment_id"})
     item["deadline_passed"] = bool(item["deadline_at"] and now() >= datetime.fromisoformat(item["deadline_at"]))
     item["can_submit"] = bool(item["published"] and not item["deadline_passed"])
+    course = db.execute("""SELECT c.id,c.name FROM university_assignment_courses ac
+        JOIN course c ON c.id=ac.course_id JOIN university_organizations o ON o.college=c.college
+        WHERE ac.assignment_id=? AND o.org_id=?""", (item['id'],item['org_id'])).fetchone()
+    item.update(course_id=course['id'] if course else None, course_name=course['name'] if course else None)
     return item
 
 
@@ -156,6 +160,7 @@ class PaperItem(StrictBody):
 
 class PaperBody(StrictBody):
     title: str = Field(min_length=1,max_length=200)
+    course_id: str | None = Field(default=None,min_length=1,max_length=200)
     class_id: str | None = Field(default=None,min_length=1,max_length=64)
     deadline_at: AwareDatetime | None = None
     published: bool = False
@@ -383,6 +388,9 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
                     aid=secrets.token_hex(12)
                     db.execute("INSERT INTO assignments VALUES (?,?,?,?,?,?,?,?,?,?)",(aid,who['org_id'],f"{body.title.strip()} · 第{position}题",question.audit_id,who['id'],None,json.dumps(question.weights,allow_nan=False),question.false_positive_penalty,int(body.published),now().isoformat()))
                     set_assignment_settings(db,aid,who,body.class_id,due,pid,position,question.points)
+                    if body.course_id:
+                        from webapp.university_workspace import bind_assignment_course
+                        bind_assignment_course(db,who,aid,body.course_id,body.class_id)
                 repo._log(db,who,'create_paper','paper',pid,f"cases={len(body.items)};published={body.published}")
             return {'id':pid,'revision':1}
         return checked(create)

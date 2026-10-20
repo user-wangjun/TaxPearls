@@ -14,13 +14,14 @@
 </header>
 <main>
   <section id="app-view" hidden>
-    <section class="card" id="school-membership" aria-label="成员邀请与席位"></section>
+    <div class="card" data-university-view="home" id="staff-workbench"><h2>教学工作台</h2><div id="staff-workbench-body"></div></div>
+    <section data-university-view="students" class="card" id="school-membership" aria-label="成员邀请与席位"></section>
     <div class="toolbar">
       <select id="cert-select"></select>
       <button class="primary" id="new-cert-btn" data-act="new-cert-btn">＋ 新建证书</button>
     </div>
 
-    <div id="pass-form" class="card" hidden>
+    <div data-university-view="settings" id="pass-form" class="card" hidden>
       <h2>修改我的密码</h2>
       <p class="muted" id="staff-password-rule">密码须为 10–128 位，包含大写字母、小写字母、数字、符号中的至少三类；不能使用常见弱口令或包含邮箱 @ 前部分。</p>
       <div class="row">
@@ -33,7 +34,7 @@
       <p class="muted">修改成功后所有登录会话失效，需用新密码重新登录（包括本页）。</p>
     </div>
 
-    <div id="new-cert-form" class="card" hidden>
+    <div data-university-view="content" id="new-cert-form" class="card" hidden>
       <h2>新建证书</h2>
       <div class="row">
         <div><label>证书编码（唯一）</label><input id="nc-code" placeholder="如 cjkj"></div>
@@ -51,7 +52,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>证书信息 <span id="cert-state"></span></h2>
       <div id="cert-form" hidden>
         <div class="row">
@@ -72,7 +73,7 @@
       <p class="muted" id="cert-empty" hidden>请先选择或新建证书。</p>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>考试日期 <button class="small" data-act="show-date-form">＋ 录入日期</button></h2>
       <div id="date-form" class="inline-form" hidden>
         <div class="row">
@@ -86,7 +87,7 @@
       <div id="dates"></div>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>内容版本（题源治理） <button class="small" data-act="show-version-form">＋ 发布新版本</button></h2>
       <p class="muted" style="margin-top:-6px;">题源分两类：规则仿真题（系统生成，明确标注非真题）与真题/回忆题/模拟题（外部题源，须先在下方「题源授权登记」取得书面授权）。同一证书仅一个启用版本，发布新版本会自动退役旧版本，旧作答仍按当时版本回溯；外部题源的授权文号会写入依据留痕。</p>
       <div id="version-form" class="inline-form" hidden>
@@ -109,7 +110,7 @@
       <div id="versions"></div>
     </div>
 
-    <div class="card" id="auth-card">
+    <div class="card" id="auth-card" data-university-view="content">
       <h2>题源授权登记 <button class="small" data-act="refresh-auth">刷新</button></h2>
       <p class="muted" style="margin-top:-6px;">决策三：授权先行、不自行采集。真题/回忆题/模拟题须先登记书面授权（授权方、文号、覆盖题源、有效期）才能发布版本或导入题库；授权文号会自动写入内容版本与题目的依据留痕。撤销只改状态、保留记录，可审计。</p>
       <div id="auth-form" class="inline-form">
@@ -134,7 +135,7 @@
       <div id="authorizations" class="muted">加载中…</div>
     </div>
 
-    <div class="card" id="bank-card">
+    <div class="card" id="bank-card" data-university-view="content">
       <h2>题库导入与审核 <button class="small" data-act="refresh-bank">刷新</button></h2>
       <p class="muted" style="margin-top:-6px;">只接受人工核对过的结构化 JSON，不解析 PDF/Word。逐行校验：合法行入草稿、非法行带原因返回，不中断整批。题目须「提交审核 → 审核通过」后学生才抽得到；答案与解析判分后才开放。导入时自动附带该题源的授权文号留痕。</p>
       <label>批量导入 JSON（数组；每题 source_type / year / stem / options[{key,text}] / answer_keys / explanation，可选 knowledge_point_id、question_no）</label>
@@ -158,7 +159,7 @@
       <div id="bank-questions" class="muted">加载中…</div>
     </div>
 
-    <div class="card" id="outline-card">
+    <div class="card" id="outline-card" data-university-view="content">
       <h2>考纲年度升版 <button class="small" data-act="refresh-outline">刷新</button></h2>
       <p class="muted" style="margin-top:-6px;">新版大纲发布后逐条人工核对，不由系统改写内容：发起后现行知识点全部标记「待核对」，逐条在下方知识点卡片确认/修改/删除；核对期新增知识点记为「新增」且对学生隐藏。全部核对完成后激活，版本号统一切换、删除项停用留痕，知识点 id 不变（作答与覆盖统计连续）。</p>
       <div class="inline-form">
@@ -174,7 +175,7 @@
       <div id="outline-body" class="muted">加载中…</div>
     </div>
 
-    <div class="card" id="trial-card">
+    <div class="card" id="trial-card" data-university-view="content">
       <h2>试用反馈与观察盘面 <button class="small" data-act="refresh-trial">刷新</button></h2>
       <p class="muted" style="margin-top:-6px;">试用学生可在学生页提交缺陷/建议/内容纠错，本人只见自己的记录；教师按院校查看与处理（new → processing → resolved，留痕处理人与时间）。盘面只做聚合，不暴露单个学生的作答内容。</p>
       <div id="trial-stats"></div>
@@ -182,7 +183,7 @@
       <div id="trial-feedback" class="muted">加载中…</div>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>考纲知识点
         <button class="small" data-act="show-kp-form">＋ 新增知识点</button>
         <button class="small" data-act="show-import-form">⇪ 批量导入</button>
@@ -221,12 +222,12 @@
       <div id="kps"></div>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>内容运营统计（按三类标注口径） <button class="small" data-act="refresh-mark-stats">刷新</button></h2>
       <p class="muted" style="margin-top:-6px;">标注是内容层事实，统计范围=证书×标注依据版本；只统计教师维护的标注与题目关联，不含学生个人作答数据。个人易错情况请在学生作答统计中查看，不反向写入公共标注。</p>
       <div id="mark-stats"></div>
     </div>
-    <div class="card" data-legacy-members>
+    <div data-university-view="students" class="card" data-legacy-members>
       <h2>学生管理（考证线名册）
         <button class="small" data-act="show-student-form">＋ 添加学生</button>
         <button class="small" data-act="show-student-import">⇪ 批量导入</button>
@@ -267,12 +268,12 @@
       </div>
       <div id="students" class="muted">加载中…</div>
     </div>
-    <div class="card">
-      <h2>课程管理（FR-U04）
+    <div data-university-view="courses" class="card">
+      <h2>课程管理
         <button class="small" data-act="show-course-form">＋ 新建课程</button>
         <button class="small" data-act="refresh-courses">刷新</button>
       </h2>
-      <p class="muted" style="margin-top:-6px;">课程绑定授课教师与班级（同课可绑多班）；花名册按绑定班级聚合在读学生。停用课程不删数据；课程级作业序列在后续版本接入。</p>
+      <p class="muted" style="margin-top:-6px;">课程基本信息绑定授课教师与学籍班级；课堂任务通过“课程与教学班级”关联后发布。停用课程保留历史数据。</p>
       <div id="course-form" class="inline-form" hidden>
         <div class="row">
           <div><label>课程名称（必填）</label><input id="cf2-name" placeholder="如 税务风险审计实训"></div>
@@ -292,12 +293,12 @@
       </div>
       <div id="courses" class="muted">加载中…</div>
     </div>
-    <div class="card" id="overview-card" hidden>
+    <div data-university-view="home" class="card" id="overview-card" hidden>
       <h2>院校教学概况（管理员） <button class="small" data-act="refresh-overview">刷新</button></h2>
       <div id="overview-body" class="muted">加载中…</div>
     </div>
-    <div class="card">
-      <h2>班级与教师名册
+    <div data-university-view="students" class="card">
+      <h2>学籍班级与教师名册
         <button class="small" data-act="refresh-roster">刷新</button>
         <button class="small" id="teacher-import-btn" data-legacy-members data-act="show-teacher-import" hidden>⇪ 教师批量导入（管理员）</button>
       </h2>
@@ -327,7 +328,7 @@
       <h3 style="margin-top:16px;">班级归属追溯（最近变更）</h3>
       <div id="class-history" class="muted"></div>
     </div>
-    <div class="card">
+    <div data-university-view="organization" class="card">
       <h2>组织架构（院系 / 学期 / 班级实体）</h2>
       <p class="muted" style="margin-top:-6px;">与现有学生名册并存：学生「班级」字段照常聚合，班级实体作为注册表经名称对齐在读人数，层级变更不改写既有数据归属。写操作仅限实训管理员；班级按学期重建只复制实体元数据，学生归属调整仍用上方「整建制迁移」。</p>
       <h3 style="margin-top:12px;">院系</h3>
@@ -368,8 +369,8 @@
 
       <div id="org-quota-history" class="muted" style="margin-top:10px;"></div>
     </div>
-    <div class="card">
-      <h2>判题管理 <span class="muted" style="font-weight:400;">（编程题 · FR-J05～J08）</span></h2>
+    <div data-university-view="judge" class="card">
+      <h2>判题管理 <span class="muted" style="font-weight:400;">（编程题）</span></h2>
       <div class="row">
         <div><label>编程题</label><select id="judge-problem"></select></div>
         <div style="flex:0 0 auto;"><button class="primary small" id="judge-load-subs">加载提交</button></div>
@@ -394,7 +395,7 @@
         <div style="flex:0 0 auto;"><button class="small" id="judge-tasks-refresh" style="margin-bottom:2px;">刷新队列</button></div>
       </div>
       <div id="judge-tasks" class="muted" style="margin-top:8px;">未加载。</div>
-      <p class="muted" style="margin-top:8px;">质量分与判题明细可在提交列表展开；查重结果仅作参考提示，不自动定性抄袭。队列默认关闭（提交即时判题），设 TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1 后启用。</p>
+      <p class="muted" style="margin-top:8px;">质量分与判题明细可在提交列表展开；查重结果仅作教师复核的参考提示，不自动定性抄袭。判题进度与失败原因以提交记录为准。</p>
     </div>
     <div class="error" id="app-error"></div>
   </section>

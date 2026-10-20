@@ -383,6 +383,7 @@ class LoginBody(BaseModel):
     username: str
     password: str
     remember: bool = False
+    college: str | None = Field(default=None, max_length=200)
 
 
 class UserBody(BaseModel):
@@ -457,6 +458,7 @@ class AssignmentBody(BaseModel):
     false_positive_penalty: float = Field(default=5.0, ge=0, le=100,allow_inf_nan=False)
     published: bool = True
     class_id: str | None = Field(default=None,min_length=1,max_length=64)
+    course_id: str | None = Field(default=None,min_length=1,max_length=200)
     deadline_at: AwareDatetime | None = None
 
 
@@ -518,6 +520,13 @@ def _user(session: str | None) -> dict[str, Any]:
     if not user:
         raise HTTPException(status_code=401, detail="请先登录。")
     return user
+
+
+def _teaching_user(session: str | None) -> dict[str, Any]:
+    from webapp.access import teaching_actor
+    user = _user(session)
+    with store.connect() as db:
+        return teaching_actor(db, user)
 
 
 def _allow(user: dict[str, Any], *roles: str) -> None:
@@ -733,7 +742,7 @@ def _result(entry: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html", headers={"Cache-Control":"no-store"})
 
 
 @app.get("/p/{code}")
@@ -866,8 +875,9 @@ def knowledge(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> 
 
 @app.get("/api/status")
 def status(request: Request) -> dict[str, Any]:
-    from webapp.university_members import session_identity
-    return {"needs_setup": not store.has_users(), "user": session_identity(store,request)}
+    from webapp.university_members import resolve_browser_identity
+    user, conflict = resolve_browser_identity(store, request)
+    return {"needs_setup": not store.has_users(), "user": user, "session_conflict": conflict}
 
 
 class GraphQuestion(BaseModel):
@@ -890,8 +900,8 @@ def _graph_for_user(user, audit_id, taxpayer_id=None):
     if entry is not None:
         return {**build_graph([], entry), "schema_version": 1, "view": "frozen_audit_evidence"}
     with store.connect() as db:
-        selected = policy_graph.sync_rules(db, _effective_rules())
-        return policy_graph.graph(db, selected)
+        from webapp.knowledge import public_graph
+        return public_graph(db, _effective_rules())
 
 
 class PolicyBundleBody(BaseModel):
@@ -1135,10 +1145,10 @@ def login(body: LoginBody, request: Request) -> Response:
             store.logout(result[1])
             result=None
         try:
-            legacy=authenticate_legacy(store,body.username,body.password,body.remember) if not result else None
+            legacy=authenticate_legacy(store,body.username,body.password,body.remember,college=body.college) if not result else None
         except ValueError as exc:
             login_guard.record_failure(body.username,ip)
-            return _err(409,str(exc))
+            return JSONResponse(status_code=409, content={"detail":str(exc), "requires_college":True})
         if not result and not legacy:
             count = login_guard.record_failure(body.username, ip)
             store.log(None, "login_failed", "account_hash", login_guard.fingerprint(body.username.strip().lower()),
@@ -1583,9 +1593,9 @@ register_enterprise_materials(app, lambda: store, _user, _allow, RULES_DIR,
                              _save_audit, lambda audit_id, user: _result(_audit_or_404(audit_id, user)))
 
 from webapp.exercises import register as register_exercises
-register_exercises(app, lambda: store, _user, _allow, _audit_or_404, lambda data, enabled: _audit_rules(data,enabled),
+register_exercises(app, lambda: store, _teaching_user, _allow, _audit_or_404, lambda data, enabled: _audit_rules(data,enabled),
                    _save_audit, _trial_payload, COOKIE_NAME)
-classroom.register(app,lambda: store,_user,_allow,_is_synthetic_dataset,COOKIE_NAME)
+classroom.register(app,lambda: store,_teaching_user,_allow,_is_synthetic_dataset,COOKIE_NAME)
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
@@ -1596,6 +1606,8 @@ from webapp.training_portal import register as register_training_portal
 register_training_portal(app, lambda: store, "taxpearls_training_session")
 from webapp import university_members
 university_members.register(app,lambda: store,_user)
+from webapp import university_workspace
+university_workspace.register(app, lambda: store, _effective_rules, ai_config)
 from webapp.training_content import register as register_training_content
 register_training_content(app, lambda: store)
 from webapp.training_graph import register as register_training_graph
@@ -1894,7 +1906,7 @@ def rule_trial(
 @app.post("/api/assignments")
 def create_assignment(body: AssignmentBody,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher")
     entry = _audit_or_404(body.audit_id, user)
     dataset: Dataset = entry["dataset"]
@@ -1912,7 +1924,7 @@ def create_assignment(body: AssignmentBody,
     try:
         assignment_id = store.create_assignment(
             user, body.title.strip(), body.audit_id, body.target_student_id,
-            body.weights, body.false_positive_penalty, body.published,body.class_id,body.deadline_at,
+            body.weights, body.false_positive_penalty, body.published,body.class_id,body.deadline_at,body.course_id,
         )
     except classroom.ClassroomError as exc:
         raise HTTPException(exc.status,str(exc)) from None
@@ -1921,7 +1933,7 @@ def create_assignment(body: AssignmentBody,
 
 @app.get("/api/assignments")
 def assignments(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher", "student")
     return store.list_assignments(user)
 
@@ -1929,7 +1941,7 @@ def assignments(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -
 @app.get("/api/assignments/{assignment_id}")
 def assignment_detail(assignment_id: str,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher", "student")
     assignment = store.get_assignment_for_user(assignment_id,user)
     if not assignment:
@@ -1961,7 +1973,7 @@ def assignment_detail(assignment_id: str,
 @app.post("/api/assignments/{assignment_id}/submit")
 def submit_assignment(assignment_id: str, body: SubmissionBody,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "student")
     assignment = store.get_assignment_for_user(assignment_id,user)
     if not assignment:
@@ -2006,18 +2018,18 @@ def teaching_feedback(assignment_id: str, body: SandboxFeedbackBody,
 @app.put("/api/submissions/{submission_id}/review")
 def review_submission(submission_id: str, body: ReviewBody,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher")
     if store.submission_org(submission_id,user=user) != user["org_id"]:
         raise HTTPException(status_code=404, detail="提交记录不存在。")
-    store.review_submission(submission_id, user["id"], body.adjusted_score, body.feedback.strip())
+    store.review_submission(submission_id, user["id"], body.adjusted_score, body.feedback.strip(), actor=user)
     return {"ok": True}
 
 
 @app.get("/api/submissions")
 def submissions(assignment_id: str | None = None,
                 session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher")
     return store.list_submissions(user, assignment_id)
 

@@ -46,6 +46,7 @@ _passwords = PasswordHasher()
 CST = timezone(timedelta(hours=8))  # 考试与倒计时按中国日历日（无夏令时）
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 login_guard = LoginGuard()
+STUDENT_COOKIE = "taxpearls_training_session"
 
 
 class TrainingPortalError(ValueError):
@@ -4766,6 +4767,14 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
             [r.model_dump() for r in body.rows],
             default_password=body.default_password, created_by=who["id"],
             role=body.role)})
+
+    @app.get("/university-workspace.js")
+    def university_workspace_script() -> FileResponse:
+        return FileResponse(STATIC_DIR / "university-workspace.js", media_type="text/javascript")
+
+    @app.get("/university.css")
+    def university_workspace_styles() -> FileResponse:
+        return FileResponse(STATIC_DIR / "university.css", media_type="text/css")
 
     @app.get("/training-certificates")
     def training_portal_page(request: Request) -> FileResponse:

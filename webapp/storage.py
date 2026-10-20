@@ -1577,7 +1577,7 @@ class Store:
     def create_assignment(self, user: dict[str, Any], title: str, audit_id: str,
                           target_student_id: str | None, weights: dict[str, float],
                           false_positive_penalty: float, published: bool,
-                          class_id: str | None = None, deadline_at=None) -> str:
+                          class_id: str | None = None, deadline_at=None, course_id: str | None = None) -> str:
         assignment_id = secrets.token_hex(12)
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -1602,6 +1602,9 @@ class Store:
                     (class_id,target_student_id),
                 ).fetchone():
                     raise classroom.ClassroomError("指定学生不在所选班级名册中。")
+            if course_id:
+                from webapp.university_workspace import bind_assignment_course
+                bind_assignment_course(db, user, assignment_id, course_id, class_id)
             self._log(db, user, "create_assignment", "assignment", assignment_id, audit_id)
         return assignment_id
 
@@ -1715,10 +1718,15 @@ class Store:
                 return None
             return row["org_id"] if row else None
 
-    def review_submission(self, submission_id: str, teacher_id: str, adjusted_score: float, feedback: str) -> None:
+    def review_submission(self, submission_id: str, teacher_id: str, adjusted_score: float, feedback: str, *, actor=None) -> None:
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            actor = db.execute("SELECT * FROM users WHERE id=? AND role='teacher' AND active=1", (teacher_id,)).fetchone()
+            if actor is None:
+                actor = db.execute("SELECT * FROM users WHERE id=? AND role='teacher' AND active=1", (teacher_id,)).fetchone()
+            elif actor['id'] != teacher_id:
+                raise AccessDenied('复核身份不一致。', 403)
+            if actor:
+                current_actor(db, actor, {'teacher'})
             row = db.execute('SELECT a.* FROM submissions s JOIN assignments a ON a.id=s.assignment_id WHERE s.id=?', (submission_id,)).fetchone()
             if not actor or not row or not classroom.can_access(db, classroom.decorate(db, dict(row)), dict(actor)):
                 raise AccessDenied('提交记录不存在或无权复核。')

@@ -1,5 +1,5 @@
 "use strict";
-const graphKinds={company:["企业","#d49b38"],policy:["政策文件","#9970d2"],clause:["原文条款","#8562b1"],concept:["适用概念","#a16fbd"],condition:["判断条件","#d48453"],exception:["例外情形","#cf6a91"],audit:["审查记录","#5f87c4"],entity:["关联主体","#a16fbd"],relation:["股权/控制关系","#5f87c4"],trade:["关联交易","#d48453"],rule:["核对规则","#4278e8"],metric:["业务指标","#2da99a"],risk:["核对结果","#e77277"],law:["法条依据","#9970d2"],source:["材料来源","#7090ad"]};
+const graphKinds={knowledge_point:["学习知识点","#41968b"],certificate:["教学证书","#5584b6"],company:["企业","#d49b38"],policy:["政策文件","#9970d2"],clause:["原文条款","#8562b1"],concept:["适用概念","#a16fbd"],condition:["判断条件","#d48453"],exception:["例外情形","#cf6a91"],audit:["审查记录","#5f87c4"],entity:["关联主体","#a16fbd"],relation:["股权/控制关系","#5f87c4"],trade:["关联交易","#d48453"],rule:["核对规则","#4278e8"],metric:["业务指标","#2da99a"],risk:["核对结果","#e77277"],law:["法条依据","#9970d2"],source:["材料来源","#7090ad"]};
 let graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphTransform={x:0,y:0,k:1},graphFocused=false,graphRequest=0,graphBusy=false;
 const graphCanvas=$("graphCanvas");
 const graphRuleLevels={national:"国家级规则",provincial:"省级规则",municipal:"市级规则",unspecified:"未标注级别"};
@@ -16,12 +16,12 @@ function clearGraph(message=""){
   $("graphAIStatus").textContent="尚未载入证据";$("graphSend").disabled=true;$("graphQuestion").value="";updateAIContext();
 }
 function invalidateGraph(){graphRequest++;clearGraph();if(typeof window!=="undefined")window.KnowledgeRetrieval?.reset();}
-async function loadKnowledge(){
+async function loadKnowledge({throwOnError=false}={}){
   const ticket=++graphRequest,owner=currentUser?.id,select=$("graphScope"),previous=select.value,previousAudit=$("graphAudit").value;
   clearGraph("正在载入可访问的企业…");select.disabled=true;
   graphScopes=new Map();select.replaceChildren();option(select,"","公共");updateGraphAudits();
   try{
-    if(["org_admin","accountant","teacher"].includes(currentUser?.role)){
+    if(currentUser?.org_type!=="university"&&["org_admin","accountant","teacher"].includes(currentUser?.role)){
       const companies=await api("/api/knowledge/enterprises");if(!graphCurrent(ticket,owner))return;
       for(const company of companies)graphScopes.set(company.taxpayer_id,company);
       const names=new Map();for(const scope of graphScopes.values())names.set(scope.name,(names.get(scope.name)||0)+1);
@@ -29,9 +29,9 @@ async function loadKnowledge(){
       if(graphScopes.has(previous))select.value=previous;
       updateGraphAudits(previousAudit);
     }
-  }catch(e){if(graphCurrent(ticket,owner))$("graphCount").textContent=e.message;return;}
+  }catch(e){if(graphCurrent(ticket,owner)){$("graphCount").textContent=e.message;if(throwOnError)throw e;}return;}
   finally{if(graphCurrent(ticket,owner))select.disabled=false;}
-  if(graphCurrent(ticket,owner)){await loadGraph();if(typeof window!=="undefined"&&window.KnowledgeRetrieval&&currentUser?.id===owner&&$("knowledgePanel").classList.contains("active"))window.KnowledgeRetrieval.activate();}
+  if(graphCurrent(ticket,owner)){await loadGraph({throwOnError});if(typeof window!=="undefined"&&window.KnowledgeRetrieval&&currentUser?.org_type!=="university"&&currentUser?.id===owner&&$("knowledgePanel").classList.contains("active"))window.KnowledgeRetrieval.activate();}
 }
 function updateGraphAudits(previous=""){
   const scope=graphScopes.get($("graphScope").value),select=$("graphAudit");
@@ -46,18 +46,19 @@ function updateGraphAudits(previous=""){
   });
   if(scope.audits.some(row=>row.id===previous))select.value=previous;
 }
-async function loadGraph(){
+async function loadGraph({throwOnError=false}={}){
   const ticket=++graphRequest,owner=currentUser?.id;clearGraph("正在载入关系网络…");
   try{
     const params=new URLSearchParams();if($("graphScope").value)params.set("taxpayer_id",$("graphScope").value);if($("graphAudit").value)params.set("audit_id",$("graphAudit").value);
-    const data=await api("/api/knowledge/graph"+(params.size?"?"+params:""));if(!graphCurrent(ticket,owner))return;
+    const data=await api(currentUser?.org_type==="university"?"/api/training/knowledge/graph":"/api/knowledge/graph"+(params.size?"?"+params:""));if(!graphCurrent(ticket,owner))return;
+    $("graphLegend").replaceChildren();for(const [kind,[label,color]]of Object.entries(graphKinds)){if(!data.nodes.some(n=>n.kind===kind))continue;const item=el("span",null,label);item.style.setProperty("--node-color",color);$("graphLegend").append(item);}
     graphData=data;graphPositions=new Map();graphFocused=false;graphTransform={x:0,y:0,k:1};
     if(data.boundary){$("graphCoverage").hidden=false;$("graphCoverage").textContent=data.boundary;}
     if(data.related_paths?.truncated){$("graphCoverage").hidden=false;$("graphCoverage").textContent=`关联方网络仅展示前 ${data.related_paths.shown} 条已复核关系候选路径，并非全部交易；G-001 的冻结结论仍基于全部路径，命中证据卡最多展示前 20 条。请结合原始台账核对其余路径。`;}
     $("graphAIStatus").textContent=data.ai.configured?"已配置模型 · "+data.ai.model:"AI 尚未连接 · 填写项目模型配置后启用";
     $("graphSend").disabled=!data.ai.configured||graphBusy;
     updateGraphRegions();filterGraph(true);focusGraph();if(data.empty)$("graphCount").textContent="该企业尚无审查记录，完成材料审查后可查看企业图谱。";
-  }catch(e){if(graphCurrent(ticket,owner)){clearGraph(e.message);}}
+  }catch(e){if(graphCurrent(ticket,owner)){clearGraph(e.message);if(throwOnError)throw e;}}
 }
 $("graphScope").addEventListener("change",()=>{updateGraphAudits();loadGraph();});
 $("graphAudit").addEventListener("change",loadGraph);
@@ -74,7 +75,8 @@ function limitGraphView(){
   graphMatchedCount=graphVisible.size;
   if(graphData.taxpayer_id||graphVisible.size<=240)return;
   const ordered=graphData.nodes.filter(n=>graphVisible.has(n.id));
-  ordered.sort((a,b)=>(a.id===graphSelected?-1:b.id===graphSelected?1:0));
+  const importance=n=>({certificate:0,knowledge_point:1,rule:2,policy:3,metric:4}[n.kind]??5);
+  ordered.sort((a,b)=>(a.id===graphSelected?-1:b.id===graphSelected?1:graphData.view==="public_teaching"?importance(a)-importance(b):0));
   graphVisible=new Set(ordered.slice(0,240).map(n=>n.id));
 }
 function filterGraph(historyFocus=false){
@@ -85,7 +87,7 @@ function filterGraph(historyFocus=false){
   let seeds=candidates.filter(n=>(!query||JSON.stringify(n).toLowerCase().includes(query))&&(!category||n.category===category)&&(!status||n.status===status));
   if(category&&status){const ruleIds=new Set(candidates.filter(n=>n.category===category).map(n=>n.id));seeds=candidates.filter(n=>n.status===status&&(n.category===category||ruleIds.has(n.rule_id))&&(!query||JSON.stringify(n).toLowerCase().includes(query)));}
   graphVisible=neighbors(new Set(seeds.map(n=>n.id)));
-  if(!graphSelected||!graphVisible.has(graphSelected))graphSelected=(graphData.taxpayer_id?seeds.find(n=>n.kind==="risk"&&n.status==="hit")||seeds.find(n=>n.kind==="risk"):seeds.find(n=>n.kind==="rule"||n.kind==="risk"))?.id||seeds[0]?.id||null;
+  if(!graphSelected||!graphVisible.has(graphSelected))graphSelected=(graphData.view==="public_teaching"?seeds.find(n=>n.kind==="knowledge_point"):graphData.taxpayer_id?seeds.find(n=>n.kind==="risk"&&n.status==="hit")||seeds.find(n=>n.kind==="risk"):seeds.find(n=>n.kind==="rule"||n.kind==="risk"))?.id||seeds[0]?.id||null;
   if(historyFocus&&graphData.taxpayer_id&&!query&&!category&&!status&&!level){graphFocused=true;graphVisible=neighbors(new Set(graphSelected?[graphSelected]:[]));}
   limitGraphView();
   layoutGraph();drawGraph();renderNode();
@@ -163,7 +165,7 @@ function renderNode(){
   const badge=el("span","node-kind",graphKinds[n.kind][0]);badge.style.color=graphKinds[n.kind][1];box.append(badge,el("h3",null,n.label));
   if(["rule","risk"].includes(n.kind)){box.append(el("p","ev-title","规则级别"),el("p","kv",graphRuleLevels[n.rule_level||"unspecified"]));if(n.region)box.append(el("p","ev-title","适用地域"),el("p","kv",n.region));}
   for(const [key,label]of [["taxpayer_id","纳税人识别号"],["company_names","企业名称记录"],["audit_count","累计审查次数"],["audit_period","审查期间"],["audited_at","审查时间"],["audit_id","审查编号"],["rule_code","规则编号"],["document_no","文号"],["issuer","发布机关"],["version","版本"],["unit","指标单位"],["extraction_status","原文复核"],["reviewed_by","审核人"],["reviewed_at","审核时间"],["review_status","复核状态"],["validity_status","政策效力"],["condition_source","条件来源"],["effective_from","生效日期"],["effective_to","终止日期"],["valid_from","规则起始日期"],["valid_to","规则终止日期"],["source_schema","指标来源表"],["source_field","指标来源字段"],["period_basis","期间口径"],["source_location","原文位置"],["notes","说明"],["value","指标值"],["period","所属期间"],["category","规则类型"],["tax_type","税种"],["status","核对结果"],["conclusion","结论"],["calculation","计算过程"],["reason","未执行原因"],["scope","适用范围"],["source","材料来源"],["requirement","取数要求"],["suggestion","排查建议"]]){
-    if(n[key]===undefined||n[key]==="")continue;let value=n[key];if(key==="review_status")value=({candidate:"候选，尚未审核",approved:"已审核",unverified:"待核实",source_recorded:"来源已记录",legacy_unverified:"历史执行版本，政策关联待核实",rejected:"已驳回",retired:"已退役"})[value]||value;if(key==="validity_status")value=({unverified:"效力待核实",in_force:"有效",partially_modified:"部分修订",repealed:"已废止",expired:"已失效"})[value]||value;if(key==="extraction_status")value=({pending:"待解析",parsed:"已解析，待复核",needs_review:"待人工核对",verified:"原文已复核"})[value]||value;if(key==="condition_source")value=({pending:"来源待核实",statutory:"法定条件",internal_screening:"内部筛查参数"})[value]||value;if(key==="status")value={hit:"风险命中",pass:"检查通过",skipped:"未执行"}[value];box.append(el("p","ev-title",label),el("p","kv",value===null?"未提供":value));
+    if(n[key]===undefined||n[key]==="")continue;let value=n[key];if(key==="review_status")value=({teaching_reference:"教学参考，按来源核对",candidate:"候选，尚未审核",approved:"已审核",unverified:"待核实",source_recorded:"来源已记录",legacy_unverified:"历史执行版本，政策关联待核实",rejected:"已驳回",retired:"已退役"})[value]||value;if(key==="validity_status")value=({unverified:"效力待核实",in_force:"有效",partially_modified:"部分修订",repealed:"已废止",expired:"已失效"})[value]||value;if(key==="extraction_status")value=({pending:"待解析",parsed:"已解析，待复核",needs_review:"待人工核对",verified:"原文已复核"})[value]||value;if(key==="condition_source")value=({pending:"来源待核实",statutory:"法定条件",internal_screening:"内部筛查参数"})[value]||value;if(key==="status")value={hit:"风险命中",pass:"检查通过",skipped:"未执行"}[value];box.append(el("p","ev-title",label),el("p","kv",value===null?"未提供":value));
   }
   if(n.audit_id||graphData.audit_id)box.append(action("打开审计证据",()=>openAudit(n.audit_id||graphData.audit_id)));
   for(const url of n.references||[]){if(!/^https?:\/\//i.test(url))continue;const a=el("a","kv","官方来源 ↗");a.href=url;a.target="_blank";a.rel="noopener noreferrer";box.append(a,el("br"));}
@@ -191,7 +193,7 @@ document.querySelectorAll("[data-question]").forEach(b=>b.addEventListener("clic
 $("graphQuestionForm").addEventListener("submit",async e=>{
   e.preventDefault();if(graphBusy)return;if(!graphSelected)return;const question=$("graphQuestion").value.trim();if(!question)return;
   const node=graphSelected,audit=graphData.audit_id,taxpayer=graphData.taxpayer_id,version=graphRequest,owner=currentUser?.id,box=$("graphMessages"),turn=el("div","ai-answer");turn.append(el("p","ai-question",question),el("p","muted","正在检索关联证据并生成解释…"));box.append(turn);graphBusy=true;$("graphSend").disabled=true;
-  try{const result=await api("/api/knowledge/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:node,audit_id:audit,taxpayer_id:taxpayer,question})});if(!graphCurrent(version,owner))return;turn.replaceChildren(el("p","ai-question",question),el("p","ai-text",result.answer),el("p","muted","证据引用 · 点击定位"));for(const cited of result.citations)turn.append(action(cited.label,()=>{graphSelected=cited.id;focusGraph();renderNode();}));if($("graphQuestion").value.trim()===question)$("graphQuestion").value="";
+  try{const result=await api(currentUser?.org_type==="university"?"/api/training/knowledge/ask":"/api/knowledge/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(currentUser?.org_type==="university"?{node_id:node,question}:{node_id:node,audit_id:audit,taxpayer_id:taxpayer,question})});if(!graphCurrent(version,owner))return;turn.replaceChildren(el("p","ai-question",question),el("p","ai-text",result.answer),el("p","muted","证据引用 · 点击定位"));for(const cited of result.citations)turn.append(action(cited.label,()=>{graphSelected=cited.id;focusGraph();renderNode();}));if($("graphQuestion").value.trim()===question)$("graphQuestion").value="";
   }catch(err){if(graphCurrent(version,owner))turn.replaceChildren(el("p","ai-question",question),el("p","ai-text",err.message));}finally{graphBusy=false;$("graphSend").disabled=!graphData.ai?.configured;}
 });
 

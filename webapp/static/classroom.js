@@ -110,7 +110,7 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
       const title = $("paperTitle").value.trim(), scope = $("paperClass").value;
       if (!title || !draft.length) throw new Error("请填写试卷标题并至少添加一个案例。");
       if (scope === "__choose__") throw new Error("请明确选择发布班级或全机构学生。");
-      const body = {title, class_id: scope || null, deadline_at: deadlineInput($("paperDeadline")), published,
+      const body = {title, class_id: scope || null, course_id: $("paperCourse")?.value || null, deadline_at: deadlineInput($("paperDeadline")), published,
         items: draft.map(({label, ...item}) => item)};
       await api("/api/papers", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
       if (getUser()?.id !== uid) return;
