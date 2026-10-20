@@ -329,6 +329,61 @@ class TrainingSourceAuthTests(unittest.TestCase):
                               f"{self.cert}/source-authorizations")
         self.assertEqual(res.status_code, 401)
 
+    # ---- 作答口径与抽题公平性 -----------------------------------------------
+
+    def test_empty_selection_is_not_scored_as_wrong(self):
+        """空提交不是答错：拒绝判分并提示走「跳过」，避免悄悄记 0 分拉低正确率。"""
+        self._approve_one()
+        self._student_login()
+        attempt = self._start_bank().json()["attempt"]
+        empty = self.client.post(
+            f"/api/training/my/practice/{attempt['id']}/submit", json={"selected_keys": []})
+        self.assertEqual(empty.status_code, 422, empty.text)
+        # 空提交不消耗本次作答：状态仍为 open，改选后可正常判分
+        detail = self.client.get(f"/api/training/my/practice/{attempt['id']}").json()["attempt"]
+        self.assertEqual(detail["status"], "open")
+        ok = self.client.post(
+            f"/api/training/my/practice/{attempt['id']}/submit", json={"selected_keys": ["A"]})
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertTrue(ok.json()["attempt"]["result"]["perfect"])
+
+    def test_draw_prefers_unseen_questions(self):
+        """抽题优先未做过的题：同题不重复抽，整库做完后才允许重复练。"""
+        self._staff_login()
+        self._create_auth(question_types=["real", "recall", "mock"])
+        res = self._import([_question(knowledge_point_id=self.kp, question_no="一、1"),
+                            _question(knowledge_point_id=self.kp, question_no="一、2")])
+        self.assertEqual(res.json()["imported"], 2, res.text)
+        ids = [r["id"] for r in res.json()["results"]]
+        for qid in ids:
+            self.client.post(f"/api/training/staff/bank-questions/{qid}/submit")
+            self.client.post(f"/api/training/staff/bank-questions/{qid}/review",
+                             json={"decision": "approve"})
+        self._student_login()
+        first = self._start_bank().json()["attempt"]
+        self.client.post(f"/api/training/my/practice/{first['id']}/submit",
+                         json={"selected_keys": ["A"]})
+        second = self._start_bank().json()["attempt"]
+        self.assertNotEqual(first["bank_question_id"], second["bank_question_id"],
+                            "两题都没做过时不应重复抽同一题")
+        self.client.post(f"/api/training/my/practice/{second['id']}/submit",
+                         json={"selected_keys": ["A"]})
+        # 两题都做过：仍可继续练（不因"没有新题"直接拒绝）
+        third = self._start_bank()
+        self.assertEqual(third.status_code, 200, third.text)
+        self.assertIn(third.json()["attempt"]["bank_question_id"], ids)
+
+    def test_import_rejects_unreasonable_year(self):
+        """考试年度须落在 1992~明年：脏年份会污染题库与年度统计。"""
+        self._staff_login()
+        self._create_auth(question_types=["real", "recall", "mock"])
+        res = self._import([_question(year=0), _question(year=9999),
+                            _question(year=2026, knowledge_point_id=self.kp)])
+        payload = res.json()
+        self.assertEqual(payload["imported"], 1, res.text)
+        self.assertEqual([r["line"] for r in payload["results"] if not r["ok"]], [1, 2])
+        self.assertIn("考试年度不合法", payload["results"][0]["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

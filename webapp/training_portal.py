@@ -2756,7 +2756,15 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
                 if kp_id:
                     clauses.append("knowledge_point_id=?")
                     params.append(kp_id)
-                pool = db.execute(
+                # 抽题优先未做过的题：同一学生已判分的题不再重复抽（题库题数量少于
+                # 练习次数时不至于反复刷同几道）；整库都做过之后才允许重复练，
+                # 避免"没题可练"与"永远抽同一题"两个极端。
+                fresh = db.execute(
+                    f"SELECT id FROM training_bank_question WHERE {' AND '.join(clauses)}"
+                    " AND id NOT IN (SELECT bank_question_id FROM training_self_practice_attempts"
+                    " WHERE student_id=? AND bank_question_id IS NOT NULL AND status='scored')",
+                    [*params, student_id]).fetchall()
+                pool = fresh or db.execute(
                     f"SELECT id FROM training_bank_question WHERE {' AND '.join(clauses)}",
                     params).fetchall()
                 if not pool:
@@ -2917,6 +2925,10 @@ def submit_practice(store, student_id: str, attempt_id: str, selected: list[str]
             raise TrainingPortalError("本题已判分，重复提交不重复计数。", 409)
         chosen = sorted({str(k).strip().upper() for k in (selected_keys if selected_keys is not None else selected)
                          if isinstance(k, str) and k.strip()})
+        if not chosen:
+            # 与仿真题口径一致：空提交不是"答错"，不能悄悄记 0 分拉低正确率；
+            # 要标记未作答请走「跳过」（skipped_at），两种口径分开统计。
+            raise TrainingPortalError("请至少选择一个选项；如需标记未作答，请用「跳过本题」。")
         with store.connect() as db:
             from webapp.training_source_auth import bank_question_for_attempt
             question = bank_question_for_attempt(db, row["bank_question_id"])

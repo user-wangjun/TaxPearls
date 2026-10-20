@@ -190,6 +190,11 @@ def _normalize_question(store, cert_id: str, item: dict[str, Any], *, default_so
         year = int(item.get("year"))
     except (TypeError, ValueError):
         raise _portal_error("考试年度必须是整数。") from None
+    # 年度口径：初级会计 1992 年开考，上限放宽到明年（新版大纲提前导入）。
+    # 不设范围会让 0 / 9999 这类脏年份混进题库与知识点年度统计。
+    latest = _today_cst().year + 1
+    if not 1992 <= year <= latest:
+        raise _portal_error(f"考试年度不合法：{year}（应在 1992~{latest} 之间）。")
     stem = str(item.get("stem", "")).strip()
     if not stem:
         raise _portal_error("题干不能为空。")
