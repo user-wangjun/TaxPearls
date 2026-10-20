@@ -138,6 +138,8 @@ def relations_payload(db, kp_id: str) -> dict[str, list[dict[str, Any]]]:
         "SELECT * FROM knowledge_point_relation WHERE from_kp_id=? OR to_kp_id=?"
         " ORDER BY created_at", (kp_id, kp_id)).fetchall()
     for r in rows:
+        if r['relation_type'] == 'prerequisite' and r['from_kp_id'] != kp_id:
+            continue
         other_id = r["to_kp_id"] if r["from_kp_id"] == kp_id else r["from_kp_id"]
         key = (r["relation_type"], other_id)
         if other_id == kp_id or key in seen:
@@ -145,7 +147,9 @@ def relations_payload(db, kp_id: str) -> dict[str, list[dict[str, Any]]]:
         seen.add(key)
         target = brief(other_id)
         if target:
-            out[r["relation_type"]].append(target | {"relation_id": r["id"]})
+            out[r["relation_type"]].append(target | {
+                "relation_id": r["id"], "basis_ref": r['basis_ref'],
+                "basis_version": r['basis_version']})
     return out
 
 

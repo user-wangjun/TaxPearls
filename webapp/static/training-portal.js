@@ -228,11 +228,18 @@ function renderKpRows() {
       const sources = r.sources.map((s) => {
         const title = `${s.title} · ${s.clause_label}`;
         const link = /^https:\/\//.test(s.source_url || "")
-          ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>` : esc(title);
-        return `<li>${link}（${s.validity_status === "unverified" || s.extraction_status !== "verified" ? "待适用复核" : "来源已复核，适用范围另核"}）</li>`;
+          ? `<a href="${esc(s.source_url)}" target="_blank" rel="noopener noreferrer" style="color:var(--accent);">${esc(title)}</a>` : esc(title);
+        const validity = s.current_validity_status || s.validity_status;
+        const extraction = s.current_extraction_status || s.extraction_status;
+        return `<li>${link}（${validity !== "in_force" || extraction !== "verified" ? "待适用复核" : "来源已复核，适用范围另核"}）
+          <div class="muted">地区：${esc(s.region_code || "未注明")} · 有效期：${esc(s.effective_from || "待核对")} 至 ${esc(s.effective_to || "终止日期未注明")}</div>
+          ${s.content ? `<details><summary>查看条款原文${s.snapshot_status === "published" ? "（教学版本留存）" : ""}</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere;">${esc(s.content)}</div>
+            ${s.source_location ? `<div class="muted">原文位置：${esc(s.source_location)}</div>` : ""}</details>` : ""}</li>`;
       }).join("");
       return `<div class="detail"><strong>${esc(r.rule_code)} · v${esc(r.rule_version)}</strong>
+        <div class="muted">规则仿真参考；政策适用仍须复核。</div>
         <div class="muted">${esc(r.threshold_basis)}</div>
+        ${r.inputs ? `<details><summary>查看取数口径</summary><ul>${Object.entries(r.inputs).map(([name, meaning]) => `<li>${esc(name)}：${esc(meaning)}</li>`).join("")}</ul></details>` : ""}
         ${sources ? `<ul>${sources}</ul>` : `<p class="muted">尚未关联原文依据，待完善；不据此确认政策适用。</p>`}</div>`;
     }).join("");
     return `<div class="item"><div class="item-head">
@@ -242,6 +249,8 @@ function renderKpRows() {
       </div>
       <div class="muted">已练 ${k.attempts} 次 · 满分 ${k.perfect} 次</div>
     </div>${k.subject ? `<div class="muted">${esc(k.subject)} · ${esc(k.outline_version || "未标注内容版本")}</div>` : ""}
+    ${k.content_version ? `<div class="muted">教学版本：${esc(k.content_version.label)}</div>` : ""}
+    ${k.knowledge_update?.pending ? `<p class="muted">公共知识已有更新，练习仍按当前教学版本进行，等待教师核对发布。</p>` : ""}
     ${relChips ? `<div style="margin-top:4px;">${relChips}</div>` : ""}
     ${knowledge ? `<details><summary>规则与政策依据</summary>${knowledge}</details>` : ""}</div>`;
   }).join("");

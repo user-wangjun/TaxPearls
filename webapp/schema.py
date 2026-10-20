@@ -534,6 +534,8 @@ def initialize(store) -> None:
         content_columns = {row['name'] for row in db.execute('PRAGMA table_info(training_content_version)')}
         if 'rules_snapshot_json' not in content_columns:
             db.execute("ALTER TABLE training_content_version ADD COLUMN rules_snapshot_json TEXT")
+        if 'knowledge_snapshot_json' not in content_columns:
+            db.execute("ALTER TABLE training_content_version ADD COLUMN knowledge_snapshot_json TEXT")
         attempt_columns = {row["name"] for row in db.execute(
             "PRAGMA table_info(training_self_practice_attempts)")}
         if "content_version_id" not in attempt_columns:

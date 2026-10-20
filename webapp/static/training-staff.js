@@ -372,6 +372,9 @@ function renderVersions() {
         ${v.status === "active" ? `<button class="small danger" data-act="retire-version" data-id="${esc(v.id)}">退役</button>` : ""}
       </div>
     </div>
+    ${v.knowledge_update?.pending ? `<p class="notice">${esc(v.knowledge_update.notice)}
+      ${v.knowledge_update.changed_rule_ids.length ? `变更规则：${esc(v.knowledge_update.changed_rule_ids.join("、"))}。` : ""}
+      请使用上方“发布新版本”表单采用更新。</p>` : ""}
     ${v.source_ref ? `<div class="muted">依据：${esc(v.source_ref)}</div>` : ""}
     ${v.note ? `<div class="muted">备注：${esc(v.note)}</div>` : ""}
   </div>`).join("");
