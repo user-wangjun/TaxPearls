@@ -130,41 +130,70 @@ from src.snapshots import serialize_dataset, deserialize_dataset, serialize_find
 
 
 class _WriteGuard:
-    """连接代理：把 BEGIN IMMEDIATE 事务纳入 Store 级写锁。
+    """连接代理：把写事务纳入 Store 级写锁。
 
     Store 的写方法外层已有 ``with self._lock``，但 material_jobs、code_judge_queue
     等模块级函数直接 ``store.connect()`` 后写库，不经过那层锁；两个写事务并发时
-    SQLite 会以 ``database is locked``（10s 超时）报错。这里在语句入口识别
-    BEGIN IMMEDIATE 并获取同一把可重入锁，连接关闭时统一释放，从而让全部写事务
-    串行、读事务仍可并发（否则后台查询线程会与持连接的主线程死锁）。
+    SQLite 会以 ``database is locked``（10s 超时）报错。这里按两种粒度取同一把
+    可重入锁，让写事务串行、读仍可并发（全程持锁会让持连接的主线程等后台线程、
+    后台线程等锁，回到 ``test_engineering`` 探针超时那个死锁）。
 
-    只识别事务起始语句，不拦截普通读写；``with db:`` 事务上下文按原样转发。
+    - ``BEGIN IMMEDIATE``：事务级锁，一直持有到连接关闭（``release()``）。
+    - 事务外的裸写（``INSERT/UPDATE/DELETE/...``）：单语句级锁，执行完立即释放。
+      sqlite3 对这些语句隐式开事务，若不取锁就会与并发写撞 ``database is locked``
+      （``material_jobs.ai_slot`` 收尾的 ``DELETE FROM material_ai_slots`` 即此）。
+
+    ``BEGIN``/``BEGIN DEFERRED`` 不取锁：读事务持锁到关闭同样会造成上述死锁，
+    其升级为写时的 ``SQLITE_BUSY`` 由 sqlite3 的 10s 超时兜底。
+    ``with db:`` 事务上下文按原样转发。
     """
 
     __slots__ = ("_db", "_lock", "_acquired")
+
+    # 无显式事务时 sqlite3 会自动开事务的语句，需按单语句粒度取锁。
+    _IMPLICIT_WRITE = frozenset({
+        "INSERT", "UPDATE", "DELETE", "REPLACE",
+        "CREATE", "DROP", "ALTER", "VACUUM", "REINDEX",
+    })
 
     def __init__(self, db, lock):
         self._db = db
         self._lock = lock
         self._acquired = 0
 
-    def _acquire_for(self, sql) -> None:
-        head = str(sql).lstrip()[:32].upper()
-        if head.startswith("BEGIN IMMEDIATE"):
+    @staticmethod
+    def _head(sql) -> str:
+        return str(sql).lstrip()[:32].upper()
+
+    def _acquire_transaction(self, sql) -> None:
+        if self._head(sql).startswith("BEGIN IMMEDIATE"):
             self._lock.acquire()
             self._acquired += 1
 
+    def _implicit_write(self, sql) -> bool:
+        """事务外的裸写语句：需要单语句级锁。"""
+        if self._db.in_transaction:
+            return False
+        return self._head(sql).split(None, 1)[0] in self._IMPLICIT_WRITE
+
     def execute(self, sql, *params):
-        self._acquire_for(sql)
+        self._acquire_transaction(sql)
+        if self._implicit_write(sql):
+            with self._lock:
+                return self._db.execute(sql, *params)
         return self._db.execute(sql, *params)
 
     def executemany(self, sql, params):
-        self._acquire_for(sql)
+        self._acquire_transaction(sql)
+        if self._implicit_write(sql):
+            with self._lock:
+                return self._db.executemany(sql, params)
         return self._db.executemany(sql, params)
 
     def executescript(self, sql):
-        self._acquire_for(sql)
-        return self._db.executescript(sql)
+        self._acquire_transaction(sql)
+        with self._lock:
+            return self._db.executescript(sql)
 
     def __enter__(self):
         self._db.__enter__()
