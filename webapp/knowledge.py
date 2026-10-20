@@ -6,6 +6,7 @@ import json
 import re
 from src.ai_transport import chat_content, TransportError
 from itertools import islice
+from contextvars import ContextVar
 
 from fastapi import HTTPException
 from src import related_graph
@@ -112,20 +113,24 @@ def build_graph(rules, entry=None):
             "audit_id": entry["id"] if entry else None, "related_paths": related_paths}
 
 
+SELECTED_SETTINGS = ContextVar('knowledge_selected_settings', default=None)
+
+
 def ai_config():
     settings = ai_keys.apply(AISettings.from_env(), usage='knowledge')
     return (settings.base_url if not settings.problem() else ""), settings.effective_model, settings.api_key
 
 
 def _chat_json(system_prompt, user_payload, failure_message, *, usage='knowledge'):
-    settings = ai_keys.apply(AISettings.from_env(), usage=usage)
+    settings = SELECTED_SETTINGS.get() or ai_keys.apply(AISettings.from_env(), usage=usage)
     if settings.problem():
         raise HTTPException(503, "AI 尚未连接：请检查项目模型配置。")
     try:
         content = chat_content(settings, [
             {"role":"system", "content":system_prompt},
             {"role":"user", "content":json.dumps(user_payload, ensure_ascii=False)},
-        ], min(settings.timeout, 60), temperature=0.2, max_tokens=min(settings.max_tokens, 2048))
+        ], min(settings.timeout, 60), temperature=0.2,
+           max_tokens=settings.max_tokens if SELECTED_SETTINGS.get() is not None else min(settings.max_tokens, 2048))
         if content.startswith("```"):
             content = content.split("\n", 1)[1].rsplit("```", 1)[0]
         answer = json.loads(content)
@@ -133,6 +138,8 @@ def _chat_json(system_prompt, user_payload, failure_message, *, usage='knowledge
             raise ValueError("Invalid answer schema")
         return answer, settings.effective_model
     except TransportError as exc:
+        if exc.kind == 'incomplete':
+            raise HTTPException(502, 'AI 输出未完整结束，可能达到输出上限；已停止本批，请调整输出容量或缩小批次后重试。') from None
         if exc.kind == "keys_unavailable" or (exc.kind == "http" and exc.status in {401, 402}):
             raise HTTPException(502, "AI 密钥暂不可用（密钥无效或余额不足）；请检查主用及备用密钥和余额。备用列表中的失败密钥五分钟后可重试，重启服务可立即重试。") from None
         raise HTTPException(502, failure_message) from None

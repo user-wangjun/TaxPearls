@@ -1,3 +1,7 @@
+"use strict";
+window.createTrainingStaff = function(document = window.document, {embedded=false} = {}) {
+let disposed=false;const requests=new AbortController();
+/* controller body */
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
@@ -10,18 +14,22 @@ function esc(value) {
 }
 
 async function api(path, options = {}) {
+  if(disposed)throw new DOMException("视图已关闭","AbortError");
   const form = options.form instanceof FormData ? options.form : null;
   const res = await fetch(path, {
     headers: form ? {} : { "Content-Type": "application/json" },
     ...options,
+    signal:requests.signal,
     body: form ? form : (options.body ? JSON.stringify(options.body) : undefined),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `请求失败（${res.status}）`);
+  if(disposed)throw new DOMException("视图已关闭","AbortError");
+  if (!res.ok) {const error=new Error(data.detail || `请求失败（${res.status}）`);error.status=res.status;throw error;}
   return data;
 }
 
 function flash(message, isError = false) {
+  if(disposed)return;
   const box = document.getElementById(isError ? "app-error" : "app-error");
   box.textContent = message || "";
   if (message) setTimeout(() => { if (box.textContent === message) box.textContent = ""; }, 5000);
@@ -380,7 +388,9 @@ function renderAll() {
 
 /* ---------- 数据 ---------- */
 
+let membershipUI=null;
 async function load() {
+  if(!embedded&&!membershipUI&&state.staff){const id=state.staff.id;membershipUI=TPMemberLinks.school(document.getElementById("school-membership"),{request:api,valid:()=>state.staff?.id===id,afterChange:async()=>{await loadStudents();}});}
   const data = await api("/api/training/staff/certificates?include_inactive=true");
   state.certificates = data.certificates;
   if (!state.certificates.find((c) => c.id === state.currentId)) {
@@ -513,12 +523,7 @@ function renderOrg() {
   if (quota) {
     document.getElementById("org-quota").innerHTML =
       `<p>教师 <strong>${quota.teachers_used}</strong>/${quota.teacher_quota} · 学生 <strong>${quota.students_used}</strong>/${quota.student_quota}${quota.configured ? "" : "（默认档，未单独配置）"}</p>`;
-    const isAdminNow = isAdmin;
-    document.getElementById("org-quota-form").hidden = !isAdminNow;
-    if (isAdminNow) {
-      document.getElementById("oq-teacher").value = quota.teacher_quota;
-      document.getElementById("oq-student").value = quota.student_quota;
-    }
+
     const hist = quota.history || [];
     document.getElementById("org-quota-history").innerHTML = hist.length
       ? `<h3 style="margin-top:12px;">调整留痕（最近 ${hist.length} 条）</h3>` + hist.map((h) =>
@@ -678,33 +683,9 @@ async function loadOverview() {
 
 /* ---------- 事件 ---------- */
 
-document.getElementById("login-btn").addEventListener("click", async () => {
-  const box = document.getElementById("login-error");
-  box.textContent = "";
-  try {
-    const data = await api("/api/training/staff/auth/login", {
-      method: "POST",
-      body: {
-        username: document.getElementById("username").value.trim(),
-        password: document.getElementById("password").value,
-        remember: document.getElementById("remember").checked,
-      },
-    });
-    state.staff = data.staff;
-    showApp(true);
-    await load();
-  } catch (err) {
-    box.textContent = err.message;
-  }
-});
-
-document.getElementById("logout-btn")?.addEventListener("click", async () => {
-  await api("/api/training/staff/auth/logout", { method: "POST" });
-  showApp(false);
-});
-
 function showApp(loggedIn) {
-  document.getElementById("login-view").hidden = loggedIn;
+  if(disposed)return;
+  if(!loggedIn){membershipUI?.destroy();membershipUI=null;state.staff=null;location.replace("/");return;}
   document.getElementById("app-view").hidden = !loggedIn;
   for (const id of ["sf-college", "si-college", "cf2-college", "cm-college", "ti-college"]) {
     document.getElementById(id).value = loggedIn ? state.staff.college : "";
@@ -850,7 +831,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       const rows = parseTeacherRows(q("#ti-text").value);
       if (!rows.length) { flash("没有可导入的行。格式：登录名,姓名,邮箱可选", true); return; }
       const college = q("#ti-college").value.trim();
-      const defaultPassword = q("#ti-pass").value.trim();
+      const defaultPassword = q("#ti-pass").value;
       if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
       try {
         const data = (await api("/api/training/staff/teachers/import", {
@@ -888,7 +869,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       const rows = parseStudentRows(q("#si-text").value);
       if (!rows.length) { flash("没有可导入的行。格式：学号,姓名,班级", true); return; }
       const college = q("#si-college").value.trim();
-      const defaultPassword = q("#si-pass").value.trim();
+      const defaultPassword = q("#si-pass").value;
       if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
       const result = await api("/api/training/staff/students/import", {
         method: "POST",
@@ -902,7 +883,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       const file = q("#si-file").files && q("#si-file").files[0];
       if (!file) { flash("请选择 .xlsx 名册文件。", true); return; }
       const college = q("#si-college").value.trim();
-      const defaultPassword = q("#si-pass").value.trim();
+      const defaultPassword = q("#si-pass").value;
       if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
       const fd = new FormData();
       fd.append("college", college);
@@ -1019,26 +1000,13 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       } catch (err) { flash(err.message, true); }
       await loadOrg();
     },
-    "org-quota-save": async () => {
-      const teacher = parseInt(q("#oq-teacher").value, 10);
-      const student = parseInt(q("#oq-student").value, 10);
-      if (!Number.isInteger(teacher) || !Number.isInteger(student)) { flash("配额须为整数。", true); return; }
-      try {
-        await api("/api/training/staff/org/quota", {
-          method: "PATCH",
-          body: { college: state.staff.college, teacher_quota: teacher,
-                  student_quota: student, revision: (state.quota || {}).revision || 0 } });
-        flash("配额已保存并留痕。");
-      } catch (err) { flash(err.message, true); }
-      await loadOrg();
-    },
     "reset-student-pass": () => {
       const stu = state.students.find((s) => s.id === id);
-      const input = window.prompt(`为 ${stu ? stu.student_no + " " + stu.name : "该学生"} 设置新密码（至少 8 位，重置后其登录立即失效）：`);
+      const input = window.prompt(`为 ${stu ? stu.student_no + " " + stu.name : "该学生"} 设置新密码（10–128 位，大小写字母、数字、符号至少三类，不能使用常见弱口令或包含邮箱前缀；重置后其登录立即失效）：`);
       if (input === null) return;
       withCert(async () => {
         await api(`/api/training/staff/students/${id}/reset-password`, {
-          method: "POST", body: { new_password: input.trim() } });
+          method: "POST", body: { new_password: input } });
         flash("密码已重置，该学生的旧登录已全部失效。");
       });
     },
@@ -1274,13 +1242,193 @@ document.getElementById("cert-select").addEventListener("change", async (event) 
 
 async function boot() {
   try {
-    const me = await api("/api/training/staff/auth/me");
+    let me;
+    try{me=await api("/api/training/staff/auth/me");}catch{await api("/api/training/membership/session",{method:"POST"});me=await api("/api/training/staff/auth/me");}
     state.staff = me.staff;
     showApp(true);
     await load();
-  } catch {
-    showApp(false);
+  } catch (error) {
+    if(disposed)return;
+    if(error.status===401||error.status===403)showApp(false);else flash(error.message,true);
   }
 }
 
-boot();
+const ready=boot();
+
+/* ---------- 判题管理（FR-J05~J08 教师端） ---------- */
+
+const judgeState = { problems: [], submissions: [] };
+
+const JUDGE_STATUS_LABEL = {
+  accepted: "通过", partial: "部分通过", wrong_answer: "答案错误",
+  runtime_error: "运行错误", timeout: "超时", judgement_failed: "判题失败",
+};
+
+function judgeStatusBadge(status) {
+  if (!status) return `<span class="badge gray">未判题</span>`;
+  const cls = status === "accepted" ? "" : (status === "partial" ? "warn" : "bad");
+  return `<span class="badge ${cls}">${esc(JUDGE_STATUS_LABEL[status] || status)}</span>`;
+}
+
+async function loadJudgeProblems() {
+  const data = await api("/api/training/staff/code-problems?include_inactive=false");
+  judgeState.problems = data.problems || [];
+  const select = document.getElementById("judge-problem");
+  select.innerHTML = judgeState.problems.map((p) =>
+    `<option value="${esc(p.id)}">${esc(p.title)}</option>`).join("") ||
+    `<option value="">（暂无编程题）</option>`;
+}
+
+async function loadJudgeSubmissions() {
+  const box = document.getElementById("judge-submissions");
+  const pid = document.getElementById("judge-problem").value;
+  if (!pid) { box.textContent = "暂无编程题，请先建题。"; return; }
+  const data = await api(`/api/training/staff/code-problems/${pid}/submissions`);
+  judgeState.submissions = data.submissions || [];
+  if (!judgeState.submissions.length) {
+    box.innerHTML = `<p class="muted">该题还没有提交。</p>`;
+    return;
+  }
+  box.innerHTML = `<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;font-size:13px;">
+    <tr style="text-align:left;border-bottom:1px solid var(--line);">
+      <th style="padding:6px;">学号</th><th style="padding:6px;">状态</th>
+      <th style="padding:6px;">客观分</th><th style="padding:6px;">生效分</th>
+      <th style="padding:6px;">通过/用例</th><th style="padding:6px;">操作</th></tr>
+    ${judgeState.submissions.map((s) => `<tr style="border-bottom:1px solid var(--line);">
+      <td style="padding:6px;">${esc(s.student_id.slice(0, 8))}…</td>
+      <td style="padding:6px;">${judgeStatusBadge(s.judge && s.judge.status)}</td>
+      <td style="padding:6px;">${s.judge ? esc(s.judge.total_score) : "—"}</td>
+      <td style="padding:6px;">${s.effective_score != null ? `<b>${esc(s.effective_score)}</b>` : "—"}</td>
+      <td style="padding:6px;">${s.judge ? `${esc(s.judge.passed_count)}/${esc(s.judge.case_count)}` : "—"}</td>
+      <td style="padding:6px;">${s.judge ? `
+        <button class="small" data-judge-act="detail" data-sid="${esc(s.id)}">明细</button>
+        <button class="small" data-judge-act="quality" data-sid="${esc(s.id)}">质量分</button>
+        <button class="small primary" data-judge-act="adjust" data-sid="${esc(s.id)}">调分</button>` : ""}</td>
+    </tr>`).join("")}</table></div><div id="judge-detail" style="margin-top:8px;"></div>`;
+}
+
+async function judgeAdjust(sid) {
+  const sub = judgeState.submissions.find((s) => s.id === sid);
+  const currentScore = sub && sub.effective_score != null ? sub.effective_score : "";
+  const input = window.prompt("调分（0~100；将留痕并要求填写理由）：", String(currentScore));
+  if (input === null) return;
+  const score = Number(input);
+  if (!Number.isFinite(score) || score < 0 || score > 100) { flash("调分须为 0~100 的数字。", true); return; }
+  const reason = window.prompt("调分理由（必填，留痕）：");
+  if (!reason || !reason.trim()) { flash("调分必须填写理由。", true); return; }
+  const data = await api(`/api/training/staff/code-submissions/${sid}/score`, {
+    method: "PUT", body: { score, reason: reason.trim() } });
+  flash(`已调分至 ${data.score.effective_score}；留痕 ${data.score.adjust_log.length} 条。`);
+  await loadJudgeSubmissions();
+}
+
+async function judgeDetail(sid) {
+  const box = document.getElementById("judge-detail");
+  const data = await api(`/api/training/staff/code-submissions/${sid}/score`);
+  const s = data.score;
+  const rows = (s.adjust_log || []).map((a) =>
+    `<div class="mark">${esc(a.at)} 由 ${esc(a.operator_id.slice(0, 8))}…：${esc(a.from)} → ${esc(a.to)}（${esc(a.reason)}）</div>`).join("")
+    || `<p class="muted">无调分记录。</p>`;
+  box.innerHTML = `<div class="item">
+    <p style="margin:4px 0;">判题：${judgeStatusBadge(s.judge_status)} 客观分 ${esc(s.auto_score)} · 生效分 <b>${esc(s.effective_score)}</b>
+      ${s.adjusted_score != null ? `（已调分，理由：${esc(s.adjust_reason)}）` : "（未调分）"}</p>
+    ${rows}</div>`;
+}
+
+async function judgeQuality(sid) {
+  const box = document.getElementById("judge-detail");
+  const data = await api(`/api/training/staff/code-submissions/${sid}/quality`);
+  const qy = data.quality;
+  if (!qy) { box.innerHTML = `<p class="muted">该提交暂无质量分（非 python 或判题前）。</p>`; return; }
+  const checks = (qy.checks || []).map((c) =>
+    `<div class="mark">−${esc(c.penalty)} 分 · ${esc(c.message)} ${esc(c.detail)}</div>`).join("")
+    || `<p class="ok">无扣分项。</p>`;
+  box.innerHTML = `<div class="item"><p style="margin:4px 0;">质量分：<b>${esc(qy.score)}</b> / 100（${esc(qy.checked_at)}）</p>${checks}</div>`;
+}
+
+async function judgePlagScan() {
+  const pid = document.getElementById("judge-problem").value;
+  if (!pid) { flash("暂无编程题。", true); return; }
+  const threshold = Number(document.getElementById("judge-plag-threshold").value) || 0.85;
+  const data = await api(`/api/training/staff/code-problems/${pid}/plagiarism-scan`, {
+    method: "POST", body: { threshold } });
+  flash(`扫描完成：比对 ${data.scan.pairs_checked} 对，落标记 ${data.scan.flagged} 条。`);
+  await judgePlagList();
+}
+
+async function judgePlagList() {
+  const pid = document.getElementById("judge-problem").value;
+  const box = document.getElementById("judge-plag-flags");
+  const data = await api(`/api/training/staff/code-problems/${pid}/plagiarism`);
+  if (!(data.flags || []).length) { box.innerHTML = `<p class="ok">无查重标记。</p>`; return; }
+  box.innerHTML = `<table style="border-collapse:collapse;width:100%;font-size:13px;">
+    <tr style="text-align:left;border-bottom:1px solid var(--line);">
+      <th style="padding:6px;">相似度</th><th style="padding:6px;">学生 A</th>
+      <th style="padding:6px;">学生 B</th><th style="padding:6px;">范围</th></tr>
+    ${data.flags.map((f) => `<tr style="border-bottom:1px solid var(--line);">
+      <td style="padding:6px;"><b>${esc(Math.round(f.similarity * 100))}%</b></td>
+      <td style="padding:6px;">${esc(f.student_no_a)} ${esc(f.name_a)}</td>
+      <td style="padding:6px;">${esc(f.student_no_b)} ${esc(f.name_b)}</td>
+      <td style="padding:6px;">${f.same_class ? `<span class="badge warn">班内</span>` : `<span class="badge gray">跨班</span>`}</td>
+    </tr>`).join("")}</table>`;
+}
+
+async function judgeTasksRefresh() {
+  const state = document.getElementById("judge-task-state").value;
+  const box = document.getElementById("judge-tasks");
+  const qs = state ? `?state=${encodeURIComponent(state)}` : "";
+  const data = await api(`/api/training/staff/code-judge/tasks${qs}`);
+  const tasks = data.tasks || [];
+  if (!tasks.length) { box.innerHTML = `<p class="ok">队列为空。</p>`; return; }
+  box.innerHTML = `<table style="border-collapse:collapse;width:100%;font-size:13px;">
+    <tr style="text-align:left;border-bottom:1px solid var(--line);">
+      <th style="padding:6px;">状态</th><th style="padding:6px;">尝试</th>
+      <th style="padding:6px;">判题结果</th><th style="padding:6px;">最近错误</th><th style="padding:6px;">操作</th></tr>
+    ${tasks.map((t) => `<tr style="border-bottom:1px solid var(--line);">
+      <td style="padding:6px;">${t.state === "done" ? `<span class="badge">done</span>`
+        : t.state === "failed" ? `<span class="badge bad">failed</span>`
+        : t.state === "running" ? `<span class="badge warn">running</span>`
+        : `<span class="badge gray">queued</span>`}</td>
+      <td style="padding:6px;">${esc(t.attempts)}/${esc(t.max_attempts)}</td>
+      <td style="padding:6px;">${t.judge_status ? `${judgeStatusBadge(t.judge_status)} ${esc(t.total_score ?? "")}` : "—"}</td>
+      <td style="padding:6px;">${esc(t.last_error || "—")}</td>
+      <td style="padding:6px;">${t.state !== "done" ? `<button class="small" data-judge-act="retry" data-tid="${esc(t.id)}">重试</button>` : ""}</td>
+    </tr>`).join("")}</table>`;
+}
+
+document.getElementById("app-view").addEventListener("click", async (event) => {
+  const btn = event.target.closest("button[data-judge-act]");
+  if (!btn) return;
+  try {
+    const acts = {
+      detail: () => judgeDetail(btn.dataset.sid),
+      quality: () => judgeQuality(btn.dataset.sid),
+      adjust: () => judgeAdjust(btn.dataset.sid),
+      retry: async () => {
+        await api(`/api/training/staff/code-judge/tasks/${btn.dataset.tid}/retry`, { method: "POST" });
+        flash("任务已置回队列。");
+        await judgeTasksRefresh();
+      },
+    };
+    if (acts[btn.dataset.judgeAct]) await acts[btn.dataset.judgeAct]();
+  } catch (err) { flash(err.message, true); }
+});
+
+document.getElementById("judge-load-subs").addEventListener("click", () =>
+  loadJudgeSubmissions().catch((err) => flash(err.message, true)));
+document.getElementById("judge-plag-scan").addEventListener("click", () =>
+  judgePlagScan().catch((err) => flash(err.message, true)));
+document.getElementById("judge-tasks-refresh").addEventListener("click", () =>
+  judgeTasksRefresh().catch((err) => flash(err.message, true)));
+document.getElementById("judge-task-state").addEventListener("change", () =>
+  judgeTasksRefresh().catch((err) => flash(err.message, true)));
+
+(async () => {
+  // boot() 已在文件前部启动：等登录态判定完成后填充编程题下拉（失败不阻塞主流程）
+  for (let i = 0; i < 50 && !state.staff && !disposed; i++) await new Promise((r) => setTimeout(r, 100));
+  if (state.staff&&!disposed) { try { await loadJudgeProblems(); } catch { /* 忽略 */ } }
+})();
+
+/* controller end */
+return {ready,destroy(){disposed=true;requests.abort();membershipUI?.destroy();}};
+};

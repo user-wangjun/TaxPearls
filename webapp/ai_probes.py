@@ -146,6 +146,16 @@ def reasoning_capability(row):
             'can_disable': can_disable, 'protocol': protocol}
 
 
+def context_capability(row):
+    """Retain only bounded provider-declared token limits, never infer by name."""
+    result = {}
+    for name, value in [('context_window', row.get('context_window', row.get('context_length'))),
+                        ('max_output_tokens', row.get('max_output_tokens'))]:
+        if type(value) is int and 256 <= value <= 16 * 1024 * 1024:
+            result[name] = value
+    return result
+
+
 def models(settings, *, with_capabilities=False):
     data = _http_json(settings.base_url.rstrip('/') + '/models', settings.api_key,
                       max_bytes=2 * 1024 * 1024)
@@ -164,7 +174,7 @@ def models(settings, *, with_capabilities=False):
                 # Conflicting duplicate entries cannot establish model capabilities.
                 details[model.strip()] = reasoning_capability({})
             else:
-                details[model.strip()] = reasoning_capability(row)
+                details[model.strip()] = {**reasoning_capability(row), **context_capability(row)}
         return {'models': sorted(set(ids)), 'capabilities': details} if with_capabilities else sorted(set(ids))
     except (ValueError, KeyError, TypeError):
         raise TransportError('schema') from None

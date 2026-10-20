@@ -39,7 +39,9 @@ class AuthHardeningTests(unittest.TestCase):
     def test_setup_is_atomic_across_connections_and_unique_in_database(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "auth.db"
-            first, second = Store(path), Store(path)
+            # first 开哨兵：并发初始化期间 -shm/-wal 常驻，消除 Windows 删建抖动；
+            # 块退出前显式关闭，避免哨兵句柄占用临时目录删除。
+            first, second = Store(path, keepalive=True), Store(path)
 
             def attempt(args):
                 store, name = args
@@ -48,13 +50,16 @@ class AuthHardeningTests(unittest.TestCase):
                 except SetupAlreadyInitialized:
                     return "already initialized"
 
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                results = list(pool.map(attempt, [(first, "owner-one"), (second, "owner-two")]))
-            self.assertEqual(results.count("already initialized"), 1)
-            self.assertEqual(len(first.list_users()), 1)
-            with self.assertRaises(sqlite3.IntegrityError):
-                first.create_user("another-admin", "strong-pass-2026", "其他管理员", "platform_admin", "default")
-            self.assertEqual(len(Store(path).list_users()), 1)
+            try:
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    results = list(pool.map(attempt, [(first, "owner-one"), (second, "owner-two")]))
+                self.assertEqual(results.count("already initialized"), 1)
+                self.assertEqual(len(first.list_users()), 1)
+                with self.assertRaises(sqlite3.IntegrityError):
+                    first.create_user("another-admin", "strong-pass-2026", "其他管理员", "platform_admin", "default")
+                self.assertEqual(len(Store(path).list_users()), 1)
+            finally:
+                first.close()
 
     def test_legacy_multiple_admins_require_manual_migration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -158,7 +163,9 @@ class PasswordPolicyTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        self.store = Store(Path(directory.name) / "policy.db")
+        # 主 Store 开哨兵：WAL 辅助文件常驻，消除 Windows 上 SQLITE_READONLY 抖动。
+        self.store = Store(Path(directory.name) / "policy.db", keepalive=True)
+        self.addCleanup(self.store.close)
 
     def _platform(self):
         return self.store.create_initial_admin("rootadmin", "Zebra!Forest92", "管理", "default",
@@ -443,7 +450,9 @@ class PersistentPasswordLoginTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.path = Path(directory.name) / "login.db"
-        self.store = Store(self.path)
+        # 主 Store 开哨兵：WAL 辅助文件常驻，消除 Windows 上 SQLITE_READONLY 抖动。
+        self.store = Store(self.path, keepalive=True)
+        self.addCleanup(self.store.close)
         self.password = "Secure-browser-2026!"
         self.user = self.store.create_initial_admin("original-owner", self.password, "管理", "default", "owner@example.com")
         patches = patch.multiple(app_module, store=self.store, login_guard=LoginGuard(),

@@ -88,10 +88,49 @@ class ConversionTests(unittest.TestCase):
         result=split_bundle(data,2200)
         self.assertGreater(result['part_count'],1)
         self.assertFalse(result['unsplittable'])
-        self.assertTrue(all(any(c['clause_id']=='required' for c in p['policy_leads']) for p in result['parts']))
+        self.assertTrue(all('required' in p['required_clause_ids'] for p in result['parts']))
         found={c['clause_id']:c['text'] for p in result['parts'] for c in p['policy_leads']}
         self.assertEqual(found,{c['clause_id']:c['text'] for c in data['policy_leads']})
         self.assertIn('retrieval_matches',data['policy_leads'][1])
+
+    def test_oversized_required_original_is_losslessly_split_by_category(self):
+        data={key:[] for key in ['facts','conditions','exceptions','gaps','relationships','policy_evidence','policy_leads']}
+        data.update(task={},check={},bundle_id='test')
+        data['policy_leads']=[{'clause_id':'required','required':True,'text':'必要原文'*1000}]+[
+            {'clause_id':str(i),'required':False,'text':'完整候选原文'+str(i)} for i in range(30)]
+        result=split_bundle(data,6000)
+        self.assertFalse(result['unsplittable'])
+        self.assertGreater(result['part_count'],1)
+        self.assertTrue(all(not p['over_budget'] and p['token_upper_bound']<=6000 for p in result['parts']))
+        pieces=[c for p in result['parts'] for c in p['policy_leads'] if c['clause_id']=='required']
+        self.assertEqual(''.join(p['text'] for p in pieces),data['policy_leads'][0]['text'])
+        self.assertTrue(all(p['partial_clause'] for p in pieces))
+        import hashlib
+        self.assertTrue(all(p['original_text_sha256']==hashlib.sha256(data['policy_leads'][0]['text'].encode()).hexdigest() for p in pieces))
+        self.assertEqual(pieces[0]['source_char_start'],0)
+        self.assertEqual(pieces[-1]['source_char_end'],len(data['policy_leads'][0]['text']))
+        self.assertTrue(all(p['batch_category']=='policy_lead' for p in result['parts']))
+
+    def test_batches_keep_material_classes_policy_documents_and_exception_links_separate(self):
+        data={key:[] for key in ['facts','conditions','exceptions','gaps','relationships','policy_evidence','policy_leads']}
+        data.update(task={},check={},bundle_id='categories',metric_definitions={})
+        for i in range(30):
+            mid=f'metric-{i}'
+            schema='Invoice' if i%2 else 'VATDeclaration'
+            data['metric_definitions'][mid]={'source_schema':schema}
+            data['facts'].append({'metric_id':mid,'name':'完整已核对指标'*8,'source_ids':[f'source-{i}'],'state':'unknown'})
+        data['exceptions']=[{'source_clause_id':'exception','exception_id':'ex'}]
+        data['policy_evidence']=[{'clause_id':'exception','policy_id':'p-ex','text':'完整排除例外。'*100,'required':True}]
+        data['policy_leads']=[{'clause_id':str(i),'policy_id':f'policy-{i%2}','text':'完整原文。'*90} for i in range(6)]
+        result=split_bundle(data,3000)
+        self.assertFalse(result['unsplittable'])
+        self.assertGreater(result['part_count'],1)
+        self.assertIn('policy_exception',{p['batch_category'] for p in result['parts']})
+        self.assertTrue({'发票资料','申报资料'}<={p['batch_group'] for p in result['parts']})
+        for part in result['parts']:
+            if part['batch_category'].startswith('policy_'):
+                self.assertLessEqual(len({c['policy_id'] for c in part['policy_evidence']+part['policy_leads']}),1)
+            self.assertEqual(part['exceptions'],data['exceptions'])
 
     def test_report_keeps_required_and_ai_cited_originals_and_human_source_coordinates(self):
         from webapp.core_reports import report_evidence,report_gaps,source_location
@@ -105,10 +144,17 @@ class ConversionTests(unittest.TestCase):
                          '官方原文.txt · 第3至5行')
         self.assertEqual(source_location('原表!C6'),'原表!C6')
         gaps=[{'code':'change_pending','clause_id':'one'}, {'code':'change_pending','clause_id':'two'},
-              {'code':'policy_review','message':'原文待审核','clause_id':'three'}]
+              {'code':'policy_review','message':'原文待审核','clause_id':'three'},
+              {'code':'rule_unapproved','message':'TaxRule 版本尚未审核。'},
+              {'code':'relationship_pending','message':'规则关系尚未审核。'},
+              {'code':'rule_period'}, {'code':'internal_new_code','message':'internal traceback'}]
         saved=deepcopy(gaps)
-        self.assertEqual(report_gaps(gaps),[{'message':'政策修订关系尚待审核。','count':2},
-                                           {'message':'原文待审核','count':1}])
+        self.assertEqual(report_gaps(gaps),[
+            {'message':'相关法规存在变更，当前适用版本尚待核实。','count':2},
+            {'message':'法规条款对本次业务及期间的适用性尚待复核。','count':1},
+            {'message':'本项检查依据尚待复核。','count':2},
+            {'message':'检查依据是否覆盖本次检查期间尚待核实。','count':1},
+            {'message':'本项仍有资料或依据待复核。','count':1}])
         self.assertEqual(gaps,saved)
 
     def test_all_cases_are_resolvable_from_existing_complete_material_metrics(self):
@@ -210,7 +256,7 @@ class ConvertedScopeTests(unittest.TestCase):
         from jinja2 import Environment,FileSystemLoader
         from src.kg_retrieval.bundle import _facts
         from tests.test_business_scope import reference_dataset
-        from webapp.core_reports import report_evidence,report_gaps,source_location
+        from webapp import core_reports
         facts,compiled,_=self.collect(reference_dataset(),'R-003')
         definitions={m['metric_id']:m for m in [*compiled['bases'].values(),*compiled['calculations']]}
         task={'period_start':'2026-01-01','period_end':'2026-12-31'}
@@ -220,13 +266,20 @@ class ConvertedScopeTests(unittest.TestCase):
         ref=next(f for f in normalized.values() if f.get('reference'))
         self.assertEqual(ref['reference']['source'],'构造来源，不是真实业务验收')
         ref['metric_period']='2025年度'
-        package={'task':task,'check':{},'facts':list(normalized.values()),'gaps':[],
+        package={'task':task,'check':{'disposition':'needs_review','topic':'合成参考指标核查'},
+                 'bundle_status':'needs_review','facts':list(normalized.values()),'gaps':[],
                  'conditions':[],'exceptions':[],'policy_evidence':[],'policy_leads':[],
                  'relationships':[],'retrieval_trace':{'excluded':[]}}
         env=Environment(loader=FileSystemLoader(ROOT/'templates'),autoescape=True)
-        env.filters.update(report_evidence=report_evidence,report_gaps=report_gaps,source_location=source_location)
+        env.filters.update(report_evidence=core_reports.report_evidence,report_analysis=core_reports.report_analysis,report_materials=core_reports.report_materials,report_period=core_reports.report_period,report_gaps=core_reports.report_gaps,
+                           source_location=core_reports.source_location,clause_reference=core_reports.clause_reference,
+                           check_result=core_reports.check_result,report_result=core_reports.report_result,
+                           material_reference=core_reports.material_reference,metric_label=core_reports.metric_label)
         html=env.get_template('core_check_report.html').render(report={
-            'task':{},'sources':[],'summary':{},'processing':{'status':'ready_for_analysis','issues':[]},
+            'task':{'company_name':'纯合成参考指标企业','tax_no':'合成示例',
+                    'start_date':task['period_start'],'end_date':task['period_end']},
+            'report_no':'TP-SYNTHETIC-REFERENCE','version':1,'created_at':'2026-01-01T00:00:00+00:00',
+            'sources':[],'summary':{'total':1},'processing':{'status':'ready_for_analysis','issues':[]},
             'checks':{'test':{'bundle':package}}})
         self.assertIn('来源实际期间：2025年度',html)
         self.assertIn('测试-v1',html)
@@ -269,6 +322,27 @@ class BindingHTTPTests(unittest.TestCase):
         self.assertEqual(r.status_code,200,r.text)
         return r.json()
 
+    def test_enterprise_catalog_excludes_policy_candidates_and_obsolete_calculations(self):
+        from src import vat_reconciliation as vat
+        self.client.get('/api/knowledge/checks').raise_for_status()
+        with self.store.connect() as db:
+            db.executemany("INSERT INTO TaxRule(rule_id,rule_code,name,tax_type,rule_type,outcome_text) "
+                           "VALUES (?,?,?,'VAT','risk_screen','政策候选，尚无材料核对计算')",
+                           [(f'candidate-{i}',f'candidate-{i}',f'政策候选第{i}条') for i in range(1209)])
+            db.execute("INSERT INTO TaxRule(rule_id,rule_code,name,tax_type,rule_type,outcome_text,conversion_json) "
+                       "VALUES ('obsolete','obsolete','旧计算','VAT','risk_screen','旧版','{}')")
+        browse=self.client.get('/api/knowledge/checks').json()
+        self.assertIn('candidate-0',{r['rule_id'] for r in browse})
+        self.assertNotIn('obsolete',{r['rule_id'] for r in browse})
+        response=self.client.get('/api/knowledge/checks?enterprise=true')
+        self.assertEqual(response.status_code,200,response.text)
+        catalog=response.json()
+        self.assertEqual(len(catalog),25)
+        self.assertEqual(sum(bool(r['computation_converted']) for r in catalog),24)
+        self.assertIn(vat.RULE,{r['rule_id'] for r in catalog})
+        self.assertFalse(any(r['rule_id'].startswith('candidate-') for r in catalog))
+        self.assertTrue(all(r['review_status']=='candidate' for r in catalog))
+
     def test_uploaded_sources_compute_real_rule_without_fabricating_policy_approval(self):
         task=self.task()
         records=task['processing']['records']
@@ -289,7 +363,21 @@ class BindingHTTPTests(unittest.TestCase):
         self.assertEqual(report.status_code,200,report.text)
         url='/api/enterprise/input-tasks/'+task['id']+'/reports/'+str(report.json()['version'])
         html=self.client.get(url).text
-        self.assertIn('内部规则事实计算',html);self.assertIn('980000.00',html)
+        self.assertIn('现有资料或适用依据尚不足以完成本项判断',html)
+        self.assertIn('暂无法完成本项检查',html)
+        self.assertIn('本项判断依据尚待确认',html)
+        self.assertNotIn('TaxRule',html)
+        self.assertNotIn('布尔数值',html)
+        self.assertNotIn('子条件1计算',html)
+        self.assertNotIn('rule_period',html)
+        self.assertNotIn('核对条件',html)
+        self.assertNotIn(rid,html)
+        self.assertIn('980000.00',html)
+        self.assertIn('1000000.00',html)
+        frozen=self.client.get(url+'?format=json').json()['checks'][rid]['bundle']
+        self.assertEqual(frozen['check']['fact_evaluation'],'FALSE')
+        self.assertIn('rule_unapproved',{g['code'] for g in frozen['gaps']})
+        self.assertTrue(any(f['is_calculation'] for f in frozen['facts']))
         self.login('other');self.assertEqual(self.client.get(url).status_code,404)
 
     def test_forged_values_foreign_rows_and_stale_revision_are_rejected(self):

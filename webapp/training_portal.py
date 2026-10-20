@@ -32,7 +32,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from webapp.login_guard import LoginGuard
-from webapp.storage import _hash_token, _now, session_max_age
+from webapp import code_sandbox, university_members
+from webapp.storage import _hash_token, _now, _validate_password, session_max_age
 from webapp.training_content import (applicability, ensure_active_version,
                                      resolve_active_version, version_brief)
 from webapp.training_graph import relations_payload
@@ -88,9 +89,9 @@ def login_student(store, student_no: str, password: str, college: str | None = N
                   remember: bool = False) -> dict[str, Any] | None:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        rows = db.execute(
-            "SELECT * FROM student_info WHERE student_no=? AND active=1", (student_no.strip(),)
-        ).fetchall()
+        identifier = student_no.strip()
+        column, value = ('lower(email)', identifier.lower()) if '@' in identifier else ('student_no', identifier)
+        rows = db.execute(f"SELECT * FROM student_info WHERE {column}=? AND active=1", (value,)).fetchall()
         if college:
             rows = [r for r in rows if r["college"] == college.strip()]
         if not rows:
@@ -98,8 +99,10 @@ def login_student(store, student_no: str, password: str, college: str | None = N
         # 先验密码再谈歧义：全部失败一律 401，不泄露学号存在性
         verified = []
         for row in rows:
+            if not university_members.identity_active(db,student_id=row["id"]):
+                continue
             try:
-                _passwords.verify(row["password_hash"], password)
+                _passwords.verify(university_members.identity_hash(db,row["password_hash"],student_id=row["id"]), password)
                 verified.append(row)
             except (VerifyMismatchError, InvalidHashError):
                 continue
@@ -126,6 +129,8 @@ def student_for_token(store, token: str | None) -> dict[str, Any] | None:
                WHERE t.token_hash=? AND t.expires_at>=?""",
             (_hash_token(token), _now()),
         ).fetchone()
+        if row and not university_members.identity_active(db,student_id=row["id"]):
+            return None
     if not row or not row["active"]:
         return None
     return _student_public(row)
@@ -139,14 +144,13 @@ def logout_student(store, token: str | None) -> None:
 
 def change_staff_password(store, staff: dict[str, Any], old_password: str, new_password: str) -> dict[str, Any]:
     """教师本人修改密码：验证当前密码，更新后清除自己全部会话（需重新登录）。"""
-    new_password = (new_password or "").strip()
-    if len(new_password) < _MIN_PASSWORD_LEN:
-        raise TrainingPortalError(f"新密码至少 {_MIN_PASSWORD_LEN} 位。")
+    new_password = _validate_training_password(new_password)
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT * FROM college_user WHERE id=? AND active=1", (staff["id"],)).fetchone()
         if not row:
             raise TrainingPortalError("账号不存在或已停用。", 404)
+        _validate_training_password(new_password, row["email"] or "")
         try:
             _passwords.verify(row["password_hash"], old_password or "")
         except (VerifyMismatchError, InvalidHashError):
@@ -155,6 +159,7 @@ def change_staff_password(store, staff: dict[str, Any], old_password: str, new_p
             raise TrainingPortalError("新密码不能与当前密码相同。")
         db.execute("UPDATE college_user SET password_hash=? WHERE id=?",
                    (_passwords.hash(new_password), row["id"]))
+        university_members.sync_password(db,db.execute("SELECT password_hash FROM college_user WHERE id=?",(row["id"],)).fetchone()[0],staff_id=row["id"])
         db.execute("DELETE FROM training_staff_sessions WHERE staff_id=?", (row["id"],))
     return {"password_changed": True}
 
@@ -163,15 +168,15 @@ def change_student_password(store, student: dict[str, Any], old_password: str,
                             new_password: str) -> dict[str, Any]:
     """学生本人修改密码：验证当前密码，更新后清除本人全部会话（需重新登录）。
 
-    与教师改密同口径；学生初始密码为默认口令（Tp#学号2026），首登改密即
-    消除默认口令风险。教师重置入口保留（不验证旧密码，属管理员动作）。"""
-    new_password = _validate_student_password(new_password)
+    与教师及平台账号共用密码规则。教师重置入口保留（不验证旧密码，属管理员动作）。"""
+    new_password = _validate_training_password(new_password)
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT * FROM student_info WHERE id=? AND active=1",
                          (student["id"],)).fetchone()
         if not row:
             raise TrainingPortalError("学生账号不存在或已停用。", 404)
+        _validate_training_password(new_password, row["email"] or "")
         try:
             _passwords.verify(row["password_hash"], old_password or "")
         except (VerifyMismatchError, InvalidHashError):
@@ -180,6 +185,7 @@ def change_student_password(store, student: dict[str, Any], old_password: str,
             raise TrainingPortalError("新密码不能与当前密码相同。")
         db.execute("UPDATE student_info SET password_hash=? WHERE id=?",
                    (_passwords.hash(new_password), row["id"]))
+        university_members.sync_password(db,db.execute("SELECT password_hash FROM student_info WHERE id=?",(row["id"],)).fetchone()[0],student_id=row["id"])
         db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (row["id"],))
     return {"password_changed": True}
 
@@ -189,36 +195,42 @@ def change_student_password(store, student: dict[str, Any], old_password: str,
 # ---------------------------------------------------------------------------
 
 _STUDENT_COLS = "id, college, student_no, name, class_name, active, created_at"
-_MIN_PASSWORD_LEN = 8
 
 
-def _validate_student_password(password: str) -> str:
-    password = (password or "").strip()
-    if len(password) < _MIN_PASSWORD_LEN:
-        raise TrainingPortalError(f"密码至少 {_MIN_PASSWORD_LEN} 位。")
+def _validate_training_password(password: str, email: str = "") -> str:
+    """Reuse the platform policy without changing the password that is hashed."""
+    try:
+        _validate_password(password, email)
+    except ValueError as exc:
+        raise TrainingPortalError(str(exc)) from None
     return password
 
 
-def list_students(store, college: str, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+def list_students(store, college: str, *, include_inactive: bool = True, teacher_id: str | None = None) -> list[dict[str, Any]]:
     with store.connect() as db:
         where = "" if include_inactive else " AND active=1"
         rows = db.execute(
-            f"SELECT {_STUDENT_COLS} FROM student_info WHERE college=?{where} ORDER BY student_no", (college,)
+            f"SELECT {_STUDENT_COLS} FROM student_info WHERE college=?{where}"
+            + (" AND id IN (SELECT student_id FROM student_teacher_memberships WHERE teacher_id=?)" if teacher_id else "")
+            + " ORDER BY student_no", (college,teacher_id) if teacher_id else (college,)
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def create_student(store, college: str, student_no: str, name: str, *,
                    class_name: str | None = None, initial_password: str | None = None,
-                   email: str | None = None) -> dict[str, Any]:
+                   email: str | None = None, teacher_id: str | None = None) -> dict[str, Any]:
     college = (college or "").strip()
     student_no = (student_no or "").strip()
     name = (name or "").strip()
     if not college or not student_no or not name:
         raise TrainingPortalError("院校、学号、姓名均不能为空。")
-    password = _validate_student_password(initial_password or f"Tp#{student_no}2026")
+    password = _validate_training_password(
+        initial_password if initial_password is not None else f"Tp#{student_no}2026", email or "")
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
+        if teacher_id:
+            university_members.require_student_slot(db,teacher_id,college)
         require_student_slot(db, college)  # FR-U06：事务内核销，并发不绕过
         dup = db.execute(
             "SELECT id FROM student_info WHERE college=? AND student_no=?", (college, student_no)
@@ -233,14 +245,16 @@ def create_student(store, college: str, student_no: str, name: str, *,
             (sid, college, student_no, name, (class_name or "").strip() or None,
              _passwords.hash(password), (email or "").strip() or None, _now()),
         )
+        if teacher_id:
+            db.execute("INSERT INTO student_teacher_memberships VALUES (?,?,?)",(sid,teacher_id,college))
         row = db.execute(f"SELECT {_STUDENT_COLS} FROM student_info WHERE id=?", (sid,)).fetchone()
     return dict(row)
 
 
 def import_students(store, college: str, rows: list[dict[str, Any]], *,
-                    default_password: str, default_class_name: str | None = None) -> dict[str, Any]:
+                    default_password: str, default_class_name: str | None = None, teacher_id: str | None = None) -> dict[str, Any]:
     """逐行导入学生；单行失败不中断整批，返回 created/skipped 明细。"""
-    _validate_student_password(default_password)
+    _validate_training_password(default_password)
     created: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
     for index, row in enumerate(rows, start=1):
@@ -249,8 +263,8 @@ def import_students(store, college: str, rows: list[dict[str, Any]], *,
             created.append(create_student(
                 store, college, student_no, str(row.get("name") or ""),
                 class_name=row.get("class_name") or default_class_name,
-                initial_password=default_password))
-        except TrainingPortalError as exc:
+                initial_password=default_password,teacher_id=teacher_id))
+        except (TrainingPortalError, university_members.AccessDenied) as exc:
             skipped.append({"line": index, "student_no": student_no, "reason": str(exc)})
     return {"created": created, "skipped": skipped}
 
@@ -328,25 +342,42 @@ def parse_student_xlsx(data: bytes, *,
         workbook.close()
 
 
-def reset_student_password(store, student_id: str, new_password: str, *, college: str) -> dict[str, Any]:
-    password = _validate_student_password(new_password)
+def reset_student_password(store, student_id: str, new_password: str, *, college: str, actor=None) -> dict[str, Any]:
+    password = _validate_training_password(new_password)
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT id FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
+        if actor:
+            university_members.student_scope(db,actor,student_id)
+        row = db.execute("SELECT id,email FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
         if not row:
             raise TrainingPortalError("学生不存在。", 404)
+        _validate_training_password(password, row["email"] or "")
         db.execute("UPDATE student_info SET password_hash=? WHERE id=?",
                    (_passwords.hash(password), student_id))
+        university_members.sync_password(db,db.execute("SELECT password_hash FROM student_info WHERE id=?",(student_id,)).fetchone()[0],student_id=student_id)
         db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (student_id,))
     return {"id": student_id, "password_reset": True}
 
 
-def set_student_active(store, student_id: str, active: bool, *, college: str) -> dict[str, Any]:
+def set_student_active(store, student_id: str, active: bool, *, college: str, actor=None) -> dict[str, Any]:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT id FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
+        if actor:
+            university_members.student_scope(db,actor,student_id)
+        row = db.execute("SELECT id,active FROM student_info WHERE id=? AND college=?", (student_id, college)).fetchone()
         if not row:
             raise TrainingPortalError("学生不存在。", 404)
+        if active and not row["active"]:
+            owner=db.execute("SELECT teacher_id FROM student_teacher_memberships WHERE student_id=?",(student_id,)).fetchone()
+            if owner:
+                university_members.require_student_slot(db,owner[0],college)
+            else:
+                require_student_slot(db,college)
+        linked=db.execute("SELECT user_id FROM university_identity_links WHERE student_id=?",(student_id,)).fetchone()
+        if linked:
+            db.execute("UPDATE users SET active=? WHERE id=?",(int(active),linked[0]))
+            db.execute("DELETE FROM sessions WHERE user_id=?",(linked[0],))
+            university_members.revoke_identity(db,linked[0])
         db.execute("UPDATE student_info SET active=? WHERE id=?", (1 if active else 0, student_id))
         if not active:
             db.execute("DELETE FROM training_student_sessions WHERE student_id=?", (student_id,))
@@ -440,12 +471,20 @@ def update_code_problem(store, problem_id: str, fields: dict[str, Any],
             "SELECT count(*) n FROM code_test_case WHERE problem_id=?",
             (problem_id,)).fetchone()["n"]
         payload["cases"] = [dict(r) for r in db.execute(
-            "SELECT seq, input_text, expected_output, weight, sample FROM code_test_case"
+            "SELECT seq, input_text, expected_output, weight, sample, match_mode,"
+            " float_tolerance, alternatives_json FROM code_test_case"
             " WHERE problem_id=? ORDER BY seq", (problem_id,)).fetchall()]
     return payload
 
 
 def _clean_test_cases(cases: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """用例清洗（v3.1）：match_mode/float_tolerance/alternatives 校验。
+
+    - match_mode: exact|float|any_of（缺省 exact）；
+    - float_tolerance: (0, 0.5] 开区间内（缺省 None → 引擎用 1e-6），
+      仅 float/any_of 模式允许给；exact 模式给了也忽略并存原值；
+    - alternatives: 仅 any_of 使用，非空字符串列表（≤20 条，单条 ≤4096 字符）；
+      exact 模式给 alternatives 视为配置错误（避免教师误配静默失效）。"""
     cleaned = []
     for i, c in enumerate(cases or [], start=1):
         input_text = str(c.get("input_text") or "")
@@ -454,8 +493,36 @@ def _clean_test_cases(cases: list[dict[str, Any]] | None) -> list[dict[str, Any]
         weight = 1.0 if raw_weight is None else float(raw_weight)
         if weight <= 0:
             raise TrainingPortalError(f"第 {i} 个用例权重必须为正数。")
+        mode = str(c.get("match_mode") or "exact").strip().lower()
+        if mode not in code_sandbox.MATCH_MODES:
+            raise TrainingPortalError(
+                f"第 {i} 个用例 match_mode 须为 {'/'.join(code_sandbox.MATCH_MODES)}。")
+        raw_tol = c.get("float_tolerance")
+        tolerance = None if raw_tol in (None, "") else float(raw_tol)
+        if tolerance is not None and not (0 < tolerance <= 0.5):
+            raise TrainingPortalError(f"第 {i} 个用例容差须在 (0, 0.5] 之间。")
+        alternatives = c.get("alternatives")
+        if alternatives is not None and mode != "any_of":
+            raise TrainingPortalError(
+                f"第 {i} 个用例只有 any_of 模式可配置多解候选。")
+        alt_list: list[str] = []
+        if mode == "any_of":
+            for alt in (alternatives or []):
+                text = str(alt)
+                if not text.strip():
+                    raise TrainingPortalError(f"第 {i} 个用例多解候选不能为空串。")
+                if len(text) > 4096:
+                    raise TrainingPortalError(f"第 {i} 个用例多解候选超长（≤4096 字符）。")
+                alt_list.append(text)
+            if len(alt_list) > 20:
+                raise TrainingPortalError(f"第 {i} 个用例多解候选最多 20 条。")
+            if not alt_list:
+                raise TrainingPortalError(
+                    f"第 {i} 个用例 any_of 模式须至少给 1 条多解候选。")
         cleaned.append({"seq": i, "input_text": input_text, "expected_output": expected,
-                        "weight": weight, "sample": 1 if c.get("sample") else 0})
+                        "weight": weight, "sample": 1 if c.get("sample") else 0,
+                        "match_mode": mode, "float_tolerance": tolerance,
+                        "alternatives": alt_list})
     return cleaned
 
 
@@ -463,10 +530,15 @@ def _insert_test_cases(db, problem_id: str, cases: list[dict[str, Any]]) -> None
     for c in cases:
         db.execute(
             """INSERT INTO code_test_case (id, problem_id, seq, input_text,
-                                           expected_output, weight, sample, created_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                                           expected_output, weight, sample,
+                                           match_mode, float_tolerance, alternatives_json,
+                                           created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (str(uuid.uuid4()), problem_id, c["seq"], c["input_text"],
-             c["expected_output"], c["weight"], c["sample"], _now()))
+             c["expected_output"], c["weight"], c["sample"],
+             c["match_mode"], c["float_tolerance"],
+             json.dumps(c["alternatives"], ensure_ascii=False) if c["alternatives"] else None,
+             _now()))
 
 
 
@@ -534,14 +606,32 @@ def submit_code(store, problem_id: str, student_id: str, code_text: str) -> dict
             (sid, problem_id, student_id, problem["language"],
              db.field_codec.seal(code_text, "code_submission", "code_text", sid),
              _now()))
+    # FR-J05：队列模式（TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1）提交入队，
+    # 由 worker 后台判题；默认仍同步判题（契约不变，测试与单机课堂直接出分）。
+    from webapp import code_judge_queue
+    if code_judge_queue.queue_enabled():
+        task_id = code_judge_queue.enqueue(store, sid)
+        return {"submission_id": sid, "task_id": task_id, "status": "pending",
+                "queued": True, "sandbox_notice": code_sandbox_notice()}
     return judge_submission(store, sid)
 
 
-def judge_submission(store, submission_id: str) -> dict[str, Any]:
-    """教学级判题（J04 v1）：逐用例受限运行并加权计分。
+def code_sandbox_notice() -> str:
+    from webapp import code_sandbox
+    return code_sandbox.SANDBOX_NOTICE
 
-    边界：单进程同步执行（J05 异步队列待专项）；逐字节级比对归一化后
-    进行，浮点容差/多解判定未实现；判题器边界见 code_sandbox.SANDBOX_NOTICE。"""
+
+def code_judge_queue_retry(store, task_id: str) -> dict[str, Any]:
+    from webapp import code_judge_queue
+    return code_judge_queue.retry_task(store, task_id)
+
+
+def judge_submission(store, submission_id: str) -> dict[str, Any]:
+    """教学级判题（J04 v3.1）：逐用例受限运行并加权计分。
+
+    边界：单进程同步执行（J05 队列可选异步）；比对按用例 match_mode
+    （exact/float 浮点容差/any_of 多解判定，见 code_sandbox.compare_output）；
+    判题器边界见 code_sandbox.SANDBOX_NOTICE。"""
     from webapp import code_sandbox
     with store.connect() as db:
         submission = db.execute(
@@ -553,7 +643,8 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
             (submission["problem_id"],)).fetchone()
         code = submission["code_text"]  # 行工厂（attach row handler）已按身份校验并解密
         cases = [dict(r) for r in db.execute(
-            "SELECT seq, input_text, expected_output, weight FROM code_test_case"
+            "SELECT seq, input_text, expected_output, weight, match_mode,"
+            " float_tolerance, alternatives_json FROM code_test_case"
             " WHERE problem_id=? ORDER BY seq", (submission["problem_id"],)).fetchall()]
         detail: list[dict[str, Any]] = []
         passed_weight = 0.0
@@ -564,8 +655,15 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
         for case in cases:
             run = code_sandbox.run_case(code, case["input_text"],
                                         time_limit_ms=problem["time_limit_ms"])
-            ok = run["status"] == "ok" and code_sandbox.judge_output(
-                run["output"], case["expected_output"])
+            try:
+                alternatives = json.loads(case["alternatives_json"] or "[]")
+            except (TypeError, ValueError):
+                alternatives = []
+            ok = run["status"] == "ok" and code_sandbox.compare_output(
+                run["output"], case["expected_output"],
+                mode=case["match_mode"] or "exact",
+                tolerance=case["float_tolerance"],
+                alternatives=alternatives)
             total_weight += float(case["weight"])
             if ok:
                 passed_weight += float(case["weight"])
@@ -589,6 +687,10 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
             detail = [{"error": "题目没有配置测试用例，无法判题。"}]
         rid = str(uuid.uuid4())
         db.execute("BEGIN IMMEDIATE")
+        # 队列重试（J05）会对同一提交重判：替换旧判题结果与评分记录
+        # （正常流一次性，历史提交行不被覆盖的惯例只针对提交本身）。
+        db.execute("DELETE FROM code_score_record WHERE submission_id=?", (submission_id,))
+        db.execute("DELETE FROM code_judge_result WHERE submission_id=?", (submission_id,))
         db.execute(
             """INSERT INTO code_judge_result (id, submission_id, status, total_score,
                                               passed_count, case_count, detail_json, judged_at)
@@ -597,8 +699,95 @@ def judge_submission(store, submission_id: str) -> dict[str, Any]:
              len(cases), json.dumps(detail, ensure_ascii=False), _now()))
         db.execute("UPDATE code_submission SET status='judged' WHERE id=?", (submission_id,))
         row = db.execute("SELECT * FROM code_judge_result WHERE id=?", (rid,)).fetchone()
+        # FR-J07/J08：质量分与评分桥接与判题同事务落库。质量分是辅助维度
+        # （不改判对错）；code_score_record 把判题客观分作为评分体系的事实
+        # 来源，教师可后续调分（adjust_code_score）。
+        # 质量评估用纯函数 assess（不开新连接），插入走本事务，避免嵌套写锁。
+        from webapp import code_quality
+        quality = None
+        if submission["language"] == "python":
+            quality = code_quality.assess(code)
+            db.execute("DELETE FROM code_quality_result WHERE submission_id=?", (submission_id,))
+            db.execute(
+                """INSERT INTO code_quality_result (id, submission_id, score, detail_json, checked_at)
+                   VALUES (?,?,?,?,?)""",
+                (str(uuid.uuid4()), submission_id, quality["score"],
+                 json.dumps(quality["checks"], ensure_ascii=False), _now()))
+        if final_status != "judgement_failed":
+            db.execute("DELETE FROM code_score_record WHERE submission_id=?", (submission_id,))
+            db.execute(
+                """INSERT INTO code_score_record (id, submission_id, judge_result_id,
+                                                  auto_score, adjusted_score, adjust_reason,
+                                                  adjust_log_json, adjusted_by, updated_at)
+                   VALUES (?,?,?,?,NULL,'','[]',NULL,?)""",
+                (str(uuid.uuid4()), submission_id, rid, total_score, _now()))
     return {**dict(row), "detail": json.loads(row["detail_json"]),
+            "quality": quality,
             "sandbox_notice": code_sandbox.SANDBOX_NOTICE}
+
+
+# ---- J08 判题分接入评分体系：教师调分与明细查看 ----
+
+def code_submission_college(store, submission_id: str) -> str | None:
+    """提交所属院校（经题目归属；code_submission 本身无 college 列）。"""
+    with store.connect() as db:
+        row = db.execute(
+            """SELECT p.college FROM code_submission s
+               JOIN code_problem p ON p.id=s.problem_id WHERE s.id=?""",
+            (submission_id,)).fetchone()
+    return row["college"] if row else None
+
+def get_code_score(store, submission_id: str) -> dict[str, Any]:
+    """一份提交的评分记录：判题客观分 + 教师调分 + 生效分 + 质量分。"""
+    from webapp import code_quality
+    with store.connect() as db:
+        row = db.execute(
+            """SELECT r.id AS record_id, r.auto_score, r.adjusted_score, r.adjust_reason,
+                      r.adjust_log_json, r.adjusted_by, r.updated_at,
+                      j.status AS judge_status, j.total_score, j.passed_count, j.case_count,
+                      j.judged_at
+               FROM code_score_record r
+               JOIN code_judge_result j ON j.id=r.judge_result_id
+               WHERE r.submission_id=?""", (submission_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("该提交尚未完成判题，暂无评分记录。", 404)
+    payload = dict(row)
+    payload["adjust_log"] = json.loads(row["adjust_log_json"] or "[]")
+    payload["effective_score"] = (row["adjusted_score"]
+                                  if row["adjusted_score"] is not None else row["auto_score"])
+    payload["quality"] = code_quality.get_quality(store, submission_id)
+    payload.pop("adjust_log_json", None)
+    return payload
+
+
+def adjust_code_score(store, submission_id: str, new_score: float, reason: str,
+                      operator_id: str) -> dict[str, Any]:
+    """教师调分（J08）：沿用评分框架的留痕惯例，全部调整入 adjust_log。"""
+    new_score = round(float(new_score), 2)
+    if not (0.0 <= new_score <= 100.0):
+        raise TrainingPortalError("调分须在 0~100 之间。")
+    reason = (reason or "").strip()
+    if not reason:
+        raise TrainingPortalError("调分必须填写理由（留痕要求）。")
+    now = _now()
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute(
+            "SELECT auto_score, adjusted_score, adjust_log_json FROM code_score_record"
+            " WHERE submission_id=?", (submission_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("该提交尚未完成判题，暂无评分记录。", 404)
+        previous = (row["adjusted_score"] if row["adjusted_score"] is not None
+                    else row["auto_score"])
+        log = json.loads(row["adjust_log_json"] or "[]")
+        log.append({"at": now, "operator_id": operator_id, "from": previous,
+                    "to": new_score, "reason": reason})
+        db.execute(
+            """UPDATE code_score_record SET adjusted_score=?, adjust_reason=?,
+                   adjust_log_json=?, adjusted_by=?, updated_at=? WHERE submission_id=?""",
+            (new_score, reason, json.dumps(log, ensure_ascii=False), operator_id, now,
+             submission_id))
+    return get_code_score(store, submission_id)
 
 
 def _submission_view(row: sqlite3.Row, include_code: bool = False) -> dict[str, Any]:
@@ -624,9 +813,11 @@ def list_code_submissions(store, *, problem_id: str | None = None,
     with store.connect() as db:
         rows = db.execute(
             f"""SELECT s.*, r.status AS judge_status, r.total_score,
-                       r.passed_count, r.case_count, r.judged_at
+                       r.passed_count, r.case_count, r.judged_at,
+                       sc.adjusted_score, sc.auto_score
                 FROM code_submission s
                 LEFT JOIN code_judge_result r ON r.submission_id = s.id
+                LEFT JOIN code_score_record sc ON sc.submission_id = s.id
                 {where} ORDER BY s.submitted_at DESC LIMIT ?""", params).fetchall()
         for row in rows:
             view = {key: row[key] for key in
@@ -635,6 +826,13 @@ def list_code_submissions(store, *, problem_id: str | None = None,
                 "status": row["judge_status"], "total_score": row["total_score"],
                 "passed_count": row["passed_count"], "case_count": row["case_count"],
                 "judged_at": row["judged_at"]}
+            # J08：生效分 = 教师调分（未调 = 判题客观分）；未判题无评分。
+            if row["judge_status"] is None:
+                view["effective_score"] = None
+            else:
+                view["effective_score"] = (row["adjusted_score"]
+                                           if row["adjusted_score"] is not None
+                                           else row["auto_score"])
             if include_code:
                 view["code_text"] = row["code_text"]  # 行工厂（attach row handler）已解密
             out.append(view)
@@ -1251,7 +1449,7 @@ def college_quota_state(db, college: str) -> dict[str, Any]:
     row = db.execute("SELECT teacher_quota, student_quota, revision FROM college_quota"
                      " WHERE college=?", (college,)).fetchone()
     teachers = db.execute("SELECT count(*) FROM college_user"
-                          " WHERE college=? AND active=1 AND role='teacher'",
+                          " WHERE college=? AND active=1",
                           (college,)).fetchone()[0]
     students = db.execute("SELECT count(*) FROM student_info WHERE college=? AND active=1",
                           (college,)).fetchone()[0]
@@ -1292,7 +1490,12 @@ def college_quota_overview(store, college: str, *, history_limit: int = 10) -> d
                FROM college_quota_history h LEFT JOIN college_user u ON u.id=h.changed_by
                WHERE h.college=? ORDER BY h.created_at DESC, h.rowid DESC LIMIT ?""",
             (college, max(1, min(int(history_limit), 50)))).fetchall()]
-    state["history"] = hist
+        hist.extend(dict(r) for r in db.execute("""SELECT e.old_staff_seats AS old_teacher_quota,
+            e.old_student_seats AS old_student_quota,e.staff_seats AS new_teacher_quota,
+            e.student_seats AS new_student_quota,e.created_at,u.display_name AS changed_by_name
+            FROM university_capacity_events e JOIN users u ON u.id=e.actor_id
+            WHERE e.college=? ORDER BY e.rowid DESC LIMIT ?""",(college,max(1,min(int(history_limit),50)))))
+    state["history"] = sorted(hist,key=lambda r:r['created_at'],reverse=True)[:max(1,min(int(history_limit),50))]
     return state
 
 
@@ -1414,7 +1617,7 @@ def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
 
     逐行导入，单行失败不中断整批；重复/错误行带原因返回，不部分静默成功。
     role 限 teacher / school_admin；admin 账号仍走人工建立，避免批量提权。"""
-    _validate_student_password(default_password)
+    _validate_training_password(default_password)
     if role not in ("teacher", "school_admin"):
         raise TrainingPortalError("role 仅支持 teacher 或 school_admin（admin 走人工建立）。")
     college = (college or "").strip()
@@ -1434,6 +1637,7 @@ def import_staff_users(store, college: str, rows: list[dict[str, Any]], *,
             skipped.append({"line": index, "username": line_no, "reason": "姓名必填。"})
             continue
         try:
+            _validate_training_password(default_password, str(row.get("email") or ""))
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 require_teacher_slot(db, college)  # FR-U06：事务内核销，并发不绕过（教师/校级管理员同槽）
@@ -1617,14 +1821,23 @@ def _staff_public(row: sqlite3.Row) -> dict[str, Any]:
 def login_staff(store, username: str, password: str, remember: bool = False) -> dict[str, Any] | None:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        row = db.execute("SELECT * FROM college_user WHERE username=? AND active=1",
-                         (username.strip(),)).fetchone()
-        if not row:
+        identifier = username.strip()
+        rows = db.execute("SELECT * FROM college_user WHERE (username=? OR lower(email)=?) AND active=1",
+                          (identifier, identifier.lower())).fetchall()
+        verified = []
+        for candidate in rows:
+            if not university_members.identity_active(db,staff_id=candidate["id"]):
+                continue
+            try:
+                _passwords.verify(university_members.identity_hash(db,candidate["password_hash"],staff_id=candidate["id"]), password)
+                verified.append(candidate)
+            except (VerifyMismatchError, InvalidHashError):
+                continue
+        if not verified:
             return None
-        try:
-            _passwords.verify(row["password_hash"], password)
-        except (VerifyMismatchError, InvalidHashError):
-            return None
+        if len(verified) > 1:
+            raise TrainingPortalError('该邮箱对应多个教学档案，请使用唯一用户名登录。')
+        row = verified[0]
         token = secrets.token_urlsafe(32)
         expires = (datetime.now(UTC) + timedelta(seconds=session_max_age(remember))).isoformat(timespec="seconds")
         db.execute("DELETE FROM training_staff_sessions WHERE expires_at < ?", (_now(),))
@@ -1643,6 +1856,8 @@ def staff_for_token(store, token: str | None) -> dict[str, Any] | None:
                WHERE t.token_hash=? AND t.expires_at>=?""",
             (_hash_token(token), _now()),
         ).fetchone()
+        if row and not university_members.identity_active(db,staff_id=row["id"]):
+            return None
     if not row or not row["active"] or row["role"] not in ("teacher", "admin", "school_admin"):
         return None
     return _staff_public(row)
@@ -3103,11 +3318,26 @@ class CodeTestCaseIn(BaseModel):
     expected_output: str = ""
     weight: float = 1.0
     sample: bool = False
+    match_mode: str = Field(default="exact",
+                            pattern="^(exact|float|any_of)$")  # v3.1 比对模式
+    float_tolerance: float | None = Field(default=None, gt=0.0, le=0.5)
+    alternatives: list[str] | None = None  # any_of 多解候选
 
 
 class CodeSubmitBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     code_text: str = Field(min_length=1)
+
+
+class PlagiarismScanBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+
+
+class CodeScoreAdjustBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    score: float = Field(ge=0.0, le=100.0)
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class CodeProblemCreate(BaseModel):
@@ -3322,6 +3552,10 @@ def _patch_fields(body) -> dict[str, Any]:
 
 
 def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
+    if university_members.AccessDenied not in app.exception_handlers:
+        async def member_access_error(_request, exc):
+            return JSONResponse({'detail':str(exc)},status_code=exc.status)
+        app.add_exception_handler(university_members.AccessDenied,member_access_error)
     def response(body: Any) -> JSONResponse:
         return JSONResponse(body, headers={"Cache-Control": "private, no-store"})
 
@@ -3357,6 +3591,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                 raise HTTPException(status_code=401, detail="学号或密码不正确。")
             login_guard.record_success(body.student_no)
         resp = response({"student": result["student"]})
+        from webapp.university_members import attach_platform_session
+        attach_platform_session(store_provider(),resp,result['student']['id'],remember=body.remember,student_cookie=cookie_name)
         resp.set_cookie(
             cookie_name, result["token"], max_age=session_max_age(body.remember), httponly=True,
             samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1", path="/",
@@ -3364,10 +3600,10 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return resp
 
     @app.post("/api/training/auth/logout")
-    def training_logout(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
-        logout_student(store_provider(), session)
+    def training_logout(request: Request) -> Response:
         resp = response({"ok": True})
-        resp.delete_cookie(cookie_name, path="/")
+        from webapp.university_members import logout_browser
+        logout_browser(store_provider(),request,resp,cookie_name)
         return resp
 
     @app.get("/api/training/auth/me")
@@ -3579,7 +3815,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
 
     def admin(session: str | None, college: str | None = None) -> dict[str, Any]:
         who = staff(session, college)
-        if who.get("role") != "admin":
+        if who.get("role") not in {"admin", "school_admin"}:
             raise HTTPException(status_code=403, detail="该操作仅限实训管理员。")
         return who
 
@@ -3606,6 +3842,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                 raise HTTPException(status_code=401, detail="用户名或密码不正确。")
             staff_login_guard.record_success(body.username)
         resp = response({"staff": result["staff"]})
+        from webapp.university_members import attach_platform_session
+        attach_platform_session(store_provider(),resp,result['staff']['id'],staff=True,remember=body.remember)
         resp.set_cookie(
             STAFF_COOKIE, result["token"], max_age=session_max_age(body.remember), httponly=True,
             samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1", path="/",
@@ -3613,10 +3851,10 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return resp
 
     @app.post("/api/training/staff/auth/logout")
-    def staff_logout(session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        logout_staff(store_provider(), session)
+    def staff_logout(request: Request) -> Response:
         resp = response({"ok": True})
-        resp.delete_cookie(STAFF_COOKIE, path="/")
+        from webapp.university_members import logout_browser
+        logout_browser(store_provider(),request,resp)
         return resp
 
     @app.get("/api/training/staff/auth/me")
@@ -3769,28 +4007,28 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def staff_student_list(include_inactive: bool = True,
                            session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         who = staff(session)
-        return response({"students": list_students(store_provider(), who["college"], include_inactive=include_inactive)})
+        return response({"students": list_students(store_provider(), who["college"], include_inactive=include_inactive,teacher_id=who["id"] if who["role"]=="teacher" else None)})
 
     @app.post("/api/training/staff/students")
     @guarded
     def staff_student_create(body: StudentCreate,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session, body.college)
+        who = staff(session, body.college)
         return response({"student": create_student(
             store_provider(), body.college, body.student_no, body.name,
             class_name=body.class_name, initial_password=body.initial_password,
-            email=body.email)})
+            email=body.email,teacher_id=who["id"])})
 
     @app.post("/api/training/staff/students/import")
     @guarded
     def staff_student_import(body: StudentImportBody,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        staff(session, body.college)
+        who = staff(session, body.college)
         return response({"import": import_students(
             store_provider(), body.college,
             [r.model_dump() for r in body.rows],
             default_password=body.default_password,
-            default_class_name=body.default_class_name)})
+            default_class_name=body.default_class_name,teacher_id=who["id"])})
 
     @app.post("/api/training/staff/students/import-xlsx")
     @guarded
@@ -3804,26 +4042,26 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         与文本导入共用 import_students 下游（逐行导入、重复/错误行带原因返回、
         不部分静默成功）；解析边界见 parse_student_xlsx（只读缓存值、不执行
         公式、表头识别、不按列序猜测）。"""
-        staff(session, college)
+        who = staff(session, college)
         rows = parse_student_xlsx(file.file.read())
         return response({"import": import_students(
             store_provider(), college, rows,
             default_password=default_password,
-            default_class_name=(default_class_name or "").strip() or None)})
+            default_class_name=(default_class_name or "").strip() or None,teacher_id=who["id"])})
 
     @app.post("/api/training/staff/students/{student_id}/reset-password")
     @guarded
     def staff_student_reset_password(student_id: str, body: StudentPasswordReset,
                                      session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         who = staff(session)
-        return response(reset_student_password(store_provider(), student_id, body.new_password, college=who["college"]))
+        return response(reset_student_password(store_provider(), student_id, body.new_password, college=who["college"],actor=who))
 
     @app.post("/api/training/staff/students/{student_id}/toggle")
     @guarded
     def staff_student_toggle(student_id: str, body: StudentToggle,
                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         who = staff(session)
-        return response({"student": set_student_active(store_provider(), student_id, body.active, college=who["college"])})
+        return response({"student": set_student_active(store_provider(), student_id, body.active, college=who["college"],actor=who)})
 
     @app.get("/api/training/staff/teachers")
     @guarded
@@ -3954,6 +4192,88 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         who = student(session)
         return response({"submissions": list_code_submissions(
             store_provider(), problem_id=problem_id, student_id=who["id"])})
+
+    # ---- 判题队列 / 查重 / 质量分 / 评分对接（FR-J05～J08，教师端） ----
+
+    @app.get("/api/training/staff/code-judge/tasks")
+    @guarded
+    def staff_code_judge_tasks(state: str | None = None, limit: int = 50,
+                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """判题队列视图（J05）：排队/运行/失败任务与最近错误，供教师核查。"""
+        who = staff(session)
+        from webapp import code_judge_queue
+        tasks = code_judge_queue.list_tasks(store_provider(), state=state, limit=limit,
+                                            college=who["college"])
+        return response({"tasks": tasks})
+
+    @app.post("/api/training/staff/code-judge/tasks/{task_id}/retry")
+    @guarded
+    def staff_code_judge_retry(task_id: str,
+                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """失败/卡死任务手动重试（J05）：置回 queued，由 worker 或 run_pending 消化。"""
+        who = staff(session)
+        store = store_provider()
+        task = code_judge_queue_retry(store, task_id)
+        with store.connect() as db:
+            row = db.execute(
+                """SELECT st.college FROM code_judge_task t
+                   JOIN code_submission s ON s.id=t.submission_id
+                   JOIN student_info st ON st.id=s.student_id WHERE t.id=?""",
+                (task_id,)).fetchone()
+        if not row or row["college"] != who["college"]:
+            raise HTTPException(status_code=404, detail="任务不存在。")
+        return response({"task": task})
+
+    @app.post("/api/training/staff/code-problems/{problem_id}/plagiarism-scan")
+    @guarded
+    def staff_code_plagiarism_scan(problem_id: str, body: PlagiarismScanBody,
+                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """同题跨学生查重扫描（J06）：每个学生最新提交两两 Jaccard 比对，落标记。"""
+        college_record(staff(session), "code_problem", problem_id)
+        from webapp import code_plagiarism
+        return response({"scan": code_plagiarism.scan_problem(
+            store_provider(), problem_id, threshold=body.threshold)})
+
+    @app.get("/api/training/staff/code-problems/{problem_id}/plagiarism")
+    @guarded
+    def staff_code_plagiarism_list(problem_id: str,
+                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        college_record(staff(session), "code_problem", problem_id)
+        from webapp import code_plagiarism
+        return response({"flags": code_plagiarism.list_flags(store_provider(), problem_id)})
+
+    @app.get("/api/training/staff/code-submissions/{submission_id}/score")
+    @guarded
+    def staff_code_score_get(submission_id: str,
+                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """评分记录（J08）：判题客观分 + 质量分 + 教师调分留痕 + 生效分。"""
+        who = staff(session)
+        if code_submission_college(store_provider(), submission_id) != who["college"]:
+            raise HTTPException(status_code=404, detail="提交不存在。")
+        return response({"score": get_code_score(store_provider(), submission_id)})
+
+    @app.put("/api/training/staff/code-submissions/{submission_id}/score")
+    @guarded
+    def staff_code_score_adjust(submission_id: str, body: CodeScoreAdjustBody,
+                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """教师调分（J08）：生效分改为教师给定值，全部调整留痕。"""
+        who = staff(session)
+        if code_submission_college(store_provider(), submission_id) != who["college"]:
+            raise HTTPException(status_code=404, detail="提交不存在。")
+        return response({"score": adjust_code_score(
+            store_provider(), submission_id, body.score, body.reason, who["id"])})
+
+    @app.get("/api/training/staff/code-submissions/{submission_id}/quality")
+    @guarded
+    def staff_code_quality_get(submission_id: str,
+                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        """质量分明细（J07）：逐检查项扣分说明。"""
+        who = staff(session)
+        if code_submission_college(store_provider(), submission_id) != who["college"]:
+            raise HTTPException(status_code=404, detail="提交不存在。")
+        from webapp import code_quality
+        quality = code_quality.get_quality(store_provider(), submission_id)
+        return response({"quality": quality})
 
     # ---- 班级与教师名册（FR-U03 第一期） ----
 
@@ -4096,10 +4416,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @guarded
     def org_quota_update(body: OrgQuotaPatch,
                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = admin(session, body.college)
-        return response({"quota": set_college_quota(
-            store_provider(), who["id"], body.college,
-            body.teacher_quota, body.student_quota, body.revision)})
+        staff(session, body.college)
+        raise HTTPException(403, "学校总额度只能由平台顶级管理员调整。")
 
     @app.post("/api/training/staff/org/terms/{term_id}/roster-snapshot")
     @guarded
@@ -4128,8 +4446,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
             role=body.role)})
 
     @app.get("/training-certificates")
-    def training_portal_page() -> FileResponse:
-        return FileResponse(STATIC_DIR / "training-portal.html", media_type="text/html")
+    def training_portal_page(request: Request) -> FileResponse:
+        return university_members.teaching_page(store_provider(),request,student_cookie=cookie_name)
 
     @app.get("/training-portal.js")
     def training_portal_script() -> FileResponse:
@@ -4140,8 +4458,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return FileResponse(STATIC_DIR / "training-dark.css", media_type="text/css")
 
     @app.get("/training-staff")
-    def training_staff_page() -> FileResponse:
-        return FileResponse(STATIC_DIR / "training-staff.html", media_type="text/html")
+    def training_staff_page(request: Request) -> FileResponse:
+        return university_members.teaching_page(store_provider(),request,staff=True)
 
     @app.get("/training-staff.js")
     def training_staff_script() -> FileResponse:

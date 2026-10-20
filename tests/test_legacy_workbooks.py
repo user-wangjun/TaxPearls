@@ -47,15 +47,35 @@ def biff(*, extra=b'', global_extra=b'', version=0x500, sheet_type=0, value='lit
             extra + record(0xA))
 
 
-def compound(stream, *, extra_name=None):
+def biff8(*, extra=b'', global_extra=b'', sst_count=2):
+    strings = ['项目', '销售额']
+    shared = struct.pack('<II', sst_count, sst_count) + b''.join(
+        struct.pack('<HB', len(s), 1) + s.encode('utf-16-le') for s in strings)
+    globals_ = (record(0x809, struct.pack('<HHHH', 0x600, 5, 0, 0)) +
+                record(0x42, struct.pack('<H', 1200)) + record(0xE0, bytes(20)) +
+                record(0x4D, bytes(4200)) + record(0xFC, shared) + global_extra)
+    name = '申报主表'.encode('utf-16-le')
+    start = len(globals_) + 4 + 8 + len(name) + 4
+    bound = record(0x85, struct.pack('<IBBBB', start, 0, 0, len(name)//2, 1) + name)
+    return (globals_ + bound + record(0xA) + record(0x809, struct.pack('<HHHH', 0x600, 0x10, 0, 0)) +
+            record(0x200, struct.pack('<IIHHH', 0, 2, 0, 2, 0)) +
+            record(0xFD, struct.pack('<HHHI', 0, 0, 0, 0)) +
+            record(0xFD, struct.pack('<HHHI', 1, 0, 0, 1)) +
+            record(0x203, struct.pack('<HHHd', 1, 1, 0, 12.5)) +
+            record(0xE5, struct.pack('<5H', 1, 0, 0, 0, 1)) + extra + record(0xA))
+
+
+def compound(stream, *, extra_name=None, extra_data=None):
     """Minimal valid CFB with regular (>=4096-byte) Book stream, no mini-FAT."""
     free, end, fat_sector = 0xFFFFFFFF, 0xFFFFFFFE, 0xFFFFFFFD
     sectors = (len(stream) + 511) // 512
+    extra_sectors = (len(extra_data) + 511) // 512 if extra_data is not None else 0
+    allocated = sectors + extra_sectors
     header = bytearray(512)
     header[:8] = b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'
     struct.pack_into('<HHHHH', header, 24, 0x3E, 3, 0xFFFE, 9, 6)
     struct.pack_into('<IIIIIIIII', header, 40, 0, 1, 0, 0, 4096, end, 0, end, 0)
-    struct.pack_into('<109I', header, 76, sectors + 1, *([free] * 108))
+    struct.pack_into('<109I', header, 76, allocated + 1, *([free] * 108))
 
     def entry(name, kind, child=free, right=free, start=end, size=0):
         raw = bytearray(128)
@@ -67,11 +87,16 @@ def compound(stream, *, extra_name=None):
     directory = (entry('Root Entry', 5, child=1) +
                  entry('Book', 2, right=2 if extra_name else free, start=1, size=len(stream)))
     if extra_name:
-        directory += entry(extra_name, 2, start=1, size=len(stream))
+        directory += entry(extra_name, 2, start=sectors+1 if extra_data is not None else 1,
+                           size=len(extra_data) if extra_data is not None else len(stream))
     directory += bytes(512 - len(directory))
-    fat = [end, *range(2, sectors + 1), end, fat_sector]
+    fat = [end, *range(2, sectors + 1), end]
+    if extra_sectors:
+        fat += [*range(sectors+2, allocated+1), end]
+    fat += [fat_sector]
     fat += [free] * (128 - len(fat))
-    return bytes(header + directory) + stream.ljust(sectors * 512, b'\0') + struct.pack('<128I', *fat)
+    return (bytes(header + directory) + stream.ljust(sectors * 512, b'\0') +
+            (extra_data.ljust(extra_sectors * 512, b'\0') if extra_data is not None else b'') + struct.pack('<128I', *fat))
 
 
 class LegacyWorkbookTests(unittest.TestCase):
@@ -79,7 +104,8 @@ class LegacyWorkbookTests(unittest.TestCase):
         raw = compound(biff(value='=not a formula'))
         original = sha256(raw).hexdigest()
         info = material_formats.validate('source.xls', raw)
-        self.assertEqual(info['parser'], 'fixed-biff57-v1')
+        from src.legacy_workbooks import VERSION
+        self.assertEqual(info['parser'], VERSION)
         book = open_workbook(raw)
         self.addCleanup(book.close)
         self.assertEqual(book['Sheet1']['B2'].value, 12.5)
@@ -92,11 +118,50 @@ class LegacyWorkbookTests(unittest.TestCase):
             with self.subTest(code=code), self.assertRaisesRegex(InputError, '公式'):
                 read(compound(biff(extra=record(code, b'\0' * 25))))
 
+    def test_biff8_unicode_shared_strings_merges_and_values(self):
+        raw = compound(biff8())
+        info = material_formats.validate('申报表.xls', raw)
+        self.assertEqual(info['biff_version'], 80)
+        book = open_workbook(raw)
+        self.addCleanup(book.close)
+        self.assertEqual(book.sheetnames, ['申报主表'])
+        self.assertEqual(book.active['A2'].value, '销售额')
+        self.assertEqual(book.active['B2'].value, 12.5)
+        self.assertEqual(str(next(iter(book.active.merged_cells.ranges))), 'A1:B1')
+
+    def test_known_excel_header_and_inert_extensions_preserve_original(self):
+        raw = compound(biff8(), extra_name='ETExtData', extra_data=bytes(4096))
+        raw = raw[:8] + bytes.fromhex('2008020000000000c000000000000046') + raw[24:]
+        before = sha256(raw).hexdigest()
+        info = material_formats.validate('旧申报模板.xls', raw)
+        self.assertEqual(info['biff_version'], 80)
+        self.assertTrue(any('文件头' in n for n in info['compatibility_notes']))
+        self.assertTrue(any('ETExtData' in n for n in info['compatibility_notes']))
+        self.assertEqual(sha256(raw).hexdigest(), before)
+
+    def test_biff8_still_rejects_formulas_active_objects_links_and_bad_bounds(self):
+        for code in (0x6, 0x221, 0x23, 0x2F, 0x1AE, 0x1B8, 0xFFFF):
+            with self.subTest(code=code), self.assertRaises(InputError):
+                read(compound(biff8(extra=record(code, bytes(25)))))
+        for stream in [biff8(sst_count=2**31), biff8(extra=record(0xFD, struct.pack('<HHHI', 29999, 99, 0, 0))),
+                       biff8(extra=record(0x5D, struct.pack('<HHHH', 0x15, 18, 8, 1)+bytes(16)))]:
+            with self.assertRaises(InputError):
+                read(compound(stream))
+
+    def test_biff8_zero_padding_and_static_comment_do_not_change_cell_values(self):
+        comment=record(0x5D,struct.pack('<HHH',0x15,18,0x19)+bytes(16)+record(0))
+        book=read(compound(biff8(extra=comment)+bytes(32)))
+        self.addCleanup(book.release_resources)
+        self.assertEqual(book.sheet_by_index(0).cell_value(1,1),12.5)
+        for tail in [bytes(4)+b'active',b'\0\0\0']:
+            with self.assertRaises(InputError):
+                read(compound(biff8()+tail))
+
     def test_unknown_external_object_encrypted_and_macro_records_reject(self):
         for code in (0x23, 0x2F, 0x5D, 0x1AE, 0x1B8, 0xEB, 0xFFFF):
             with self.subTest(code=code), self.assertRaises(InputError):
                 read(compound(biff(extra=record(code))))
-        for version in (0x600, 0x400):
+        for version in (0x400, 0x200):
             with self.subTest(version=version), self.assertRaises(InputError):
                 read(compound(biff(version=version)))
         for kind in (1, 2, 6):

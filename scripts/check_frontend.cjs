@@ -152,7 +152,7 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 // Refresh restores the actual selected workspace view, while role-hidden views stay unavailable.
 {
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
-  const code = source.slice(source.indexOf("function defaultWorkspacePanel()"), source.indexOf("/* ---------- 多材料上传"));
+  const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("/* ---------- 多材料上传"));
   const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel"];
   const permitted = {
     org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel"].includes(id)),
@@ -229,7 +229,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
     const code = source.slice(source.indexOf("function inviteOrgTypeLabel("), source.indexOf('$("btnCreateClient").addEventListener'));
     const nodes = new Map(), handlers = new Map(), writes = [], errors = [], toasts = [];
     const node = id => {
-      if(!nodes.has(id))nodes.set(id,{value:"",textContent:"",hidden:false,disabled:false,
+      if(!nodes.has(id))nodes.set(id,{value:"",textContent:"",hidden:false,disabled:false,dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},
         addEventListener:(_event,handler)=>handlers.set(id,handler)});
       return nodes.get(id);
     };
@@ -279,7 +279,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   // in application code; this tiny boundary provides only the needed DOM/API.
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
   // Settings reuses self-only preferences; stale reads/writes may not alter another view/account.
-  const settingsCode = source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
+  const settingsCode = source.slice(source.indexOf("function isCampusUser("), source.indexOf("async function teachingRequest("))+source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
   function settingsBoundary(role = "accountant") {
     const nodes = new Map(), calls = [], navigated = []; let active = true;
     const user = {id:"settings-user", role, username:"<account>", display_name:"<name>", created_at:"2026-10-01T00:00:00+00:00"};
@@ -527,3 +527,27 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
 // Core inputs must be loaded before the shared console creates its controller.
 assert.ok(indexMarkup.indexOf('/core-inputs.js') < indexMarkup.indexOf('/console.js'));
 assert.ok(indexMarkup.includes('id="coreInputs"'));
+
+// Material history stays in management and is fetched only after an explicit query.
+(async()=>{
+  const source=fs.readFileSync("webapp/static/console.js","utf8"),start=source.indexOf("function renderAdminLogs("),end=source.indexOf("\nasync function loadAdmin()",start);
+  const node=(tag,cls="",text="")=>({tag,className:cls,textContent:text,children:[],hidden:false,disabled:false,append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
+  const root=node("div"),calls=[];let pending=null,fail=false,current=true;
+  const ctx={$:()=>root,el:node,currentUser:{id:"admin",role:"org_admin"},Intl,Date,
+    api:async url=>{calls.push(url);if(pending)return await pending;if(fail)throw Error("权限已变化");return {id:"task/id",revision:2,versions:[{revision:2,kind:"edit",created_at:"2026-10-17T13:43:30+00:00",created_by:"admin"}],events:[{action:"view",created_at:"2026-10-17T13:43:30+00:00",actor_id:"admin",revision:2}]};}};
+  vm.createContext(ctx);vm.runInContext(source.slice(start,end),ctx);
+  const rows=[{target_type:"material_batch",target_id:"task/id",action:"material_edit",created_at:"2026-10-17T13:43:30+00:00"}];
+  const all=n=>[n,...n.children.flatMap(all)],button=()=>all(root).find(n=>n.tag==="button");
+  ctx.renderAdminLogs(rows,()=>current);assert.equal(calls.length,0,"management only requests history on demand");
+  await button().onclick();assert.deepEqual(calls,["/api/enterprise/materials/task%2Fid/trace"]);
+  assert.ok(all(root).some(n=>n.textContent.includes("保存资料核对")&&n.textContent.includes("21:43:30")),"timestamps use Asia/Shanghai");
+  const trace=all(root).find(n=>n.tag==="div"&&n.children.some(c=>c.textContent.includes("材料任务 task/id")));
+  await button().onclick();assert.equal(trace.hidden,true);assert.equal(calls.length,1);
+  await button().onclick();assert.equal(calls.length,2,"reopening reauthorizes the trace on the server");
+  await button().onclick();fail=true;await button().onclick();assert.ok(all(root).some(n=>n.textContent==="查询失败：权限已变化"));
+  fail=false;ctx.renderAdminLogs(rows,()=>current);let resolve;pending=new Promise(done=>{resolve=done;});const request=button().onclick();current=false;
+  resolve({id:"stale-private-task",revision:3,versions:[],events:[]});await request;
+  assert.ok(!all(root).some(n=>n.textContent.includes("stale-private-task")),"late responses cannot repopulate an inactive session or panel");
+  for(const role of ["accountant","teacher","platform_admin"]){ctx.currentUser.role=role;ctx.renderAdminLogs(rows,()=>true);assert.equal(button(),undefined);}
+  console.log("Admin material trace: on-demand query, close/reopen authorization, failure and stale-session guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});

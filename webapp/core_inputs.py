@@ -1,6 +1,7 @@
 """Task -> encrypted inputs -> standardized evidence; stops before risk evaluation."""
 
 from copy import deepcopy
+from contextlib import contextmanager
 from datetime import date
 import json
 import secrets
@@ -31,14 +32,44 @@ def migrate(db):
     core_reports.migrate(db)
 
 
-def latest(view):
+def latest(view, *, writable=False):
     if not view["versions"] or not view["versions"][-1]["payload"].get("core_task"):
         raise AccessDenied("这不是基础资料处理任务。", 404)
-    return view["versions"][-1]["payload"]
+    payload = view["versions"][-1]["payload"]
+    if writable and payload.get("completion"):
+        raise AccessDenied("任务已完成并归档，请先重新打开任务。", 409)
+    return payload
+
+
+def delete_task(store, user, task_id, expected_revision):
+    """Purge one core task atomically; enterprise/client and independent audits remain."""
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        batch = batches._authorize(db, user, task_id)
+        current_actor(db, user, {"org_admin"})
+        if not db.execute("SELECT 1 FROM core_input_tasks WHERE id=?", (task_id,)).fetchone():
+            raise AccessDenied()
+        if batch["revision"] != expected_revision:
+            raise AccessDenied("任务版本已变化，请重新读取后再删除。", 409)
+        if db.execute("SELECT 1 FROM material_jobs WHERE batch_id=? AND state='running'", (task_id,)).fetchone():
+            raise AccessDenied("任务正在处理，请处理结束后再删除。", 409)
+        db.execute("DELETE FROM material_ai_slots WHERE job_id IN (SELECT id FROM material_jobs WHERE batch_id=?)", (task_id,))
+        for table in ("material_jobs", "material_operations", "core_tax_reports", "material_executions",
+                      "material_revisions", "material_events", "material_originals"):
+            db.execute(f"DELETE FROM {table} WHERE batch_id=?", (task_id,))
+        db.execute("DELETE FROM core_mapping_observations WHERE org_id=? AND task_id=?", (user["org_id"], task_id))
+        db.execute("DELETE FROM core_input_tasks WHERE id=?", (task_id,))
+        db.execute("DELETE FROM material_batches WHERE id=?", (task_id,))
+        members.log(db, user, "core_task_delete", "material_batch", task_id, "permanent")
+    return {"id": task_id, "deleted": True}
 
 
 def project(view):
     value = deepcopy(latest(view))
+    # Older drafts may predate range modes. Expose a descriptive kind at the
+    # projection level without mutating the signed task payload; the range
+    # itself remains the user's selection.
+    value["range_kind"] = value["task"].get("range_kind") or core_materials.effective_range_kind(value["task"])
     from src import vat_reconciliation as vat
     value["vat_review_current"] = bool(vat.review(value))
     from webapp import core_policies
@@ -46,20 +77,22 @@ def project(view):
     return {
         **value,
         "scope_errors": scope_errors(value),
+        "scope_identity_candidates": core_materials.scope_identity_candidates(value.get("documents", [])),
+        "scope_period_candidates": core_materials.scope_period_candidates(value["task"]),
         "id": view["id"],
         "revision": view["revision"],
         "files": view["files"],
-        "events": view["events"],
-        "versions": [
-            {"revision": v["revision"], "kind": v["kind"], "created_at": v["created_at"]} for v in view["versions"]
-        ],
     }
 
 
 def scope_errors(payload):
     errors = core_materials.scope_errors(payload["task"])
+    # Document-level identity conflicts block the check; invoice-level ones are
+    # counterparties and belong to the rule layer as findings to review.
+    errors.update(core_materials.scope_identity_errors(
+        payload["task"], payload.get("documents", []), invoices=False))
     for item in payload.get("processing", {}).get("issues", []):
-        if item["code"] == "company_conflict":
+        if item["code"] == "company_conflict" and "tax_no" not in errors:
             errors["tax_no"] = "文件税号与任务企业冲突，请核对原件或排除不属于本企业的材料。"
     return errors
 
@@ -77,6 +110,11 @@ def scope_values(value):
         if not isinstance(raw, str) or len(raw) > 200:
             raise InputError("企业与检查区间须为不超过200字的文本。")
         result[key] = core_materials.identity(raw) if key == "tax_no" else raw.strip()
+    if "range_kind" in value:
+        kind = value.get("range_kind")
+        if not isinstance(kind, str) or len(kind) > 20:
+            raise InputError("检查范围方式无效。")
+        result["range_kind"] = kind.strip()
     return result
 
 
@@ -140,17 +178,17 @@ def register(app, get_store, get_user, allow, static_dir):
     def listing(session: str | None = Cookie(default=None, alias="taxpearls_session")):
         user = actor(session)
         result = []
-        for row in batches.listing(get_store(), user, workflow="core"):
-            view = batches.read(get_store(), user, row["id"])
-            if view["versions"] and view["versions"][-1]["payload"].get("core_task"):
-                value = project(view)
+        for row in batches.listing(get_store(), user, workflow="core", include_latest=True):
+            value = row["payload"]
+            if value and value.get("core_task"):
                 result.append(
                     {
-                        "id": value["id"],
-                        "revision": value["revision"],
+                        "id": row["id"],
+                        "revision": row["revision"],
                         "task": value["task"],
-                        "status": value["processing"]["status"],
+                        "status": "archived" if value.get("completion") else value["processing"]["status"],
                         "created_at": row["created_at"],
+                        **({"completion": value["completion"]} if value.get("completion") else {}),
                     }
                 )
         return result
@@ -159,7 +197,15 @@ def register(app, get_store, get_user, allow, static_dir):
     async def create(request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         user = actor(session)
         value = await body(request)
-        if set(value) - {"company_name", "tax_no", "start_date", "end_date", "client_id", "applicable_forms"}:
+        if set(value) - {
+            "company_name",
+            "tax_no",
+            "start_date",
+            "end_date",
+            "range_kind",
+            "client_id",
+            "applicable_forms",
+        }:
             raise HTTPException(422, "任务包含未知字段。")
         try:
             fields = scope_values(value)
@@ -179,7 +225,10 @@ def register(app, get_store, get_user, allow, static_dir):
                     "tenant_id": user["org_id"],
                     **fields,
                     "scope_confirmed": not core_materials.scope_errors(fields),
-                    "scope_origins": {key: {"kind": "manual"} for key, val in fields.items() if val},
+                    "scope_origins": {key: {"kind": "manual"} for key, val in fields.items()
+                                      if val and key != "range_kind"},
+                    "scope_history": [],
+                    "scope_revision": 0,
                     "applicable_forms": applicable,
                 }
                 payload = {
@@ -205,6 +254,27 @@ def register(app, get_store, get_user, allow, static_dir):
     def detail(task_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         return read(actor(session), task_id)
 
+    @app.delete("/api/enterprise/input-tasks/{task_id}")
+    async def remove(task_id: str, request: Request,
+                     session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user = actor(session)
+        value = await body(request)
+        if (set(value) != {"expected_revision", "confirm"}
+                or type(value.get("expected_revision")) is not int or value["expected_revision"] < 0
+                or value.get("confirm") is not True):
+            raise HTTPException(422, "请明确确认删除，并提供当前任务版本。")
+        return await run_in_threadpool(delete_task, get_store(), user, task_id, value["expected_revision"])
+
+    @app.get("/api/enterprise/input-tasks/{task_id}/data")
+    def data(task_id: str, expected_revision: int,
+             session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        from src import material_export
+
+        view = batches.read(get_store(), actor(session), task_id)
+        if view["revision"] != expected_revision:
+            raise AccessDenied("任务版本已变化，请重新读取后下载。", 409)
+        return material_export.build(latest(view))
+
     def process(user, task_id, revision, *, ai=False):
         if not PROCESS_SLOTS.acquire(blocking=False):
             raise AccessDenied("资料整理繁忙，原件已保存，请稍后重新整理。", 429)
@@ -216,7 +286,7 @@ def register(app, get_store, get_user, allow, static_dir):
     def process_work(user, task_id, revision, *, ai=False):
         store = get_store()
         view = batches.read(store, user, task_id)
-        payload = deepcopy(latest(view))
+        payload = deepcopy(latest(view, writable=True))
         if view["revision"] != revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         documents = []
@@ -230,9 +300,28 @@ def register(app, get_store, get_user, allow, static_dir):
                 continue
             _, raw = batches.original(store, user, task_id, meta["id"], purpose="read_for_reanalysis")
             with store.connect() as db:
-                db.execute("BEGIN IMMEDIATE")
-                batches._authorize(db, user, task_id)
-                mapper = core_mapping.Mapper(db, user["org_id"], task_id, meta["sha256"], ai=ai, settings=settings)
+                @contextmanager
+                def mapping_write():
+                    # Parsing/OCR/model waits run outside transactions. Recheck
+                    # live permission and the source revision at every write.
+                    with db:
+                        db.execute("BEGIN IMMEDIATE")
+                        batch = batches._authorize(db, user, task_id)
+                        if batch["revision"] != revision:
+                            raise AccessDenied("任务版本已变化，请重新读取。", 409)
+                        start = len(mapper.promotions)
+                        yield batch
+                        for promotion in mapper.promotions[start:]:
+                            batches._event(db, batch, user, "mapping_promotion",
+                                           {**promotion, "source_file_id": meta["id"]})
+
+                with db:
+                    db.execute("BEGIN")
+                    batch = batches._authorize(db, user, task_id)
+                    if batch["revision"] != revision:
+                        raise AccessDenied("任务版本已变化，请重新读取。", 409)
+                mapper = core_mapping.Mapper(db, user["org_id"], task_id, meta["sha256"], ai=ai, settings=settings,
+                                             observation_transaction=mapping_write)
                 mapper.call_limit = calls_remaining
                 try:
                     previous = next(
@@ -273,18 +362,17 @@ def register(app, get_store, get_user, allow, static_dir):
                         "issues": [core_materials.issue("parse_failed", str(exc)[:300], meta["id"])],
                     }
                 calls_remaining -= mapper.calls
-                for promotion in mapper.promotions:
-                    batches._event(
-                        db,
-                        batches._authorize(db, user, task_id),
-                        user,
-                        "mapping_promotion",
-                        {**promotion, "source_file_id": meta["id"]},
-                    )
             override = options.get("confirmed_metadata", {})
+            if "direction" in override:
+                # Old file-wide overrides must not replace per-invoice evidence on reprocessing.
+                if override["direction"]:
+                    options["source_reviewed"] = False
+                override = {key: value for key, value in override.items() if key != "direction"}
+                options["confirmed_metadata"] = override
             needs_review = doc.get("ocr_candidate") or doc.get("pdf_candidate")
             doc["issues"] = [i for i in doc["issues"] if i["code"] != "invoice_status_missing"]
             for record in doc["records"]:
+                record.pop("confirmed_metadata", None)
                 record["source_metadata"] = {
                     k: record.get(k) for k in ["unit", "form_type", "period_start", "period_end", "direction"]
                 }
@@ -347,16 +435,24 @@ def register(app, get_store, get_user, allow, static_dir):
                     if override.get("form_type"):
                         part["form_type"] = override["form_type"]
                 for record in doc["records"]:
-                    record["confirmed_metadata"] = override
+                    record["confirmed_metadata"] = dict(override)
                     for key in ["unit", "form_type"]:
                         if override.get(key):
                             record[key] = override[key]
                     if override.get("period_start") and override.get("period_end"):
                         record["period_start"], record["period_end"] = override["period_start"], override["period_end"]
-                    if override.get("direction"):
-                        record["direction"] = override["direction"]
+            for record in doc["records"]:
+                direction = options.get("invoice_directions", {}).get(record["id"])
+                if direction and doc["material_type"] == "invoice_detail":
+                    record.setdefault("confirmed_metadata", {})["direction"] = direction
+                    record["direction"] = direction
             documents.append(doc)
         core_materials.autofill_scope(payload["task"], documents)
+        for doc in documents:
+            if doc["material_type"] == "invoice_detail":
+                for record in doc["records"]:
+                    extracted = {**record, "direction": record["source_metadata"].get("direction")}
+                    record["automatic_direction"] = core_materials.invoice_direction(extracted, payload["task"].get("tax_no"))
         payload["documents"] = documents
         payload["processing"] = core_materials.prepare(payload["task"], documents)
         if payload.get('policy_input'):
@@ -371,7 +467,7 @@ def register(app, get_store, get_user, allow, static_dir):
     ):
         user = actor(session)
         view = batches.read(get_store(), user, task_id)
-        payload = deepcopy(latest(view))
+        payload = deepcopy(latest(view, writable=True))
         try:
             async with multipart(
                 request,
@@ -436,7 +532,7 @@ def register(app, get_store, get_user, allow, static_dir):
             if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input"}:
                 raise InputError("请求包含未知字段。")
             view = batches.read(get_store(), user, task_id)
-            payload = deepcopy(latest(view))
+            payload = deepcopy(latest(view, writable=True))
             revision = value.get("expected_revision")
             if type(revision) is not int or revision != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
@@ -455,6 +551,7 @@ def register(app, get_store, get_user, allow, static_dir):
                     "source_reviewed",
                     "ocr",
                     "invoice_statuses",
+                    "invoice_directions",
                 }:
                     raise InputError("资料核对项无效。")
                 meta = change.get("confirmed_metadata", {})
@@ -471,9 +568,13 @@ def register(app, get_store, get_user, allow, static_dir):
                 if (
                     meta.get("unit") not in {None, "", "元", "千元", "万元", "亿元"}
                     or meta.get("form_type") not in {None, "", "main", "supplement"}
-                    or meta.get("direction") not in {None, "", "input", "output"}
                 ):
-                    raise InputError("核对单位、表单或方向无效。")
+                    raise InputError("核对单位或表单无效。")
+                if meta.get("direction"):
+                    raise InputError("发票进销项方向由系统逐票判断，不支持整份文件统一设置。")
+                if "direction" in meta:
+                    meta = {key: item for key, item in meta.items() if key != "direction"}
+                    change["confirmed_metadata"] = meta
                 if meta.get("period_start") or meta.get("period_end"):
                     if not all(isinstance(meta.get(k), str) for k in ["period_start", "period_end"]):
                         raise InputError("核对期间须为起止日期文本。")
@@ -491,6 +592,11 @@ def register(app, get_store, get_user, allow, static_dir):
                 document = next((d for d in payload["documents"] if d["id"] == file_id), None)
                 records = {r["id"]: r for r in document["records"]} if document else {}
                 options = payload["source_options"][file_id]
+                directions = change.get("invoice_directions", options.get("invoice_directions", {}))
+                if "invoice_directions" in change and (not isinstance(directions, dict) or (directions and options["material_type"] != "invoice_detail") or set(directions) - set(records)):
+                    raise InputError("只能核对当前文件已识别的逐票进销项方向。")
+                if any(not isinstance(item, str) or item not in {"", "input", "output"} for item in directions.values()):
+                    raise InputError("逐票进销项方向无效。")
                 if statuses and (options["material_type"] != "invoice_detail" or not options["original_name"].lower().endswith(".pdf") or set(statuses) - set(records)):
                     raise InputError("只能核对当前文件已识别的PDF发票状态。")
                 for record_id, status in statuses.items():
@@ -503,7 +609,8 @@ def register(app, get_store, get_user, allow, static_dir):
                         if original and new_value and original != new_value:
                             raise InputError("核对状态与票面识别值冲突，请核对或排除此原件。")
                 if (
-                    (meta != options.get("confirmed_metadata", {}) or statuses != options.get("invoice_statuses", {}))
+                    (meta != options.get("confirmed_metadata", {}) or statuses != options.get("invoice_statuses", {})
+                     or directions != options.get("invoice_directions", {}))
                     and "source_reviewed" not in change
                 ):
                     change["source_reviewed"] = False
@@ -516,19 +623,69 @@ def register(app, get_store, get_user, allow, static_dir):
         except (InputError, ValueError, batches.MaterialStorageError) as exc:
             raise HTTPException(422, str(exc)) from None
 
+    @app.post("/api/enterprise/input-tasks/{task_id}/identity-validation")
+    async def validate_identity(task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, store = actor(session), get_store()
+        value = await body(request)
+        try:
+            if set(value) - {*core_materials.SCOPE_FIELDS, "range_kind", "fields", "expected_revision"}:
+                raise InputError("请求包含未知字段。")
+            fields = value.get("fields")
+            if (not isinstance(fields, list) or not fields or len(fields) > 4
+                    or any(not isinstance(key, str) or key not in core_materials.SCOPE_FIELDS for key in fields)
+                    or len(set(fields)) != len(fields)):
+                raise InputError("请选择需要校验的企业信息字段。")
+            period_selected = "start_date" in fields or "end_date" in fields
+            if period_selected and not {"start_date", "end_date"}.issubset(fields):
+                raise InputError("请同时选择检查起始日和终止日。")
+            with store.connect() as db:
+                db.execute("BEGIN")
+                batch = batches._authorize(db, user, task_id)
+                if not db.execute("SELECT 1 FROM core_input_tasks WHERE id=?", (task_id,)).fetchone():
+                    raise AccessDenied("这不是基础资料处理任务。", 404)
+                if type(value.get("expected_revision")) is not int or value["expected_revision"] != batch["revision"]:
+                    raise AccessDenied("任务版本已变化，请重新读取。", 409)
+                row = db.execute("SELECT * FROM material_revisions WHERE batch_id=? AND revision=?",
+                                 (task_id, batch["revision"])).fetchone()
+                if not row:
+                    raise AccessDenied("当前任务版本不存在，请重新读取。", 409)
+                payload = json.loads(batches._open(row["payload_cipher"], batches._context(
+                    batch["org_id"], task_id, "revision:" + row["kind"], row["revision"])))
+            task = scope_values(value)
+            errors = core_materials.scope_identity_errors(task, payload.get("documents", []), invoices=False)
+            errors.update(core_materials.identity_field_errors(task))
+            if period_selected:
+                errors.update({key: message for key, message in core_materials.scope_errors(task).items()
+                               if key in {"start_date", "end_date", "range_kind"}})
+                if not any(p["start_date"] == task["start_date"] and p["end_date"] == task["end_date"]
+                           for p in core_materials.scope_period_candidates(payload["task"])):
+                    errors.setdefault("end_date", "所选区间不是当前材料中的完整期间候选，请重新读取并核对。")
+            errors = {key: message for key, message in errors.items() if key in fields}
+            if period_selected and core_materials.range_error(task):
+                errors["range_kind"] = core_materials.range_error(task)
+            return {"valid": not errors, "errors": errors}
+        except (InputError, ValueError, batches.MaterialStorageError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
     @app.post("/api/enterprise/input-tasks/{task_id}/scope")
     async def update_scope(task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         user, store = actor(session), get_store()
         value = await body(request)
         try:
-            if set(value) - {*core_materials.SCOPE_FIELDS, "client_id", "expected_revision", "confirm"}:
+            if set(value) - {
+                *core_materials.SCOPE_FIELDS,
+                "range_kind",
+                "client_id",
+                "expected_revision",
+                "confirm",
+            }:
                 raise InputError("请求包含未知字段。")
             if "confirm" in value and type(value["confirm"]) is not bool:
                 raise InputError("确认标记须为布尔值。")
             view = batches.read(store, user, task_id)
             if value.get("expected_revision") != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
-            payload = deepcopy(latest(view))
+            payload = deepcopy(latest(view, writable=True))
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 batch = batches._authorize(db, user, task_id)
@@ -538,9 +695,28 @@ def register(app, get_store, get_user, allow, static_dir):
                 previous_task = deepcopy(task)
                 fields = scope_values(value)
                 for key, val in fields.items():
-                    if val != task[key]:
+                    if key != "range_kind" and val != task.get(key):
                         task.setdefault("scope_origins", {})[key] = {"kind": "manual"}
                 task.update(fields)
+                range_changed = (
+                    previous_task.get("start_date") != task.get("start_date")
+                    or previous_task.get("end_date") != task.get("end_date")
+                    or core_materials.effective_range_kind(previous_task)
+                    != core_materials.effective_range_kind(task)
+                )
+                if range_changed:
+                    # Keep a bounded user-visible trail. The previous revisions
+                    # (originals, old processing and frozen reports) are retained
+                    # separately and are not used to confirm the new range.
+                    history = task.setdefault("scope_history", [])
+                    history.append({
+                        "start_date": previous_task.get("start_date", ""),
+                        "end_date": previous_task.get("end_date", ""),
+                        "range_kind": core_materials.effective_range_kind(previous_task),
+                        "recorded_at": members.now(),
+                    })
+                    del history[:-20]
+                    task["scope_revision"] = int(task.get("scope_revision") or 0) + 1
                 task["scope_confirmed"] = False
                 payload["processing"] = core_materials.prepare(task, payload["documents"])
                 errors = scope_errors(payload)

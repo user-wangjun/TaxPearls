@@ -25,6 +25,7 @@ def main():
     subprocess.run([sys.executable, '-m', 'pip', 'check'], check=True)
     subprocess.run([sys.executable, '-m', 'ruff', 'check', 'main.py', 'src', 'webapp', 'scripts', 'tests'], check=True)
     subprocess.run(['node', 'scripts/check_frontend.cjs'], check=True)
+    subprocess.run(['node', 'scripts/check_ai_key_frontend.cjs'], check=True)
     subprocess.run(['node', 'scripts/check_enterprise_frontend.cjs'], check=True)
     subprocess.run(['node', 'scripts/check_core_frontend.cjs'], check=True)
     with tempfile.TemporaryDirectory(prefix='taxpearls-check-') as directory:
@@ -33,6 +34,11 @@ def main():
                           TAXPEARLS_AI_ENABLED='0', TAXPEARLS_NOTIFICATION_EMAIL_ENABLED='0',
                           TAXPEARLS_AI_API_KEY='', TAXPEARLS_AI_BACKUP_API_KEYS='', TAXPEARLS_RESEND_API_KEY='',
                           TAXPEARLS_BACKUP_KEY='', TAXPEARLS_MATERIAL_KEY='',
+                          # patch.dict 类装饰器只包 test 方法不包 setUp：setUp 阶段 lifespan 的
+                          # material_worker.start() 会以默认 enabled=True 抢先 BEGIN IMMEDIATE，
+                          # 与用例首条写事务在 Windows 上并发初始化 WAL，以 SQLITE_READONLY 面目
+                          # 偶发失败（storage.connect 注释记录的同一竞态）。队列用例自行显式开 '1'。
+                          TAXPEARLS_MATERIAL_QUEUE_ENABLED='0',
                           TAXPEARLS_FIELD_KEY=base64.b64encode(os.urandom(32)).decode())
         # Multiple explicit patterns let related migrations share one isolated
         # process and the same source-stability/contract checks.

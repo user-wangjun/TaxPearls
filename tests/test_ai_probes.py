@@ -126,6 +126,43 @@ class ProbeTransportTests(unittest.TestCase):
             self.assertEqual(caps[model]['state'],'unknown',model)
         self.assertEqual(caps['all-levels']['levels'],list(ai_reasoning.EFFORTS))
 
+    def test_model_context_limits_are_retained_without_guessing_or_accepting_booleans(self):
+        FakeUpstream.response={'data':[
+            {'id':'large','context_window':1048576,'max_output_tokens':393216},
+            {'id':'small','context_length':32000},
+            {'id':'invalid','context_window':True,'max_output_tokens':'1000000'},
+            {'id':'duplicate','context_window':1048576},{'id':'duplicate','context_window':4096}]}
+        caps=ai_probes.models(self.settings,with_capabilities=True)['capabilities']
+        self.assertEqual(caps['large']['context_window'],1048576)
+        self.assertEqual(caps['large']['max_output_tokens'],393216)
+        self.assertEqual(caps['small']['context_window'],32000)
+        self.assertNotIn('context_window',caps['invalid'])
+        self.assertNotIn('context_window',caps['duplicate'])
+        from webapp import ai_keys
+        with patch.object(ai_keys,'STORE_PROVIDER',return_value=None):
+            unknown=ai_keys.context_budget(self.settings)
+        self.assertIsNone(unknown['context_window'])
+        self.assertEqual(unknown['capacity_source'],'conservative_fallback')
+
+    def test_analysis_output_limit_matches_reserved_capacity_and_cache_usage_is_reported(self):
+        from webapp import knowledge
+        from src.ai_transport import USAGE_OBSERVER
+        FakeUpstream.response={'choices':[{'finish_reason':'stop','message':{'content':'{"probe":"ok"}'}}],
+            'usage':{'prompt_tokens':10000,'completion_tokens':300,'total_tokens':10300,
+                     'prompt_cache_hit_tokens':9000,'prompt_cache_miss_tokens':1000}}
+        observations=[]
+        selected=knowledge.SELECTED_SETTINGS.set(replace(self.settings,max_tokens=8192))
+        observed=USAGE_OBSERVER.set(observations.append)
+        try:
+            answer,_=knowledge._chat_json('return JSON',{'synthetic':True},'failed')
+        finally:
+            knowledge.SELECTED_SETTINGS.reset(selected)
+            USAGE_OBSERVER.reset(observed)
+        self.assertEqual(answer,{'probe':'ok'})
+        self.assertEqual(FakeUpstream.calls[-1][2]['max_tokens'],8192)
+        self.assertEqual(observations[0]['usage']['prompt_tokens'],10000)
+        self.assertEqual(observations[0]['usage']['prompt_cache_hit_tokens'],9000)
+
     def test_real_reasoning_business_and_probe_payloads_are_provider_specific(self):
         FakeUpstream.response={'choices':[{'finish_reason':'stop','message':{'content':'{"probe":"ok"}'}}]}
         for protocol,effort,expected in [

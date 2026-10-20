@@ -217,9 +217,23 @@ class VATV12Acceptance(unittest.TestCase):
             return {'old_difference':'10000','new_difference':slot['bundle']['fact_assessment']['amount'],'versions':[old['version'],new['version']],'ai_calls':0}
         if number==37:
             task=self.start('S04');result=self.run_check(task)
-            value=next(f['value'] for f in result['bundle']['facts'] if f['metric_id']==vat.INVOICE)
-            self.assertEqual(Decimal(value),Decimal('3000'));self.assertTrue(any(not r['in_scope'] for r in task['processing']['records'] if r['material_type']=='invoice_detail'))
-            return {'march_invoice_metric':value,'april_source_retained':True}
+            metric=next(f for f in result['bundle']['facts'] if f['metric_id']==vat.INVOICE)
+            records=[r for r in task['processing']['records'] if r['material_type']=='invoice_detail']
+            march=next(r for r in records if r['issue_date'].startswith('2026-03'))
+            april=next(r for r in records if r['issue_date'].startswith('2026-04'))
+            # A file mixing in-range and out-of-range invoices is retained but
+            # cannot silently feed the formal metric. The user must split or
+            # re-provide in-range material.
+            self.assertIsNone(metric['value']);self.assertEqual(metric['state'],'unknown')
+            self.assertEqual(result['bundle']['fact_assessment']['status'],'FACT_INCOMPLETE')
+            codes={i['code'] for i in task['processing']['issues']}
+            self.assertTrue({'record_outside_scope','mixed_scope_file'} <= codes)
+            self.assertTrue(march['in_scope']);self.assertFalse(april['in_scope'])
+            self.assertEqual(april['scope_status'],'outside_scope');self.assertEqual(april['date_basis'],'issue_date')
+            self.assertEqual(Decimal(march['amount_excluding_tax']),Decimal('3000'))
+            self.assertEqual(Decimal(april['amount_excluding_tax']),Decimal('7000'))
+            return {'formal_invoice_metric':None,'fact_status':'FACT_INCOMPLETE',
+                    'march_source_amount':'3000','april_source_retained':True}
         if number==29:
             task=self.start('S03');raw=fixture.workbook(next(s for s in fixture.data('demo_business_scenarios.json') if s['scenario_id']=='S03'),'invoice_detail')
             task=self.upload(task,raw,'重复文件.xlsx');task=self.review(task);result=self.run_check(task)

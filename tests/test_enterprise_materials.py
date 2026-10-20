@@ -30,7 +30,11 @@ class EnterpriseMaterialFixture(unittest.TestCase):
                                      'TAXPEARLS_AI_ENABLED': '0', 'TAXPEARLS_MATERIAL_QUEUE_ENABLED': '0', 'TAXPEARLS_NOTIFICATION_EMAIL_ENABLED': '0'})
         env.start()
         self.addCleanup(env.stop)
-        self.store = Store(Path(self.tmp.name) / 'enterprise.db')
+        # 并发确认/重检用例多线程同时写任务；哨兵连接让 WAL 的 -wal/-shm 不被
+        # "最后一个连接关闭即删除"反复删建，否则 Windows 上偶发 SQLITE_READONLY
+        # （生产由 lifespan 的 keepalive 覆盖；close 先于临时目录清理归还句柄）。
+        self.store = Store(Path(self.tmp.name) / 'enterprise.db', keepalive=True)
+        self.addCleanup(self.store.close)
         replacement = patch.object(module, 'store', self.store)
         replacement.start()
         self.addCleanup(replacement.stop)

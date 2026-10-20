@@ -196,6 +196,7 @@
   footer { border-top: 1px solid var(--line); padding: 22px 0 40px; color: var(--ink-3); font-size: 12px; line-height: 1.9; }
 
   .field { margin:12px 0; }
+  #coreInputs .core-task-group .field[hidden] { display:none; }
   .field label { display:block; font-size:12px; color:var(--ink-2); margin-bottom:6px; }
   .field input,.field select,.field textarea { width:100%; border:1px solid var(--line); border-radius:6px; padding:10px 12px; font:inherit; background:#fff; transition:border-color .16s,box-shadow .16s,background .16s; }
   /* 自绘下拉组件：原生 select 弹层无法控制可见条数，改用按钮 + 列表面板 */
@@ -442,10 +443,11 @@
   @media(max-width:700px) { .material-company { grid-template-columns:repeat(2,minmax(0,1fr)); } .material-review { padding:14px; } }
 
 </style>
-<link rel="stylesheet" href="/workspace.css?v=20261017-invite-org-type-1">
+<link rel="stylesheet" href="/workspace.css?v=native-20261020-4-20261019-312820fc14e8">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
+<link rel="stylesheet" href="/member-links.css?v=20261020-native-1">
 </head>
 <body>
 <section class="auth-screen" id="authScreen">
@@ -540,6 +542,7 @@
       <button data-panel="auditPanel" class="business-nav" aria-label="审计详情" title="审计详情"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path fill-rule="evenodd" d="M6 2h8l5 5v13a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2Zm7 2v5h5Zm2.2 8.3-4.7 4.8-2.7-2.7-1.4 1.4 4.1 4.1 6.1-6.2Z"/></svg><span class="nav-label">审计详情</span></button>
       <button data-panel="historyPanel" aria-label="历史档案" title="历史档案"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="3" width="20" height="5" rx="1.5"/><path fill-rule="evenodd" d="M4 10h16v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2Zm5 3v2h6v-2Z"/></svg><span class="nav-label">历史档案</span></button>
       <button data-panel="knowledgePanel" aria-label="知识图谱" title="知识图谱"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m11 6 2-1 6 12-2 1zM5 17 11 5l2 1-6 12zM6 17h12v2H6z"/><circle cx="12" cy="5" r="3.5"/><circle cx="5" cy="18" r="3.5"/><circle cx="19" cy="18" r="3.5"/></svg><span class="nav-label">知识图谱</span></button>
+      <button data-panel="examPanel" class="training-nav" aria-label="考证教学" title="考证教学"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16v18H4zm3 4h10v2H7zm0 5h10v2H7z"/></svg><span class="nav-label">考证教学</span></button>
       <button data-panel="trainingPanel" class="training-nav" aria-label="实训中心" title="实训中心"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 11 5-11 5L1 8zm-7 9 7 3.2 7-3.2v5c-3.7 3.5-10.3 3.5-14 0zM21 11h2v8h-2z"/></svg><span class="nav-label">实训中心</span></button>
       <button data-panel="adminPanel" class="admin-nav" aria-label="管理" title="管理"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10" cy="7" r="4"/><path d="M2 21v-3a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v3zm16-18a4 4 0 0 1 0 8h-1a6 6 0 0 0 0-8zm.5 10a5 5 0 0 1 4.5 5v3h-3v-3a8 8 0 0 0-1.5-5z"/></svg><span class="nav-label">管理</span></button>
       <button data-panel="aiKeysPanel" style="display:none" aria-label="AI 密钥检测" title="AI 密钥检测"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h18v18H3z"/><path fill="var(--bg,#fff)" d="M5 11h4l2-5 3 11 2-6h3v2h-2l-3 8-3-10-1 2H5z"/></svg><span class="nav-label">AI 密钥检测</span></button>
@@ -564,7 +567,7 @@
 
     <section class="panel" id="dashboardPanel">
       <div class="page-head"><div><p class="eyebrow">BUSINESS OVERVIEW</p><h2>工作台</h2><p class="muted">从企业业务数据出发，了解经营表现与税务风险。</p></div><button class="btn pdf" id="dashboardUpload">上传材料 ↗</button></div>
-      <div class="sheet row"><div class="field"><label for="dashboardCompany">企业</label><select id="dashboardCompany"></select></div><div class="field"><label for="dashboardPeriod">所属期间</label><select id="dashboardPeriod"></select></div><p class="muted" id="dashboardUpdated"></p></div>
+      <div class="sheet row" id="dashboardFilters"><div class="field"><label for="dashboardCompany">企业</label><select id="dashboardCompany"></select></div><div class="field"><label for="dashboardPeriod">所属期间</label><select id="dashboardPeriod"></select></div><p class="muted" id="dashboardUpdated"></p></div>
       <div id="dashboardBody" aria-live="polite"></div>
     </section>
     <section class="panel" id="orgReportPanel">
@@ -630,7 +633,7 @@
           <div class="field"><label for="kgStart">检查起始日期</label><input id="kgStart" type="date" required></div>
           <div class="field"><label for="kgEnd">检查终止日期</label><input id="kgEnd" type="date" required></div>
           <div class="field"><label for="kgTopic">本次核查主题</label><input id="kgTopic" maxlength="2000" placeholder="留空使用检查项目名称"></div>
-          <div class="field"><label for="kgTokenBudget">AI 材料容量</label><select id="kgTokenBudget"><option value="6000">标准容量（6000）</option><option value="16000">较多原文（16000）</option><option value="32000">完整规则与多条原文（32000）</option></select><small>按文本字节保守限制，非实际 Token 用量；容量增加可能增加模型费用。超出时保留全文并转复核。</small></div>
+          <div class="field"><label for="kgTokenBudget">AI 材料容量</label><select id="kgTokenBudget"><option value="0">自动（默认 128K，受模型容量约束）</option><option value="16000">较小批次（16000）</option><option value="32000">较小批次（32000）</option></select><small>自动预留指令与输出空间；超出时按资料类别和政策文件分批，保留原文及来源。模型未提供容量时会标明使用保守容量。</small></div>
         </div><div id="kgVATReview" hidden></div><div class="kg-evidence-actions"><button class="btn primary" type="submit">本地检索与核对</button><button type="button" id="kgAnalyze">AI 辅助分析</button><button type="button" id="kgReload">刷新任务与项目</button></div></fieldset></form>
         <div id="kgBindings"></div><p id="kgRetrievalStatus" class="muted" role="status"></p><div id="kgTaskChecks"></div><div id="kgEvidenceResult" aria-live="polite"></div>
         <div class="kg-evidence-actions"><button id="kgBackToInputs" type="button" hidden>返回资料补充</button><button id="kgRecheck" type="button" disabled>重检受影响项目（本地）</button><button id="kgArchiveReport" type="button" disabled>生成检查报告</button></div>
@@ -644,19 +647,40 @@
     <section class="panel" id="uploadPanel">
     <div class="sheet" id="coreInputs" hidden>
       <h2>基础审查资料准备</h2>
-      <p class="muted">可选择历史企业，也可先上传资料，由文件读取企业与所属期。核对自动填入的信息后，点击“开始检查”校验并进入核查。</p>
+      <p class="muted">检查区间由你选择：按月、按季度、按年度或自定义起止日。程序读取材料期间只用于核对，不会自动改变你选择的区间；材料期间候选须明确采用。核对后点击“开始检查”，自动检索依据并由 AI 辅助分析，在本页查看结果。</p>
       <fieldset id="coreTaskForm"><legend>企业与检查区间（可先留空）</legend>
         <label class="field core-client-field">选择历史企业<select id="coreClient"><option value="">新企业 / 从文件读取</option></select></label>
         <div class="core-task-fields">
           <div class="core-task-group">
-            <h3>企业信息</h3>
-            <label class="field">企业名称<input id="coreCompanyName" maxlength="200" placeholder="填写企业全称"></label>
-            <label class="field">税号<input id="coreTaxNo" maxlength="20" placeholder="填写纳税人识别号"></label>
+            <div class="core-task-heading"><h3>企业信息</h3><div id="coreIdentityActions" class="core-identity-actions" hidden></div></div>
+            <div class="field core-identity-field">
+              <div class="core-identity-field-heading"><label for="coreCompanyName">企业名称</label><div id="coreCompanyNameCandidates" class="core-identity-candidates" hidden></div></div>
+              <input id="coreCompanyName" maxlength="200" placeholder="填写企业全称">
+            </div>
+            <div class="field core-identity-field">
+              <div class="core-identity-field-heading"><label for="coreTaxNo">税号</label><div id="coreTaxNoCandidates" class="core-identity-candidates" hidden></div></div>
+              <input id="coreTaxNo" maxlength="20" placeholder="填写纳税人识别号">
+            </div>
+            <label class="field">企业所在地<select id="coreRegion" aria-label="企业所在地"><option value="">未选择：先匹配国家级政策</option></select><small>选填。选择实际所在地后，可进一步核对该地区的地方政策。</small></label>
           </div>
           <div class="core-task-group">
-            <h3>检查区间</h3>
-            <label class="field">检查起始日<input id="coreStart" type="date"></label>
-            <label class="field">检查终止日<input id="coreEnd" type="date"></label>
+            <div class="core-task-heading"><h3>检查区间</h3></div>
+            <label class="field"><span class="core-field-label">范围方式</span><select id="coreRangeKind"><option value="month">按月</option><option value="quarter">按季度</option><option value="year">按年度</option><option value="custom">自定义起止日</option></select></label>
+            <label class="field" id="coreRangeMonthField" hidden><span class="core-field-label">检查月份</span><input id="coreRangeMonth" type="month" min="0001-01" max="9999-12"></label>
+            <label class="field" id="coreRangeYearField" hidden><span class="core-field-label">检查年份</span><input id="coreRangeYear" type="number" min="1" max="9999" step="1" placeholder="如 2026"></label>
+            <label class="field" id="coreRangeQuarterField" hidden><span class="core-field-label">检查季度</span><select id="coreRangeQuarter"><option value="1">第一季度</option><option value="2">第二季度</option><option value="3">第三季度</option><option value="4">第四季度</option></select></label>
+            <div class="field core-range-field" id="coreDateRangeField">
+              <div class="core-identity-field-heading"><span id="coreDateRangeLabel">检查起止日期</span><div id="corePeriodCandidates" class="core-identity-candidates" hidden></div></div>
+              <button id="coreDateRange" class="core-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="coreRangeCalendar" aria-labelledby="coreDateRangeLabel coreDateRangeText"><span id="coreDateRangeText">选择起始和终止日期</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg></button>
+              <input id="coreStart" type="hidden"><input id="coreEnd" type="hidden">
+              <div id="coreRangeCalendar" class="core-range-calendar" role="dialog" aria-label="选择检查起止日期" hidden>
+                <p id="coreCalendarHint" role="status">请选择起始日期</p>
+                <div class="core-calendar-toolbar"><button id="coreCalendarPrev" type="button" aria-label="上个月">‹</button><input id="coreCalendarMonth" type="month" min="0001-01" max="9999-12" aria-label="日历显示月份"><button id="coreCalendarNext" type="button" aria-label="下个月">›</button></div>
+                <div class="core-calendar-week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+                <div id="coreCalendarDays" class="core-calendar-days" role="group" aria-label="日期"></div>
+                <div class="core-calendar-actions"><button id="coreCalendarClear" type="button">清空</button><button id="coreCalendarCancel" type="button">取消</button></div>
+              </div>
+            </div>
           </div>
         </div>
         <div class="core-task-footer">
@@ -670,7 +694,28 @@
           <button id="coreCreateTask" class="btn pdf" type="button">创建草稿并上传资料</button>
         </div>
       </fieldset>
+      <p id="coreActionStatus" class="material-note" role="status"></p>
+      <section id="coreCheckResult" class="core-check-result" aria-live="polite" hidden></section>
       <div id="coreTaskResult" aria-live="polite"></div><div id="coreTaskHistory"></div>
+      <dialog id="coreIdentityDialog" class="core-delete-dialog core-identity-dialog" aria-labelledby="coreIdentityTitle" aria-describedby="coreIdentityDescription">
+        <div class="core-delete-body">
+          <h2 id="coreIdentityTitle">确认采用文件识别值</h2>
+          <p id="coreIdentityDescription">相同识别值已合并，不同内容以红字标出。请核对并选择要采用的值，确认后才会更新填写内容。</p>
+          <div id="coreIdentityChanges"></div>
+          <p id="coreIdentityValidation" class="core-field-error" role="status" aria-live="polite" hidden></p>
+          <p class="muted">仅更新本次确认的字段；采用材料期间时使用自定义起止日。之后仍须保存核对，不会自动开始检查。</p>
+        </div>
+        <div class="core-delete-actions"><button id="coreIdentityCancel" class="btn re" type="button" autofocus>保留原填写</button><button id="coreIdentityConfirm" class="btn pdf" type="button">确认采用</button></div>
+      </dialog>
+      <dialog id="coreDeleteDialog" class="core-delete-dialog" aria-labelledby="coreDeleteTitle" aria-describedby="coreDeleteDescription">
+        <div class="core-delete-body">
+          <h2 id="coreDeleteTitle">删除本次任务</h2>
+          <p>确认永久删除「<strong id="coreDeleteTaskName"></strong>」的本次任务？</p>
+          <p id="coreDeleteDescription">上传原件、解析与核对历史、任务内报告将一并删除，无法在本系统恢复。</p>
+          <p class="muted">企业档案和其他任务保留；已有备份及下载副本不受影响。</p>
+        </div>
+        <div class="core-delete-actions"><button id="coreDeleteCancel" class="btn re" type="button" autofocus>取消</button><button id="coreDeleteConfirm" class="btn core-delete-confirm" type="button">确认删除</button></div>
+      </dialog>
     </div>
     <details id="coreLegacyToggle" hidden><summary>历史材料检测入口</summary><p class="muted">下方为原有材料与报告流程；本次基础资料任务不从这里执行检测。</p></details>
     <div id="legacyInputFlow">
@@ -806,6 +851,7 @@
     </section>
 
     <section class="panel" id="historyPanel">
+      <div class="sheet" id="coreArchivedTasks" hidden></div>
       <div class="sheet" id="reportVerification"><h2>报告原件核验</h2><p class="muted">标识和水印可以被复制，不能单独证明文件真实。登录后核对服务器冻结原件；文件在本机计算 SHA-256，只提交指纹，不上传报告内容。不提供公开报告查询，不是第三方数字签名，也不能阻止转发。旧归档没有标识时保留旧文件，归档当前报告可生成带标识的新版本。</p>
         <div class="row verify-fields"><div class="field"><label for="verificationId">追溯标识</label><input id="verificationId" maxlength="44" placeholder="TPV- 后接 40 位小写十六进制"></div><div class="field"><label for="verificationFormat">文件类型</label><select id="verificationFormat"><option value="pdf">PDF 原件</option><option value="html">HTML 原件</option></select></div><div class="field"><label for="verificationFile">待核验文件（仅本机计算）</label><input id="verificationFile" type="file" accept=".pdf,.html"></div></div>
         <div class="row verify-actions"><button class="btn re" id="verificationLookup" type="button">查看登记信息</button><button class="btn pdf" id="verificationCheck" type="button">核验所选文件</button></div><p id="verificationStatus" class="muted" role="status"></p><p id="verificationDetails" class="muted" style="overflow-wrap:anywhere;white-space:pre-line"></p>
@@ -865,6 +911,7 @@
       <div class="sheet"><h2>最近 100 条通知</h2><p class="muted">“邮件已受理”仅表示服务商接收请求，不代表收件箱送达。失败/未知可在 23 小时内手动重试，累计最多 3 次尝试；超出后请人工核查。</p><div class="data-list" id="noticeList"></div></div>
     </section>
 
+    <section class="panel" id="examPanel"><div class="page-head"><div><p class="eyebrow">TEACHING &amp; LEARNING</p><h2>考证教学</h2><p class="muted">沿用当前高校账号的教学范围与学习档案。</p></div></div><div id="examWorkspace"></div></section>
     <section class="panel" id="trainingPanel">
       <div class="sheet" id="teacherBox" style="display:none">
         <h2>按规则生成仿真账套</h2><p class="muted">只使用内置仿真数据与本年度已启用规则，不调用模型或复制真实客户材料。目标规则须命中，标准答案以整套材料的全部实际命中为准；可能同时触发关联规则。参考区间保持原值。</p>
@@ -921,19 +968,21 @@
 
     <section class="panel" id="adminPanel">
       <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button class="btn re" id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
-      <div class="sheet" id="inviteAdmin" style="display:none"><h2>签发机构创始码</h2><p class="muted">为企业和高校的管理员签发一次性注册码：码与机构名称、类别捆绑，一码一位、私聊交付，不绑定邮箱；注册时仍须通过邮箱验证码核验。明文只在签发时显示一次，系统中仅存哈希。</p><div class="row invite-issue-form"><div class="field"><label for="inviteOrgType">机构类别</label><select id="inviteOrgType" required><option value="" selected disabled>请选择机构类别</option><option value="enterprise">企业</option><option value="university">高校</option></select></div><div class="field"><label for="inviteOrgName">机构名称</label><input id="inviteOrgName" maxlength="120" placeholder="例如：东莞市某某税务师事务所"></div><div class="field"><label for="inviteSeats">机构总席位（含管理员）</label><select id="inviteSeats"><option value="5" selected>小型 · 5 席</option><option value="20">中型 · 20 席</option><option value="50">大型 · 50 席</option></select></div><button class="btn pdf" id="btnCreateInvite" type="button">签发邀请码</button></div><div class="data-item" id="inviteReveal" hidden><div><div id="inviteRevealCode" class="invite-code"></div><p class="muted" id="inviteRevealOrg"></p><p class="muted" id="inviteRevealSeats"></p><p class="muted">仅显示这一次，关闭后无法找回，请立即复制并私聊交付给机构负责人。</p></div><div class="row"><button id="btnCopyInvite" type="button" disabled>复制</button><button id="btnHideInvite" type="button">我已保存</button></div></div><h3>邀请码台账</h3><div class="data-list" id="inviteList"></div></div>
+      <div class="sheet" id="inviteAdmin" style="display:none"><h2>签发机构创始码</h2><p class="muted">为企业和高校的管理员签发一次性注册码：码与机构名称、类别捆绑，一码一位、私聊交付，不绑定邮箱；注册时仍须通过邮箱验证码核验。明文只在签发时显示一次，系统中仅存哈希。</p><div class="invite-type-row"><div class="field invite-type-field"><span id="inviteOrgTypeLabel" class="field-label">机构类别</span><input id="inviteOrgType" type="hidden" value="enterprise"><div id="inviteOrgTypeOptions" class="workspace-segmented" role="group" aria-labelledby="inviteOrgTypeLabel" data-value="enterprise"><button id="inviteTypeEnterprise" type="button" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5h10v16M14 10h6v11M2 21h20M7 9h4M7 13h4M7 17h4"/></svg><span>企业</span></button><button id="inviteTypeUniversity" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m2 8 10-5 10 5-10 5ZM6 11v7c4 3 8 3 12 0v-7M22 8v9"/></svg><span>高校</span></button></div></div></div><div class="row invite-issue-form"><div class="field"><label for="inviteOrgName">机构名称</label><input id="inviteOrgName" maxlength="120" placeholder="例如：东莞市某某税务师事务所"></div><div class="field"><label for="inviteSeats" id="inviteSeatsLabel">机构总席位（含管理员）</label><div style="display:flex;gap:10px;align-items:center"><select id="inviteSeats" style="flex:1;min-width:0"><option value="5" selected>小型 · 5 席</option><option value="20">中型 · 20 席</option><option value="50">大型 · 50 席</option><option value="custom">自定义</option></select><div id="inviteCustomSeatsField" hidden style="flex:1;min-width:0"><input id="inviteCustomSeats" aria-label="自定义席位数（含管理员，1–200）" type="number" inputmode="numeric" min="1" max="200" step="1" placeholder="1–200 席" disabled></div></div></div><div class="field" id="inviteStudentSeatsField" hidden><label for="inviteStudentSeats">学生总额度</label><input id="inviteStudentSeats" type="number" min="0" max="100000" value="500"></div><button class="btn pdf" id="btnCreateInvite" type="button">签发邀请码</button></div><div class="data-item" id="inviteReveal" hidden><div><div id="inviteRevealCode" class="invite-code"></div><p class="muted" id="inviteRevealOrg"></p><p class="muted" id="inviteRevealSeats"></p><p class="muted">仅显示这一次，关闭后无法找回，请立即复制并私聊交付给机构负责人。</p></div><div class="row"><button id="btnCopyInvite" type="button" disabled>复制</button><button id="btnHideInvite" type="button">我已保存</button></div></div><h3>邀请码台账</h3><div class="data-list" id="inviteList"></div></div>
+      <section class="sheet tp-members" id="universityCapacityPanel" hidden><h2>高校总席位配置</h2><p class="tm-muted">仅平台顶级管理员调整教职工和学生总额度；高校管理员在额度内分配。</p><div id="universityCapacityList"></div><p id="universityCapacityStatus" class="tm-message" role="status" aria-live="polite"></p></section>
       <div class="sheet" id="userAdmin"><h2>账号与成员管理</h2><p class="muted" id="userAdminHint">机构管理员可创建本机构会计；平台只能签发创始码，不手动开户。席位按当前在岗成员计算（含机构管理员，不含平台管理员）；停用释放席位并撤销会话，恢复后须重新登录，不删除历史业务。</p>
         <div class="row"><div class="field"><label for="memberOrg">管理机构</label><select id="memberOrg"></select></div><button class="btn" id="btnRefreshMembers">刷新成员</button></div>
         <p class="muted" id="memberQuotaStatus" role="status">尚未加载成员信息。</p>
         <div class="row" id="memberQuotaEditor" hidden><div class="field"><label for="memberSeats">席位配额（1–200）</label><input id="memberSeats" type="number" min="1" max="200" step="1"></div><button class="btn" id="btnSaveMemberQuota">保存配额</button></div>
         <div class="row" id="createUserRow" style="display:none"><div class="field"><label for="newUsername">用户名</label><input id="newUsername"></div><div class="field"><label for="newDisplayName">显示姓名</label><input id="newDisplayName"></div><div class="field"><label for="newPassword">初始密码</label><input id="newPassword" type="password" autocomplete="new-password"></div><div class="field"><label for="newRole">角色</label><select id="newRole"><option value="accountant">会计</option></select></div><button class="btn pdf" id="btnCreateUser">创建账号</button></div><div class="data-list" id="userList"></div>
         <section id="memberInvitationPanel" hidden>
-          <h3>机构成员邀请链接</h3><p class="muted">每种角色一条多人可用链接，无自动过期；注册仍须验证邮箱并有空余席位。角色由签发凭证决定。刷新立即作废旧链接，不影响已注册成员；停用后刷新不会自动启用。</p>
-          <div class="row"><div class="field"><label for="memberInviteRole">邀请角色</label><select id="memberInviteRole"><option value="accountant">会计</option><option value="teacher">教师</option><option value="student">学生</option></select></div><button class="btn" id="btnIssueMemberInvite" type="button">签发成员链接</button></div>
+          <h3>机构成员邀请链接</h3><p class="muted">企业员工使用同一条邀请链接。加入时核验邮箱和剩余席位，角色由邀请凭证确定。刷新立即作废旧链接，停用不影响已有成员。高校教师和学生邀请在高校工作台管理。</p>
+          <div class="row"><div class="field"><label for="memberInviteRole">邀请角色</label><select id="memberInviteRole"><option value="accountant">员工（会计）</option></select></div><button class="btn" id="btnIssueMemberInvite" type="button">签发成员链接</button></div>
           <div id="memberInvitationReveal" class="data-item" hidden><div><p id="memberInvitationURL"></p><p class="muted">明文仅本次显示，请私下交付。关闭或刷新列表后无法找回；丢失时须刷新凭证。</p></div><div class="row"><button id="btnCopyMemberInvite" type="button">复制链接</button><button id="btnHideMemberInvite" type="button">我已保存</button></div></div>
           <div class="data-list" id="memberInvitationList"></div>
           <h3>注册邮箱域名白名单</h3><div class="field"><label for="memberDomainEnabled"><input type="checkbox" id="memberDomainEnabled"> 启用限制（默认关闭）</label><label for="memberDomains">允许的完整域名，每行一个，最多 20 个</label><textarea id="memberDomains" maxlength="5100" placeholder="example.com"></textarea><p class="muted">只匹配完整域名，不自动允许子域名；支持国际化域名。仅限制新成员通过邀请注册，不影响现有账号。</p><button class="btn" id="btnSaveInvitationPolicy" type="button">保存邮箱限制</button></div>
         </section>
+        <div id="universityMembers" hidden></div>
       </div>
       <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称</label><input id="clientName"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号</label><input id="clientTaxpayerId"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
       <div class="sheet" id="ruleAdmin"><h2>规则参数与试跑</h2><p class="muted">选择规则后以表单调整参数，并在指定历史材料快照上试跑。试跑不修改历史审计；只有平台管理员可正式保存。带日期的新版本只适用于完整落在其生效区间内的审计期。</p><div class="data-list" id="ruleList"></div><div class="rule-editor" id="ruleEditor" hidden><div class="rule-editor-head"><div><h3 id="ruleEditorTitle"></h3><p class="muted" id="ruleEditorMeta"></p></div><span class="role-chip" id="ruleEditorState"></span></div><div class="row"><div class="field"><label for="ruleCurrentVersion">最新保存版本</label><input id="ruleCurrentVersion" readonly></div><div class="field"><label for="ruleNewVersion">新版本</label><input id="ruleNewVersion" maxlength="32" inputmode="decimal"></div></div><div class="row"><div class="field"><label for="ruleEffectiveFrom">生效起始日</label><input id="ruleEffectiveFrom" type="date"></div><div class="field"><label for="ruleEffectiveTo">生效终止日（可留空）</label><input id="ruleEffectiveTo" type="date"></div></div><p class="muted">首次配置可留空日期沿用全期间兼容模式；启用定期版本后，后续版本须填写起始日。新起始日会自动截止前一条开放式版本；有限区间不得重叠。跨版本的审计期需拆期审计。</p><div class="field"><label for="ruleThresholdBasis">阈值依据</label><textarea id="ruleThresholdBasis" maxlength="500"></textarea></div><div><h3>可调参数</h3><p class="muted" id="ruleMetricHint"></p><div class="rule-param-grid" id="ruleParamFields"></div></div><div class="field"><label for="ruleTrialAudit">试跑材料</label><select id="ruleTrialAudit"></select></div><div class="row"><button class="btn pdf" id="btnRuleTrial" type="button">试跑当前草稿</button><button id="btnRuleSave" type="button">保存为新版本</button><p class="muted" id="ruleEditorStatus" role="status"></p></div><div class="rule-trial-result" id="ruleTrialResult" hidden></div><div id="ruleVersionHistory" class="data-list"></div></div></div>
@@ -952,15 +1001,19 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=teaching-storage-1"></script>
-<script src="/core-inputs.js?v=20261017-ffed1dc42b90"></script>
-<script src="/enterprise.js?v=enterprise-invoice-20261013-1"></script>
-<script src="/ai-keys.js?v=20261012-model-combobox-11"></script>
-<script src="/console.js?v=20261017-invite-password-1"></script>
+<script src="/core-inputs.js?v=20261019-2e461e9cdcc1"></script>
+<script src="/enterprise.js?v=20261017-62c89aee0e75"></script>
+<script src="/ai-keys.js?v=20261017-live-balance-1"></script>
+<script src="/member-links.js?v=20261020-native-1"></script>
+<script src="/training-workspace.js?v=20261020-native-1"></script>
+<script src="/training-staff.js?v=20261020-native-1"></script>
+<script src="/training-portal.js?v=20261020-native-1"></script>
+<script src="/console.js?v=20261020-native-3"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
-<script src="/workspace.js?v=20261009-icon-sidebar-8"></script>
+<script src="/workspace.js?v=20261020-native-1"></script>
 <script src="/graph.js?v=20261017-11967901ecc2"></script>
 <script src="/rule-bindings.js?v=20261016"></script>
-<script src="/knowledge-retrieval.js?v=20261017-90decf1290ba"></script>
+<script src="/knowledge-retrieval.js?v=20261018-32580db4e0ef"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>
 </body>

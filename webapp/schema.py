@@ -646,9 +646,13 @@ def initialize(store) -> None:
                 problem_id TEXT NOT NULL REFERENCES code_problem(id),
                 seq INTEGER NOT NULL,                     -- 用例序号（题内从 1 递增）
                 input_text TEXT NOT NULL DEFAULT '',      -- 标准输入
-                expected_output TEXT NOT NULL DEFAULT '', -- 期望输出（逐字节比对，浮点容差属判题引擎）
+                expected_output TEXT NOT NULL DEFAULT '', -- 期望输出（按 match_mode 比对）
                 weight REAL NOT NULL DEFAULT 1.0,         -- 计分权重
                 sample INTEGER NOT NULL DEFAULT 0,        -- 1=公开样例（学生可见）
+                match_mode TEXT NOT NULL DEFAULT 'exact'
+                    CHECK (match_mode IN ('exact','float','any_of')),  -- 比对模式（v3.1）
+                float_tolerance REAL,                     -- float 模式容差（NULL=1e-6）
+                alternatives_json TEXT,                   -- any_of 多解候选（JSON 数组，可空）
                 created_at TEXT NOT NULL,
                 UNIQUE(problem_id, seq)
             );
@@ -689,6 +693,15 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_code_judge_submission
                 ON code_judge_result(submission_id);
         """)
+        # 判题比对模式（v3.1，浮点容差/多解判定）：既有库幂等补列。
+        _code_case_columns = {row["name"] for row in db.execute("PRAGMA table_info(code_test_case)")}
+        if _code_case_columns:
+            if "match_mode" not in _code_case_columns:
+                db.execute("ALTER TABLE code_test_case ADD COLUMN match_mode TEXT NOT NULL DEFAULT 'exact'")
+            if "float_tolerance" not in _code_case_columns:
+                db.execute("ALTER TABLE code_test_case ADD COLUMN float_tolerance REAL")
+            if "alternatives_json" not in _code_case_columns:
+                db.execute("ALTER TABLE code_test_case ADD COLUMN alternatives_json TEXT")
         # 院校席位与配额（FR-U06）：教师/学生分席，院校按师生配额核销。
         # 无记录院校按默认档放行（不阻塞既有部署）；调整走 revision 乐观锁
         # 并逐次留痕（与 platform org_quota/members.set_quota 同模式）。
@@ -731,9 +744,80 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_college_roster_snapshot_term
                 ON college_roster_snapshot(term_id, class_name);
         """)
+        # 判题链路增强（FR-J05/J06/J07/J08 v1）：任务队列、查重标记、
+        # 质量评分、判题分与评分体系桥接。均无敏感列（不进 REGISTRY）；
+        # 追加式建表，历史数据不受影响。
+        db.executescript("""
+            -- J05 判题任务队列：提交入队 → worker 认领（running）→ done/failed。
+            -- 状态机 queued→running→done|failed；failed 且 attempts<max_attempts
+            -- 可重试（retry 置回 queued）。同一提交只有一个未完结任务
+            -- （submission_id 唯一，重判=新提交新行，沿用既有惯例）。
+            CREATE TABLE IF NOT EXISTS code_judge_task (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                submission_id TEXT NOT NULL UNIQUE REFERENCES code_submission(id),
+                state TEXT NOT NULL DEFAULT 'queued'
+                    CHECK (state IN ('queued','running','done','failed')),
+                attempts INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 3,
+                last_error TEXT NOT NULL DEFAULT '',      -- 最近一次失败原因（截断留存）
+                picked_at TEXT,                           -- worker 认领时间
+                finished_at TEXT,                         -- done/failed 时间
+                next_run_at TEXT NOT NULL,                -- 最早可执行时间（失败退避用）
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_judge_task_state
+                ON code_judge_task(state, next_run_at);
+            -- J06 查重标记：同题跨学生两两比对（归一化 token shingle Jaccard），
+            -- 超阈值落标记。无向对去重：submission_a 字典序 < submission_b。
+            CREATE TABLE IF NOT EXISTS code_plagiarism_flag (
+                id TEXT PRIMARY KEY,
+                problem_id TEXT NOT NULL REFERENCES code_problem(id),
+                submission_a TEXT NOT NULL REFERENCES code_submission(id),
+                submission_b TEXT NOT NULL REFERENCES code_submission(id),
+                similarity REAL NOT NULL,                 -- 0~1 Jaccard 相似度
+                same_class INTEGER NOT NULL DEFAULT 0,    -- 1=同班级（班内比对命中）
+                detail_json TEXT NOT NULL DEFAULT '{}',   -- 归一化摘要/共享 shingle 数等
+                flagged_at TEXT NOT NULL,
+                UNIQUE(submission_a, submission_b)
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_plagiarism_problem
+                ON code_plagiarism_flag(problem_id, similarity DESC);
+            -- J07 代码质量分：判题通过后对同一提交做 AST 静态检查，
+            -- 与正确性得分分开留存（辅助维度，不计入判题通过判定）。
+            CREATE TABLE IF NOT EXISTS code_quality_result (
+                id TEXT PRIMARY KEY,
+                submission_id TEXT NOT NULL UNIQUE REFERENCES code_submission(id),
+                score REAL NOT NULL,                      -- 0~100 质量分（确定性问题清单扣分）
+                detail_json TEXT NOT NULL,                -- 逐检查项：名称/扣分/说明
+                checked_at TEXT NOT NULL
+            );
+            -- J08 判题接入评分体系：判题产出（code_judge_result）作为客观事实
+            -- 来源落评分记录；教师可调分（adjusted_score），调整留痕入 adjust_log。
+            -- 生效分 = adjusted_score（未调分时 = auto_score）。
+            CREATE TABLE IF NOT EXISTS code_score_record (
+                id TEXT PRIMARY KEY,
+                submission_id TEXT NOT NULL UNIQUE REFERENCES code_submission(id),
+                judge_result_id TEXT NOT NULL REFERENCES code_judge_result(id),
+                auto_score REAL NOT NULL,                 -- 判题引擎客观分（0~100）
+                adjusted_score REAL,                      -- 教师调分（NULL=未调）
+                adjust_reason TEXT NOT NULL DEFAULT '',   -- 最近一次调分理由
+                adjust_log_json TEXT NOT NULL DEFAULT '[]',  -- 全部调分留痕（时间/操作人/前后值/理由）
+                adjusted_by TEXT REFERENCES college_user(id),
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_code_score_record_submission
+                ON code_score_record(submission_id);
+        """)
         from webapp import ai_keys
         ai_keys.migrate(db)
         from webapp import policy_graph
         policy_graph.migrate(db)
         from src import vat_reconciliation
         vat_reconciliation.initialize(db)
+        from webapp import university_members
+        university_members.migrate(db)
+        if 'student_seats' not in {r['name'] for r in db.execute('PRAGMA table_info(invite_codes)')}:
+            db.execute('ALTER TABLE invite_codes ADD COLUMN student_seats INTEGER NOT NULL DEFAULT 0')
+        if 'code_secret' not in {r['name'] for r in db.execute('PRAGMA table_info(member_invitations)')}:
+            db.execute('ALTER TABLE member_invitations ADD COLUMN code_secret TEXT')

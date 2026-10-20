@@ -9,6 +9,7 @@ from io import BytesIO
 import json
 from pathlib import Path
 import re
+import unicodedata
 
 import pdfplumber
 import pypdfium2
@@ -59,6 +60,20 @@ def identity(value):
     return re.sub(r"\s+", "", str(value or "")).upper()
 
 
+def invoice_direction(record, tax_no):
+    direction = label(record.get("direction"))
+    if direction in {"进项", "input", "进项发票"}:
+        return "input"
+    if direction in {"销项", "output", "销项发票"}:
+        return "output"
+    seller, buyer, tax_no = identity(record.get("seller_tax_no")), identity(record.get("buyer_tax_no")), identity(tax_no)
+    if tax_no and seller == tax_no and buyer != tax_no:
+        return "output"
+    if tax_no and buyer == tax_no and seller != tax_no:
+        return "input"
+    return None
+
+
 def text(value):
     return value.isoformat() if isinstance(value, (date, datetime)) else "" if value is None else str(value)
 
@@ -98,7 +113,7 @@ def metadata(rows, kind):
     tax = re.findall(r"(?:纳税人识别号|统一社会信用代码|税号)\s*[:：]?\s*([A-Za-z0-9]{8,20})", content)
     period = None
     # VAT must explicitly refer to tax period; submission date is never used.
-    marker = r"税款所属(?:期|期间)" if kind == "vat_declaration" else r"(?:会计期间|本期范围|所属期间|统计期间|期间)"
+    marker = r"税(?:\s*[（(]费[）)])?款所属(?:时间|期|期间)|税[（(]费[）)]款所属时间" if kind == "vat_declaration" else r"(?:会计期间|本期范围|所属期间|统计期间|期间)"
     for line in content.splitlines():
         if not re.search(marker, line):
             continue
@@ -146,16 +161,68 @@ def issue(code, message, file_id=None, position=None):
     return {"code": code, "message": message, "source_file_id": file_id, "source_position": position}
 
 
-def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_name, *, pdf_invoice=False):
+VAT_VALUE_HEADER = r"本期|本月|本年累计|申报数值|declared_value|销售额|税额|余额|扣除额|发生额|含税收入|减征额|税费额|税费率|税\(费\)率|份数|价税合计"
+VAT_CHILD_HEADER = r"本期数|本月数|本年累计数?|货物及劳务|服务、不动产和无形资产|销售额|销项税额|税额|减免性质代码|减免税.*额|减征比例.*|减征额|增值税税额"
+
+
+def vat_matrix_records(rows, positions, meta, file_id, sheet_name, issues):
+    """Horizontal deduction schedules: preserve each labelled source cell.
+
+    Printed column-number/formula guidance is not a reported amount. Empty
+    amount rows remain missing candidates, never a zero-business assertion.
+    """
+    records = []
+    for index, header in enumerate(rows[:-1]):
+        columns = [c for c,v in enumerate(header) if re.search(VAT_VALUE_HEADER, label(v))]
+        if len(columns) < 2 or any(v is not None and not isinstance(v, str) for v in header):
+            continue
+        if any(label(v) in {'项目', '项目名称', '申报项目', '税费种', '税费种类'} for v in header):
+            continue
+        section_row, section_col, section = next(((r,c,text(v).strip())
+                        for r in range(index-1,-1,-1) if sum(bool(text(v).strip()) for v in rows[r]) == 1
+                        for c,v in enumerate(rows[r]) if text(v).strip()), (None,None,sheet_name))
+        # A form title or prose row mentioning amounts is not a matrix header.
+        if len([v for v in header if text(v).strip()]) != len(columns):
+            continue
+        data_index = index + 1
+        following = rows[data_index]
+        if any(re.match(r'^\d+[=＝（(≤≥]', text(v).strip()) for v in following):
+            data_index += 1
+        if data_index >= len(rows):
+            continue
+        data = rows[data_index]
+        if any(text(v).strip() and not re.match(r'^[-+\d（(—－]', text(v).strip()) for v in data):
+            continue
+        scopes = [label(v) for v in header]
+        records.extend(vat_grid(rows, positions, meta, file_id, data_index-1, 0, columns,
+                                sheet_name, issues, scopes, key_column=None, row_end=data_index+1,
+                                label_override=(section, positions(section_row,section_col) if section_row is not None else sheet_name)))
+    return records
+
+
+def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_name, *, pdf_invoice=False, split_sections=True):
     required = [k for k in REQUIRED[kind] if not pdf_invoice or k not in {"red_letter_status", "void_status"}]
     known = {label(alias) for names in ALIASES[kind].values() for alias in names} | {label(k) for k in ALIASES[kind]}
     anchor = {"account_balance": "account_name", "vat_declaration": "item_label", "invoice_detail": "invoice_no"}[kind]
     anchors = set(map(label, [anchor, *ALIASES[kind][anchor]]))
+    if kind == "vat_declaration" and split_sections:
+        starts = [i for i,row in enumerate(rows) if any(label(v) in anchors for v in row)
+                  and sum(bool(text(v).strip()) for v in row) >= 2]
+        if len(starts) > 1:
+            result = []
+            for start,end in zip(starts, [*starts[1:],len(rows)]):
+                result.extend(table_records(rows[start:end],lambda r,c,s=start:positions(r+s,c),meta,
+                    kind,file_id,mapper,issues,sheet_name,split_sections=False))
+            return result
     candidates = [
         (sum(label(v) in known for v in row) + 100 * any(label(v) in anchors for v in row), i)
         for i, row in enumerate(rows[:40])
     ]
     score, header_index = max(candidates, default=(0, 0))
+    if kind == "vat_declaration" and not any(any(label(v) in anchors for v in row) for row in rows[:40]):
+        matrix = vat_matrix_records(rows, positions, meta, file_id, sheet_name, issues)
+        if matrix:
+            return matrix
     if score < 1:
         if not mapper.ai:
             return []
@@ -173,7 +240,8 @@ def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_na
     headers = list(rows[header_index])
     if header_index + 1 < len(rows):
         child = rows[header_index + 1]
-        if sum(bool(re.fullmatch(r"借方|贷方|本期数|本月数|本年累计|本年累计数", re.sub(r"\s+", "", text(v)))) for v in child) >= 2:
+        child_pattern = VAT_CHILD_HEADER if kind == "vat_declaration" else r"借方|贷方|本期数|本月数|本年累计|本年累计数"
+        if sum(bool(re.fullmatch(child_pattern, label(v))) for v in child) >= 2:
             parent = ""
             combined = []
             for c in range(max(len(headers), len(child))):
@@ -207,9 +275,19 @@ def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_na
     if kind == "vat_declaration":
         label_columns = [i for i, m in mapping.items() if m["target_field"] == "item_label"]
         value_columns = [
-            i for i, h in enumerate(headers) if re.search(r"本期|本月|本年累计|申报数值|declared_value", text(h))
+            i for i, h in enumerate(headers) if re.search(VAT_VALUE_HEADER, label(h))
+            and i not in label_columns and mapping.get(i, {}).get("target_field") != "item_key"
+            and not re.search(r"性质代码|项目代码", label(h))
         ]
         if label_columns and len(value_columns) > 1:
+            key_column=next((i for i,m in mapping.items() if m["target_field"]=="item_key"), None)
+            if key_column is None:
+                scores=[]
+                for c in range(label_columns[0]+1,min(value_columns)):
+                    values=[text(row[c]).strip() for row in rows[header_index+1:header_index+16] if c<len(row) and text(row[c]).strip()]
+                    if values and all(re.match(r'^\d+(?:\.0)?(?:[（(=＝≤≥]|$)',v) for v in values):
+                        scores.append((len(values),c))
+                key_column=max(scores)[1] if scores else None
             records = vat_grid(
                 rows,
                 positions,
@@ -221,6 +299,8 @@ def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_na
                 sheet_name,
                 issues,
                 headers,
+                key_column=key_column,
+                label_end=key_column if key_column is not None else min(value_columns),
             )
             if records:
                 # Multiple value columns are valid when their scopes remain separate.
@@ -304,12 +384,20 @@ def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_na
     return records
 
 
-def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_columns, form_name, issues, headers):
+def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_columns, form_name, issues, headers,
+             *, key_column=None, label_end=None, row_end=None, label_override=None):
     records = []
-    for r, row in enumerate(rows[header_index + 1 :], header_index + 1):
-        name = text(row[label_column] if label_column < len(row) else None).strip()
+    for r, row in enumerate(rows[header_index + 1 : row_end], header_index + 1):
+        available = [(i,text(row[i]).strip()) for i in range(label_column, min(label_end or label_column+1,len(row)))
+                     if text(row[i]).strip()]
+        name_column, name = available[-1] if available else (label_column, "")
+        name_position = positions(r, name_column)
+        if label_override:
+            name, name_position = label_override
         if not name or name in {"项目", "项目名称", "合计", "总计"}:
             continue
+        if key_column is not None and not text(row[key_column] if key_column < len(row) else None).strip():
+            continue  # Footers and section titles are not declared rows.
         for c in value_columns:
             raw = row[c] if c < len(row) else None
             value, state = number(raw)
@@ -325,13 +413,12 @@ def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_c
                     "source_position": position,
                     "raw_record": {str(i): text(v) for i, v in enumerate(row)},
                     "item_label": name,
-                    "item_key": text(row[label_column + 1])
-                    if label_column + 1 < len(row) and label_column + 1 not in value_columns
-                    else None,
+                    "item_key": (str(int(row[key_column])) if isinstance(row[key_column],float) and row[key_column].is_integer()
+                                 else text(row[key_column])) if key_column is not None and key_column < len(row) else None,
                     "declared_value": value,
                     "column_scope": context,
                     "field_sources": {
-                        "item_label": {"position": positions(r, label_column), "raw_value": name},
+                        "item_label": {"position": name_position, "raw_value": name},
                         "declared_value": {
                             "position": position,
                             "raw_value": text(raw),
@@ -342,7 +429,7 @@ def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_c
                         },
                     },
                     "value_states": {"declared_value": state, "item_label": "present"},
-                    "unit": meta["unit"],
+                    "unit": "%" if re.search(r"率.*[%％]|比例.*[%％]",text(headers[c])) else "份" if "份数" in text(headers[c]) else meta["unit"],
                     "period_start": meta["period"][0] if meta["period"] else None,
                     "period_end": meta["period"][1] if meta["period"] else None,
                     "form_type": meta["form_type"],
@@ -389,6 +476,9 @@ def parse(raw, name, kind, file_id, mapper, *, ocr=False):
                         result["parts"].append({"name": sheet.title, **meta, "empty_table": True})
                     elif any(text(value).strip() for row in rows for value in row):
                         result["issues"].append(issue("unreadable_sheet", "发票工作簿含未识别的非空工作表，须核对，不能当作零或忽略其金额。", file_id, sheet.title))
+                elif kind == "vat_declaration" and any(text(value).strip() for row in rows for value in row):
+                    result["parts"].append({"name":sheet.title, **meta, "unparsed":True})
+                    result["issues"].append(issue("unreadable_sheet", "申报工作簿中此表尚未提取到可核对记录，请核对适用性与原表；未视为零申报。", file_id, sheet.title))
         finally:
             book.close()
     elif extension == "pdf":
@@ -824,17 +914,103 @@ def gaps(intervals, start, end):
 
 
 SCOPE_FIELDS = ("company_name", "tax_no", "start_date", "end_date")
+RANGE_KINDS = {"month": "月份", "quarter": "季度", "year": "年度", "custom": "明确起止日期"}
+
+
+def _full_month(start, end):
+    return (
+        start.day == 1
+        and start.year == end.year
+        and start.month == end.month
+        and end.day == calendar.monthrange(end.year, end.month)[1]
+    )
+
+
+def _full_quarter(start, end):
+    return (
+        start.day == 1
+        and start.month in {1, 4, 7, 10}
+        and end.year == start.year
+        and end.month == start.month + 2
+        and end.day == calendar.monthrange(end.year, end.month)[1]
+    )
+
+
+def _full_year(start, end):
+    return (
+        start.year == end.year
+        and (start.month, start.day) == (1, 1)
+        and (end.month, end.day) == (12, 31)
+    )
+
+
+def effective_range_kind(task):
+    """Return the declared mode, or a descriptive mode when older drafts omit it.
+
+    Inference never changes start_date/end_date and never decides the range; the
+    two dates remain the user's selection.
+    """
+    kind = task.get("range_kind")
+    if kind:
+        return kind
+    try:
+        start = date.fromisoformat(task.get("start_date") or "")
+        end = date.fromisoformat(task.get("end_date") or "")
+    except (ValueError, TypeError):
+        return "custom"
+    if _full_month(start, end):
+        return "month"
+    if _full_quarter(start, end):
+        return "quarter"
+    if _full_year(start, end):
+        return "year"
+    return "custom"
+
+
+def range_error(task):
+    """Validate that an explicit month/quarter/year mode covers the whole interval."""
+    kind = task.get("range_kind")
+    if not kind:
+        return ""
+    if kind not in RANGE_KINDS:
+        return "检查范围方式无效，请选择月份、季度、年度或明确起止日期。"
+    if not task.get("start_date") or not task.get("end_date"):
+        return ""
+    try:
+        start = date.fromisoformat(task["start_date"])
+        end = date.fromisoformat(task["end_date"])
+    except (ValueError, TypeError):
+        return ""
+    if start > end:
+        return ""
+    aligned = {"month": _full_month, "quarter": _full_quarter, "year": _full_year}.get(kind)
+    if aligned is not None and not aligned(start, end):
+        return f"按{RANGE_KINDS[kind]}检查时，起止日期须覆盖完整自然{RANGE_KINDS[kind]}。"
+    return ""
+
+
+def identity_field_errors(task):
+    """Use the same identity field rules for draft adoption and final checks."""
+    errors = {}
+    name = str(task.get("company_name") or "").strip()
+    if not name:
+        errors["company_name"] = "请填写企业名称，或从材料读取后核对。"
+    elif len(name) > 200:
+        errors["company_name"] = "企业名称不得超过200字。"
+    tax = identity(task.get("tax_no"))
+    if not tax:
+        errors["tax_no"] = "请填写税号，或从材料读取后核对。"
+    elif not tax.isascii() or not tax.isalnum() or not 8 <= len(tax) <= 20:
+        errors["tax_no"] = "税号须为8至20位字母或数字。"
+    return errors
 
 
 def scope_errors(task):
     """Validate inspection scope only when requested; draft storage accepts blanks."""
-    errors = {}
+    errors = identity_field_errors(task)
     for key, field_label in zip(SCOPE_FIELDS, ("企业名称", "税号", "检查起始日", "检查终止日")):
         if not task.get(key):
             errors[key] = "请填写" + field_label + "，或从材料读取后核对。"
-    tax = identity(task.get("tax_no"))
-    if tax and (not tax.isascii() or not tax.isalnum() or not 8 <= len(tax) <= 20):
-        errors["tax_no"] = "税号须为8至20位字母或数字。"
     for key in ("start_date", "end_date"):
         if task.get(key):
             try:
@@ -844,11 +1020,179 @@ def scope_errors(task):
                 errors[key] = "请填写有效日期。"
     if not any(key in errors for key in ("start_date", "end_date")) and task["start_date"] > task["end_date"]:
         errors["end_date"] = "检查终止日不能早于起始日。"
+    mismatch = range_error(task)
+    if mismatch:
+        errors["range_kind"] = mismatch
     return errors
 
 
+def scope_period_candidates(task):
+    """Pair source start/end dates without spanning unrelated periods."""
+    candidates = task.get("scope_candidates", {})
+    grouped = {}
+    for start in candidates.get("start_date", []):
+        for end in candidates.get("end_date", []):
+            try:
+                first, last = date.fromisoformat(start["value"]), date.fromisoformat(end["value"])
+                if first > last or first.isoformat() != start["value"] or last.isoformat() != end["value"]:
+                    continue
+            except (ValueError, TypeError, KeyError):
+                continue
+            ends = {(s.get("file_id"), s.get("position")) for s in end.get("sources", [])}
+            sources = [s for s in start.get("sources", []) if s.get("file_id")
+                       and (s.get("file_id"), s.get("position")) in ends]
+            if not sources:
+                continue
+            item = grouped.setdefault((first, last), {"start_date": start["value"], "end_date": end["value"], "sources": []})
+            for source in sources:
+                if source not in item["sources"]:
+                    item["sources"].append(source)
+    return list(grouped.values())
+
+
+def identity_token(key, value):
+    value = re.sub(r"\s+", "", unicodedata.normalize("NFKC", str(value or "")))
+    return value.upper() if key == "tax_no" else value
+
+
+def entity_names(quote):
+    # PDF text may put entity name and taxpayer ID on the same physical line.
+    labels = r"纳税人识别号|统一社会信用代码|纳税识别号|税号|税款所属期|统计期间|金额单位|地址|电话|开户银行|银行账号|编制日期"
+    pattern = (r"(?:企业名称|纳税人名称|单位名称)\s*[:：]\s*(.*?)"
+               r"(?=\s*(?:" + labels + r")\s*[:：]|[\r\n\t|]|$)")
+    values = {}
+    for match in re.finditer(pattern, quote or ""):
+        value = match.group(1).strip()
+        if value and len(value) <= 200:
+            values.setdefault(identity_token("company_name", value), value)
+    return list(values.values())
+
+
+def scope_identity_candidates(documents):
+    """Deduplicate entity values while retaining every physical source.
+
+    Invoice counterparties without a known enterprise side are membership
+    checks only, never selectable enterprise identity candidates.
+    """
+    grouped = {"company_name": {}, "tax_no": {}}
+
+    def add(key, values, source, *, selectable=True):
+        unique = {identity_token(key, v): str(v).strip() for v in values if identity_token(key, v)}
+        if not unique:
+            return
+        token = (tuple(sorted(unique)), selectable)
+        entry = grouped[key].setdefault(token, {
+            "value": " / ".join(unique.values()), "alternatives": list(unique.values()),
+            "selectable": selectable, "sources": []})
+        if source not in entry["sources"]:
+            entry["sources"].append(source)
+
+    for doc in documents:
+        if doc.get("material_type") == "invoice_detail":
+            continue
+        for part in doc.get("parts", []):
+            source = {"file_id": doc["id"], "file_name": doc.get("name") or doc["id"],
+                      "position": part.get("name", "来源位置待核对"),
+                      "needs_review": bool(doc.get("ocr_candidate") and not doc.get("source_reviewed"))}
+            for value in entity_names(part.get("quote", "")):
+                add("company_name", [value], source)
+            for value in part.get("tax_nos", []):
+                add("tax_no", [value], source)
+    primary = {identity_token("tax_no", e["value"]) for e in grouped["tax_no"].values()}
+    for doc in documents:
+        if doc.get("material_type") != "invoice_detail":
+            continue
+        for record in doc.get("records", []):
+            seller, buyer = identity(record.get("seller_tax_no")), identity(record.get("buyer_tax_no"))
+            direction = invoice_direction(record, "")
+            values = ([seller] if direction == "output" else [buyer] if direction == "input"
+                      else [seller, buyer] if seller and buyer else [])
+            if not values or not all(values):
+                continue
+            matched = [v for v in values if identity_token("tax_no", v) in primary]
+            selectable = bool(direction or len(matched) == 1)
+            if len(matched) == 1 and not direction:
+                values = matched
+            source = {"file_id": doc["id"], "file_name": doc.get("name") or doc["id"],
+                      "position": record.get("source_position", "发票票面"),
+                      "needs_review": bool(not doc.get("source_reviewed"))}
+            add("tax_no", values, source, selectable=selectable)
+    return {key: list(groups.values()) for key, groups in grouped.items()}
+
+
+def scope_identity_errors(task, documents, *, invoices=True):
+    errors = {}
+    invoice_ids = {d["id"] for d in documents if d.get("material_type") == "invoice_detail"}
+    for key, choices in scope_identity_candidates(documents).items():
+        # Non-selectable entries are invoice counterparties with no known
+        # enterprise side: they may only narrow a choice, never contradict the
+        # task identity. Treating them as the enterprise produced false
+        # company_conflict blocks for ordinary invoices.
+        candidates = [c for c in choices if c.get("selectable", True)]
+        if not invoices:
+            # Invoice-level identity belongs to the rule layer: a counterparty
+            # mismatch is a finding to review, not an input error that blocks
+            # the whole check.
+            candidates = [c for c in candidates
+                          if not any(s.get("file_id") in invoice_ids for s in c.get("sources", []))]
+        if task.get(key) and any(
+            identity_token(key, task[key]) not in [identity_token(key, v) for v in c["alternatives"]]
+            for c in candidates
+        ):
+            label = "企业名称" if key == "company_name" else "税号"
+            errors[key] = label + "与材料识别结果不同，请查看差异并对照原件确认。"
+    return errors
+
+
+def invoice_identity_votes(documents):
+    """Vote for the inspected enterprise from invoice sides only.
+
+    A counterparty appears far more often than the enterprise itself, so raw
+    frequency is biased. Only the side that belongs to the enterprise counts:
+    output invoices vote for the seller, input invoices for the buyer. Invoices
+    without a known direction do not vote at all.
+    """
+    votes = {}
+    for doc in documents:
+        if doc.get("material_type") != "invoice_detail":
+            continue
+        for record in doc.get("records", []):
+            seller, buyer = identity(record.get("seller_tax_no")), identity(record.get("buyer_tax_no"))
+            direction = invoice_direction(record, "")
+            value = seller if direction == "output" else buyer if direction == "input" else ""
+            if not value:
+                continue
+            item = votes.setdefault(identity_token("tax_no", value),
+                                    {"value": value, "count": 0, "sources": []})
+            item["count"] += 1
+            source = {"file_id": doc["id"], "position": record.get("source_position", "发票票面")}
+            if source not in item["sources"]:
+                item["sources"].append(source)
+    return votes
+
+
+def invoice_identity_majority(documents):
+    """Return the clear voting winner, or None when the result is not decisive."""
+    votes = list(invoice_identity_votes(documents).values())
+    total = sum(item["count"] for item in votes)
+    if total < 2:
+        return None
+    ranked = sorted(votes, key=lambda item: item["count"], reverse=True)
+    best = ranked[0]
+    runner_up = ranked[1]["count"] if len(ranked) > 1 else 0
+    if best["count"] < 2 or best["count"] <= runner_up:
+        return None
+    if best["count"] / total < 0.6:
+        return None
+    return best
+
+
 def autofill_scope(task, documents):
-    """Only unanimous explicit source metadata becomes a candidate, never date extrema."""
+    """Unanimous source identity may prefill; inspection dates are candidates only.
+
+    The user owns the inspection range. Materials are read to check that range,
+    never to choose it from their earliest/latest date or from a scan result.
+    """
     before = {key: task.get(key) for key in SCOPE_FIELDS}
     candidates = {key: {} for key in SCOPE_FIELDS}
     origins = task.setdefault("scope_origins", {})
@@ -863,7 +1207,7 @@ def autofill_scope(task, documents):
                 taxes = part.get("tax_nos", [])
                 if len(taxes) == 1:
                     values["tax_no"] = taxes[0]
-                names = re.findall(r"(?:企业名称|纳税人名称|单位名称)\s*[:：]\s*([^\n]+)", part.get("quote", ""))
+                names = entity_names(part.get("quote", ""))
                 if len(set(names)) == 1:
                     values["company_name"] = names[0].strip()
                 period = part.get("parsed_metadata", part).get("period")
@@ -872,15 +1216,54 @@ def autofill_scope(task, documents):
             for key, value in values.items():
                 candidates[key].setdefault(value, []).append(source)
     for key, choices in candidates.items():
+        if key in {"company_name", "tax_no"}:
+            grouped = {}
+            for value, sources in choices.items():
+                item = grouped.setdefault(identity_token(key, value), {"value": value, "sources": []})
+                for source in sources:
+                    if source not in item["sources"]:
+                        item["sources"].append(source)
+            choices = candidates[key] = {item["value"]: item["sources"] for item in grouped.values()}
+        # start_date/end_date stay user decisions. They are exposed below as
+        # candidates for an explicit selection, never applied automatically.
+        if key in {"start_date", "end_date"}:
+            continue
         if not task.get(key) or origins.get(key, {}).get("kind") == "file":
-            task[key] = next(iter(choices)) if len(choices) == 1 else ""
+            value = next(iter(choices)) if len(choices) == 1 else ""
+            sources = next(iter(choices.values())) if value else []
+            if not value and key == "tax_no" and not choices:
+                # No header identity at all: a decisive majority of invoice sides
+                # may still prefill. Headers always win, and the user confirms.
+                winner = invoice_identity_majority(documents)
+                if winner:
+                    value, sources = winner["value"], winner["sources"]
+                    choices[value] = sources
+            task[key] = value
             origins.pop(key, None)
-            if len(choices) == 1:
-                origins[key] = {"kind": "file", "sources": next(iter(choices.values()))}
+            if value:
+                origins[key] = {"kind": "file", "sources": sources}
+    # Drafts created before this rule may carry a range chosen from file
+    # metadata. Clear that origin so the user must select and confirm again;
+    # the old values remain available in scope_candidates.
+    for key in ("start_date", "end_date"):
+        if origins.get(key, {}).get("kind") == "file":
+            task[key] = ""
+            origins.pop(key, None)
     if any(task.get(key) != value for key, value in before.items()):
         task["scope_confirmed"] = False
     task["scope_candidates"] = {key: [{"value": value, "sources": sources} for value, sources in choices.items()]
                                 for key, choices in candidates.items()}
+
+
+def scope_summary(task, records):
+    return {
+        "kind": effective_range_kind(task),
+        "start_date": task.get("start_date") or "",
+        "end_date": task.get("end_date") or "",
+        "confirmed": bool(task.get("scope_confirmed")),
+        "outside_records": sum(1 for record in records if record.get("scope_status") == "outside_scope"),
+        "unknown_date_records": sum(1 for record in records if record.get("scope_status") == "unknown_date"),
+    }
 
 
 def prepare(task, documents):
@@ -891,8 +1274,11 @@ def prepare(task, documents):
                 "invoice_summaries": [], "coverage": {kind: [] for kind in KINDS},
                 "evidence_links": {"company_id": task.get("company_id"), "period": [task.get("start_date"), task.get("end_date")],
                                    "source_record_ids": [], "comparison_status": "requires_confirmed_rules"},
+                "scope": scope_summary(task, []),
                 "boundary": "资料已保存；开始检查前请核对企业与检查区间。"}
-    problems, notices, records = [], [], []
+    problems = [issue("company_name_conflict" if key == "company_name" else "company_conflict", message)
+                for key, message in scope_identity_errors(task, documents, invoices=False).items()]
+    notices, records = [], []
     coverage = {kind: [] for kind in KINDS}
     direction_coverage = {"input": [], "output": []}
     seen = {}
@@ -950,19 +1336,8 @@ def prepare(task, documents):
         for source in doc["records"]:
             record = {**source, "company_id": task["company_id"], "task_id": task["id"], "tenant_id": task["tenant_id"]}
             if kind == "invoice_detail":
-                direction = label(record.get("direction"))
-                direction = (
-                    "input"
-                    if direction in {"进项", "input", "进项发票"}
-                    else "output"
-                    if direction in {"销项", "output", "销项发票"}
-                    else None
-                )
+                direction = invoice_direction(record, task["tax_no"])
                 seller, buyer = identity(record.get("seller_tax_no")), identity(record.get("buyer_tax_no"))
-                if direction is None and seller == task["tax_no"] and buyer != task["tax_no"]:
-                    direction = "output"
-                elif direction is None and buyer == task["tax_no"] and seller != task["tax_no"]:
-                    direction = "input"
                 record["direction"] = direction
                 enterprise_id = seller if direction == "output" else buyer if direction == "input" else None
                 if direction is None:
@@ -989,9 +1364,17 @@ def prepare(task, documents):
                     )
                 if direction:
                     direction_coverage[direction].extend(part["period"] for part in doc["parts"] if part["period"])
-                record["in_scope"] = bool(
-                    record.get("issue_date") and task["start_date"] <= record["issue_date"] <= task["end_date"]
-                )
+                # Invoices are checked by issue date, a business date from the
+                # source. Filing/upload dates never establish the inspection range.
+                record["date_basis"] = "issue_date"
+                record["date_source"] = "source"
+                if not record.get("issue_date"):
+                    record["scope_status"] = "unknown_date"
+                elif task["start_date"] <= record["issue_date"] <= task["end_date"]:
+                    record["scope_status"] = "in_scope"
+                else:
+                    record["scope_status"] = "outside_scope"
+                record["in_scope"] = record["scope_status"] == "in_scope"
                 # Explicit detail line identity permits multi-line invoices. Without
                 # it, differing rows of the same invoice remain a conflict.
                 key = (record.get("seller_tax_no"), record.get("buyer_tax_no"), direction,
@@ -1031,13 +1414,26 @@ def prepare(task, documents):
                 else:
                     seen[key] = record
             else:
-                record["in_scope"] = bool(
-                    record["period_start"]
-                    and record["period_end"]
-                    and task["start_date"] <= record["period_start"]
-                    and record["period_end"] <= task["end_date"]
+                # Ledgers and declarations are checked by the source-stated
+                # period. A user-confirmed period is labelled separately from
+                # the original metadata; the whole interval must fit.
+                record["date_basis"] = "source_period"
+                record["date_source"] = (
+                    "user_confirmed"
+                    if (record.get("confirmed_metadata") or {}).get("period_start")
+                    else "source"
                 )
-                if record["period_start"] and not record["in_scope"]:
+                if not record.get("period_start") or not record.get("period_end"):
+                    record["scope_status"] = "unknown_date"
+                elif (
+                    task["start_date"] <= record["period_start"]
+                    and record["period_end"] <= task["end_date"]
+                ):
+                    record["scope_status"] = "in_scope"
+                else:
+                    record["scope_status"] = "outside_scope"
+                record["in_scope"] = record["scope_status"] == "in_scope"
+                if record["scope_status"] == "outside_scope":
                     problems.append(
                         issue(
                             "period_alignment",
@@ -1047,6 +1443,39 @@ def prepare(task, documents):
                         )
                     )
             records.append(record)
+        # A file is never silently filtered. Mixed or out-of-range evidence is
+        # kept with its original position and blocks readiness until handled.
+        file_records = [record for record in records if record["source_file_id"] == file_id]
+        outside = [record for record in file_records if record.get("scope_status") == "outside_scope"]
+        unknown = [record for record in file_records if record.get("scope_status") == "unknown_date"]
+        if outside:
+            problems.append(
+                issue(
+                    "record_outside_scope",
+                    f"{len(outside)} 条记录不在检查区间内，已保留原值但不纳入本次检查；"
+                    "请调整检查区间或重新提供区间内材料。",
+                    file_id,
+                    outside[0]["source_position"],
+                )
+            )
+        if unknown:
+            problems.append(
+                issue(
+                    "record_date_unknown",
+                    f"{len(unknown)} 条记录的业务日期无法识别，须核对后才能纳入正式检查。",
+                    file_id,
+                    unknown[0]["source_position"],
+                )
+            )
+        if outside and len(outside) < len(file_records):
+            problems.append(
+                issue(
+                    "mixed_scope_file",
+                    "同一文件同时含检查区间内和区间外的记录，不能静默过滤；"
+                    "请拆分或重新提供符合检查区间的材料。",
+                    file_id,
+                )
+            )
     for kind in KINDS:
         if not any(d["material_type"] == kind for d in documents):
             problems.append(issue("missing_material", "缺少" + KINDS[kind]))
@@ -1124,5 +1553,6 @@ def prepare(task, documents):
             "source_record_ids": [r["id"] for r in records if r["in_scope"]],
             "comparison_status": "requires_confirmed_rules",
         },
+        "scope": scope_summary(task, records),
         "boundary": "资料处理完成后停在规则核验之前；不生成风险结论或报告。",
     }
