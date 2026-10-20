@@ -273,6 +273,13 @@
         <div class="actions"><button class="primary small" data-act="org-dep-create">创建院系</button></div>
       </div>
       <div id="org-departments" class="muted">加载中…</div>
+      <h3 style="margin-top:16px;">专业</h3>
+      <div id="org-major-form" class="row" hidden>
+        <div><label>专业名称</label><input id="om-name" placeholder="如 大数据与会计"></div>
+        <div><label>所属院系</label><select id="om-department"></select></div>
+        <div class="actions"><button class="primary small" data-act="org-major-create">创建专业</button></div>
+      </div>
+      <div id="org-majors" class="muted">加载中…</div>
       <h3 style="margin-top:16px;">学年学期</h3>
       <div id="org-term-form" class="row" hidden>
         <div><label>学期名称</label><input id="ot-name" placeholder="如 2026-2027-1"></div>
@@ -287,6 +294,7 @@
       <div id="org-class-form" class="row" hidden>
         <div><label>班级名称</label><input id="oc-name" placeholder="如 会计2601"></div>
         <div><label>院系</label><select id="oc-department"></select></div>
+        <div><label>专业</label><select id="oc-major"></select></div>
         <div><label>学期</label><select id="oc-term"></select></div>
         <div class="actions"><button class="primary small" data-act="org-class-create">创建班级</button></div>
       </div>

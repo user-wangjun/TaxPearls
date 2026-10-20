@@ -457,6 +457,7 @@ async function loadOrg() {
   if (!college) { renderOrg(); return; }
   const q = encodeURIComponent(college);
   state.departments = (await api(`/api/training/staff/org/departments?college=${q}`)).departments;
+  state.majors = (await api(`/api/training/staff/org/majors?college=${q}`)).majors;
   state.terms = (await api(`/api/training/staff/org/terms?college=${q}`)).terms;
   state.orgClasses = (await api(`/api/training/staff/org/classes?college=${q}`)).classes;
   state.quota = (await api(`/api/training/staff/org/quota?college=${q}`)).quota;
@@ -469,10 +470,12 @@ function orgBadge(archived) {
 
 function renderOrg() {
   const deps = state.departments || [];
+  const majors = state.majors || [];
   const terms = state.terms || [];
   const classes = state.orgClasses || [];
   const isAdmin = state.staff && state.staff.role === "admin";
   document.getElementById("org-dep-form").hidden = !isAdmin;
+  document.getElementById("org-major-form").hidden = !isAdmin;
   document.getElementById("org-term-form").hidden = !isAdmin;
   document.getElementById("org-class-form").hidden = !isAdmin;
   document.getElementById("org-departments").innerHTML = deps.length
@@ -483,6 +486,15 @@ function renderOrg() {
         <button class="small" data-act="org-dep-delete" data-id="${esc(d.id)}">删除</button>` : ""}</td></tr>`).join("")}
     </table>`
     : `<p class="muted">暂无院系${isAdmin ? "，可在上方创建" : ""}。</p>`;
+  document.getElementById("org-majors").innerHTML = majors.length
+    ? `<table style="width:100%;border-collapse:collapse;">
+      <tr><th style="text-align:left;">专业</th><th style="text-align:left;">所属院系</th><th style="text-align:left;">班级数</th><th style="text-align:left;"></th></tr>
+      ${majors.map((m) => `<tr><td>${esc(m.name)}${orgBadge(m.archived)}</td>
+        <td>${esc(m.department_name || "—")}</td><td>${m.classes}</td>
+        <td>${isAdmin ? `<button class="small" data-act="org-major-toggle" data-id="${esc(m.id)}" data-v="${m.archived ? 0 : 1}">${m.archived ? "恢复" : "归档"}</button>
+        <button class="small" data-act="org-major-delete" data-id="${esc(m.id)}">删除</button>` : ""}</td></tr>`).join("")}
+    </table>`
+    : `<p class="muted">暂无专业${isAdmin ? "，可在上方创建（专业可选挂院系，班级可再挂专业）" : ""}。</p>`;
   document.getElementById("org-terms").innerHTML = terms.length
     ? `<table style="width:100%;border-collapse:collapse;">
       <tr><th style="text-align:left;">学期</th><th style="text-align:left;">起止</th><th style="text-align:left;">班级数</th><th style="text-align:left;"></th></tr>
@@ -497,9 +509,9 @@ function renderOrg() {
     : `<p class="muted">暂无学期${isAdmin ? "，可在上方创建" : ""}。</p>`;
   document.getElementById("org-classes").innerHTML = classes.length
     ? `<table style="width:100%;border-collapse:collapse;">
-      <tr><th style="text-align:left;">班级</th><th style="text-align:left;">院系</th><th style="text-align:left;">学期</th><th style="text-align:left;">在读</th><th style="text-align:left;"></th></tr>
+      <tr><th style="text-align:left;">班级</th><th style="text-align:left;">院系</th><th style="text-align:left;">专业</th><th style="text-align:left;">学期</th><th style="text-align:left;">在读</th><th style="text-align:left;"></th></tr>
       ${classes.map((c) => `<tr><td>${esc(c.name)}${orgBadge(c.archived)}</td>
-        <td>${esc(c.department_name || "—")}</td><td>${esc(c.term_name || "—")}</td><td>${c.active_students}</td>
+        <td>${esc(c.department_name || "—")}</td><td>${esc(c.major_name || "—")}</td><td>${esc(c.term_name || "—")}</td><td>${c.active_students}</td>
         <td>${isAdmin ? `<button class="small" data-act="org-class-clone" data-id="${esc(c.id)}">按学期重建</button>
         <button class="small" data-act="org-class-toggle" data-id="${esc(c.id)}" data-v="${c.archived ? 0 : 1}">${c.archived ? "恢复" : "归档"}</button>
         <button class="small" data-act="org-class-delete" data-id="${esc(c.id)}">删除</button>` : ""}</td></tr>`).join("")}
@@ -507,6 +519,10 @@ function renderOrg() {
     : `<p class="muted">暂无班级实体。学生名册「班级」字段照常聚合展示于上方「班级与教师名册」，不受影响。</p>`;
   document.getElementById("oc-department").innerHTML = `<option value="">（未绑定院系）</option>` +
     deps.filter((d) => !d.archived).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
+  document.getElementById("om-department").innerHTML = `<option value="">（未挂院系）</option>` +
+    deps.filter((d) => !d.archived).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
+  document.getElementById("oc-major").innerHTML = `<option value="">（未绑定专业）</option>` +
+    majors.filter((m) => !m.archived).map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
   document.getElementById("oc-term").innerHTML = `<option value="">（未绑定学期）</option>` +
     terms.filter((t) => !t.archived).map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");
   const quota = state.quota;
@@ -934,6 +950,32 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       } catch (err) { flash(err.message, true); }
       await loadOrg();
     },
+    "org-major-create": async () => {
+      const name = q("#om-name").value.trim();
+      if (!name) { flash("专业名称必填。", true); return; }
+      try {
+        await api("/api/training/staff/org/majors", {
+          method: "POST", body: { college: state.staff.college, name,
+                                  department_id: q("#om-department").value || null } });
+        q("#om-name").value = "";
+        flash("专业已创建。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-major-toggle": async () => {
+      try {
+        await api(`/api/training/staff/org/majors/${id}`, {
+          method: "PATCH", body: { archived: q(`button[data-act="org-major-toggle"][data-id="${id}"]`).dataset.v === "1" } });
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-major-delete": async () => {
+      try {
+        await api(`/api/training/staff/org/majors/${id}`, { method: "DELETE" });
+        flash("专业已删除。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
     "org-term-create": async () => {
       const name = q("#ot-name").value.trim();
       if (!name) { flash("学期名称必填（如 2026-2027-1）。", true); return; }
@@ -986,13 +1028,16 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     "org-class-create": async () => {
       const name = q("#oc-name").value.trim();
       if (!name) { flash("班级名称必填。", true); return; }
-      await api("/api/training/staff/org/classes", {
-        method: "POST",
-        body: { college: state.staff.college, name,
-                department_id: q("#oc-department").value || null,
-                term_id: q("#oc-term").value || null } });
-      q("#oc-name").value = "";
-      flash("班级实体已创建（在读人数按学生名册「班级」字段对齐）。");
+      try {
+        await api("/api/training/staff/org/classes", {
+          method: "POST",
+          body: { college: state.staff.college, name,
+                  department_id: q("#oc-department").value || null,
+                  major_id: q("#oc-major").value || null,
+                  term_id: q("#oc-term").value || null } });
+        q("#oc-name").value = "";
+        flash("班级实体已创建（在读人数按学生名册「班级」字段对齐）。");
+      } catch (err) { flash(err.message, true); }
       await loadOrg();
     },
     "org-class-toggle": async () => {

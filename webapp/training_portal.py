@@ -903,6 +903,7 @@ class OrgClassCreate(BaseModel):
     college: str
     name: str
     department_id: str | None = None
+    major_id: str | None = None
     term_id: str | None = None
 
 
@@ -910,7 +911,22 @@ class OrgClassPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str | None = None
     department_id: str | None = None
+    major_id: str | None = None
     term_id: str | None = None
+    archived: bool | None = None
+
+
+class OrgMajorCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    name: str
+    department_id: str | None = None
+
+
+class OrgMajorPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    department_id: str | None = None
     archived: bool | None = None
 
 
@@ -1007,6 +1023,88 @@ def delete_department(store, department_id: str) -> dict[str, Any]:
             raise TrainingPortalError(f"该院系仍被 {used} 个班级引用，请先调整班级归属或归档院系。", 409)
         db.execute("DELETE FROM college_department WHERE id=?", (department_id,))
     return {"deleted": True, "id": department_id}
+
+
+# ---- 专业层级（FR-U01 待补）：院系 → 专业 → 班级 ----
+#
+# 专业挂院系（可空、同院校引用校验），班级可选挂专业；同院校专业名唯一，
+# 被班级引用禁删 409（可归档保留）。层级变更不改写既有学生名册归属。
+
+def list_majors(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
+    """专业列表，附引用班级数（删除保护提示用）。"""
+    where = "" if include_archived else "AND m.archived=0"
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT m.id, m.college, m.name, m.department_id, m.archived, m.created_at,
+                      d.name AS department_name, count(c.id) AS classes
+               FROM college_major m
+               LEFT JOIN college_department d ON d.id = m.department_id
+               LEFT JOIN college_class c ON c.major_id = m.id
+               WHERE m.college=? {where}
+               GROUP BY m.id
+               ORDER BY m.archived, m.name""", (college,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_major(store, college: str, name: str, *,
+                 department_id: str | None = None) -> dict[str, Any]:
+    college = (college or "").strip()
+    name = _org_name(name, "专业")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        department_id, _ = _org_ref_check(db, college,
+                                          (department_id or "").strip() or None, None)
+        dup = db.execute("SELECT id FROM college_major WHERE college=? AND name=?",
+                         (college, name)).fetchone()
+        if dup:
+            raise TrainingPortalError(f"已存在专业「{name}」。", 409)
+        mid = str(uuid.uuid4())
+        db.execute("INSERT INTO college_major (id, college, name, department_id, archived, created_at)"
+                   " VALUES (?,?,?,?,0,?)", (mid, college, name, department_id, _now()))
+        row = db.execute("SELECT * FROM college_major WHERE id=?", (mid,)).fetchone()
+    return dict(row)
+
+
+def update_major(store, major_id: str, *, name: str | None = None,
+                 department_id: str | None = None,
+                 archived: bool | None = None) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_major WHERE id=?", (major_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("专业不存在。", 404)
+        new_name = row["name"]
+        if name is not None:
+            new_name = _org_name(name, "专业")
+            dup = db.execute("SELECT id FROM college_major WHERE college=? AND name=? AND id!=?",
+                             (row["college"], new_name, major_id)).fetchone()
+            if dup:
+                raise TrainingPortalError(f"已存在专业「{new_name}」。", 409)
+        new_department = row["department_id"]
+        if department_id is not None:
+            new_department = department_id.strip() or None
+            _org_ref_check(db, row["college"], new_department, None)
+        db.execute("UPDATE college_major SET name=?, department_id=? WHERE id=?",
+                   (new_name, new_department, major_id))
+        _update_archived(db, "college_major", major_id, archived)
+        row = db.execute("SELECT * FROM college_major WHERE id=?", (major_id,)).fetchone()
+    return dict(row)
+
+
+def delete_major(store, major_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_major WHERE id=?", (major_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("专业不存在。", 404)
+        used = db.execute("SELECT count(*) n FROM college_class WHERE major_id=?",
+                          (major_id,)).fetchone()["n"]
+        if used:
+            raise TrainingPortalError(f"该专业仍被 {used} 个班级引用，请先调整班级归属或归档专业。", 409)
+        db.execute("DELETE FROM college_major WHERE id=?", (major_id,))
+    return {"deleted": True, "id": major_id}
 
 
 def list_terms(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
@@ -1114,8 +1212,9 @@ def _class_unique_check(db, college: str, name: str, term_id: str | None,
 
 
 def _org_ref_check(db, college: str, department_id: str | None,
-                   term_id: str | None) -> tuple[str | None, str | None]:
-    """引用的院系/学期必须存在且属于同院校（跨院校引用拒绝）。"""
+                   term_id: str | None,
+                   major_id: str | None = None) -> tuple[str | None, str | None]:
+    """引用的院系/学期/专业必须存在且属于同院校（跨院校引用拒绝）。"""
     if department_id:
         row = db.execute("SELECT id FROM college_department WHERE id=?", (department_id,)).fetchone()
         if not row:
@@ -1129,6 +1228,12 @@ def _org_ref_check(db, college: str, department_id: str | None,
             raise TrainingPortalError("学期不存在。", 404)
         if own["college"] != college:
             raise TrainingPortalError("学期属于其他院校。", 422)
+    if major_id:
+        own = db.execute("SELECT college FROM college_major WHERE id=?", (major_id,)).fetchone()
+        if not own:
+            raise TrainingPortalError("专业不存在。", 404)
+        if own["college"] != college:
+            raise TrainingPortalError("专业属于其他院校。", 422)
     return department_id, term_id
 
 
@@ -1137,13 +1242,15 @@ def list_org_classes(store, college: str, *, include_archived: bool = True) -> l
     where = "" if include_archived else "AND c.archived=0"
     with store.connect() as db:
         rows = db.execute(
-            f"""SELECT c.id, c.college, c.name, c.department_id, c.term_id, c.archived,
-                       c.created_at, d.name AS department_name, t.name AS term_name,
+            f"""SELECT c.id, c.college, c.name, c.department_id, c.major_id, c.term_id,
+                       c.archived, c.created_at, d.name AS department_name,
+                       mj.name AS major_name, t.name AS term_name,
                        (SELECT count(*) FROM student_info s
                         WHERE s.college=c.college AND s.class_name=c.name AND s.active=1)
                        AS active_students
                 FROM college_class c
                 LEFT JOIN college_department d ON d.id=c.department_id
+                LEFT JOIN college_major mj ON mj.id=c.major_id
                 LEFT JOIN college_term t ON t.id=c.term_id
                 WHERE c.college=? {where}
                 ORDER BY c.archived, c.name""", (college,)).fetchall()
@@ -1151,6 +1258,7 @@ def list_org_classes(store, college: str, *, include_archived: bool = True) -> l
 
 
 def create_org_class(store, college: str, name: str, *, department_id: str | None = None,
+                 major_id: str | None = None,
                  term_id: str | None = None) -> dict[str, Any]:
     college = (college or "").strip()
     name = _org_name(name, "班级")
@@ -1159,18 +1267,21 @@ def create_org_class(store, college: str, name: str, *, department_id: str | Non
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         department_id, term_id = _org_ref_check(db, college, (department_id or "").strip() or None,
-                                                (term_id or "").strip() or None)
+                                                (term_id or "").strip() or None,
+                                                (major_id or "").strip() or None)
         _class_unique_check(db, college, name, term_id)
         cid = str(uuid.uuid4())
-        db.execute("INSERT INTO college_class (id, college, name, department_id, term_id,"
-                   " archived, created_at) VALUES (?,?,?,?,?,0,?)",
-                   (cid, college, name, department_id, term_id, _now()))
+        db.execute("INSERT INTO college_class (id, college, name, department_id, major_id,"
+                   " term_id, archived, created_at) VALUES (?,?,?,?,?,?,0,?)",
+                   (cid, college, name, department_id, (major_id or "").strip() or None,
+                    term_id, _now()))
         row = db.execute("SELECT * FROM college_class WHERE id=?", (cid,)).fetchone()
     return dict(row)
 
 
 def update_org_class(store, class_id: str, *, name: str | None = None,
-                 department_id: str | None = None, term_id: str | None = None,
+                 department_id: str | None = None, major_id: str | None = None,
+                 term_id: str | None = None,
                  archived: bool | None = None) -> dict[str, Any]:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -1179,16 +1290,20 @@ def update_org_class(store, class_id: str, *, name: str | None = None,
             raise TrainingPortalError("班级不存在。", 404)
         new_name = _org_name(name, "班级") if name is not None else row["name"]
         new_department = row["department_id"]
+        new_major = row["major_id"]
         new_term = row["term_id"]
-        if department_id is not None or term_id is not None:
+        if department_id is not None or term_id is not None or major_id is not None:
             if department_id is not None:
                 new_department = department_id.strip() or None
+            if major_id is not None:
+                new_major = major_id.strip() or None
             if term_id is not None:
                 new_term = term_id.strip() or None
-            new_department, new_term = _org_ref_check(db, row["college"], new_department, new_term)
+            new_department, new_term = _org_ref_check(db, row["college"], new_department,
+                                                      new_term, new_major)
         _class_unique_check(db, row["college"], new_name, new_term, exclude_id=class_id)
-        db.execute("UPDATE college_class SET name=?, department_id=?, term_id=? WHERE id=?",
-                   (new_name, new_department, new_term, class_id))
+        db.execute("UPDATE college_class SET name=?, department_id=?, major_id=?, term_id=?"
+                   " WHERE id=?", (new_name, new_department, new_major, new_term, class_id))
         _update_archived(db, "college_class", class_id, archived)
         row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
     return dict(row)
@@ -1220,9 +1335,10 @@ def clone_org_class(store, class_id: str, *, term_id: str, name: str | None = No
         new_name = _org_name(name, "班级") if name is not None else row["name"]
         _class_unique_check(db, row["college"], new_name, term_id)
         cid = str(uuid.uuid4())
-        db.execute("INSERT INTO college_class (id, college, name, department_id, term_id,"
-                   " archived, created_at) VALUES (?,?,?,?,?,0,?)",
-                   (cid, row["college"], new_name, row["department_id"], term_id, _now()))
+        db.execute("INSERT INTO college_class (id, college, name, department_id, major_id,"
+                   " term_id, archived, created_at) VALUES (?,?,?,?,?,?,0,?)",
+                   (cid, row["college"], new_name, row["department_id"], row["major_id"],
+                    term_id, _now()))
         new_row = db.execute("SELECT * FROM college_class WHERE id=?", (cid,)).fetchone()
     return {"class": dict(new_row), "cloned_from": class_id, "term_name": term["name"]}
 
@@ -4044,6 +4160,38 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         college_record(admin(session), "college_term", term_id)
         return response(delete_term(store_provider(), term_id))
 
+    @app.get("/api/training/staff/org/majors")
+    @guarded
+    def org_major_list(college: str, include_archived: bool = True,
+                       session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session, college)
+        return response({"majors": list_majors(
+            store_provider(), college, include_archived=include_archived)})
+
+    @app.post("/api/training/staff/org/majors")
+    @guarded
+    def org_major_create(body: OrgMajorCreate,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session, body.college)
+        return response({"major": create_major(
+            store_provider(), body.college, body.name, department_id=body.department_id)})
+
+    @app.patch("/api/training/staff/org/majors/{major_id}")
+    @guarded
+    def org_major_update(major_id: str, body: OrgMajorPatch,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        college_record(admin(session), "college_major", major_id)
+        return response({"major": update_major(
+            store_provider(), major_id, name=body.name, department_id=body.department_id,
+            archived=body.archived)})
+
+    @app.delete("/api/training/staff/org/majors/{major_id}")
+    @guarded
+    def org_major_delete(major_id: str,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        college_record(admin(session), "college_major", major_id)
+        return response(delete_major(store_provider(), major_id))
+
     @app.get("/api/training/staff/org/classes")
     @guarded
     def org_class_list(college: str, include_archived: bool = True,
@@ -4059,7 +4207,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         admin(session, body.college)
         return response({"class": create_org_class(
             store_provider(), body.college, body.name,
-            department_id=body.department_id, term_id=body.term_id)})
+            department_id=body.department_id, major_id=body.major_id, term_id=body.term_id)})
 
     @app.patch("/api/training/staff/org/classes/{class_id}")
     @guarded
@@ -4068,7 +4216,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         college_record(admin(session), "college_class", class_id)
         return response({"class": update_org_class(
             store_provider(), class_id, name=body.name, department_id=body.department_id,
-            term_id=body.term_id, archived=body.archived)})
+            major_id=body.major_id, term_id=body.term_id, archived=body.archived)})
 
     @app.delete("/api/training/staff/org/classes/{class_id}")
     @guarded

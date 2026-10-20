@@ -618,6 +618,25 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_college_class_lookup
                 ON college_class(college, name);
         """)
+        # 专业层级（FR-U01 待补）：院系 → 专业 → 班级。专业挂院系（可空），
+        # 班级可选挂专业；同院校专业名唯一；既有库 additive 加列补挂 major_id。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS college_major (
+                id TEXT PRIMARY KEY,
+                college TEXT NOT NULL,
+                name TEXT NOT NULL,
+                department_id TEXT REFERENCES college_department(id),
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(college, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_college_major_lookup
+                ON college_major(college, name);
+        """)
+        class_columns = {row["name"] for row in db.execute("PRAGMA table_info(college_class)")}
+        if "major_id" not in class_columns:
+            db.execute(
+                "ALTER TABLE college_class ADD COLUMN major_id TEXT REFERENCES college_major(id)")
         # 编程题库（FR-J01 v1，仅数据模型与管理）：题目 + 测试用例。
         # 边界如实标注：判题沙箱（J03）、判题引擎（J04）、提交与版本存储（J02，
         # 代码正文按 05 号文档加密留存）待判题专项接入；本版不含提交数据，
