@@ -129,7 +129,8 @@ class AIProbeBody(BaseModel):
     operation: Literal['health', 'balance']
     key_id: str = Field(default='', max_length=64)
     api_key: str = Field(default='', max_length=4096, repr=False)
-    provider: Literal['configured', 'deepseek', 'openrouter'] = 'configured'
+    provider: Literal['configured', 'deepseek', 'openrouter', 'custom'] = 'configured'
+    base_url: str = Field(default='', max_length=500)
     model: str = Field(default='', max_length=200)
     balance_protocol: Literal['auto', 'deepseek', 'openrouter', 'credit_grants'] = 'auto'
 
@@ -151,7 +152,7 @@ class AIKeyCreateBody(AIKeyUsageBody):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1, max_length=80)
     api_key: str = Field(min_length=1, max_length=4096, repr=False)
-    provider: Literal['configured', 'deepseek', 'openrouter'] = 'configured'
+    provider: Literal['configured', 'deepseek', 'openrouter', 'custom'] = 'configured'
     model: str = Field(default='', max_length=200)
     base_url: str = Field(default='', max_length=500)
     usage: Literal['all', 'extraction', 'knowledge', 'report', 'tutor', 'none'] | None = None
@@ -324,7 +325,7 @@ def ai_key_probe(body: AIProbeBody, request: Request,
     try:
         settings = _environment_settings.AISettings.from_env()
         if body.key_id:
-            if body.api_key or body.provider != 'configured' or body.model:
+            if body.api_key or body.provider != 'configured' or body.model or body.base_url:
                 raise HTTPException(422, '已配置密钥检测不能混用临时密钥或覆盖模型。')
             selected_entry = next((entry for entry in ai_keys.entries(settings, store)
                                    if ai_probes.identity(entry['settings']) == body.key_id), None)
@@ -337,7 +338,9 @@ def ai_key_probe(body: AIProbeBody, request: Request,
         else:
             if not body.api_key.strip():
                 raise HTTPException(422, '请选择已配置密钥或填写临时密钥。')
-            target = ai_probes.temporary(settings, body.provider, body.api_key.strip(), body.model.strip())
+            if body.base_url and body.provider != 'custom':
+                raise HTTPException(422, '自定义接口地址须选择自定义服务。')
+            target = ai_probes.temporary(settings, body.provider, body.api_key.strip(), body.model.strip(), body.base_url)
         validation = replace(target, model=target.model or ('balance-only' if body.operation == 'balance' else ''))
         if validation.problem():
             raise HTTPException(422, '检测配置无效，请核对密钥格式、接口地址与模型名称。')

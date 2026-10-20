@@ -590,7 +590,7 @@
             </div>
             <div id="aiKeyAddUsage" class="probe-editor-usages"></div>
             <div class="probe-endpoint-fields">
-              <label class="field">地址预设<select id="aiKeyAddProvider"><option value="configured">当前配置</option><option value="deepseek">DeepSeek 官方</option><option value="openrouter">OpenRouter 官方</option></select></label>
+              <label class="field">地址预设<select id="aiKeyAddProvider"><option value="configured">当前配置</option><option value="deepseek">DeepSeek 官方</option><option value="openrouter">OpenRouter 官方</option><option value="custom">自定义</option></select></label>
               <label class="field">接口 URL<input id="aiKeyAddURL" type="url" maxlength="500" required placeholder="https://服务地址/v1"></label>
             </div>
             <div class="field"><label for="aiKeyAddSecret">API key</label><div class="probe-secret-row"><input id="aiKeyAddSecret" type="password" maxlength="4096" required autocomplete="off" spellcheck="false" placeholder="填写 API key"><button id="btnRevealAIKey" type="button" class="btn pdf" hidden>查看 key</button></div></div>
@@ -607,8 +607,9 @@
       <details class="sheet probe-temporary">
         <summary>临时密钥检测<span class="muted">不保存 key，仅检测一次</span></summary><p class="muted">提交后清空输入，不更改业务配置。“当前配置地址”使用服务端配置的接口。</p>
         <div class="probe-form">
-          <label class="field">服务地址<select id="aiTemporaryProvider"><option value="configured">当前配置地址</option><option value="deepseek">DeepSeek 官方</option><option value="openrouter">OpenRouter 官方</option></select></label>
-          <label class="field">模型名称<input id="aiTemporaryModel" maxlength="200" placeholder="当前配置地址可留空；OpenRouter 测活须填写模型"></label>
+          <label class="field">服务地址<select id="aiTemporaryProvider"><option value="configured">当前配置地址</option><option value="deepseek">DeepSeek 官方</option><option value="openrouter">OpenRouter 官方</option><option value="custom">自定义</option></select></label>
+          <label id="aiTemporaryURLField" class="field" hidden>接口 URL<input id="aiTemporaryURL" type="url" maxlength="500" placeholder="https://服务地址/v1" disabled></label>
+          <label class="field">模型名称<input id="aiTemporaryModel" maxlength="200" placeholder="当前配置地址可留空；OpenRouter / 自定义测活须填写模型"></label>
           <label class="field">临时 API key<input id="aiTemporaryKey" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="仅用于本次检测"></label>
           <label class="field">余额查询协议<select id="aiTemporaryProtocol"><option value="auto">自动识别</option><option value="deepseek">DeepSeek 账户余额</option><option value="openrouter">OpenRouter 密钥额度</option><option value="credit_grants">兼容额度接口（USD）</option></select></label>
         </div>
@@ -998,7 +999,7 @@
 <script src="/classroom.js?v=teaching-storage-1"></script>
 <script src="/core-inputs.js?v=20261019-2e461e9cdcc1"></script>
 <script src="/enterprise.js?v=20261017-62c89aee0e75"></script>
-<script src="/ai-keys.js?v=20261017-live-balance-1"></script>
+<script src="/ai-keys.js?v=20261020-custom-endpoint-1"></script>
 <script src="/console.js?v=20261019-6903fd6f4ce8"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261009-icon-sidebar-8"></script>

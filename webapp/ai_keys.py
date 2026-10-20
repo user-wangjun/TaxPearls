@@ -231,7 +231,7 @@ def catalog(settings, store, user):
 
 def add(store, user, settings, *, name, key, provider, model, base_url='', usage=None,
         balance_protocol='auto', json_mode=None, vision=None, disable_thinking=None, reasoning_effort=None, usages=None):
-    target = ai_probes.temporary(settings, provider, key.strip(), model.strip())
+    target = ai_probes.temporary(settings, provider, key.strip(), model.strip(), base_url)
     if base_url:
         target = replace(target, base_url=base_url.strip().rstrip('/'))
     target = replace(target, json_mode=target.json_mode if json_mode is None else json_mode,
