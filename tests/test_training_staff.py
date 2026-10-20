@@ -19,7 +19,7 @@ from fastapi.testclient import TestClient
 
 from src import settings  # noqa: F401 - 先加载 .env，Store 需要 FIELD_KEY
 from webapp.storage import Store
-from webapp.training_portal import register, today_cst
+from webapp.training_portal import STATIC_DIR, register, today_cst
 
 _passwords = PasswordHasher()
 STUDENT_COOKIE = "test_training_cookie"
@@ -92,9 +92,13 @@ class TrainingStaffTests(unittest.TestCase):
         self.assertEqual(res.status_code, 401)
 
     def test_staff_page_and_script_served(self):
-        page = self.client.get("/training-staff")
-        self.assertEqual(page.status_code, 200)
-        self.assertIn("text/html", page.headers["content-type"])
+        anonymous = self.client.get('/training-staff',follow_redirects=False)
+        self.assertEqual(anonymous.status_code,307)
+        self.assertEqual(anonymous.headers['location'],'/')
+        self._staff_login()
+        page = self.client.get("/training-staff",follow_redirects=False)
+        self.assertEqual(page.status_code,307)
+        self.assertEqual(page.headers["location"],"/#panel=examPanel")
         script = self.client.get("/training-staff.js")
         self.assertEqual(script.status_code, 200)
         self.assertIn("text/javascript", script.headers["content-type"])
@@ -118,20 +122,22 @@ class TrainingStaffTests(unittest.TestCase):
                     self.stack.pop()
 
         staff_page = Containers()
-        staff_page.feed(self.client.get("/training-staff").text)
+        self._staff_login()
+        staff_page.feed((STATIC_DIR/"training-staff.html").read_text(encoding="utf-8"))
         self.assertEqual(staff_page.nodes["new-cert-btn"][0].get("data-act"), "new-cert-btn")
         for field in ("sf-college", "si-college", "cf2-college", "cm-college", "ti-college"):
             attrs = staff_page.nodes[field][0]
             self.assertIn("readonly", attrs)
             self.assertNotIn("value", attrs)  # 登录身份填充，不预设演示院校
         student_page = Containers()
-        student_page.feed(self.client.get("/training-certificates").text)
+        self._student_login()
+        student_page.feed((STATIC_DIR/"training-portal.html").read_text(encoding="utf-8"))
         parents = student_page.nodes["pr-card"][1]
         self.assertIn(("section", "app-view"), parents)
         self.assertNotIn(("div", "pass-modal"), parents)
         self.assertNotIn("code-card", student_page.nodes)
         self.assertNotIn("code-problems", staff_page.nodes)
-        self.assertIn("税务案例训练", self.client.get("/training-certificates").text)
+        self.assertIn("税务案例训练", (STATIC_DIR/"training-portal.html").read_text(encoding="utf-8"))
 
     def test_tax_practice_retake_and_resume_buttons_reach_handlers(self):
         script = r"""
@@ -145,7 +151,8 @@ function node(id) {
 const ctx = {document: {getElementById: node}, setTimeout() {}};
 vm.createContext(ctx);
 const source = fs.readFileSync('webapp/static/training-portal.js', 'utf8');
-vm.runInContext(source.slice(0, source.lastIndexOf('boot();')), ctx);
+const controller=source.split('/* controller body */')[1].split('/* controller end */')[0];
+vm.runInContext(controller.slice(0,controller.lastIndexOf('const ready=boot();')), ctx);
 ctx.startPractice = async body => starts.push(body);
 ctx.api = async path => { requests.push(path); return {attempt: {id: 'unfinished'}}; };
 ctx.renderAttempt = () => {};

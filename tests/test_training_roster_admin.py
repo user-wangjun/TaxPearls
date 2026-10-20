@@ -53,6 +53,11 @@ class RosterAdminTests(unittest.TestCase):
         register(app, lambda: self.store, COOKIE_NAME)
         self.client = TestClient(app)
         self._seed()
+        with self.store.connect() as db:
+            staff=db.execute("SELECT id FROM college_user WHERE username=?",('admin01',)).fetchone()[0]
+            db.execute("INSERT INTO teacher_student_quotas VALUES (?,?,?,1,?,?)",(staff,COLLEGE,50,staff,NOW))
+            teacher=db.execute("SELECT id FROM college_user WHERE username='teacher01'").fetchone()[0]
+            db.execute("INSERT INTO teacher_student_quotas VALUES (?,?,50,1,?,?)",(teacher,COLLEGE,staff,NOW))
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -94,7 +99,7 @@ class RosterAdminTests(unittest.TestCase):
             "college": COLLEGE, "default_password": "NewStaff2026!",
             "rows": [
                 {"username": "teacher02", "display_name": "王老师",
-                 "email": "w@demo.edu"},
+                 "email": "lecturer@demo.edu"},
                 {"username": "teacher01", "display_name": "重复登录名"},
                 {"username": "", "display_name": "缺登录名"},
                 {"username": "teacher03", "display_name": ""},
@@ -191,7 +196,7 @@ class RosterAdminTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/training/staff/classes/migrate", json={
             "college": COLLEGE, "from_class": "a", "to_class": "b"}).status_code, 401)
         self.assertEqual(self.client.post("/api/training/staff/teachers/import", json={
-            "college": COLLEGE, "default_password": "x1Pass!!",
+            "college": COLLEGE, "default_password": "x1Pass2026!!",
             "rows": [{"username": "someone", "display_name": "某人"}]}).status_code, 401)
 
     # ---- Excel 名册直读（FR-U03 第二期） -------------------------------------

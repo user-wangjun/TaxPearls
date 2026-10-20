@@ -183,6 +183,8 @@ def reset_password(store, proof, password, browser):
             raise ValueError(INVALID)
         _validate_password(password,user['email'])
         db.execute('UPDATE users SET password_hash=? WHERE id=?',(_passwords.hash(password),user['id']))
+        from webapp.university_members import sync_password
+        sync_password(db,db.execute('SELECT password_hash FROM users WHERE id=?',(user['id'],)).fetchone()[0],user_id=user['id'])
         db.execute('DELETE FROM sessions WHERE user_id=?',(user['id'],))
         from webapp import oauth
         oauth.revoke_pending(db,user['id'])
