@@ -543,6 +543,101 @@ def initialize(store) -> None:
         if "skipped_at" not in attempt_columns:
             db.execute(
                 "ALTER TABLE training_self_practice_attempts ADD COLUMN skipped_at TEXT")
+        # 真题/回忆/模拟题库作答（第四条就绪：真题授权先行、审核启用）。
+        # 题库题作答与规则仿真共用 attempts 行：bank_question_id 非空即题库题，
+        # rule_id 置空串、seed 置 0；判分按选项集合比对，解析判分后开放。
+        if "bank_question_id" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts"
+                " ADD COLUMN bank_question_id TEXT REFERENCES training_bank_question(id)")
+        # 真题授权与题库、考纲升版、试用反馈（第四条就绪三件套）。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS training_source_authorization (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 授权适用证书（外键）
+                licensor TEXT NOT NULL,                   -- 授权方（命题管理方或其授权出版方）
+                auth_no TEXT NOT NULL,                    -- 授权文号（书面授权凭证编号，证书内唯一）
+                question_types TEXT NOT NULL,             -- 覆盖题源（逗号分隔：real/recall/mock，服务层校验）
+                valid_from TEXT NOT NULL,                 -- 生效日（ISO 日期）
+                valid_until TEXT,                         -- 失效日（可空=长期；到期后不可再发布/导入）
+                scope_note TEXT NOT NULL DEFAULT '',      -- 使用范围与限制说明
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','revoked')),  -- 生效 / 已撤销（撤销不留痕删除，可审计）
+                created_by TEXT REFERENCES college_user(id),  -- 登记人（外键）
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(certificate_id, auth_no)
+            );
+            CREATE TABLE IF NOT EXISTS training_bank_question (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 所属证书（外键）
+                source_type TEXT NOT NULL
+                    CHECK (source_type IN ('real','recall','mock')),
+                                                          -- 题源：真题/回忆题/模拟题（仿真题为规则生成，不入库）
+                year INTEGER NOT NULL,                    -- 考试年度（如 2026 年真题）
+                question_no TEXT NOT NULL DEFAULT '',     -- 卷内题号（如 一、单选第3题）
+                knowledge_point_id TEXT REFERENCES knowledge_point(id),  -- 关联知识点（外键，可空）
+                stem TEXT NOT NULL,                       -- 题干
+                options_json TEXT NOT NULL,               -- 选项（[{"key":"A","text":"…"},…]）
+                answer_keys_json TEXT NOT NULL,           -- 标准答案（["A"] 或多选 ["A","C"]）
+                explanation TEXT NOT NULL DEFAULT '',     -- 解析（判分后才对学生开放）
+                source_ref TEXT NOT NULL,                 -- 出处说明（年份卷次+授权文号，导入时自动附带）
+                auth_id TEXT NOT NULL REFERENCES training_source_authorization(id),  -- 授权记录（外键，必填）
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','pending','approved','rejected')),
+                                                          -- 草稿/待审/已审核上线/驳回
+                review_note TEXT NOT NULL DEFAULT '',     -- 审核意见
+                reviewed_by TEXT REFERENCES college_user(id),  -- 审核人（外键）
+                reviewed_at TEXT,                         -- 审核时间
+                created_by TEXT REFERENCES college_user(id),  -- 导入人（外键）
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_bank_question_cert
+                ON training_bank_question(certificate_id, source_type, status);
+            CREATE TABLE IF NOT EXISTS training_outline_upgrade (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 证书（外键）
+                from_version TEXT NOT NULL,               -- 现行考纲版本（如 2026）
+                to_version TEXT NOT NULL,                 -- 目标考纲版本（如 2027）
+                status TEXT NOT NULL DEFAULT 'working'
+                    CHECK (status IN ('working','activated')),  -- 核对中 / 已激活切换
+                started_by TEXT REFERENCES college_user(id),  -- 发起人（外键）
+                started_at TEXT NOT NULL,
+                activated_by TEXT REFERENCES college_user(id),  -- 激活人（外键）
+                activated_at TEXT,                        -- 激活时间
+                note TEXT NOT NULL DEFAULT ''             -- 备注（如大纲发布文号）
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_outline_upgrade_cert
+                ON training_outline_upgrade(certificate_id, status);
+            CREATE TABLE IF NOT EXISTS training_trial_feedback (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 反馈学生（外键）
+                certificate_id TEXT REFERENCES certificate(id),  -- 关联证书（外键，可空）
+                ref_type TEXT NOT NULL DEFAULT 'none'
+                    CHECK (ref_type IN ('none','kp','attempt','question')),
+                                                          -- 关联对象：无/知识点/作答/题库题
+                ref_id TEXT NOT NULL DEFAULT '',          -- 关联对象 id（ref_type=none 时为空）
+                category TEXT NOT NULL
+                    CHECK (category IN ('bug','suggestion','content','other')),
+                                                          -- 类别：缺陷/建议/内容纠错/其他
+                content TEXT NOT NULL,                    -- 反馈内容（1~1000 字，服务层校验）
+                status TEXT NOT NULL DEFAULT 'new'
+                    CHECK (status IN ('new','processing','resolved')),  -- 新反馈/处理中/已处理
+                staff_note TEXT NOT NULL DEFAULT '',      -- 教师处理备注
+                handled_by TEXT REFERENCES college_user(id),  -- 处理人（外键）
+                handled_at TEXT,                          -- 处理时间
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_trial_feedback_student
+                ON training_trial_feedback(student_id, created_at DESC);
+        """)
+        # 考纲升版核对状态（第四条就绪：逐条核对升版在现行树上进行）。
+        # ''=非核对树；pending=待核对 confirmed=沿用 updated=已按新纲修改
+        # added=新版新增（激活时才对学生可见） removed=新版删除（激活时停用）。
+        kp_columns = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_point)")}
+        if "review_status" not in kp_columns:
+            db.execute("ALTER TABLE knowledge_point ADD COLUMN review_status TEXT NOT NULL DEFAULT ''")
         # 班级归属追溯（FR-U03：账号与班级归属可追溯）。整建制/单点改班各记一行，不改写历史。
         db.executescript("""
             CREATE TABLE IF NOT EXISTS roster_class_history (

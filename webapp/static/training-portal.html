@@ -47,10 +47,17 @@
       <div class="ok" id="goal-msg"></div>
     </div>
     <div class="card" id="pr-card">
-      <h2>税务案例训练</h2>
-      <p class="muted">选择证书和知识点，阅读模拟企业的账务、申报数据与指标，识别涉税风险。提交后查看得分与逐项解析，再通过错题重练巩固薄弱点。</p>
+      <h2>税务案例训练与刷题</h2>
+      <p class="muted">仿真题为规则生成的企业案例（识别涉税风险）；真题/回忆题/模拟题为教师在授权下导入并审核上线的客观题（选项作答，判分后开放解析）。两类都不冒充真题，题源在题目标签上明示。</p>
       <div class="row">
         <div><label>证书范围</label><select id="pr-cert"></select></div>
+        <div><label>题源</label>
+          <select id="pr-source">
+            <option value="simulated">规则仿真题</option>
+            <option value="real">真题（须授权）</option>
+            <option value="recall">回忆题（须授权）</option>
+            <option value="mock">模拟题（须授权）</option>
+          </select></div>
         <div><label>知识点（选填，不选则整证随机）</label><select id="pr-kp"></select></div>
         <div style="flex:0 0 auto;"><button class="primary" id="start-practice">开始训练</button></div>
       </div>
@@ -61,6 +68,23 @@
       <div id="pr-attempt" style="margin-top:14px;"></div>
       <h2 style="margin-top:18px;">错题重练</h2>
       <div id="pr-wrong"></div>
+    </div>
+
+    <div class="card" id="feedback-card">
+      <h2>试用反馈</h2>
+      <p class="muted" style="margin-top:-6px;">试用期遇到缺陷、想要的功能或内容错误，可以直接反馈给本校教师。只有你自己和本校教师能看到内容，记录仅本人可见。</p>
+      <div class="row">
+        <div><label>类别</label>
+          <select id="fb-category">
+            <option value="bug">缺陷（打不开、判分错）</option>
+            <option value="suggestion">建议（想要的功能）</option>
+            <option value="content">内容纠错（题干/答案/解析）</option>
+            <option value="other">其他</option>
+          </select></div>
+        <div style="flex:1;"><label>内容</label><input id="fb-content" placeholder="如 提交后解析显示不全"></div>
+        <div style="flex:0 0 auto;"><button class="primary" id="fb-submit">提交反馈</button></div>
+      </div>
+      <div id="fb-mine" class="muted"></div>
     </div>
 
     <div class="card">

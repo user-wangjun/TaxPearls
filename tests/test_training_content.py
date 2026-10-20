@@ -20,6 +20,7 @@ from src import engine
 from webapp.storage import Store
 from webapp.training_content import register as register_content
 from webapp.training_portal import RULES_DIR, register
+from webapp.training_source_auth import register as register_source_auth
 
 _passwords = PasswordHasher()
 STUDENT_COOKIE = "test_training_cookie"
@@ -34,6 +35,7 @@ class TrainingContentVersionTests(unittest.TestCase):
         app = FastAPI()
         register(app, lambda: self.store, STUDENT_COOKIE)
         register_content(app, lambda: self.store)
+        register_source_auth(app, lambda: self.store)
         self.client = TestClient(app)
         self.rules = engine.load_rules(RULES_DIR)
         self.rule_id = self.rules[0].id
@@ -113,16 +115,33 @@ class TrainingContentVersionTests(unittest.TestCase):
             json={"label": "无依据版本"})
         self.assertEqual(no_ref.status_code, 422)
 
-    def test_external_question_sources_refused(self):
+    def test_external_question_sources_require_authorization(self):
         self._staff_login()
+        # 无授权时发布真题/回忆/模拟题版本一律拒绝（决策三：授权先行）
         for source_type in ("real", "recall", "mock"):
             res = self._create_version(f"试_{source_type}", source_type=source_type)
             self.assertEqual(res.status_code, 422, res.text)
-            self.assertIn("暂缓", res.json()["detail"])
             self.assertIn("授权", res.json()["detail"])
+            self.assertIn("书面授权", res.json()["detail"])
         versions = self.client.get(
             f"/api/training/staff/certificates/{self.cert}/content-versions").json()["versions"]
         self.assertEqual(versions, [])  # 数据模型预留但服务层不放行
+        # 登记生效授权后允许发布，且授权文号自动写入依据留痕
+        auth = self.client.post(
+            f"/api/training/staff/certificates/{self.cert}/source-authorizations",
+            json={"licensor": "全国会计考办授权出版方", "auth_no": "AUTH-2026-001",
+                  "question_types": ["real", "recall", "mock"], "valid_from": "2026-01-01",
+                  "scope_note": "仅限校内教学使用"}).json()["authorization"]
+        res = self._create_version("2026 真题精选 v1", year=2026, source_type="real",
+                                   source_ref="2026 年真题整理")
+        self.assertEqual(res.status_code, 200, res.text)
+        version = res.json()["content_version"]
+        self.assertEqual(version["source_type"], "real")
+        self.assertIn("AUTH-2026-001", version["source_ref"])
+        # 授权撤销后不得再发布（存量版本与作答不受影响）
+        self.client.post(f"/api/training/staff/source-authorizations/{auth['id']}/revoke")
+        res = self._create_version("2026 回忆题 v1", source_type="recall")
+        self.assertEqual(res.status_code, 422, res.text)
 
     def test_practice_binds_auto_baseline_version(self):
         self._staff_login()

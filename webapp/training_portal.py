@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import os
@@ -1949,14 +1950,24 @@ def create_knowledge_point(store, staff: dict, cert_id: str, code: str, name: st
             raise TrainingPortalError(f"知识点编码 {code} 在该证书下已存在。", 409)
         if parent_id:
             _assert_same_certificate(db, parent_id, cert_id, "上级知识点")
+        # 考纲升版核对期内新增的知识点：记 added 并对学生隐藏，激活时统一上线。
+        from webapp.training_outline import working_upgrade
+        upgrade = working_upgrade(db, cert_id)
+        if upgrade:
+            review_status = "added"
+            if not outline_version.strip():
+                outline_version = upgrade["to_version"]
+        else:
+            review_status = ""
+        active = 0 if upgrade else 1
         kp_id = str(uuid.uuid4())
         now = _now()
         db.execute(
             """INSERT INTO knowledge_point (id, certificate_id, code, name, subject, parent_id,
-               description, source_ref, outline_version, active, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,1,?,?)""",
+               description, source_ref, outline_version, active, review_status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?, ?,?)""",
             (kp_id, cert_id, code, name, subject.strip(), parent_id, description.strip(),
-             source_ref.strip(), outline_version.strip(), now, now))
+             source_ref.strip(), outline_version.strip(), active, review_status, now, now))
         row = db.execute("SELECT * FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
         return _kp_payload(db, row)
 
@@ -1996,7 +2007,8 @@ def list_knowledge_points(store, staff: dict, cert_id: str, *,
 
 def update_knowledge_point(store, staff: dict, kp_id: str, *, fields: dict[str, Any]) -> dict[str, Any]:
     allowed = {"name": None, "subject": None, "description": None, "source_ref": None,
-               "outline_version": None, "active": None, "parent_id": None}
+               "outline_version": None, "active": None, "parent_id": None,
+               "review_status": None}
     updates: dict[str, Any] = {}
     for key, value in fields.items():
         if key not in allowed:
@@ -2009,6 +2021,9 @@ def update_knowledge_point(store, staff: dict, kp_id: str, *, fields: dict[str, 
             updates[key] = str(value).strip()
         elif key == "active":
             updates["active"] = 1 if value else 0
+        elif key == "review_status":
+            from webapp.training_outline import assert_consistent_review_status
+            updates["review_status"] = assert_consistent_review_status(value)
         else:
             updates["parent_id"] = value
     if not updates:
@@ -2531,11 +2546,21 @@ def _candidate_rules(db, cert_id: str, kp_id: str | None) -> list[str]:
 
 def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = None,
                    rule_id: str | None = None, seed: int | None = None,
-                   mode: str = "new") -> dict[str, Any]:
+                   mode: str = "new", source_type: str = "simulated",
+                   bank_question_id: str | None = None) -> dict[str, Any]:
     if mode not in ("new", "redo_same"):
         raise TrainingPortalError("作答模式必须是 new 或 redo_same。")
-    if mode == "redo_same" and (rule_id is None or seed is None):
-        raise TrainingPortalError("原题重做必须显式提供规则与种子。")
+    if source_type not in ("simulated", "real", "recall", "mock"):
+        # 不认识的题源不能悄悄退回仿真题：那会让学生以为在练真题（决策三：不冒充真题）。
+        raise TrainingPortalError("题源类型必须是 simulated / real / recall / mock。")
+    bank_mode = source_type in ("real", "recall", "mock")
+    if bank_mode and (rule_id or seed is not None):
+        raise TrainingPortalError("题库题练习不接受规则或种子参数。")
+    if mode == "redo_same":
+        if bank_mode and not bank_question_id:
+            raise TrainingPortalError("题库题原题重做必须提供题目标识。")
+        if not bank_mode and (rule_id is None or seed is None):
+            raise TrainingPortalError("原题重做必须显式提供规则与种子。")
     rules = _load_rules(store)
     by_id = {r.id: r for r in rules}
     with store.connect() as db:
@@ -2546,6 +2571,46 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
             kp = db.execute("SELECT certificate_id, active FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
             if not kp or kp["certificate_id"] != cert_id or not kp["active"]:
                 raise TrainingPortalError("知识点不存在或未启用。", 404)
+        # 绑定当前内容版本（FR-K08）：证书尚无版本时自动建立仿真基线版本。
+        version = ensure_active_version(db, cert_id, rules)
+        if bank_mode:
+            # 真题/回忆/模拟题：从审核上线的题库抽题（决策三：仅授权导入且审核通过的题可见）。
+            from webapp.training_source_auth import SOURCE_LABELS as _BANK_LABELS, bank_question_for_attempt
+            if mode == "redo_same":
+                question = bank_question_for_attempt(db, bank_question_id)
+                if question["certificate_id"] != cert_id or question["source_type"] != source_type:
+                    raise TrainingPortalError("题目不属于该证书或题源类型。", 404)
+                if question["status"] != "approved":
+                    raise TrainingPortalError("该题已下线或未通过审核，无法原题重做；请改练其他题目。", 409)
+            else:
+                clauses = ["certificate_id=?", "status='approved'", "source_type=?"]
+                params: list[Any] = [cert_id, source_type]
+                if kp_id:
+                    clauses.append("knowledge_point_id=?")
+                    params.append(kp_id)
+                pool = db.execute(
+                    f"SELECT id FROM training_bank_question WHERE {' AND '.join(clauses)}",
+                    params).fetchall()
+                if not pool:
+                    label = _BANK_LABELS[source_type]
+                    scope = "该知识点" if kp_id else "该证书"
+                    raise TrainingPortalError(
+                        f"{scope}暂无已审核上线的{label}；教师导入并审核通过后即可练习。", 404)
+                question = bank_question_for_attempt(db, secrets.choice([r["id"] for r in pool]))
+            attempt_id = str(uuid.uuid4())
+            digest = hashlib.sha256(
+                json.dumps({"stem": question["stem"], "options": question["options_json"],
+                            "answer": question["answer_keys_json"]},
+                           ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+            db.execute(
+                """INSERT INTO training_self_practice_attempts (id, student_id, certificate_id, knowledge_point_id,
+                   rule_id, seed, level, year, source_type, digest, status, content_version_id, mode,
+                   bank_question_id, created_at)
+                   VALUES (?,?,?,?,?,0,'normal',?,?,?,'open',?,?,?,?)""",
+                (attempt_id, student_id, cert_id, kp_id, "", question["year"], question["source_type"],
+                 digest, version["id"], mode, question["id"], _now()))
+            row = db.execute("SELECT * FROM training_self_practice_attempts WHERE id=?", (attempt_id,)).fetchone()
+            return _bank_open_view(question, row, db)
         if rule_id:
             if rule_id not in by_id:
                 raise TrainingPortalError("所选规则不存在或未启用。")
@@ -2564,8 +2629,6 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
             if not candidates:
                 raise TrainingPortalError("该范围还没有可练题目：知识点尚未关联规则，请等待教师配置。")
             rule_id = secrets.choice(candidates)
-        # 绑定当前内容版本（FR-K08）：证书尚无版本时自动建立仿真基线版本。
-        version = ensure_active_version(db, cert_id, rules)
     if seed is None:
         seed = secrets.randbelow(2147483648)
     exercise = _generate(rules, rule_id, seed)
@@ -2599,6 +2662,28 @@ def _open_view(exercise, row: Any, rules: list[Any], db=None) -> dict[str, Any]:
     return view
 
 
+def _bank_open_view(question: Any, row: Any, db=None) -> dict[str, Any]:
+    """题库题作中视图：题干与选项下发；标准答案与解析判分前绝不下发。
+
+    题干只下发题干本身，选项走结构化 options（前端按 A/B/C 列表渲染），
+    避免把选项拼进题干导致页面重复显示两遍。"""
+    from webapp.training_content import SOURCE_LABELS
+    view = {
+        "id": row["id"], "status": "open", "bank": True,
+        "certificate_id": row["certificate_id"], "knowledge_point_id": row["knowledge_point_id"],
+        "bank_question_id": row["bank_question_id"],
+        "source_type": question["source_type"],
+        "source_type_label": SOURCE_LABELS.get(question["source_type"], question["source_type"]),
+        "year": row["year"], "question_no": question["question_no"],
+        "stem": question["stem"], "options": json.loads(question["options_json"] or "[]"),
+        "created_at": row["created_at"], "mode": row["mode"], "skipped": bool(row["skipped_at"]),
+    }
+    if db is not None:
+        view["content_version"] = version_brief(db, row["content_version_id"])
+        view["applicability"] = applicability(db, row["certificate_id"], row["content_version_id"])
+    return view
+
+
 def _attempt_row(store, student_id: str, attempt_id: str) -> sqlite3.Row:
     with store.connect() as db:
         return db.execute("SELECT * FROM training_self_practice_attempts WHERE id=? AND student_id=?",
@@ -2608,6 +2693,13 @@ def _attempt_row(store, student_id: str, attempt_id: str) -> sqlite3.Row:
 
 def get_attempt(store, student_id: str, attempt_id: str) -> dict[str, Any]:
     row = _attempt_row(store, student_id, attempt_id)
+    if row["bank_question_id"]:
+        with store.connect() as db:
+            from webapp.training_source_auth import bank_question_for_attempt
+            question = bank_question_for_attempt(db, row["bank_question_id"])
+            if row["status"] == "scored":
+                return _bank_history_view(row, db, question)
+            return _bank_open_view(question, row, db)
     if row["status"] == "scored":
         with store.connect() as db:
             return _scored_view(row, db)
@@ -2618,7 +2710,56 @@ def get_attempt(store, student_id: str, attempt_id: str) -> dict[str, Any]:
         return _open_view(exercise, row, rules, db=db)
 
 
-def submit_practice(store, student_id: str, attempt_id: str, selected: list[str]) -> dict[str, Any]:
+def _bank_history_view(row: Any, db, question: Any) -> dict[str, Any]:
+    """已判分题库题的视图：判分时快照优先（题目后续被改题干或下架也不影响回看），
+    旧记录无快照时退回当前题目内容。"""
+    view = _scored_view(row, db)
+    result = view.get("result") or {}
+    view["stem"] = result.get("stem_snapshot") or question["stem"]
+    view["options"] = result.get("options_snapshot") or json.loads(
+        question["options_json"] or "[]")
+    view["question_no"] = question["question_no"]
+    from webapp.training_content import SOURCE_LABELS
+    view["source_type_label"] = SOURCE_LABELS.get(question["source_type"], question["source_type"])
+    return view
+
+
+def _score_bank_result(question: Any, chosen: list[str]) -> dict[str, Any]:
+    """题库题判分：选择集合与标准答案完全一致得满分（多选/错选/漏选均不得分，
+    与初级会计考试客观题评分口径一致）；解析判分后随结果开放。
+
+    同时把判分时的题干/选项快照写进结果（随 result_json 加密留存），
+    供历史作答按当时题目回看，不受后续改题、下架影响。"""
+    answer = json.loads(question["answer_keys_json"] or "[]")
+    missed = [k for k in answer if k not in chosen]
+    false_positives = [k for k in chosen if k not in answer]
+    perfect = not missed and not false_positives
+    return {"missed": missed, "false_positives": false_positives,
+            "score": 100 if perfect else 0, "perfect": perfect, "answer_keys": answer,
+            "explanation": question["explanation"], "bank": True,
+            "stem_snapshot": question["stem"],
+            "options_snapshot": json.loads(question["options_json"] or "[]")}
+
+
+def submit_practice(store, student_id: str, attempt_id: str, selected: list[str],
+                    selected_keys: list[str] | None = None) -> dict[str, Any]:
+    row = _attempt_row(store, student_id, attempt_id)
+    if row["bank_question_id"]:
+        if row["status"] != "open":
+            raise TrainingPortalError("本题已判分，重复提交不重复计数。", 409)
+        chosen = sorted({str(k).strip().upper() for k in (selected_keys if selected_keys is not None else selected)
+                         if isinstance(k, str) and k.strip()})
+        with store.connect() as db:
+            from webapp.training_source_auth import bank_question_for_attempt
+            question = bank_question_for_attempt(db, row["bank_question_id"])
+            result = _score_bank_result(question, chosen)
+            payload = json.dumps(result, ensure_ascii=False)
+            sealed = db.field_codec.seal(payload, "training_self_practice_attempts", "result_json", attempt_id)
+            db.execute(
+                "UPDATE training_self_practice_attempts SET status='scored', answers_json=?, result_json=?, scored_at=? WHERE id=?",
+                (json.dumps(chosen, ensure_ascii=False), sealed, _now(), attempt_id))
+            updated = db.execute("SELECT * FROM training_self_practice_attempts WHERE id=?", (attempt_id,)).fetchone()
+            return _bank_history_view(updated, db, question)
     chosen = sorted({s.strip() for s in selected if isinstance(s, str) and s.strip()})
     row = _attempt_row(store, student_id, attempt_id)
     if row["status"] != "open":
@@ -2655,6 +2796,10 @@ def _scored_view(row: sqlite3.Row, db=None) -> dict[str, Any]:
         "id": row["id"], "status": "scored", "certificate_id": row["certificate_id"],
         "knowledge_point_id": row["knowledge_point_id"], "rule_id": row["rule_id"],
         "seed": row["seed"], "level": row["level"], "year": row["year"], "mode": row["mode"],
+        "source_type": row["source_type"],
+        "bank_question_id": row["bank_question_id"] if "bank_question_id" in row.keys() else None,
+        # 是否题库题（真题/回忆/模拟）：前端据此选选项判分模板，而不是规则仿真模板。
+        "bank": bool(row["bank_question_id"]) if "bank_question_id" in row.keys() else False,
         "answers": json.loads(row["answers_json"] or "[]"),
         "result": result, "score": result.get("score"), "perfect": result.get("perfect"),
         "created_at": row["created_at"], "scored_at": row["scored_at"],
@@ -3396,6 +3541,7 @@ class KnowledgePointPatch(BaseModel):
     source_ref: str | None = None
     outline_version: str | None = None
     active: bool | None = None
+    review_status: str | None = None  # 考纲升版核对状态：pending/confirmed/updated/removed/added
 
 
 class MarkCreate(BaseModel):
@@ -3425,12 +3571,15 @@ class PracticeStart(BaseModel):
     knowledge_point_id: str | None = None
     rule_id: str | None = None
     seed: int | None = None
-    mode: str = "new"  # new=新题 / redo_same=原题重做（错题订正，须显式给 rule_id+seed）
+    mode: str = "new"  # new=新题 / redo_same=原题重做（错题订正，仿真须 rule_id+seed，题库题须 bank_question_id）
+    source_type: str = "simulated"  # simulated=规则仿真 / real|recall|mock=授权题库题
+    bank_question_id: str | None = None
 
 
 class PracticeSubmit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     selected_rule_ids: list[str] = Field(default_factory=list)
+    selected_keys: list[str] | None = None  # 题库题选项键（A/B/…）；仿真题仍用 selected_rule_ids
 
 
 def _patch_fields(body) -> dict[str, Any]:
@@ -3581,7 +3730,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return response({"attempt": start_practice(
             store_provider(), who["id"], body.certificate_id,
             kp_id=body.knowledge_point_id, rule_id=body.rule_id, seed=body.seed,
-            mode=body.mode)})
+            mode=body.mode, source_type=body.source_type,
+            bank_question_id=body.bank_question_id)})
 
     @app.post("/api/training/my/practice/{attempt_id}/skip")
     @guarded
@@ -3625,7 +3775,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def practice_submit(attempt_id: str, body: PracticeSubmit,                        session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student(session)
         return response({"attempt": submit_practice(
-            store_provider(), who["id"], attempt_id, body.selected_rule_ids)})
+            store_provider(), who["id"], attempt_id, body.selected_rule_ids,
+            selected_keys=body.selected_keys)})
 
     @app.get("/api/training/my/coverage")
     @guarded

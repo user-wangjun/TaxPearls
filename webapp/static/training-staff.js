@@ -1,7 +1,11 @@
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [], quota: null };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [], quota: null, auths: [], bank: [], outline: null, trialFeedback: [], trialStats: null };
+
+const SOURCE_ZH = { simulated: "仿真题", real: "真题", recall: "回忆题", mock: "模拟题" };
+const BANK_STATUS_ZH = { draft: "草稿", pending: "待审", approved: "已上线", rejected: "已驳回" };
+const REVIEW_ZH = { pending: "待核对", confirmed: "沿用", updated: "已按新纲修改", removed: "新版删除", added: "新版新增" };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -164,10 +168,23 @@ function renderKps() {
       state.kps.filter((p) => p.id !== k.id && p.active).map((p) =>
         `<option value="${esc(p.id)}" ${p.id === k.parent_id ? "selected" : ""}>${esc(p.code)} ${esc(p.name)}</option>`)
     ).join("");
+    const reviewStatus = k.review_status || "";
+    const reviewBox = (reviewStatus || (state.outline && state.outline.current))
+      ? `<div class="inline-form">
+          <div class="row">
+            <div><label>考纲升版核对</label>
+              <select data-role="kp-review">${Object.entries(REVIEW_ZH).map(([v, t]) =>
+                `<option value="${v}"${reviewStatus === v ? " selected" : ""}>${t}</option>`).join("")}</select></div>
+            <div class="actions" style="align-self:flex-end;">
+              <button class="small primary" data-act="set-review" data-id="${esc(k.id)}">保存核对</button></div>
+          </div>
+          <p class="muted" style="margin:4px 0 0;">核对口径：沿用=与新版一致；已按新纲修改=内容按要求改过；新版删除=激活后停用；新增项由系统自动标记，无需手工选。</p>
+        </div>` : "";
     return `<div class="item" ${indent} id="kp-${esc(k.id)}">
       <div class="item-head">
         <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
           ${k.active ? "" : `<span class="badge gray">已停用</span>`}
+          ${reviewStatus ? `<span class="badge warn">${REVIEW_ZH[reviewStatus] || esc(reviewStatus)}</span>` : ""}
           ${k.subject ? `<span class="chip">${esc(k.subject)}</span>` : ""}
           ${k.source_ref ? `<span class="muted">依据：${esc(k.source_ref)}${k.outline_version ? "（" + esc(k.outline_version) + "）" : ""}</span>` : ""}
         </div>
@@ -175,6 +192,7 @@ function renderKps() {
           <button class="small" data-act="edit-kp" data-id="${esc(k.id)}">编辑</button>
         </div>
       </div>
+      ${reviewBox}
       ${marks}
       ${renderRelations(k)}
       ${renderRuleLinks(k)}
@@ -376,6 +394,178 @@ function renderAll() {
   renderVersions();
   renderKps();
   renderParentOptions();
+  renderAuths();
+  renderBank();
+  renderOutline();
+  renderTrial();
+}
+
+/* ---------- 题源授权 / 题库 / 考纲升版 / 试用反馈 ---------- */
+
+async function loadSourceAuths() {
+  if (!state.currentId) { state.auths = []; renderAuths(); return; }
+  state.auths = (await api(
+    `/api/training/staff/certificates/${state.currentId}/source-authorizations`)).authorizations;
+  renderAuths();
+}
+
+function renderAuths() {
+  const box = document.getElementById("authorizations");
+  const rows = state.auths || [];
+  if (!rows.length) {
+    box.innerHTML = `<p class="muted">该证书还没有登记任何授权：真题/回忆题/模拟题当前不可发布与导入，题库只能保持规则仿真题。</p>`;
+    return;
+  }
+  box.innerHTML = `<div class="table-scroll"><table style="width:100%;border-collapse:collapse;">
+    <tr><th style="text-align:left;">授权方</th><th style="text-align:left;">文号</th>
+      <th style="text-align:left;">覆盖题源</th><th style="text-align:left;">有效期</th>
+      <th style="text-align:left;">状态</th><th style="text-align:left;"></th></tr>
+    ${rows.map((a) => `<tr>
+      <td>${esc(a.licensor)}</td>
+      <td>${esc(a.auth_no)}</td>
+      <td>${(a.question_type_list || []).map((t) => SOURCE_ZH[t] || t).join("、")}</td>
+      <td>${esc(a.valid_from || "")} ~ ${esc(a.valid_until || "长期")}</td>
+      <td><span class="badge ${a.status === "active" ? (a.covering_today ? "" : "warn") : "gray"}">${
+        a.status === "active" ? (a.covering_today ? "生效中" : "未生效/已过期") : "已撤销"}</span></td>
+      <td>${a.status === "active" ? `<button class="small danger" data-act="revoke-auth" data-id="${esc(a.id)}">撤销</button>` : ""}</td>
+    </tr>`).join("")}
+  </table></div>
+  ${rows.some((a) => a.status === "active" && !a.covering_today)
+    ? `<p class="muted">「未生效/已过期」的授权不能用于发布或导入；如需继续使用请重新登记有效期内的授权。</p>` : ""}`;
+}
+
+async function loadBank() {
+  if (!state.currentId) { state.bank = []; renderBank(); return; }
+  const filter = document.getElementById("bank-status-filter");
+  const status = filter && filter.value ? `?status=${encodeURIComponent(filter.value)}` : "";
+  state.bank = (await api(
+    `/api/training/staff/certificates/${state.currentId}/bank-questions${status}`)).questions;
+  renderBank();
+}
+
+function renderBank() {
+  const box = document.getElementById("bank-questions");
+  const rows = state.bank || [];
+  if (!rows.length) {
+    box.innerHTML = `<p class="muted">题库暂无题目：先在上方登记授权，再粘贴人工核对过的 JSON 导入。</p>`;
+    return;
+  }
+  box.innerHTML = rows.map((q) => {
+    const options = (q.options || []).map((o) => `${esc(o.key)}. ${esc(o.text)}`).join("　");
+    const actions = q.status === "draft" || q.status === "rejected"
+      ? `<button class="small primary" data-act="bank-submit" data-id="${esc(q.id)}">提交审核</button>`
+      : q.status === "pending"
+        ? `<button class="small primary" data-act="bank-approve" data-id="${esc(q.id)}">通过</button>
+           <button class="small danger" data-act="bank-reject" data-id="${esc(q.id)}">驳回</button>`
+        : `<button class="small" data-act="bank-offline" data-id="${esc(q.id)}">下架</button>`;
+    return `<div class="item">
+      <div class="item-head">
+        <div><span class="chip">${SOURCE_ZH[q.source_type] || esc(q.source_type)} · ${esc(q.year)} 年度</span>
+          <span class="badge ${q.status === "approved" ? "" : "gray"}">${BANK_STATUS_ZH[q.status] || esc(q.status)}</span>
+          ${q.question_no ? `<span class="muted">${esc(q.question_no)}</span>` : ""}</div>
+        <div class="actions">${actions}</div>
+      </div>
+      <div style="margin-top:4px;">${esc(q.stem)}</div>
+      <div class="muted">${options}</div>
+      <div class="muted">标准答案：${esc((q.answer_keys || []).join("、"))}</div>
+      <details><summary>解析与依据</summary>
+        <div class="detail">${esc(q.explanation || "（缺解析）")}</div>
+        <div class="muted">依据：${esc(q.source_ref || "")}</div>
+        ${q.review_note ? `<div class="muted">审核意见：${esc(q.review_note)}</div>` : ""}
+      </details>
+    </div>`;
+  }).join("");
+}
+
+function renderBankImport(data) {
+  const rows = (data.results || []).map((r) => r.ok
+    ? `<div class="detail ok">第 ${r.line} 行：已入库草稿</div>`
+    : `<div class="detail miss">第 ${r.line} 行：${esc(r.error)}</div>`).join("");
+  document.getElementById("bank-import-result").innerHTML =
+    `<p class="${data.failed ? "warn" : "ok"}">导入完成：成功 ${data.imported} 题，失败 ${data.failed} 题（非法行不中断整批）。</p>${rows}`;
+}
+
+async function loadOutline() {
+  if (!state.currentId) { state.outline = null; renderOutline(); return; }
+  state.outline = await api(`/api/training/staff/certificates/${state.currentId}/outline-upgrade`);
+  renderOutline();
+}
+
+function renderOutline() {
+  const box = document.getElementById("outline-body");
+  const data = state.outline;
+  if (!data) { box.innerHTML = ""; return; }
+  const cur = data.current;
+  const counts = data.review_counts || {};
+  const progress = `<span class="chip">待核对 ${counts.pending || 0}</span>
+    <span class="chip">沿用 ${counts.confirmed || 0}</span>
+    <span class="chip">已修改 ${counts.updated || 0}</span>
+    <span class="chip">新增 ${counts.added || 0}</span>
+    <span class="chip">删除 ${counts.removed || 0}</span>`;
+  const current = cur
+    ? `<div class="item">
+        <div class="item-head"><div><strong>核对中：${esc(cur.from_version)} → ${esc(cur.to_version)}</strong>
+          <span class="badge warn">核对中</span></div>
+          <span class="muted">发起于 ${esc((cur.started_at || "").slice(0, 16).replace("T", " "))}</span></div>
+        <div style="margin-top:4px;">${progress}</div>
+        <div class="muted">在「考纲知识点」卡片逐条把核对状态改为沿用/已修改/删除；核对期新增的知识点自动记为新增、暂不对学生显示。待核对清零后可点上方「激活切换」。</div>
+        ${cur.note ? `<div class="muted">备注：${esc(cur.note)}</div>` : ""}
+      </div>`
+    : `<p class="muted">当前没有进行中的升版核对；现行主导版本：${esc(data.dominant_version || "未登记")}。新版大纲发布后填目标版本再发起。</p>`;
+  const history = (data.history || []).map((h) => `<div class="item">
+    <div class="item-head"><div>${esc(h.from_version)} → <strong>${esc(h.to_version)}</strong>
+      <span class="badge gray">已激活</span></div>
+      <span class="muted">${esc((h.activated_at || "").slice(0, 16).replace("T", " "))}</span></div>
+    ${h.note ? `<div class="muted">备注：${esc(h.note)}</div>` : ""}
+  </div>`).join("");
+  box.innerHTML = current + (history ? `<h3 style="margin-top:14px;">升版历史</h3>${history}` : "");
+}
+
+async function loadTrial() {
+  const [fb, stats] = await Promise.all([
+    api("/api/training/staff/trial-feedback"),
+    api("/api/training/staff/trial-stats"),
+  ]);
+  state.trialFeedback = fb.feedback;
+  state.trialStats = stats.stats;
+  renderTrial();
+}
+
+function renderTrial() {
+  const box = document.getElementById("trial-stats");
+  const list = document.getElementById("trial-feedback");
+  const s = state.trialStats;
+  box.innerHTML = s ? `<div class="row" style="gap:10px;flex-wrap:wrap;">
+    <div class="chip">建档学生 ${s.students_total}</div>
+    <div class="chip">登录过 ${s.students_logged_in}</div>
+    <div class="chip">近 7 日活跃 ${s.students_active_7d}</div>
+    <div class="chip">作答 ${s.attempts_total} 次（满分 ${s.attempts_perfect}）</div>
+    <div class="chip">题库题作答 ${s.attempts_bank} 次</div>
+    <div class="chip">覆盖知识点 ${s.kps_covered}</div>
+    <div class="chip">反馈 ${s.feedback.total}（新 ${s.feedback.new} / 处理中 ${s.feedback.processing} / 已处理 ${s.feedback.resolved}）</div>
+  </div>` : `<p class="muted">暂无盘面数据。</p>`;
+  const rows = state.trialFeedback || [];
+  const STATUS = { new: "新反馈", processing: "处理中", resolved: "已处理" };
+  const CATEGORY = { bug: "缺陷", suggestion: "建议", content: "内容纠错", other: "其他" };
+  list.innerHTML = rows.length ? rows.map((f) => `<div class="item">
+    <div class="item-head">
+      <div><span class="badge ${f.status === "resolved" ? "" : "warn"}">${STATUS[f.status] || esc(f.status)}</span>
+        <span class="chip">${CATEGORY[f.category] || esc(f.category)}</span>
+        <span class="muted">${esc(f.student ? `${f.student.student_no} ${f.student.name}` : "")}</span>
+        <span class="muted">${esc((f.created_at || "").slice(0, 16).replace("T", " "))}</span></div>
+    </div>
+    <div style="margin-top:4px;">${esc(f.content)}</div>
+    <div class="row" style="margin-top:6px;">
+      <div><label>处理状态</label>
+        <select id="fb-status-${esc(f.id)}">
+          ${Object.entries(STATUS).map(([k, v]) => `<option value="${k}"${f.status === k ? " selected" : ""}>${v}</option>`).join("")}
+        </select></div>
+      <div><label>处理备注</label><input id="fb-note-${esc(f.id)}" value="${esc(f.staff_note || "")}" placeholder="如 已定位，下个版本修复"></div>
+      <div class="actions" style="align-self:flex-end;">
+        <button class="small primary" data-act="feedback-save" data-id="${esc(f.id)}">保存处理</button></div>
+    </div>
+    ${f.handled_at ? `<div class="muted">最近处理：${esc((f.handled_at || "").slice(0, 16).replace("T", " "))}</div>` : ""}
+  </div>`).join("") : `<p class="muted">暂无学生反馈。</p>`;
 }
 
 /* ---------- 数据 ---------- */
@@ -388,11 +578,17 @@ async function load() {
   }
   state.kps = [];
   state.versions = [];
+  state.auths = [];
+  state.bank = [];
+  state.outline = null;
   if (state.currentId) {
     const kp = await api(`/api/training/staff/certificates/${state.currentId}/knowledge-points`);
     state.kps = kp.knowledge_points;
     const vs = await api(`/api/training/staff/certificates/${state.currentId}/content-versions`);
     state.versions = vs.versions;
+    await loadSourceAuths().catch(() => { state.auths = []; renderAuths(); });
+    await loadBank().catch(() => { state.bank = []; renderBank(); });
+    await loadOutline().catch(() => { state.outline = null; renderOutline(); });
   }
   try { state.rules = (await api("/api/training/staff/rules")).rules; } catch (err) { state.rules = []; }
   await loadStudents().catch(() => { state.students = []; });
@@ -405,6 +601,7 @@ async function load() {
   await loadMarkStats().catch(() => {});
   await loadRoster().catch(() => { state.classes = []; state.classHistory = []; renderRoster(); });
   await loadOrg().catch(() => { state.departments = []; state.terms = []; state.orgClasses = []; renderOrg(); });
+  await loadTrial().catch(() => { state.trialFeedback = []; state.trialStats = null; renderTrial(); });
 }
 
 /* ---------- 班级与教师名册（FR-U03） ---------- */
@@ -752,6 +949,16 @@ async function withCert(mutator) {
   }
 }
 
+/* 四个内容治理面板的轻量刷新：只重取授权/题库/升版/试用，不重跑整页 load。 */
+async function refreshPanels() {
+  await Promise.all([
+    loadSourceAuths().catch(() => {}),
+    loadBank().catch(() => {}),
+    loadOutline().catch(() => {}),
+    loadTrial().catch(() => {}),
+  ]);
+}
+
 document.getElementById("app-view").addEventListener("click", (event) => {
   const btn = event.target.closest("button[data-act]");
   if (!btn) return;
@@ -761,6 +968,127 @@ document.getElementById("app-view").addEventListener("click", (event) => {
   const q = (sel, root) => (root || document).querySelector(sel);
 
   const handlers = {
+    /* ---- 题源授权登记 ---- */
+    "refresh-auth": () => refreshPanels(),
+    "refresh-bank": () => refreshPanels(),
+    "refresh-outline": () => refreshPanels(),
+    "refresh-trial": () => loadTrial().catch((err) => flash(err.message, true)),
+    "create-auth": () => {
+      const types = [...document.querySelectorAll(".au-type:checked")].map((c) => c.value);
+      if (!q("#au-licensor").value.trim() || !q("#au-no").value.trim()) {
+        flash("授权方与授权文号必填。", true); return;
+      }
+      if (!types.length) { flash("请至少勾选一个覆盖题源。", true); return; }
+      if (!q("#au-from").value) { flash("请填生效日。", true); return; }
+      withCert(async () => {
+        await api(`/api/training/staff/certificates/${cert.id}/source-authorizations`, {
+          method: "POST",
+          body: {
+            licensor: q("#au-licensor").value.trim(),
+            auth_no: q("#au-no").value.trim(),
+            question_types: types,
+            valid_from: q("#au-from").value,
+            valid_until: q("#au-until").value || null,
+            scope_note: q("#au-scope").value.trim(),
+          },
+        });
+        q("#au-no").value = "";
+        q("#au-scope").value = "";
+        document.querySelectorAll(".au-type:checked").forEach((c) => { c.checked = false; });
+        flash("授权已登记：发布对应题源版本或导入题库时会自动写入该文号留痕。");
+      });
+    },
+    "revoke-auth": () => {
+      if (!window.confirm("撤销后该授权不能再用于发布或导入（记录保留可审计）。确认撤销？")) return;
+      withCert(async () => {
+        await api(`/api/training/staff/source-authorizations/${id}/revoke`, { method: "POST" });
+        flash("授权已撤销；已发布版本与存量作答不受影响。");
+      });
+    },
+    /* ---- 题库导入与审核 ---- */
+    "import-bank": () => {
+      const text = q("#bank-json").value.trim();
+      if (!text) { flash("请先粘贴导入 JSON。", true); return; }
+      let questions;
+      try { questions = JSON.parse(text); } catch (err) {
+        flash(`JSON 解析失败：${err.message}`, true); return;
+      }
+      if (!Array.isArray(questions)) { flash("导入内容必须是 JSON 数组。", true); return; }
+      withCert(async () => {
+        const data = await api(`/api/training/staff/certificates/${cert.id}/bank-questions`, {
+          method: "POST", body: { questions } });
+        renderBankImport(data);
+        flash(`导入完成：成功 ${data.imported} 题，失败 ${data.failed} 题。`, data.failed > 0);
+      });
+    },
+    "filter-bank": () => { loadBank().catch((err) => flash(err.message, true)); },
+    "bank-submit": () => withCert(async () => {
+      await api(`/api/training/staff/bank-questions/${id}/submit`, { method: "POST" });
+      flash("已提交审核；待审通过后学生才能抽到。");
+    }),
+    "bank-approve": () => withCert(async () => {
+      await api(`/api/training/staff/bank-questions/${id}/review`, {
+        method: "POST", body: { decision: "approve" } });
+      flash("已审核上线。");
+    }),
+    "bank-reject": () => {
+      const note = window.prompt("驳回原因（会显示在审核意见里）：", "");
+      if (note === null) return;
+      withCert(async () => {
+        await api(`/api/training/staff/bank-questions/${id}/review`, {
+          method: "POST", body: { decision: "reject", note } });
+        flash("已驳回；该题可修改后重新提交审核。");
+      });
+    },
+    "bank-offline": () => {
+      if (!window.confirm("下架后学生不再抽到本题；已产生的历史作答仍按当时题目与解析回看。继续？")) return;
+      withCert(async () => {
+        await api(`/api/training/staff/bank-questions/${id}/offline`, { method: "POST" });
+        flash("已下架回草稿。");
+      });
+    },
+    /* ---- 考纲升版 ---- */
+    "set-review": () => withCert(async () => {
+      const value = q("[data-role=kp-review]", q(`#kp-${id}`)).value;
+      await api(`/api/training/staff/knowledge-points/${id}`, {
+        method: "PATCH", body: { review_status: value } });
+      flash(`核对状态已保存：${REVIEW_ZH[value] || value}。`);
+    }),
+    "outline-start": () => {
+      const to = q("#ou-to").value.trim();
+      if (!to) { flash("请填目标考纲版本（如 2027）。", true); return; }
+      if (!window.confirm(`发起后现行知识点全部标记「待核对」，核对完成前不能再次发起。确认发起 ${to} 升版核对？`)) return;
+      withCert(async () => {
+        await api(`/api/training/staff/certificates/${cert.id}/outline-upgrade/start`, {
+          method: "POST", body: { to_version: to, note: q("#ou-note").value.trim() } });
+        flash(`已发起 ${to} 升版核对：请逐条核对知识点，待核对清零后再激活。`);
+      });
+    },
+    "outline-activate": () => {
+      const cur = state.outline && state.outline.current;
+      if (!cur) { flash("当前没有进行中的升版核对。", true); return; }
+      const pending = (state.outline.review_counts || {}).pending || 0;
+      if (pending) { flash(`还有 ${pending} 条知识点待核对，不能激活切换。`, true); return; }
+      if (!window.confirm(`确认激活 ${cur.to_version}：知识点版本号统一切换、删除项停用留痕、新增项上线。`)) return;
+      withCert(async () => {
+        const data = await api(
+          `/api/training/staff/certificates/${cert.id}/outline-upgrade/activate`, { method: "POST" });
+        flash(`已切换到 ${data.upgrade.to_version}：上线 ${data.upgrade.activated} 条，停用 ${data.upgrade.removed} 条。`);
+      });
+    },
+    /* ---- 试用反馈处理 ---- */
+    "feedback-save": async () => {
+      try {
+        await api(`/api/training/staff/trial-feedback/${id}`, {
+          method: "PATCH",
+          body: { status: q(`#fb-status-${id}`).value, staff_note: q(`#fb-note-${id}`).value },
+        });
+        flash("反馈处理已保存。");
+        await loadTrial();
+      } catch (err) {
+        flash(err.message, true);
+      }
+    },
     "new-cert-btn": () => { document.getElementById("new-cert-form").hidden = false; },
     "cancel-new-cert": () => { document.getElementById("new-cert-form").hidden = true; },
     "create-cert": () => withCert(async () => {
