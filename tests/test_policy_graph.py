@@ -277,7 +277,8 @@ class PolicyGraphTests(unittest.TestCase):
         result = pg.import_corpus(self.db, path, ["TEST"], root / "retained")
         self.assertEqual(result, {"Policy": 1, "Clause": 2})
         policy = dict(self.db.execute("SELECT * FROM Policy").fetchone())
-        self.assertEqual(Path(policy["raw_file_path"]).read_bytes(), raw)
+        from src.policy_paths import database_directory, resolve_path
+        self.assertEqual(resolve_path(policy["raw_file_path"], database_directory(self.db)).read_bytes(), raw)
         self.assertEqual(policy["validity_status"], "unverified")
         self.assertEqual(self.db.execute("SELECT count(*) FROM TaxRule").fetchone()[0], 0)
         pg.import_corpus(self.db, path, ["TEST"], root / "retained")

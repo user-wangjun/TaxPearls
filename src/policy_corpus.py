@@ -288,7 +288,10 @@ def prepare(manifest_path, document_ids=None):
 def import_plan(db, plan, originals_dir, *, rule_ids=None):
     """Retain every original and atomically import bounded candidate batches."""
     from webapp import policy_graph as pg
+    from src.policy_paths import database_directory, resolve_path, stored_path
     destination = Path(originals_dir).resolve()
+    base = database_directory(db)
+    stored_path(db, destination)  # Reject a non-portable destination before creating any files.
     rows = json.loads(json.dumps(plan["bundle"], ensure_ascii=False))
     created, retained = [], {}
     if not db.in_transaction:
@@ -307,7 +310,7 @@ def import_plan(db, plan, originals_dir, *, rule_ids=None):
             for kind in ('raw', 'text'):
                 relative, retained_path = saved[kind + '_path'], saved['retained_' + kind + '_path']
                 expected_hash = plan['files'][relative]['sha256']
-                if sha(Path(retained_path).read_bytes()) != expected_hash:
+                if sha(resolve_path(retained_path, base).read_bytes()) != expected_hash:
                     raise ValueError('既有留存原文哈希不一致，不能沿用。')
                 prior_paths[relative] = retained_path
             prior_locations[clause['clause_id']] = old['source_location']
@@ -333,12 +336,12 @@ def import_plan(db, plan, originals_dir, *, rule_ids=None):
                 with target.open("xb") as output:
                     output.write(data)
                 created.append(target)
-            retained[relative] = str(target)
+            retained[relative] = stored_path(db, target)
         for row in rows["Policy"]:
             suffix = Path(row["raw_file_path"]).suffix.lower()
             old = db.execute('SELECT raw_file_path FROM Policy WHERE policy_id=?', (row['policy_id'],)).fetchone()
-            row["raw_file_path"] = old['raw_file_path'] if old else str(destination / (row["file_sha256"] + suffix))
-            if sha(Path(row['raw_file_path']).read_bytes()) != row['file_sha256']:
+            row["raw_file_path"] = old['raw_file_path'] if old else stored_path(db, destination / (row["file_sha256"] + suffix))
+            if sha(resolve_path(row['raw_file_path'], base).read_bytes()) != row['file_sha256']:
                 raise ValueError('既有政策原文哈希不一致，不能沿用。')
         # source_location records include both original relative coordinates and
         # retained paths, so they remain traceable if the collection moves.
