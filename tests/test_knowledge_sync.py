@@ -31,6 +31,30 @@ class KnowledgeSynchronizationTests(unittest.TestCase):
             db.execute('BEGIN IMMEDIATE')
             return sync.synchronize(db, rules or self.rules, plan or self.plan, self.originals)
 
+    def test_path_migration_preserves_published_evidence_and_update_status(self):
+        from src.policy_paths import database_directory, resolve_path, relativize_paths
+        import json
+        result = self.update()
+        cert = result['teaching']['certificate_id']
+        with self.store.connect() as db:
+            # Recreate an older publication containing absolute retention paths.
+            for row in db.execute('SELECT clause_id,source_location FROM Clause').fetchall():
+                location = json.loads(row['source_location'])
+                for field in ('retained_raw_path', 'retained_text_path'):
+                    location[field] = str(resolve_path(location[field], database_directory(db)))
+                db.execute('UPDATE Clause SET source_location=? WHERE clause_id=?',
+                           (json.dumps(location, ensure_ascii=False, sort_keys=True, separators=(',', ':')), row['clause_id']))
+        self.publish(cert, self.rules)
+        with self.store.connect() as db:
+            version = content.resolve_active_version(db, cert)
+            snapshot = version['knowledge_snapshot_json']
+            before = content.update_status(db, version, self.rules)
+            self.assertFalse(before['pending'])
+            result = relativize_paths(db)
+            self.assertGreater(result['clauses_changed'], 0)
+            self.assertEqual(content.update_status(db, version, self.rules), before)
+            self.assertEqual(content.resolve_active_version(db, cert)['knowledge_snapshot_json'], snapshot)
+
     def counts(self):
         with self.store.connect() as db:
             return {table: db.execute('SELECT count(*) FROM ' + table).fetchone()[0]

@@ -63,6 +63,8 @@ async def lifespan(application):
     global store
     if store is None:
         store = Store(keepalive=True)
+    from src.public_policy_package import bootstrap
+    application.state.public_knowledge = await run_in_threadpool(bootstrap, store, RULES_DIR)
     worker = NotificationWorker(lambda: store)
     worker.start()
     judge_worker = None
@@ -1115,6 +1117,11 @@ def audit_narrative(audit_id: str,
 @app.get("/graph.js")
 def graph_script():
     return FileResponse(STATIC_DIR / "graph.js", media_type="text/javascript")
+
+
+@app.get("/policy-source.js")
+def policy_source_script():
+    return FileResponse(STATIC_DIR / "policy-source.js", media_type="text/javascript")
 
 
 @app.post("/api/setup")
