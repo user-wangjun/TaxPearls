@@ -448,7 +448,7 @@ class TenantIsolationTests(unittest.TestCase):
             self.assertEqual(self.client.get(path).status_code, 200, path)
         self.assertEqual(self.client.put('/api/rules/R-001/state',json={'enabled':False}).status_code, 200)
         self.assertEqual(self.client.put('/api/rules/R-001/state',json={'enabled':True}).status_code, 200)
-        self.assertEqual(self.client.post('/api/invites',json={'org_name':'Synthetic school','seats':5}).status_code, 200)
+        self.assertEqual(self.client.post('/api/invites',json={'org_name':'Synthetic school','org_type':'enterprise','seats':5}).status_code, 200)
         # Platform may manage subscriptions, but must not receive business summaries itself.
         self.assertNotIn(self.root['id'],{r['id'] for r in self.client.get('/api/notifications/recipients').json()})
         with self.assertRaises(ValueError):

@@ -346,14 +346,14 @@ class Store:
 
     def _org_settings(self, db, org_id):
         row = db.execute(
-            """SELECT org_id,display_name,report_title,footer_text,logo_mime,logo_updated_at
+            """SELECT org_id,org_type,display_name,report_title,footer_text,logo_mime,logo_updated_at
                FROM org_settings WHERE org_id=?""", (org_id,),
         ).fetchone()
         if row:
             result = dict(row)
             result["has_logo"] = bool(result["logo_mime"])
             return result
-        return {**self.ORG_DEFAULTS, "org_id": org_id}
+        return {**self.ORG_DEFAULTS, "org_id": org_id, "org_type": None}
 
     def get_org_settings(self, org_id: str, *, actor=None) -> dict[str, Any]:
         with self.connect() as db:
@@ -446,6 +446,9 @@ class Store:
             db.execute('BEGIN IMMEDIATE')
             if actor is not None:
                 current_actor(db, actor, {'org_admin'})
+                category=db.execute('SELECT org_type FROM org_settings WHERE org_id=?',(actor['org_id'],)).fetchone()
+                if category and category[0]=='university':
+                    raise AccessDenied('高校成员请通过高校工作台的教师或学生邀请链接加入。',403)
                 if role != 'accountant' or org_id.strip() != actor['org_id']:
                     raise AccessDenied('机构管理员只能创建本机构会计账号。', 403)
                 members.require_slot(db, actor['org_id'])
@@ -533,10 +536,11 @@ class Store:
         return self._with_email(dict(row)) if row else None
 
     def create_invite_code(self, creator: dict[str, Any], org_name: str, seats: int,
-                           bound_email: str = "", expires_days: int = INVITE_CODE_DAYS) -> dict[str, Any]:
+                           bound_email: str = "", expires_days: int = INVITE_CODE_DAYS,
+                           *, org_type: str, student_seats: int = 0) -> dict[str, Any]:
         """平台管理员签发一次性创始码。明文只在此刻返回一次。
 
-        创始码只与机构名称捆绑（不绑邮箱）：一码一位、私聊交付；注册时
+        创始码与机构名称、类别捆绑（不绑邮箱）：一码一位、私聊交付；注册时
         仍须通过邮箱验证码核验，构成「码 + 邮箱验证」双因子。bound_email
         留空即不绑定（保留参数以兼容旧码）。
         """
@@ -545,6 +549,10 @@ class Store:
         org_name = (org_name or "").strip()
         if not org_name:
             raise ValueError("机构名称不能为空")
+        if org_type not in ("enterprise", "university"):
+            raise ValueError("请选择机构类别：企业或高校")
+        if type(student_seats) is not int or not 0 <= student_seats <= 100000 or (org_type == 'enterprise' and student_seats):
+            raise ValueError('学生额度仅适用于高校，须为 0–100000 的整数。')
         if not isinstance(seats, int) or not 1 <= seats <= 200:
             raise ValueError("席位须为 1–200 的整数")
         address = _validate_email(bound_email) if (bound_email or "").strip() else ""
@@ -555,14 +563,14 @@ class Store:
             current_actor(db, creator, {'platform_admin'})
             db.execute(
                 """INSERT INTO invite_codes
-                       (token_hash,org_name,seats,bound_email,expires_at,revoked,created_by,created_at)
-                   VALUES (?,?,?,?,?,0,?,?)""",
-                (_hash_token(_normalize_invite_code(code)), org_name, seats, address, expires,
-                 creator["id"], _now()),
+                       (token_hash,org_name,org_type,seats,bound_email,expires_at,revoked,created_by,created_at,student_seats)
+                   VALUES (?,?,?,?,?,?,0,?,?,?)""",
+                (_hash_token(_normalize_invite_code(code)), org_name, org_type, seats, address, expires,
+                 creator["id"], _now(), student_seats),
             )
             self._log(db, creator, 'invite_created', 'invite', _hash_token(_normalize_invite_code(code)),
-                      f'org={org_name};seats={seats}')
-        return {"code": code, "org_name": org_name, "seats": seats,
+                      f'org={org_name};org_type={org_type};seats={seats}')
+        return {"code": code, "org_name": org_name, "org_type": org_type, "seats": seats, "student_seats": student_seats,
                 "bound_email": address, "expires_at": expires}
 
     def list_invite_codes(self, *, actor=None) -> list[dict[str, Any]]:
@@ -572,7 +580,7 @@ class Store:
             if actor is not None:
                 current_actor(db, actor, {'platform_admin'})
             rows = db.execute(
-                """SELECT i.token_hash,i.org_name,i.seats,i.bound_email,i.expires_at,i.redeemed_by,
+                """SELECT i.token_hash,i.org_name,i.org_type,i.seats,i.student_seats,i.bound_email,i.expires_at,i.redeemed_by,
                           i.redeemed_at,i.revoked,i.created_at,u.email AS redeemed_email
                    FROM invite_codes i LEFT JOIN users u ON u.id=i.redeemed_by
                    ORDER BY i.created_at DESC"""
@@ -581,7 +589,7 @@ class Store:
 
     def register_with_code(self, email: str, code: str, invite_code: str,
                            password: str, *, browser_session: str | None = None,
-                           email_proof: str = '') -> tuple[dict[str, Any], str]:
+                           email_proof: str = '', display_name: str = '') -> tuple[dict[str, Any], str]:
         """邮箱验证后按完整凭证哈希查找创始码或成员邀请。
 
         凭证决定机构和角色；席位、核销、来源、审计及会话同事务。
@@ -591,6 +599,8 @@ class Store:
         if not address:
             raise ValueError("邮箱格式不正确")
         _validate_password(password, address)
+        if len(display_name.strip()) > 100:
+            raise ValueError('姓名不能超过 100 字。')
         now = _now()
         invite_hash = _hash_token(_normalize_invite_code(invite_code))
         # ⚠️ 验证码输错时的尝试计数必须**提交**而非回滚——在 with 块内 raise 会触发
@@ -616,7 +626,7 @@ class Store:
                     # Both tables are searched by the FULL hash. Never dispatch
                     # by length/prefix, even for legacy or deliberately crafted rows.
                     invite = db.execute(
-                        """SELECT org_name,seats,bound_email,expires_at,revoked,redeemed_by
+                        """SELECT org_name,org_type,seats,student_seats,bound_email,expires_at,revoked,redeemed_by
                            FROM invite_codes WHERE token_hash=?""",
                         (invite_hash,),
                     ).fetchone()
@@ -645,7 +655,7 @@ class Store:
                     db.execute(
                         """INSERT INTO users (id,username,password_hash,display_name,role,org_id,active,email,created_at)
                            VALUES (?,?,?,?,?,?,1,?,?)""",
-                        (user_id, username, _passwords.hash(password), username if member_invite else invite["org_name"], role,
+                        (user_id, username, _passwords.hash(password), (display_name.strip() or username) if member_invite else invite["org_name"], role,
                          org_id, address, now),
                     )
                     if member_invite:
@@ -655,11 +665,20 @@ class Store:
                                    (user_id,'member_invitation',member_invite['id'],member_invite['created_by'],now))
                     else:
                         db.execute(
+                            "INSERT INTO org_settings "
+                            "(org_id,org_type,display_name,report_title,footer_text,updated_at) VALUES (?,?,?,?,?,?)",
+                            (org_id, invite["org_type"], invite["org_name"],
+                             self.ORG_DEFAULTS["report_title"], self.ORG_DEFAULTS["footer_text"], now),
+                        )
+                        db.execute(
                             "INSERT INTO org_quota (org_id,seats,updated_at) VALUES (?,?,?)",
                             (org_id, invite["seats"], now),
                         )
                         db.execute("UPDATE invite_codes SET redeemed_by=?,redeemed_at=? WHERE token_hash=?",
                                    (user_id, now, invite_hash))
+                        if invite['org_type'] == 'university':
+                            from webapp.university_members import provision_founder
+                            provision_founder(db, user_id, org_id, invite['seats'], invite['student_seats'])
                     db.execute("UPDATE email_tokens SET used_at=? WHERE token_hash=?",
                                (now, token_row["token_hash"]))
                     session_token = secrets.token_urlsafe(32)
@@ -1558,7 +1577,7 @@ class Store:
     def create_assignment(self, user: dict[str, Any], title: str, audit_id: str,
                           target_student_id: str | None, weights: dict[str, float],
                           false_positive_penalty: float, published: bool,
-                          class_id: str | None = None, deadline_at=None) -> str:
+                          class_id: str | None = None, deadline_at=None, course_id: str | None = None) -> str:
         assignment_id = secrets.token_hex(12)
         with self.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -1583,6 +1602,9 @@ class Store:
                     (class_id,target_student_id),
                 ).fetchone():
                     raise classroom.ClassroomError("指定学生不在所选班级名册中。")
+            if course_id:
+                from webapp.university_workspace import bind_assignment_course
+                bind_assignment_course(db, user, assignment_id, course_id, class_id)
             self._log(db, user, "create_assignment", "assignment", assignment_id, audit_id)
         return assignment_id
 
@@ -1696,10 +1718,15 @@ class Store:
                 return None
             return row["org_id"] if row else None
 
-    def review_submission(self, submission_id: str, teacher_id: str, adjusted_score: float, feedback: str) -> None:
+    def review_submission(self, submission_id: str, teacher_id: str, adjusted_score: float, feedback: str, *, actor=None) -> None:
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
-            actor = db.execute("SELECT * FROM users WHERE id=? AND role='teacher' AND active=1", (teacher_id,)).fetchone()
+            if actor is None:
+                actor = db.execute("SELECT * FROM users WHERE id=? AND role='teacher' AND active=1", (teacher_id,)).fetchone()
+            elif actor['id'] != teacher_id:
+                raise AccessDenied('复核身份不一致。', 403)
+            if actor:
+                current_actor(db, actor, {'teacher'})
             row = db.execute('SELECT a.* FROM submissions s JOIN assignments a ON a.id=s.assignment_id WHERE s.id=?', (submission_id,)).fetchone()
             if not actor or not row or not classroom.can_access(db, classroom.decorate(db, dict(row)), dict(actor)):
                 raise AccessDenied('提交记录不存在或无权复核。')

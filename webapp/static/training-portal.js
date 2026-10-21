@@ -1,3 +1,7 @@
+"use strict";
+window.createTrainingStudent = function(document = window.document, {embedded=false} = {}) {
+let disposed=false;const requests=new AbortController();
+/* controller body */
 /* 考证备考学生端（FR-K01/K02）：证书目录、学习目标与考试倒计时。 */
 "use strict";
 
@@ -11,13 +15,16 @@ function esc(value) {
 }
 
 async function api(path, options = {}) {
+  if(disposed)throw new DOMException("视图已关闭","AbortError");
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json" },
     ...options,
+    signal:requests.signal,
     body: options.body ? JSON.stringify(options.body) : undefined,
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `请求失败（${res.status}）`);
+  if(disposed)throw new DOMException("视图已关闭","AbortError");
+  if (!res.ok) {const error=new Error(data.detail || `请求失败（${res.status}）`);error.status=res.status;throw error;}
   return data;
 }
 
@@ -138,7 +145,9 @@ function todayISO() {
 /* ---------- 行为 ---------- */
 
 function flash(message, isError = false) {
-  const box = document.getElementById(isError ? "login-error" : "goal-msg");
+  if(disposed)return;
+  if(embedded){window.universityWorkspace?.notify(message,isError);return;}
+  const box = document.getElementById(isError ? "app-error" : "goal-msg");
   if (isError) box.textContent = message || "";
   else box.textContent = message || "";
   if (message && !isError) setTimeout(() => { box.textContent = ""; }, 4000);
@@ -153,9 +162,9 @@ async function refresh() {
   state.goals = goals.goals;
   renderGoals();
   renderCerts();
-  await refreshPractice().catch((err) => flash(err.message, true));
-  await refreshProfile().catch(() => {});
-  await loadMyFeedback().catch(() => {});
+  await refreshPractice();
+  await refreshProfile({strict: true});
+  await loadMyFeedback();
 }
 
 /* ---------- 试用反馈（本人隔离） ---------- */
@@ -321,7 +330,9 @@ function renderWorkbench() {
   const dash = state.dashboard;
   if (!dash) { box.innerHTML = ""; return; }
   if (!dash.goals.length) {
-    box.innerHTML = `<p class="muted">${esc(dash.hint)}</p>`;
+    const hosted = typeof window !== "undefined" && window.universityWorkspace;
+    const hint = hosted ? dash.hint.replace("下方证书目录", "侧栏的考证目标") : dash.hint;
+    box.innerHTML = `<p class="muted">${esc(hint)}</p>${hosted ? '<button class="btn pdf" data-act="workspace-goals">设置考证目标</button>' : ""}`;
     return;
   }
   box.innerHTML = dash.goals.map((g) => {
@@ -503,7 +514,8 @@ async function startPractice(body) {
 }
 
 function showApp(loggedIn) {
-  document.getElementById("login-view").hidden = loggedIn;
+  if(disposed)return;
+  if(!loggedIn){state.student=null;location.replace("/");return;}
   document.getElementById("app-view").hidden = !loggedIn;
   document.getElementById("who").textContent = loggedIn
     ? `${state.student.name}（${state.student.student_no}${state.student.college ? " · " + state.student.college : ""}）` : "";
@@ -518,12 +530,15 @@ function closePassModal() {
 
 async function boot() {
   try {
-    const me = await api("/api/training/auth/me");
+    let me;
+    try{me=await api("/api/training/auth/me");}catch{await api("/api/training/membership/session",{method:"POST"});me=await api("/api/training/auth/me");}
     state.student = me.student;
     showApp(true);
     await refresh();
-  } catch {
-    showApp(false);
+  } catch (error) {
+    if(disposed)return;
+    if(embedded)throw error;
+    if(error.status===401||error.status===403)showApp(false);else flash(error.message,true);
   }
 }
 
@@ -550,8 +565,9 @@ document.getElementById("save-pass").addEventListener("click", async () => {
     });
     closePassModal();
     state.student = null;
+    if (typeof window !== "undefined" && window.universityWorkspace) { window.universityWorkspace.expired("密码已修改，请用新密码重新登录。"); return; }
     showApp(false);
-    document.getElementById("login-error").textContent = "密码已修改，请用新密码重新登录。";
+
   } catch (err) {
     box.textContent = err.message;
   }
@@ -561,27 +577,6 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
   try { await api("/api/training/auth/logout", { method: "POST" }); } catch { /* 会话已失效即可 */ }
   state.student = null;
   showApp(false);
-});
-
-document.getElementById("login-btn").addEventListener("click", async () => {
-  const box = document.getElementById("login-error");
-  box.textContent = "";
-  try {
-    const data = await api("/api/training/auth/login", {
-      method: "POST",
-      body: {
-        student_no: document.getElementById("student-no").value.trim(),
-        password: document.getElementById("password").value,
-        college: document.getElementById("college").value.trim() || null,
-        remember: document.getElementById("remember").checked,
-      },
-    });
-    state.student = data.student;
-    showApp(true);
-    await refresh();
-  } catch (err) {
-    box.textContent = err.message;
-  }
 });
 
 document.getElementById("app-view").addEventListener("click", async (event) => {
@@ -767,10 +762,26 @@ document.getElementById("wb-body").addEventListener("click", async (event) => {
 
 /* ---------- 学习档案与知识库 ---------- */
 
+function noteDrafts(list) {
+  return Array.from(list.querySelectorAll(".item[id]"), item => {
+    const editor = item.querySelector('[data-role="note-edit"]');
+    return editor && !editor.hidden ? [item.id, editor.querySelector("textarea").value] : null;
+  }).filter(Boolean);
+}
+
+function restoreNoteDrafts(list, drafts) {
+  for (const [id, text] of drafts) {
+    const item = Array.from(list.querySelectorAll(".item[id]")).find(item => item.id === id);
+    const editor = item?.querySelector('[data-role="note-edit"]');
+    if (editor) { editor.hidden = false; editor.querySelector("textarea").value = text; }
+  }
+}
+
 function renderProfile() {
   const p = state.profile;
   const sum = document.getElementById("pf-summary");
   const list = document.getElementById("pf-list");
+  const drafts = noteDrafts(list);
   if (!p) {
     sum.innerHTML = `<p class="muted">选择证书后加载档案。</p>`;
     list.innerHTML = "";
@@ -830,9 +841,10 @@ function renderProfile() {
       ${tutorBlock}
     </div>`;
   }).join("");
+  restoreNoteDrafts(list, drafts);
 }
 
-async function refreshProfile() {
+async function refreshProfile({strict = false} = {}) {
   const sel = document.getElementById("pf-cert");
   sel.innerHTML = state.certificates.map((c) =>
     `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
@@ -848,6 +860,7 @@ async function refreshProfile() {
   } catch (err) {
     flash(err.message, true);
     state.profile = null;
+    if (strict) throw err;
   }
   renderProfile();
 }
@@ -899,6 +912,7 @@ document.getElementById("pf-list").addEventListener("click", async (event) => {
       await api(`/api/training/my/knowledge-points/${btn.dataset.id}/note`,
                 { method: "PUT", body: { content } });
       flash("笔记已保存（仅本人可见，教师无访问入口）。");
+      scope.querySelector('[data-role="note-edit"]').hidden = true;
       await refreshProfile();
     } catch (err) { flash(err.message, true); }
   } else if (act === "delete-note") {
@@ -980,4 +994,8 @@ async function toggleKpHistory(btn, scope, kpId) {
   }
 }
 
-boot();
+const ready=boot();
+
+/* controller end */
+return {ready,refresh,destroy(){disposed=true;requests.abort();}};
+};

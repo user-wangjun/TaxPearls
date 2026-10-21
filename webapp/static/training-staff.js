@@ -1,3 +1,7 @@
+"use strict";
+window.createTrainingStaff = function(document = window.document, {embedded=false} = {}) {
+let disposed=false;const requests=new AbortController();
+/* controller body */
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
@@ -14,18 +18,23 @@ function esc(value) {
 }
 
 async function api(path, options = {}) {
+  if(disposed)throw new DOMException("视图已关闭","AbortError");
   const form = options.form instanceof FormData ? options.form : null;
   const res = await fetch(path, {
     headers: form ? {} : { "Content-Type": "application/json" },
     ...options,
+    signal:requests.signal,
     body: form ? form : (options.body ? JSON.stringify(options.body) : undefined),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || `请求失败（${res.status}）`);
+  if(disposed)throw new DOMException("视图已关闭","AbortError");
+  if (!res.ok) {const error=new Error(data.detail || `请求失败（${res.status}）`);error.status=res.status;throw error;}
   return data;
 }
 
 function flash(message, isError = false) {
+  if(disposed)return;
+  if(embedded){window.universityWorkspace?.notify(message,isError);return;}
   const box = document.getElementById(isError ? "app-error" : "app-error");
   box.textContent = message || "";
   if (message) setTimeout(() => { if (box.textContent === message) box.textContent = ""; }, 5000);
@@ -573,7 +582,9 @@ function renderTrial() {
 
 /* ---------- 数据 ---------- */
 
+let membershipUI=null;
 async function load() {
+  if(!membershipUI&&state.staff&&state.staff.role!=="school_admin"&&document.getElementById("school-membership")){const id=state.staff.id;membershipUI=TPMemberLinks.school(document.getElementById("school-membership"),{request:api,valid:()=>!disposed&&state.staff?.id===id,afterChange:async()=>{await loadStudents();}});}
   const data = await api("/api/training/staff/certificates?include_inactive=true");
   state.certificates = data.certificates;
   if (!state.certificates.find((c) => c.id === state.currentId)) {
@@ -593,18 +604,19 @@ async function load() {
     await loadBank().catch(() => { state.bank = []; renderBank(); });
     await loadOutline().catch(() => { state.outline = null; renderOutline(); });
   }
-  try { state.rules = (await api("/api/training/staff/rules")).rules; } catch (err) { state.rules = []; }
-  await loadStudents().catch(() => { state.students = []; });
-  await loadCourses().catch(() => { state.courses = []; state.teachers = []; });
-  if (state.staff && state.staff.role === "admin") {
+  state.rules = (await api("/api/training/staff/rules")).rules;
+  await loadStudents();
+  await loadCourses();
+  if (state.staff && ["admin", "school_admin"].includes(state.staff.role)) {
     document.getElementById("overview-card").hidden = false;
-    await loadOverview().catch(() => {});
+    await loadOverview();
   }
   renderAll();
-  await loadMarkStats().catch(() => {});
-  await loadRoster().catch(() => { state.classes = []; state.classHistory = []; renderRoster(); });
-  await loadOrg().catch(() => { state.departments = []; state.terms = []; state.orgClasses = []; renderOrg(); });
-  await loadTrial().catch(() => { state.trialFeedback = []; state.trialStats = null; renderTrial(); });
+  await loadMarkStats();
+  await loadRoster();
+  await loadOrg();
+  await loadTrial();
+  renderStaffWorkbench();
 }
 
 /* ---------- 班级与教师名册（FR-U03） ---------- */
@@ -729,12 +741,7 @@ function renderOrg() {
   if (quota) {
     document.getElementById("org-quota").innerHTML =
       `<p>教师 <strong>${quota.teachers_used}</strong>/${quota.teacher_quota} · 学生 <strong>${quota.students_used}</strong>/${quota.student_quota}${quota.configured ? "" : "（默认档，未单独配置）"}</p>`;
-    const isAdminNow = isAdmin;
-    document.getElementById("org-quota-form").hidden = !isAdminNow;
-    if (isAdminNow) {
-      document.getElementById("oq-teacher").value = quota.teacher_quota;
-      document.getElementById("oq-student").value = quota.student_quota;
-    }
+
     const hist = quota.history || [];
     document.getElementById("org-quota-history").innerHTML = hist.length
       ? `<h3 style="margin-top:12px;">调整留痕（最近 ${hist.length} 条）</h3>` + hist.map((h) =>
@@ -784,7 +791,7 @@ function parseStudentRows(text) {
 
 async function loadCourses() {
   state.courses = (await api("/api/training/staff/courses")).courses;
-  try { state.teachers = (await api("/api/training/staff/teachers")).teachers; } catch (err) { state.teachers = []; }
+  state.teachers = (await api("/api/training/staff/teachers")).teachers;
   renderCourses();
 }
 
@@ -878,7 +885,7 @@ async function loadOverview() {
   document.getElementById("overview-body").innerHTML = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
       <span class="badge">在读学生 ${o.students.active}/${o.students.total}</span>
-      <span class="badge">在职教师 ${o.teachers}</span>
+      <span class="badge">教职账号 ${o.teachers}</span>
       <span class="badge">班级 ${o.classes.length}</span>
       <span class="badge">课程 ${o.courses.length}</span>
       <span class="badge gray">考证知识点 ${o.content.knowledge_points}（已挂规则 ${o.content.linked_points} · 高频标注 ${o.content.high_freq_marks}）</span>
@@ -889,38 +896,14 @@ async function loadOverview() {
       <tbody>${cls}</tbody>
     </table>
     ${courses}
-    <p class="muted">${esc(o.scope_note)}</p>`;
+    <p class="muted">${esc(o.scope_note.replace(/（FR-U\d+）/g, ""))}</p>`;
 }
 
 /* ---------- 事件 ---------- */
 
-document.getElementById("login-btn").addEventListener("click", async () => {
-  const box = document.getElementById("login-error");
-  box.textContent = "";
-  try {
-    const data = await api("/api/training/staff/auth/login", {
-      method: "POST",
-      body: {
-        username: document.getElementById("username").value.trim(),
-        password: document.getElementById("password").value,
-        remember: document.getElementById("remember").checked,
-      },
-    });
-    state.staff = data.staff;
-    showApp(true);
-    await load();
-  } catch (err) {
-    box.textContent = err.message;
-  }
-});
-
-document.getElementById("logout-btn")?.addEventListener("click", async () => {
-  await api("/api/training/staff/auth/logout", { method: "POST" });
-  showApp(false);
-});
-
 function showApp(loggedIn) {
-  document.getElementById("login-view").hidden = loggedIn;
+  if(disposed)return;
+  if(!loggedIn){membershipUI?.destroy();membershipUI=null;state.staff=null;location.replace("/");return;}
   document.getElementById("app-view").hidden = !loggedIn;
   for (const id of ["sf-college", "si-college", "cf2-college", "cm-college", "ti-college"]) {
     document.getElementById(id).value = loggedIn ? state.staff.college : "";
@@ -1164,6 +1147,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
           q("#pw-old").value = ""; q("#pw-new").value = ""; q("#pw-new2").value = "";
           q("#pass-form").hidden = true;
           flash("密码已修改，请用新密码重新登录。");
+          if (window.universityWorkspace) { window.universityWorkspace.expired("密码已修改，请用新密码重新登录。"); return; }
           showApp(false);
         } catch (err) {
           flash(err.message, true);
@@ -1197,7 +1181,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       const rows = parseTeacherRows(q("#ti-text").value);
       if (!rows.length) { flash("没有可导入的行。格式：登录名,姓名,邮箱可选", true); return; }
       const college = q("#ti-college").value.trim();
-      const defaultPassword = q("#ti-pass").value.trim();
+      const defaultPassword = q("#ti-pass").value;
       if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
       try {
         const data = (await api("/api/training/staff/teachers/import", {
@@ -1235,7 +1219,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       const rows = parseStudentRows(q("#si-text").value);
       if (!rows.length) { flash("没有可导入的行。格式：学号,姓名,班级", true); return; }
       const college = q("#si-college").value.trim();
-      const defaultPassword = q("#si-pass").value.trim();
+      const defaultPassword = q("#si-pass").value;
       if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
       const result = await api("/api/training/staff/students/import", {
         method: "POST",
@@ -1249,7 +1233,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       const file = q("#si-file").files && q("#si-file").files[0];
       if (!file) { flash("请选择 .xlsx 名册文件。", true); return; }
       const college = q("#si-college").value.trim();
-      const defaultPassword = q("#si-pass").value.trim();
+      const defaultPassword = q("#si-pass").value;
       if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
       const fd = new FormData();
       fd.append("college", college);
@@ -1395,26 +1379,13 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       } catch (err) { flash(err.message, true); }
       await loadOrg();
     },
-    "org-quota-save": async () => {
-      const teacher = parseInt(q("#oq-teacher").value, 10);
-      const student = parseInt(q("#oq-student").value, 10);
-      if (!Number.isInteger(teacher) || !Number.isInteger(student)) { flash("配额须为整数。", true); return; }
-      try {
-        await api("/api/training/staff/org/quota", {
-          method: "PATCH",
-          body: { college: state.staff.college, teacher_quota: teacher,
-                  student_quota: student, revision: (state.quota || {}).revision || 0 } });
-        flash("配额已保存并留痕。");
-      } catch (err) { flash(err.message, true); }
-      await loadOrg();
-    },
     "reset-student-pass": () => {
       const stu = state.students.find((s) => s.id === id);
-      const input = window.prompt(`为 ${stu ? stu.student_no + " " + stu.name : "该学生"} 设置新密码（至少 8 位，重置后其登录立即失效）：`);
+      const input = window.prompt(`为 ${stu ? stu.student_no + " " + stu.name : "该学生"} 设置新密码（10–128 位，大小写字母、数字、符号至少三类，不能使用常见弱口令或包含邮箱前缀；重置后其登录立即失效）：`);
       if (input === null) return;
       withCert(async () => {
         await api(`/api/training/staff/students/${id}/reset-password`, {
-          method: "POST", body: { new_password: input.trim() } });
+          method: "POST", body: { new_password: input } });
         flash("密码已重置，该学生的旧登录已全部失效。");
       });
     },
@@ -1650,16 +1621,20 @@ document.getElementById("cert-select").addEventListener("change", async (event) 
 
 async function boot() {
   try {
-    const me = await api("/api/training/staff/auth/me");
+    let me;
+    try{me=await api("/api/training/staff/auth/me");}catch{await api("/api/training/membership/session",{method:"POST"});me=await api("/api/training/staff/auth/me");}
     state.staff = me.staff;
     showApp(true);
+    document.getElementById("pass-form").hidden = false;
     await load();
-  } catch {
-    showApp(false);
+  } catch (error) {
+    if(disposed)return;
+    if(embedded)throw error;
+    if(error.status===401||error.status===403)showApp(false);else flash(error.message,true);
   }
 }
 
-boot();
+const ready=boot();
 
 /* ---------- 判题管理（FR-J05~J08 教师端） ---------- */
 
@@ -1831,6 +1806,21 @@ document.getElementById("judge-task-state").addEventListener("change", () =>
 
 (async () => {
   // boot() 已在文件前部启动：等登录态判定完成后填充编程题下拉（失败不阻塞主流程）
-  for (let i = 0; i < 50 && !state.staff; i++) await new Promise((r) => setTimeout(r, 100));
-  if (state.staff) { try { await loadJudgeProblems(); } catch { /* 忽略 */ } }
+  for (let i = 0; i < 50 && !state.staff && !disposed; i++) await new Promise((r) => setTimeout(r, 100));
+  if (state.staff&&!disposed) { try { await loadJudgeProblems(); } catch { /* 忽略 */ } }
 })();
+
+function renderStaffWorkbench() {
+  const box = document.getElementById("staff-workbench-body");
+  if (!box) return;
+  const count = (label, value, unit) => `<div class="kpi"><div>${esc(label)}</div><div class="value">${esc(value)}<span class="unit">${esc(unit)}</span></div></div>`;
+  box.innerHTML = `<p class="muted">${esc(state.staff.college)} · ${esc(state.staff.display_name)}，从这里继续教学与管理。</p>
+    <div class="kpi-grid">${count("在读学生", state.students.filter(s => s.active).length, "人")}${count("名册班级", state.classes.length, "个")}${count("课程", state.courses.length, "门")}${count("上架证书", state.certificates.filter(c => c.active).length, "项")}</div>
+    <p class="muted">师生、班级和课程按本院校统计；考证内容为共享教学资源。这里不将资源数量当作学习成绩。</p>
+    <div class="university-home-actions"><button data-workspace-view="students">查看师生与班级</button><button data-workspace-view="courses">查看课程</button><button data-workspace-view="organization">查看组织与学期</button></div>`;
+  box.querySelectorAll("[data-workspace-view]").forEach(button => button.addEventListener("click", () => window.universityWorkspace.choose(button.dataset.workspaceView)));
+}
+
+/* controller end */
+return {ready,refresh:async()=>{await load();await membershipUI?.load();},destroy(){disposed=true;requests.abort();membershipUI?.destroy();}};
+};
