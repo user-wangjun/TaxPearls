@@ -678,6 +678,45 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     function draw(){body.replaceChildren(...rows.slice(page*size,(page+1)*size));description.textContent=rows.length?`${page*size+1}–${Math.min((page+1)*size,rows.length)} / ${rows.length} 条 · 第 ${page+1} / ${pages} 页`:"尚未识别到记录，请查看来源说明并核对原件。";previous.disabled=previous.corePageDisabled=page===0;next.disabled=next.corePageDisabled=page>=pages-1;}
     pager.append(description);if(pages>1)pager.append(previous,next);wrap.append(pager);draw();return wrap;
   }
+  function renderDedup(root){
+    const result=current.processing?.deduplication;if(!result)return;
+    const counts=result.counts,box=el("section","material-card");
+    box.append(el("h4","","自动去重核对"),el("p","",`本次 ${counts.total} 条 · 新增 ${counts.new} 条 · 历史已有 ${counts.historical_duplicate} 条 · 本次重复 ${counts.task_duplicate} 条 · 版本冲突 ${counts.conflict} 条 · 身份信息不足 ${counts.unverified} 条`),
+      el("p","muted","重复来源会保留，本次计算只取一份。历史已有记录仍可用于本次检查；已完成报告保持原版本。不同覆盖期间的余额表、申报表不能直接相加。"));
+    const detail=el("details"),summary=el("summary","","查看去重明细与历史来源"),list=el("div");detail.append(summary,list);box.append(detail);root.append(box);
+    const labels={new:"新增",historical_duplicate:"历史已有，本次保留",task_duplicate:"本次重复，只计一次",conflict:"版本冲突，待核对",unverified:"身份信息不足，未自动合并",superseded:"已采用其他版本"};
+    const valueLabels={issue_date:"开票日期",amount_excluding_tax:"不含税金额",tax_amount:"税额",amount_including_tax:"价税合计",red_letter_status:"红蓝字状态",void_status:"作废状态",opening_balance:"期初余额",current_debit:"本期借方",current_credit:"本期贷方",closing_balance:"期末余额",declared_value:"申报数值",unit:"单位"};
+    const valuesText=record=>Object.entries(valueLabels).filter(([key])=>record&&key in record).map(([key,label])=>{
+      const value=record[key],text=value&&typeof value==="object"?`借方 ${value.debit??"未取得"}，贷方 ${value.credit??"未取得"}`:value??"未取得";
+      return `${label}：${text}`;
+    }).join("；");
+    let shown=0;
+    const more=button("继续查看去重明细",()=>paint());
+    function paint(){
+      for(const entry of result.records.slice(shown,shown+50)){
+        const row=el("div","core-dedup-record"),doc=current.documents.find(d=>d.id===entry.file_id),record=current.processing.records.find(r=>r.id===entry.source_record_id);
+        row.append(el("p","",`${doc?.name||entry.file_id} · ${entry.position||"位置待核对"} · ${labels[entry.status]||entry.status}`));
+        if(entry.status==="conflict"){
+          row.append(el("p","muted","本条记录 · "+valuesText(record)));
+        }
+        for(const source of entry.historical_sources||[]){
+          row.append(el("p","muted",`${source.completed?"已完成任务":"历史任务"} · ${(source.period||[]).join(" 至 ")} · ${source.file_name||"历史文件"} · ${source.position||""}${entry.status==="conflict"?" · "+valuesText(source.values):""}`),
+            button("打开来源任务",()=>{if(dirty||scopeDirty){showError("请先保存当前修改，再查看来源任务。");return;}return openTask(source.task_id);}));
+        }
+        if(entry.status==="conflict"&&!current.completion){
+          const choose=button("采用本条记录的版本",()=>{
+            if(dirty||scopeDirty){showError("请先保存当前修改，再核对冲突版本。");return;}
+            choose.disabled=true;
+            const confirm=button("已核对原件，确认采用此版本",()=>action(()=>api(base+"/"+encodeURIComponent(current.id)+"/deduplication/resolve",json({expected_revision:current.revision,source_record_id:entry.source_record_id,expected_versions:entry.conflict_versions,confirm:true}))));
+            const cancel=button("取消采用",()=>{confirm.disabled=true;cancel.disabled=true;choose.disabled=false;});row.append(confirm,cancel);
+          });row.append(choose);
+        }
+        list.append(row);
+      }
+      shown=Math.min(shown+50,result.records.length);more.hidden=shown>=result.records.length;
+    }
+    paint();detail.append(more);
+  }
   function render() {
     uploadViews.clear();
     const root=$("coreTaskResult");root.replaceChildren();renderIdentityCandidates();renderChecks();if(!current)return;
@@ -685,6 +724,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const rangeLabels={month:"按月",quarter:"按季度",year:"按年度",custom:"自定义起止日"};
     root.append(el("h3","",`${task.company_name||"待识别企业"} · ${task.tax_no||"税号待填写"}`),el("p","muted",`${task.start_date||"起始日待确认"} 至 ${task.end_date||"终止日待确认"} · ${rangeLabels[task.range_kind||current.range_kind]||""}`),
       el("p",p.status==="ready_for_analysis"?"":"material-note",states[p.status]||p.status),el("p","muted",Object.keys(current.tax_checks||{}).length?"检查结果见上方；资料更新后需重新检查。":"资料已保存。核对后点击开始检查，自动检索依据并进行 AI 辅助分析。"));
+    renderDedup(root);
     if(current.completion){
       const archived=current.completion;
       root.append(el("p","material-note",`已完成并归档 · 报告 V${archived.report_version} · ${archiveTime(archived.completed_at)}`),

@@ -454,6 +454,8 @@ def archive(store, actor, task_id, expected_revision, *, complete_report_version
         batch = batches._authorize(db, actor, task_id)
         if batch["revision"] != expected_revision:
             raise AccessDenied("资料已更新，请重新读取。", 409)
+        from webapp import core_record_index
+        core_record_index.compare(db, batch, actor, payload)
         policy_assessment = core_policies.current_for_report(payload)
         for rid, slot in checks.items():
             old = slot["bundle"]
@@ -471,7 +473,9 @@ def archive(store, actor, task_id, expected_revision, *, complete_report_version
         file_names = {doc['id']: doc['name'] for doc in payload.get('documents', [])}
         sources = [{"record_id": row["id"], "file_id": row.get("source_file_id"),
                     "file_name": file_names.get(row.get('source_file_id')),
-                    "source_position": row.get("source_position"), "field_sources": row.get("field_sources", {})}
+                    "source_position": row.get("source_position"), "field_sources": row.get("field_sources", {}),
+                    **({"business_record": {key: row["dedup"][key] for key in ("record_key", "version_key")}}
+                       if row.get("dedup") else {})}
                    for row in payload["processing"].get("records", []) if row["id"] in
                    {sid for slot in checks.values() for fact in slot["bundle"]["facts"] for sid in fact["source_ids"]}]
         template = (ROOT / "templates/core_check_report.html").read_text(encoding="utf-8")
