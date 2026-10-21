@@ -233,6 +233,8 @@ def initialize(store) -> None:
         classroom.migrate(db)
         from webapp import ai_coach
         ai_coach.migrate(db)
+        from webapp import training_tasks
+        training_tasks.migrate(db)
         mistake_book.migrate(db)
         members.migrate(db)
         from webapp import material_batches

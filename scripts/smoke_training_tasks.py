@@ -1,0 +1,203 @@
+"""课程任务主链浏览器冒烟：教师清单→预览→设置，学生清单→任务说明。
+
+用法（临时库，不碰真库）：
+    python -B -X utf8 scripts/smoke_training_tasks.py
+
+检查项：教师看到作业与试卷各一项、预览可用、学生只看到已发布任务、
+学生端答案开放状态文案正确、控制台无 JS 错误。
+"""
+from __future__ import annotations
+
+import json
+import os
+import socket
+import sys
+import threading
+import time
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+CHECKS: list[tuple[str, bool, str]] = []
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    CHECKS.append((name, bool(ok), detail))
+    print(("PASS " if ok else "FAIL ") + name + ((" · " + detail) if detail else ""))
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def main() -> int:
+    tmp = TemporaryDirectory()
+    os.environ["TAXPEARLS_DB"] = str(Path(tmp.name) / "smoke.db")
+    os.environ["TAXPEARLS_AI_ENABLED"] = "0"
+    os.environ["TAXPEARLS_NOTIFICATION_EMAIL_ENABLED"] = "0"
+
+    from webapp import app as module
+
+    import uvicorn
+
+    port = free_port()
+    server = uvicorn.Server(uvicorn.Config(module.app, host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=server.run, daemon=True).start()
+    base = f"http://127.0.0.1:{port}"
+    for _ in range(80):
+        try:
+            socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            break
+        except OSError:
+            time.sleep(0.15)
+    # store 在应用 lifespan 里创建，服务起来之后才有实例
+    for _ in range(80):
+        if module.store is not None:
+            break
+        time.sleep(0.1)
+    store = module.store
+    password = "Smoke-tk84bdqe-2210!"
+    teacher = store.create_user("smoke-task-teacher", password, "冒烟教师", "teacher", "smoke-college")
+    student = store.create_user("smoke-task-student", password, "冒烟学生", "student", "smoke-college")
+
+    import http.cookiejar
+    import urllib.request
+
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+
+    def call(path: str, payload=None):
+        data = None if payload is None else json.dumps(payload).encode()
+        request = urllib.request.Request(base + path, data=data,
+                                         method="POST" if data else "GET",
+                                         headers={"Content-Type": "application/json"})
+        with opener.open(request, timeout=20) as response:
+            return json.loads(response.read() or b"{}")
+
+    errors: list[str] = []
+    call("/api/login", {"username": teacher["username"], "password": password})
+    case = call("/api/exercises", {"rule_id": "R-001", "seed": 23, "expected_version": "2.0"})
+    cls = call("/api/classes", {"name": "冒烟会计一班", "student_ids": [student["id"]]})
+    due = (datetime.now(UTC) + timedelta(days=7)).isoformat()
+    single = call("/api/assignments", {"title": "冒烟单案例作业", "audit_id": case["audit_id"],
+                                       "published": True, "class_id": cls["id"], "deadline_at": due})
+    paper = call("/api/papers", {"title": "冒烟综合卷", "class_id": cls["id"], "deadline_at": due,
+                                 "published": True,
+                                 "items": [{"audit_id": case["audit_id"], "points": 100}]})
+    check("教师创建单案例作业与试卷", bool(single.get("id") and paper.get("id")),
+          json.dumps({"assignment": single.get("id"), "paper": paper.get("id")}, ensure_ascii=False))
+    for kind, subject in (("assignment", single["id"]), ("paper", paper["id"])):
+        task = call(f"/api/training/tasks/{kind}/{subject}")
+        check(f"任务详情 {kind}", task.get("state") == "published" and task.get("expected") == 1,
+              f"state={task.get('state')} expected={task.get('expected')}")
+    listed = call("/api/training/tasks")["items"]
+    check("教师清单含两类任务且不重复列题", {(i["kind"], i["id"]) for i in listed} ==
+          {("assignment", single["id"]), ("paper", paper["id"])}, f"{len(listed)} 项")
+    preview = call(f"/api/training/tasks/assignment/{single['id']}/preview")
+    check("预览返回学生视角与题目顺序", preview["task"]["preview"] and len(preview["task"]["questions"]) == 1,
+          preview["note"][:24])
+
+    call("/api/logout", {})
+    call("/api/login", {"username": student["username"], "password": password})
+    mine = call("/api/training/tasks")["items"]
+    check("学生看到在班任务", {i["id"] for i in mine} == {single["id"], paper["id"]}, f"{len(mine)} 项")
+    detail = call(f"/api/training/tasks/assignment/{single['id']}")
+    check("学生详情默认答案不开放", detail["answers_visible"] is False and detail["can_submit"] is True,
+          f"release={detail['answer_release']}")
+
+    from playwright.sync_api import sync_playwright
+
+    def open_tasks(page):
+        """高校工作台点「课程与作业」；通用工作台点「实训中心」。"""
+        page.wait_for_timeout(600)
+        tasks_nav = page.locator('#universityNav [data-university-view="tasks"]')
+        if tasks_nav.count():
+            tasks_nav.first.click()
+            page.wait_for_timeout(400)
+            return "university"
+        panel = page.locator('#nav [data-panel="trainingPanel"]')
+        if panel.count():
+            panel.first.click()
+            page.wait_for_timeout(400)
+        return "workbench"
+
+    def login(page, who):
+        page.goto(base + "/", wait_until="domcontentloaded")
+        page.evaluate("""async ({u, p}) => {
+            const response = await fetch('/api/login', {method: 'POST',
+                headers: {'Content-Type': 'application/json'}, body: JSON.stringify({username: u, password: p})});
+            if (!response.ok) throw new Error('login failed');
+        }""", {"u": who["username"], "p": password})
+        page.goto(base + "/", wait_until="networkidle")
+
+    with sync_playwright() as play:
+        browser = play.chromium.launch(channel="msedge", headless=True)
+        context = browser.new_context(viewport={"width": 1440, "height": 900})
+        page = context.new_page()
+        page.on("console", lambda msg: errors.append(msg.text)
+                if msg.type == "error" and "401" not in msg.text else None)
+        page.on("pageerror", lambda exc: errors.append(str(exc)))
+        login(page, teacher)
+        mode = open_tasks(page)
+        card = page.locator("#task-board-card")
+        card.wait_for(timeout=15000)
+        text = card.inner_text()
+        check("教师端任务卡渲染两类任务", "冒烟单案例作业" in text and "冒烟综合卷" in text,
+              f"{mode} · {text.split(chr(10))[0]}")
+        page.get_by_role("button", name="预览学生视角").first.click()
+        page.wait_for_function("""() => {
+            const box = document.querySelector('#task-board-card .tb-detail');
+            return box && box.textContent.includes('学生看到的样子');
+        }""", timeout=10000)
+        shots = os.environ.get("SMOKE_SHOT_DIR")
+        if shots:
+            Path(shots).mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(Path(shots) / "task-board-teacher.png"), full_page=True)
+        detail_text = page.locator("#task-board-card .tb-detail").first.inner_text()
+        check("预览面板可展开", "学生看到的样子" in detail_text, detail_text.replace(chr(10), " / ")[:40])
+        page.get_by_role("button", name="任务设置").first.click()
+        page.wait_for_selector("#task-board-card .tb-form", timeout=10000)
+        check("任务设置表单可展开", page.locator("#task-board-card .tb-form select").first.input_value() in
+              {"after_due", "after_submit", "manual"})
+
+        context2 = browser.new_context(viewport={"width": 1440, "height": 900})
+        page2 = context2.new_page()
+        page2.on("console", lambda msg: errors.append(msg.text)
+                 if msg.type == "error" and "401" not in msg.text else None)
+        page2.on("pageerror", lambda exc: errors.append(str(exc)))
+        login(page2, student)
+        mode2 = open_tasks(page2)
+        card2 = page2.locator("#task-board-card")
+        card2.wait_for(timeout=15000)
+        text2 = card2.inner_text()
+        check("学生端任务卡渲染任务与答案口径", "冒烟单案例作业" in text2 and "截止后开放" in text2,
+              f"{mode2} · {text2.split(chr(10))[0]}")
+        page2.get_by_role("button", name="任务说明").first.click()
+        page2.wait_for_selector("#task-board-card .tb-detail", timeout=10000)
+        check("学生任务说明可展开", "提交次数" in page2.locator("#task-board-card .tb-detail").first.inner_text())
+        if shots:
+            page2.screenshot(path=str(Path(shots) / "task-board-student.png"), full_page=True)
+        browser.close()
+
+    check("浏览器控制台无 JS 错误", not errors, "; ".join(errors[:3]))
+    server.should_exit = True
+    time.sleep(0.5)
+    try:
+        tmp.cleanup()
+    except OSError:
+        pass  # Windows 上服务线程可能还占着 db 文件，临时目录交给系统清理
+
+    failed = [name for name, ok, _ in CHECKS if not ok]
+    print(f"\n{len(CHECKS) - len(failed)}/{len(CHECKS)} 项通过")
+    if failed:
+        print("未通过：" + "、".join(failed))
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

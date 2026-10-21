@@ -827,6 +827,11 @@ def ai_coach_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "training-ai-coach.js", media_type="text/javascript")
 
 
+@app.get("/training-tasks.js")
+def training_tasks_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-tasks.js", media_type="text/javascript")
+
+
 
 
 @app.get("/console.js")
@@ -1603,6 +1608,8 @@ register_exercises(app, lambda: store, _teaching_user, _allow, _audit_or_404, la
 classroom.register(app,lambda: store,_teaching_user,_allow,_is_synthetic_dataset,COOKIE_NAME)
 from webapp import ai_coach as ai_coach_routes
 ai_coach_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import training_tasks as training_task_routes
+training_task_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)

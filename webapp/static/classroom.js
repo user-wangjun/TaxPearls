@@ -389,6 +389,6 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     $("className").value = ""; $("paperClass").value = "__choose__"; $("paperDeadline").value = "";
     draftRows();
   }
-  return {render, reset, deadlineInput, dueText, status, invalidatePending:()=>{paperRequest++;mistakeBook.invalidate("作业列表更新中，请稍候或刷新错题本。");clearStatistics("作业列表更新中，请稍候或刷新学情。");clearProfile("作业列表更新中，请稍候或刷新画像。");},
+  return {render, reset, deadlineInput, dueText, status, openPaper, invalidatePending:()=>{paperRequest++;mistakeBook.invalidate("作业列表更新中，请稍候或刷新错题本。");clearStatistics("作业列表更新中，请稍候或刷新学情。");clearProfile("作业列表更新中，请稍候或刷新画像。");},
     singleControls: item => teacher() && item.created_by === getUser()?.id ? settingsControls(item, "assignments") : null};
 };
