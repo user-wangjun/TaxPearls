@@ -13,12 +13,46 @@ import tempfile
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from webapp.storage import Store
 
 
 class StorageConcurrencyTest(unittest.TestCase):
+    def test_reader_sees_committed_data_while_two_writers_are_serialized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'reader-writer.db', keepalive=True)
+            pool = ThreadPoolExecutor(max_workers=2)
+            try:
+                with store.connect() as db:
+                    db.execute('CREATE TABLE probe(value TEXT)')
+                    db.execute("INSERT INTO probe VALUES ('committed')")
+                started = threading.Event()
+
+                def next_writer():
+                    started.set()
+                    with store.connect() as db:
+                        db.execute('BEGIN IMMEDIATE')
+                        db.execute("UPDATE probe SET value='second writer'")
+
+                def read():
+                    with store.connect() as db:
+                        return db.execute('SELECT value FROM probe').fetchone()[0]
+
+                with store.connect() as writer:
+                    writer.execute('BEGIN IMMEDIATE')
+                    writer.execute("UPDATE probe SET value='uncommitted'")
+                    waiting = pool.submit(next_writer)
+                    self.assertTrue(started.wait(2))
+                    self.assertEqual(pool.submit(read).result(timeout=3), 'committed')
+                waiting.result(timeout=3)
+                self.assertEqual(read(), 'second writer')
+            finally:
+                # Release the writer scope before joining, including on timeout.
+                pool.shutdown(wait=True)
+                store.close()
+
     def test_implicit_writers_and_explicit_writers_share_transaction_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp)/'mixed.db', keepalive=True)

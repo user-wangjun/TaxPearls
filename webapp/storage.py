@@ -187,9 +187,10 @@ class _WriteGuard:
 class Store:
     """Small SQLite repository with explicit organization and ownership checks."""
 
-    # 模块级共享锁：同进程所有 Store 实例（含指向同一库文件的多个实例）串行化库访问。
+    # 同进程所有 Store 实例共享写事务锁；连接开关另用短锁，允许 WAL 并发读取。
     # 实例级锁无法保护跨实例并发；跨进程部署无此场景（单进程单实例服务）。
     _LOCK = RLock()
+    _CONNECTION_LOCK = RLock()
 
     def __init__(self, path: str | Path | None = None, *, notification_adapters=None,
                  keepalive: bool = False) -> None:
@@ -201,6 +202,7 @@ class Store:
         self.path = p if p.is_absolute() else (ROOT / p).resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = Store._LOCK
+        self._connection_lock = Store._CONNECTION_LOCK
         self._field_codec = sensitive_storage.Codec(sensitive_storage.configured_key())
         self.deployment = deployment.configured()
         self._fields_ready = False
@@ -224,22 +226,24 @@ class Store:
         # 守护）。空闲哨兵不持文件锁、不阻塞任何读写；服务退出 close() 后 WAL
         # 正常合并，关闭服务后的主库文件备份不受影响。测试与短命脚本不开哨兵，
         # 避免常驻句柄妨碍 TemporaryDirectory 清理。
-        self._keepalive = sqlite3.connect(self.path, timeout=10,
-                                          factory=sensitive_storage.Connection)
-        try:
-            sensitive_storage.attach(self._keepalive, self._field_codec)
-            self._keepalive.execute("SELECT 1").fetchone()
-        except BaseException:
-            self._keepalive.close()
-            self._keepalive = None
-            raise
+        with self._connection_lock:
+            self._keepalive = sqlite3.connect(self.path, timeout=10,
+                                              factory=sensitive_storage.Connection)
+            try:
+                sensitive_storage.attach(self._keepalive, self._field_codec)
+                self._keepalive.execute("SELECT 1").fetchone()
+            except BaseException:
+                self._keepalive.close()
+                self._keepalive = None
+                raise
 
     def close(self) -> None:
         """关闭哨兵连接；服务正常退出时调用可确保 WAL 合并回主库文件。"""
-        ka = getattr(self, "_keepalive", None)
-        if ka is not None:
-            self._keepalive = None
-            ka.close()
+        if getattr(self, "_keepalive", None) is not None:
+            with self._connection_lock:
+                ka, self._keepalive = self._keepalive, None
+                if ka is not None:
+                    ka.close()
 
     def __del__(self):
         # 引用计数归零即释放哨兵句柄：测试中被替换的 Store、离开作用域的
@@ -256,13 +260,13 @@ class Store:
         # - 开/关连接串行——关闭会触发 WAL -shm/-wal 删除重建，与另一连接的映射
         #   重叠时在 Windows 上以 SQLITE_READONLY 的面目打断写事务
         #   （test_training_profiles/stats、test_vat_* 稳定复现）。
-        # - 业务执行期不持锁，否则主线程持连接等后台线程、后台线程等锁会死锁
-        #   （test_engineering 的后台查询探针 5s 超时即此症状）。
+        # - 连接生命周期锁与写事务锁必须分开：写事务等待读请求时，读连接仍须
+        #   能打开、提交和关闭；等待写锁的另一连接也不能占住生命周期锁。
         # - 写事务（显式或隐式）由 _WriteGuard 持锁到提交/回滚：Store 方法外层虽有
         #   self._lock，但 material_jobs 等模块级函数直接 connect 写，不持锁就会
         #   与并发写撞出 database is locked（test_auth_hardening 稳定复现）。
         # RLock 可重入，同线程重复获取不会自锁。
-        with self._lock:
+        with self._connection_lock:
             db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
             try:
                 sensitive_storage.attach(db, self._field_codec)
@@ -281,10 +285,10 @@ class Store:
             # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
             # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
             # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
-            with self._lock:
+            with self._connection_lock:
                 db.commit()
         except Exception:
-            with self._lock:
+            with self._connection_lock:
                 try:
                     db.rollback()
                 except Exception:
@@ -292,7 +296,7 @@ class Store:
             raise
         finally:
             guard.release()
-            with self._lock:
+            with self._connection_lock:
                 db.close()
 
     def _init_schema(self) -> None:

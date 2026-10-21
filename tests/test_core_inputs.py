@@ -1,6 +1,7 @@
 """Business acceptance before tax rules: core inputs, evidence, gaps and tenant ACL."""
 
 import base64
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from io import BytesIO
 import json
@@ -971,21 +972,26 @@ class CoreAPITests(unittest.TestCase):
             kwargs["timeout"] = 0.05
             return connect(*args, **kwargs)
 
-        with self.store.connect() as writer:
-            self.assertEqual(writer.execute("PRAGMA journal_mode").fetchone()[0], "wal")
-            stamp = writer.execute("SELECT created_at FROM material_batches WHERE id=?", (task["id"],)).fetchone()[0]
-            writer.execute("BEGIN IMMEDIATE")
-            writer.execute("UPDATE material_batches SET created_at='uncommitted' WHERE id=?", (task["id"],))
-            try:
-                with patch("webapp.storage.sqlite3.connect", side_effect=short_wait):
-                    response = self.client.get("/api/enterprise/input-tasks")
-                self.assertEqual(response.status_code, 200, response.text)
-                self.assertEqual(response.json(), [{
-                    "id": task["id"], "revision": task["revision"], "task": task["task"],
-                    "status": task["processing"]["status"], "created_at": stamp,
-                }])
-            finally:
-                writer.rollback()
+        # A lock regression must fail promptly instead of hanging the CI worker.
+        pool = ThreadPoolExecutor(max_workers=1)
+        try:
+            with self.store.connect() as writer:
+                self.assertEqual(writer.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+                stamp = writer.execute("SELECT created_at FROM material_batches WHERE id=?", (task["id"],)).fetchone()[0]
+                writer.execute("BEGIN IMMEDIATE")
+                writer.execute("UPDATE material_batches SET created_at='uncommitted' WHERE id=?", (task["id"],))
+                try:
+                    with patch("webapp.storage.sqlite3.connect", side_effect=short_wait):
+                        response = pool.submit(self.client.get, "/api/enterprise/input-tasks").result(timeout=5)
+                    self.assertEqual(response.status_code, 200, response.text)
+                    self.assertEqual(response.json(), [{
+                        "id": task["id"], "revision": task["revision"], "task": task["task"],
+                        "status": task["processing"]["status"], "created_at": stamp,
+                    }])
+                finally:
+                    writer.rollback()
+        finally:
+            pool.shutdown(wait=True)
 
     def test_listing_preserves_tenant_owner_and_live_client_assignment_scope(self):
         task = self.create()
