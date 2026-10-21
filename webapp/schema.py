@@ -231,6 +231,8 @@ def initialize(store) -> None:
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_platform_admin "
                    "ON users(role) WHERE role='platform_admin'")
         classroom.migrate(db)
+        from webapp import ai_coach
+        ai_coach.migrate(db)
         mistake_book.migrate(db)
         members.migrate(db)
         from webapp import material_batches
