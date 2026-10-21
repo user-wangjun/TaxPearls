@@ -115,6 +115,8 @@ async def invalid_request(_request: Request, exc: RequestValidationError):
     ]},headers={"Cache-Control":"no-store"})
 store: Store | None = None
 ai_keys.STORE_PROVIDER = lambda: store
+from webapp.feishu_binding import register as register_feishu_binding
+register_feishu_binding(app, lambda: store, COOKIE_NAME)
 login_guard = LoginGuard()
 reset_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})
 register_code_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})

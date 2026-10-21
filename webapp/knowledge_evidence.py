@@ -418,15 +418,20 @@ def register(app, get_store, get_user, allow):
             try:
                 # Reauthorize immediately before any external request and again at the CAS write.
                 with store.connect() as db:
+                    db.execute("BEGIN IMMEDIATE")
                     latest_batch = batches._authorize(db, user, body.task_id)
                     if latest_batch["revision"] != view["revision"]:
                         raise AccessDenied("资料已变化，请重新核对后再分析。", 409)
+                    from webapp import core_record_index
+                    core_record_index.require_current(db, latest_batch, user, payload)
                 def authorize_batch():
                     with store.connect() as db:
+                        db.execute("BEGIN IMMEDIATE")
                         current_actor(db, user)
                         latest_batch = batches._authorize(db, user, body.task_id)
                         if latest_batch['revision'] != view['revision']:
                             raise AccessDenied('资料已变化，请重新核对后再分析。', 409)
+                        core_record_index.require_current(db, latest_batch, user, payload)
                 authorized = _AUTHORIZE_BATCH.set(authorize_batch)
                 try:
                     prior = old.get('ai') if same_input else None
