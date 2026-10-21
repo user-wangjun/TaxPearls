@@ -983,6 +983,8 @@ function enterApp(user) {
   memberRequest++; memberSnapshot=null; $("memberOrg").textContent=""; $("userList").textContent="";
   clearMemberInvitations(); $("signupCode").value=""; delete $("authForm").dataset.inviteCode;
   $("memberQuotaStatus").textContent="尚未加载成员信息。"; $("memberQuotaEditor").hidden=true;
+  resetMemberQuotaEditor();$("universityCapacityPanel").hidden=true;$("universityCapacityStatus").textContent="";
+  $("btnSaveUniversityCapacity").disabled=true;$("universityTeacherQuota").value="";$("universityStudentQuota").value="";
   $("authScreen").style.display = "none";
   document.body.classList.add("workspace-ready");
   $("appHeader").style.display = "block"; $("appMain").style.display = "block"; $("appFooter").style.display = "block";
@@ -1833,24 +1835,95 @@ async function mutateMemberInvitation(suffix,method,body){
   }
 }
 $("btnIssueMemberInvite").addEventListener("click",()=>mutateMemberInvitation("/invitations","POST",{role:$("memberInviteRole").value}));
-let universityCapacityRequest=0;
-async function loadUniversityCapacity(){
-  const uid=currentUser?.id,n=++universityCapacityRequest;
-  if(currentUser?.role!=="platform_admin")return;
-  const panel=$("universityCapacityPanel"),list=$("universityCapacityList"),status=$("universityCapacityStatus");
-  panel.hidden=false;list.replaceChildren();status.textContent="正在读取高校总额度…";
-  const valid=()=>currentUser?.id===uid&&currentUser?.role==="platform_admin"&&n===universityCapacityRequest;
+let memberQuotaEdit=null,memberQuotaConfirmation=null;
+function memberQuotaControls(context,saving=false){
+  for(const [kind,inputs,edit,save,cancel] of [
+    ["university",["universityTeacherQuota","universityStudentQuota"],"btnEditUniversityCapacity","btnSaveUniversityCapacity","btnCancelUniversityCapacity"],
+    ["enterprise",["memberSeats"],"btnEditMemberQuota","btnSaveMemberQuota","btnCancelMemberQuota"]]){
+    const editing=context?.kind===kind;
+    for(const id of inputs)$(id).disabled=!editing||saving;
+    $(edit).hidden=editing;$(save).hidden=$(cancel).hidden=!editing;
+    $(save).disabled=$(cancel).disabled=saving||!editing;
+  }
+}
+function resetMemberQuotaEditor(){
+  memberQuotaEdit=null;memberQuotaConfirmation=null;
+  if($("quotaConfirmDialog").open)$("quotaConfirmDialog").close();
+  memberQuotaControls(null);$("universityCapacityStatus").textContent="";$("memberQuotaSaveStatus").textContent="";
+}
+function memberQuotaContext(kind){
+  const data=memberSnapshot,org=$("memberOrg").value;
+  if(currentUser?.role!=="platform_admin"||!data||data.org_id!==org||
+    (kind==="university"?data.org_type!=="university"||!data.university_quota:data.org_type==="university"))return null;
+  return {kind,org,uid:currentUser.id,request:memberRequest,snapshot:data};
+}
+function memberQuotaValid(context){
+  return !!context&&currentUser?.role==="platform_admin"&&memberCurrent(context.uid,context.org)&&
+    memberRequest===context.request&&memberSnapshot===context.snapshot;
+}
+function memberQuotaStatus(context){return $(context.kind==="university"?"universityCapacityStatus":"memberQuotaSaveStatus");}
+function openMemberQuotaConfirmation(kind,stage){
+  const context=stage==="unlock"?memberQuotaContext(kind):memberQuotaEdit;
+  if(!memberQuotaValid(context)||context.kind!==kind)return;
+  const school=kind==="university",q=school?context.snapshot.university_quota:context.snapshot.quota;
+  const fields=school?[["教职工总额度","universityTeacherQuota",q.teacher_quota],["学生总额度","universityStudentQuota",q.student_quota]]:[["机构总席位","memberSeats",q.seats]];
+  if(stage==="save"&&!fields.every(([,id])=>$(id).reportValidity()))return;
+  const values=fields.map(([,id])=>Number($(id).value));
+  if(stage==="save"&&fields.every(([, ,old],i)=>old===values[i])){memberQuotaStatus(context).textContent="额度未变化，无需保存。";return;}
+  const body=school?{teacher_quota:values[0],student_quota:values[1],revision:q.revision}:{seats:values[0],revision:q.revision};
+  memberQuotaConfirmation={...context,stage,body};
+  $("quotaConfirmTitle").textContent=stage==="unlock"?"确认修改席位":"确认保存席位修改";
+  $("quotaConfirmOrganization").textContent="管理机构："+($("memberOrg").selectedOptions?.[0]?.textContent||context.org);
+  $("quotaConfirmDescription").textContent=stage==="unlock"?"确认后可编辑席位额度；当前额度不会立即改变。":"请核对以下修改，确认后提交保存。";
+  $("quotaConfirmChanges").replaceChildren(...fields.map(([label,,old],i)=>el("p",null,label+"："+(old??"未配置")+(stage==="save"?" → "+values[i]:""))));
+  $("quotaConfirmAccept").textContent=stage==="unlock"?"确认修改":"确认保存";
+  $("quotaConfirmDialog").showModal();
+}
+async function saveMemberQuota(context,body){
+  if(!memberQuotaValid(context))return;
+  const school=context.kind==="university",q=context.snapshot.university_quota,status=memberQuotaStatus(context);
+  memberQuotaControls(context,true);status.textContent="正在保存席位修改…";
   try{
-    const schools=await api("/api/universities");if(!valid())return;status.textContent=schools.length?"":"暂无高校账号。";
-    for(const school of schools){
-      const section=el("section","tm-section"),row=el("div","tm-row");section.append(el("h3",null,school.name),el("p","tm-muted","教职工已使用 "+school.teachers_used+" · 学生已使用 "+school.students_used+" · 已分配学生额度 "+school.allocated));
-      const staffLabel=el("label",null,"教职工总额度 "),studentLabel=el("label",null,"学生总额度 ");
-      const staff=el("input","tm-quota"),students=el("input","tm-quota");staff.type=students.type="number";staff.min="1";students.min="0";staff.max=students.max="100000";staff.step=students.step="1";staff.value=school.teacher_quota;students.value=school.student_quota;staff.required=students.required=true;staffLabel.append(staff);studentLabel.append(students);
-      const save=el("button","tm-button tm-button-primary","保存学校总额度");save.type="button";
-      save.addEventListener("click",async()=>{if(!valid()||!staff.reportValidity()||!students.reportValidity())return;save.disabled=true;status.textContent="正在保存学校总额度…";try{await api("/api/universities/"+encodeURIComponent(school.college)+"/capacity",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({teacher_quota:Number(staff.value),student_quota:Number(students.value),revision:school.revision})});if(valid()){await loadUniversityCapacity();status.textContent="学校总额度已保存。";}}catch(err){if(valid()){status.textContent=err.message;save.disabled=false;}}});
-      row.append(staffLabel,studentLabel,save);section.append(row);list.append(section);
-    }
-  }catch(err){if(valid())status.textContent=err.message;}
+    await api(school?"/api/universities/"+encodeURIComponent(q.college)+"/capacity":"/api/members/"+encodeURIComponent(context.org)+"/quota",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!memberQuotaValid(context))return;
+    await loadMembers();
+    const refreshed=()=>memberCurrent(context.uid,context.org)&&memberRequest===context.request+1&&memberSnapshot&&currentUser?.role==="platform_admin";
+    if(!refreshed())return;
+    status.textContent="席位修改已保存。";
+    try{const logs=await api("/api/audit-log");if(refreshed())renderAdminLogs(logs,refreshed);}
+    catch{if(refreshed())status.textContent="席位修改已保存，操作记录加载失败，请刷新管理页查看。";}
+  }catch(err){if(memberQuotaValid(context)){status.textContent=err.message;memberQuotaControls(context);}}
+}
+$("quotaConfirmCancel").addEventListener("click",()=>$("quotaConfirmDialog").close());
+$("quotaConfirmDialog").addEventListener("close",()=>{memberQuotaConfirmation=null;});
+$("quotaConfirmAccept").addEventListener("click",async()=>{
+  const context=memberQuotaConfirmation;
+  if(!memberQuotaValid(context)){resetMemberQuotaEditor();return;}
+  $("quotaConfirmDialog").close();
+  if(context.stage==="unlock"){
+    memberQuotaEdit=context;memberQuotaControls(context);memberQuotaStatus(context).textContent="修改后请保存；取消将保留原额度。";
+    $(context.kind==="university"?"universityTeacherQuota":"memberSeats").focus();
+  }else await saveMemberQuota(context,context.body);
+});
+for(const [kind,edit,save,cancel] of [["university","btnEditUniversityCapacity","btnSaveUniversityCapacity","btnCancelUniversityCapacity"],["enterprise","btnEditMemberQuota","btnSaveMemberQuota","btnCancelMemberQuota"]]){
+  $(edit).addEventListener("click",()=>openMemberQuotaConfirmation(kind,"unlock"));
+  $(save).addEventListener("click",()=>openMemberQuotaConfirmation(kind,"save"));
+  $(cancel).addEventListener("click",()=>{if(memberQuotaValid(memberQuotaEdit)){resetMemberQuotaEditor();renderMemberQuota(memberSnapshot);}});
+}
+function renderMemberQuota(result){
+  const school=result.org_type==="university",q=school?result.university_quota:result.quota;
+  $("memberQuotaEditor").hidden=currentUser?.role!=="platform_admin"||school;
+  $("universityCapacityPanel").hidden=currentUser?.role!=="platform_admin"||!school||!q;
+  if(school){
+    $("userAdminHint").textContent="高校教职工与学生分别核销席位；平台管理员调整学校总额度，高校管理员在额度内分配。停用释放对应席位并撤销会话，恢复后须重新登录。";
+    $("memberQuotaStatus").textContent=q?"教职工 "+q.teachers_used+" / "+q.teacher_quota+"，剩余 "+q.teacher_remaining+"；学生 "+q.students_used+" / "+q.student_quota+"，剩余 "+q.student_remaining+"。学生额度已分配 "+q.allocated+"，未分配 "+q.unallocated+"。":"高校席位信息尚未关联，请先核对学校关联后再配置额度。";
+    if(q){$("universityTeacherQuota").value=q.teacher_quota;$("universityStudentQuota").value=q.student_quota;}
+  }else{
+    $("userAdminHint").textContent="机构管理员管理本机构员工；加入时核销席位，停用释放席位并撤销会话，恢复后须重新登录。";
+    $("memberQuotaStatus").textContent=q.seats===null?"在岗 "+q.used+" 人；席位尚未配置，创建或恢复成员前须由平台配置。":"席位 "+q.used+" / "+q.seats+"，剩余 "+q.remaining+(q.over_quota?"；现有成员超额，须先处理或调整配额。":"。");
+    $("memberSeats").value=q.seats??"";
+  }
+  memberQuotaControls(null);
 }
 $("btnSaveInvitationPolicy").addEventListener("click",()=>{
   if(!memberSnapshot?.invitations)return;
@@ -1863,9 +1936,11 @@ $("btnCopyMemberInvite").addEventListener("click",async()=>{
 });
 async function loadMembers(refreshOrganizations=false){
   const uid=currentUser?.id,role=currentUser?.role,request=++memberRequest;
-  if(role==="platform_admin")loadUniversityCapacity();
+  resetMemberQuotaEditor();
   if(!["platform_admin","org_admin"].includes(role))return;
   memberSnapshot=null;$("btnSaveMemberQuota").disabled=true;$("memberQuotaStatus").textContent="正在读取成员与席位…";
+  $("universityCapacityPanel").hidden=true;$("btnSaveUniversityCapacity").disabled=true;$("universityCapacityStatus").textContent="";
+  $("universityTeacherQuota").value="";$("universityStudentQuota").value="";
   clearMemberInvitations();
   $("userList").textContent="";$("memberQuotaEditor").hidden=true;
   try{
@@ -1882,9 +1957,7 @@ async function loadMembers(refreshOrganizations=false){
     const [result,invites]=await Promise.all([api("/api/members/"+encodeURIComponent(org)),api("/api/members/"+encodeURIComponent(org)+"/invitations")]);
     if(request!==memberRequest||!memberCurrent(uid,org))return;
     memberSnapshot={...result,invitations:invites};renderMemberInvitations(invites,uid,org);
-    const q=result.quota;
-    $("memberQuotaStatus").textContent=q.seats===null?"在岗 "+q.used+" 人；席位尚未配置，创建或恢复成员前须由平台配置。":"席位 "+q.used+" / "+q.seats+"，剩余 "+q.remaining+(q.over_quota?"；现有成员超额，须先处理或调整配额。":"。");
-    $("memberQuotaEditor").hidden=role!=="platform_admin"||result.org_type==="university";$("memberSeats").value=q.seats??"";$("btnSaveMemberQuota").disabled=false;
+    renderMemberQuota(result);
     const names={platform_admin:"平台管理员",org_admin:"机构管理员",accountant:"会计",teacher:"教师",student:"学生"};
     const sources={founder:"创始码开户",admin_created:"机构管理员创建",member_invitation:"机构邀请链接",legacy:"现有账号（来源未登记）"};
     for(const person of result.members){
@@ -1909,15 +1982,6 @@ async function loadMembers(refreshOrganizations=false){
 }
 $("memberOrg").addEventListener("change",()=>loadMembers());
 $("btnRefreshMembers").addEventListener("click",()=>loadMembers(true));
-$("btnSaveMemberQuota").addEventListener("click",async()=>{
-  const uid=currentUser?.id,org=$("memberOrg").value,data=memberSnapshot,seats=Number($("memberSeats").value);
-  if(currentUser?.role!=="platform_admin"||!data||data.org_id!==org)return;
-  if(!Number.isInteger(seats)||seats<1||seats>200){showError("席位须为 1–200 的整数。");return;}
-  $("btnSaveMemberQuota").disabled=true;
-  try{await api("/api/members/"+encodeURIComponent(org)+"/quota",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({seats,revision:data.quota.revision})});}
-  catch(err){if(memberCurrent(uid,org))showError(err.message);}
-  finally{if(memberCurrent(uid,org))await loadMembers();}
-});
 
 function renderAdminLogs(logs,current){
   const root=$("logList");root.replaceChildren();
@@ -1926,6 +1990,15 @@ function renderAdminLogs(logs,current){
   for(const log of logs.slice(0,80)){
     const row=el("div","data-item"),content=el("div");
     content.append(el("p","",`${localTime(log.created_at)}（北京时间） · ${log.action} · ${log.target_type} ${log.target_id}`));row.append(content);root.append(row);
+    if(["set_member_quota","set_university_capacity"].includes(log.action)){
+      let detail;try{detail=JSON.parse(log.detail);}catch{}
+      if(detail?.before&&detail?.after){
+        content.append(el("p","",`管理机构：${detail.organization_name||detail.organization_id} · 操作人：${detail.actor?.display_name||"未记录"}（${detail.actor?.username||detail.actor?.id||"未记录"}） · 来源 IP：${detail.source_ip||"未记录"}`));
+        const labels={seats:"机构总席位",teacher_quota:"教职工总额度",student_quota:"学生总额度"};
+        for(const [key,label]of Object.entries(labels))if(Object.hasOwn(detail.after,key))content.append(el("p","muted",`${label}：${detail.before[key]??"未配置"} → ${detail.after[key]}`));
+        content.append(el("p","muted",`配置版本：${detail.old_revision} → ${detail.new_revision} · 操作人 ID：${detail.actor?.id||"未记录"} · 机构 ID：${detail.organization_id}`));
+      }else content.append(el("p","muted","历史记录未保存完整前后额度及来源 IP。"));
+    }
     if(currentUser?.role!=="org_admin"||log.target_type!=="material_batch")continue;
     const trace=el("div");trace.hidden=true;
     const button=el("button","btn re","查看材料追溯");button.type="button";

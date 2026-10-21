@@ -995,7 +995,8 @@ def register(app, store_provider, user_for_session):
 
     @app.put("/api/universities/{college}/capacity")
     def capacity(
-        college: str, body: CapacityBody, session: str | None = Cookie(default=None, alias="taxpearls_session")
+        college: str, body: CapacityBody, request: Request,
+        session: str | None = Cookie(default=None, alias="taxpearls_session")
     ):
         who = user_for_session(session)
         with store_provider().connect() as db:
@@ -1029,6 +1030,13 @@ def register(app, store_provider, user_for_session):
                     old["student_quota"] if old["configured"] else None,
                 ),
             )
+            organization = db.execute('SELECT org_id FROM university_organizations WHERE college=?', (college,)).fetchone()
+            org_id = organization[0] if organization else college
+            members.log_quota_change(
+                db, who, org_id, 'set_university_capacity', org_id,
+                {'teacher_quota': old['teacher_quota'], 'student_quota': old['student_quota']},
+                {'teacher_quota': body.teacher_quota, 'student_quota': body.student_quota},
+                old['revision'], body.revision + 1, members.request_ip(request), college=college)
             return school_state(db, college)
 
     @app.get("/api/join/{code}")

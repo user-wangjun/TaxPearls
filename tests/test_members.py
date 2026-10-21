@@ -3,6 +3,7 @@ import auth_support
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import os
+import json
 import sqlite3
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 from webapp import app as module, members
 from webapp.access import AccessDenied
 from webapp.storage import Store
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 
 class MemberTests(unittest.TestCase):
@@ -111,6 +113,62 @@ class MemberTests(unittest.TestCase):
         with self.store.connect() as db:db.execute("UPDATE org_quota SET seats=1 WHERE org_id='alpha'")
         self.assertTrue(members.overview(self.store,self.owner,'alpha')['quota']['over_quota'])
         self.assertIsNotNone(self.store.authenticate(self.member['username'],self.password))
+
+    def test_quota_logs_before_after_actor_ip_and_survives_backup_encrypted(self):
+        self.configure(3)
+        self.login(self.root)
+        client = TestClient(module.app, client=('198.51.100.24', 12345))
+        client.cookies.update(self.client.cookies)
+        response = client.put('/api/members/alpha/quota', json={'seats': 7, 'revision': 1},
+                              headers={'X-Forwarded-For': '203.0.113.99'})
+        self.assertEqual(response.status_code, 200, response.text)
+        record = next(r for r in self.store.list_logs(self.root) if r['action'] == 'set_member_quota')
+        detail = json.loads(record['detail'])
+        self.assertEqual((detail['before'], detail['after']), ({'seats': 3}, {'seats': 7}))
+        self.assertEqual((detail['old_revision'], detail['new_revision']), (1, 2))
+        self.assertEqual(detail['source_ip'], '198.51.100.24')
+        self.assertEqual((record['org_id'], detail['organization_id'], detail['actor']['id']),
+                         ('alpha', 'alpha', self.root['id']))
+        self.assertEqual(detail['actor']['username'], self.root['username'])
+        self.assertTrue(record['created_at'])
+        backup = Path(self.tmp.name) / 'quota-backup.db'
+        with self.store.connect() as source, closing(sqlite3.connect(backup)) as target:
+            source.backup(target)
+        with closing(sqlite3.connect(backup)) as raw:
+            stored = raw.execute('SELECT detail FROM audit_log WHERE id=?', (record['id'],)).fetchone()[0]
+            self.assertNotIn('198.51.100.24', stored)
+            self.assertTrue(stored.startswith('tp-field-v1:'))
+        restored = Store(backup)
+        self.assertEqual(next(r for r in restored.list_logs(self.root) if r['id'] == record['id']), record)
+        restored.close()
+        self.assertNotIn(record['id'], {r['id'] for r in self.store.list_logs(self.other)})
+
+    def test_quota_ip_respects_trusted_proxy_boundary_and_ipv6(self):
+        self.configure(3)
+        self.login(self.root)
+        app = ProxyHeadersMiddleware(module.app, trusted_hosts='127.0.0.1,10.0.0.0/8')
+        cases = [('198.51.100.24', '203.0.113.99', '198.51.100.24'),
+                 ('127.0.0.1', '203.0.113.42,10.0.0.2', '203.0.113.42'),
+                 ('127.0.0.1', '203.0.113.99,198.51.100.55,10.0.0.2', '198.51.100.55'),
+                 ('2001:db8::1', '203.0.113.99', '2001:db8::1')]
+        for revision, (peer, forwarded, expected) in enumerate(cases, 1):
+            client = TestClient(app, client=(peer, 12345))
+            client.cookies.update(self.client.cookies)
+            response = client.put('/api/members/alpha/quota', json={'seats': revision + 4, 'revision': revision},
+                                  headers={'X-Forwarded-For': forwarded})
+            self.assertEqual(response.status_code, 200, response.text)
+            record = next(r for r in self.store.list_logs(self.root) if r['action'] == 'set_member_quota')
+            self.assertEqual(json.loads(record['detail'])['source_ip'], expected)
+
+    def test_quota_and_log_roll_back_together(self):
+        self.configure(3)
+        before = members.overview(self.store, self.root, 'alpha')['quota']
+        logs = self.store.list_logs(self.root)
+        with patch.object(members, 'log', side_effect=RuntimeError('audit unavailable')):
+            with self.assertRaises(RuntimeError):
+                members.set_quota(self.store, self.root, 'alpha', 9, before['revision'], source_ip='198.51.100.24')
+        self.assertEqual(members.overview(self.store, self.root, 'alpha')['quota'], before)
+        self.assertEqual(self.store.list_logs(self.root), logs)
 
     def test_disable_releases_seat_restore_requires_space_and_never_revives_cookie(self):
         self.configure(2)

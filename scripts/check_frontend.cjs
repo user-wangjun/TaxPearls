@@ -549,6 +549,13 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   resolve({id:"stale-private-task",revision:3,versions:[],events:[]});await request;
   assert.ok(!all(root).some(n=>n.textContent.includes("stale-private-task")),"late responses cannot repopulate an inactive session or panel");
   for(const role of ["accountant","teacher","platform_admin"]){ctx.currentUser.role=role;ctx.renderAdminLogs(rows,()=>true);assert.equal(button(),undefined);}
+  ctx.renderAdminLogs([{action:"set_university_capacity",target_type:"org",target_id:"school",created_at:"2026-10-21T01:00:00Z",
+    detail:JSON.stringify({actor:{id:"actor-1",username:"root",display_name:"平台管理员"},organization_id:"school",organization_name:"模拟高校",source_ip:"2001:db8::21",before:{teacher_quota:5,student_quota:1},after:{teacher_quota:6,student_quota:3},old_revision:1,new_revision:2})},
+    {action:"set_member_quota",target_type:"org",target_id:"company",detail:"seats=5;revision=1"}],()=>true);
+  const quotaText=all(root).map(n=>n.textContent).join("\n");
+  assert.match(quotaText,/来源 IP：2001:db8::21/);assert.match(quotaText,/教职工总额度：5 → 6/);
+  assert.match(quotaText,/学生总额度：1 → 3/);assert.match(quotaText,/配置版本：1 → 2/);
+  assert.match(quotaText,/历史记录未保存完整前后额度及来源 IP/);
   console.log("Admin material trace: on-demand query, close/reopen authorization, failure and stale-session guards passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
@@ -584,6 +591,84 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   assert.equal(node("loginCollege").disabled,true,"disambiguation must not block registration or reset");
   console.log("University navigation and conditional ownership disambiguation passed.");
 }
+
+// Selected-organization capacity must survive refreshes without leaking stale school data.
+(async()=>{
+  const source=fs.readFileSync("webapp/static/console.js","utf8"),nodes=new Map(),calls=[];
+  const node=(tag,cls,text="")=>({tag,value:"",textContent:text,hidden:true,disabled:true,children:[],style:{},open:false,
+    append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},reportValidity(){return this.valid!==false;},focus(){},
+    showModal(){this.open=true;},close(){this.open=false;this.onclose?.();},
+    addEventListener(event,handler){if(event==="close")this.onclose=handler;else this[event]=handler;}});
+  const ctx={currentUser:{id:"root",role:"platform_admin"},memberRequest:0,memberSnapshot:null,
+    $:id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);},el:node,
+    clearMemberInvitations(){},renderMemberInvitations(){},renderAdminLogs(){},showError(){},
+    api:(url,options)=>url==="/api/audit-log"?Promise.resolve([]):new Promise((resolve,reject)=>calls.push({url,options,resolve,reject}))};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf("function memberCurrent("),source.indexOf("function clearMemberInvitations("))+
+    source.slice(source.indexOf("let memberQuotaEdit="),source.indexOf('$("btnSaveInvitationPolicy").addEventListener'))+
+    source.slice(source.indexOf("async function loadMembers("),source.indexOf('$("memberOrg").addEventListener')),ctx);
+  const school={org_id:"school",org_type:"university",members:[],quota:{seats:5,used:2,remaining:3},
+    university_quota:{college:"school/college",teacher_quota:5,student_quota:1,teachers_used:1,students_used:1,teacher_remaining:4,student_remaining:0,allocated:1,unallocated:0,revision:7}};
+  const enterprise={org_id:"company",org_type:"enterprise",members:[],quota:{seats:5,used:2,remaining:3,revision:1}};
+  const respond=(result)=>{calls.shift().resolve(result);calls.shift().resolve({links:[]});};
+  const unlock=async(kind)=>{ctx.$(kind==="university"?"btnEditUniversityCapacity":"btnEditMemberQuota").click();await ctx.$("quotaConfirmAccept").click();};
+  const save=(kind)=>{ctx.$(kind==="university"?"btnSaveUniversityCapacity":"btnSaveMemberQuota").click();return ctx.$("quotaConfirmAccept").click();};
+  ctx.$("memberOrg").value="school";
+  let pending=ctx.loadMembers();respond(school);await pending;
+  assert.equal(ctx.$("universityCapacityPanel").hidden,false);
+  assert.equal(ctx.$("memberQuotaEditor").hidden,true);
+  assert.match(ctx.$("memberQuotaStatus").textContent,/教职工 1 \/ 5.*学生 1 \/ 1/);
+  assert.ok(!ctx.$("memberQuotaStatus").textContent.includes("2 / 5"));
+  assert.equal(ctx.$("universityTeacherQuota").disabled,true);
+  assert.equal(ctx.$("btnSaveUniversityCapacity").hidden,true);
+  ctx.$("btnEditUniversityCapacity").click();assert.equal(ctx.$("quotaConfirmDialog").open,true);
+  ctx.$("quotaConfirmCancel").click();assert.equal(ctx.$("universityTeacherQuota").disabled,true);assert.equal(calls.length,0);
+  await unlock("university");assert.equal(ctx.$("universityTeacherQuota").disabled,false);
+  ctx.$("universityTeacherQuota").value="6";ctx.$("universityStudentQuota").value="3";
+  ctx.$("btnSaveUniversityCapacity").click();assert.equal(calls.length,0);
+  assert.ok(ctx.$("quotaConfirmChanges").children.some(n=>n.textContent.includes("5 → 6")));
+  ctx.$("quotaConfirmCancel").click();assert.equal(calls.length,0);assert.equal(ctx.$("universityTeacherQuota").value,"6");
+  pending=save("university");
+  const write=calls.shift();assert.equal(write.url,"/api/universities/school%2Fcollege/capacity");
+  assert.deepEqual(JSON.parse(write.options.body),{teacher_quota:6,student_quota:3,revision:7});
+  write.resolve({});await new Promise(resolve=>setImmediate(resolve));
+  respond({...school,university_quota:{...school.university_quota,teacher_quota:6,student_quota:3,teacher_remaining:5,student_remaining:2,revision:8}});
+  await pending;assert.equal(ctx.$("universityCapacityStatus").textContent,"席位修改已保存。");
+  assert.equal(ctx.$("universityTeacherQuota").disabled,true);
+  assert.match(ctx.$("memberQuotaStatus").textContent,/教职工 1 \/ 6.*学生 1 \/ 3/);
+  const stale=ctx.loadMembers(),old=calls.splice(0);
+  assert.equal(ctx.$("universityCapacityPanel").hidden,true);
+  ctx.$("memberOrg").value="company";pending=ctx.loadMembers();respond(enterprise);await pending;
+  old[0].resolve(school);old[1].resolve({links:[]});await stale;
+  assert.equal(ctx.$("universityCapacityPanel").hidden,true);
+  assert.equal(ctx.$("memberQuotaEditor").hidden,false);
+  assert.equal(ctx.$("memberQuotaStatus").textContent,"席位 2 / 5，剩余 3。");
+  assert.equal(ctx.$("memberSeats").disabled,true);
+  await unlock("enterprise");ctx.$("memberSeats").value="9";
+  ctx.$("btnCancelMemberQuota").click();assert.equal(ctx.$("memberSeats").value,5);assert.equal(ctx.$("memberSeats").disabled,true);
+  await unlock("enterprise");ctx.$("memberSeats").value="9";ctx.$("memberSeats").valid=false;
+  ctx.$("btnSaveMemberQuota").click();assert.equal(ctx.$("quotaConfirmDialog").open,false);assert.equal(calls.length,0);
+  ctx.$("memberSeats").valid=true;pending=save("enterprise");
+  const enterpriseWrite=calls.shift();assert.equal(enterpriseWrite.url,"/api/members/company/quota");
+  assert.deepEqual(JSON.parse(enterpriseWrite.options.body),{seats:9,revision:1});
+  enterpriseWrite.reject(new Error("版本冲突，请刷新"));await pending;
+  assert.match(ctx.$("memberQuotaSaveStatus").textContent,/版本冲突/);assert.equal(ctx.$("memberSeats").value,"9");
+  ctx.$("btnCancelMemberQuota").click();
+  ctx.$("memberOrg").value="school";pending=ctx.loadMembers();respond({...school,university_quota:null});await pending;
+  assert.equal(ctx.$("universityCapacityPanel").hidden,true);assert.match(ctx.$("memberQuotaStatus").textContent,/尚未关联/);
+  pending=ctx.loadMembers();respond(school);await pending;
+  await unlock("university");ctx.$("universityTeacherQuota").value="7";
+  const saving=save("university"),lateWrite=calls.shift();
+  ctx.$("memberOrg").value="company";pending=ctx.loadMembers();respond(enterprise);await pending;
+  lateWrite.resolve({});await saving;assert.equal(calls.length,0);
+  assert.equal(ctx.$("universityCapacityStatus").textContent,"");
+  ctx.$("memberOrg").value="school";pending=ctx.loadMembers();respond(school);await pending;
+  ctx.$("btnEditUniversityCapacity").click();ctx.currentUser={id:"other",role:"platform_admin"};
+  await ctx.$("quotaConfirmAccept").click();assert.equal(calls.length,0);assert.equal(ctx.$("universityTeacherQuota").disabled,true);
+  ctx.currentUser={id:"owner",role:"org_admin"};ctx.renderMemberQuota(school);
+  assert.equal(ctx.$("universityCapacityPanel").hidden,true);
+  console.log("Member capacity: locked defaults, unlock/save confirmations, cancellations, failed saves, school/enterprise accounting and stale read/write/session guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
 
 // A late profile refresh must preserve open note drafts, scoped to the same point.
 {
