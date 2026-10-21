@@ -235,7 +235,7 @@ function renderKpRows() {
         return `<li>${link}（${validity !== "in_force" || extraction !== "verified" ? "待适用复核" : "来源已复核，适用范围另核"}）
           <div class="muted">地区：${esc(s.region_code || "未注明")} · 有效期：${esc(s.effective_from || "待核对")} 至 ${esc(s.effective_to || "终止日期未注明")}</div>
           ${s.content ? `<details><summary>查看条款原文${s.snapshot_status === "published" ? "（教学版本留存）" : ""}</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere;">${esc(s.content)}</div>
-            ${s.source_location ? `<div class="muted">原文位置：${esc(s.source_location)}</div>` : ""}</details>` : ""}</li>`;
+            ${s.source_location ? `<div class="muted">原文位置：${esc(formatPolicySourceLocation(s.source_location))}</div>` : ""}</details>` : ""}</li>`;
       }).join("");
       return `<div class="detail"><strong>${esc(r.rule_code)} · v${esc(r.rule_version)}</strong>
         <div class="muted">规则仿真参考；政策适用仍须复核。</div>
