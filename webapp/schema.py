@@ -200,6 +200,8 @@ def initialize(store) -> None:
         oauth.migrate(db)
         from webapp import channel_bindings
         channel_bindings.migrate(db)
+        from webapp import feishu_binding
+        feishu_binding.migrate(db)
         db.execute("""CREATE TABLE IF NOT EXISTS invite_codes (
                 token_hash TEXT PRIMARY KEY,
                 org_name TEXT NOT NULL,

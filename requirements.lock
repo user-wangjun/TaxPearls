@@ -6,6 +6,7 @@ argon2-cffi-bindings==26.1.0
 cffi==2.1.1
 charset-normalizer==3.5.1
 click==8.5.0
+colorama==0.4.6; sys_platform == "win32"
 cryptography==50.0.1
 et_xmlfile==2.0.0
 fastapi==0.141.1
@@ -22,6 +23,7 @@ olefile==0.47
 pdfminer.six==20260107
 pdfplumber==0.11.10
 pillow==12.3.0
+qrcode==8.2
 playwright==1.63.0
 pycparser==3.0
 pydantic==2.13.5
