@@ -2,6 +2,10 @@
 import gzip
 import hashlib
 import json
+import logging
+import sqlite3
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
 from src.policy_paths import database_directory, resolve_path, source_identity, check_text_location
@@ -9,6 +13,69 @@ from webapp import policy_graph as pg
 
 FORMAT = 'taxpearls-public-policy-v1'
 MAX_BYTES = 64 * 1024 * 1024
+
+
+def bootstrap(store, rules_dir, *, repository=None):
+    """Install bundled public knowledge before serving requests, once per content version.
+
+    School accounts are not needed. Existing teaching publications and source
+    reviews remain local; a changed bundle never publishes a new teaching version.
+    """
+    from src.rule_conversion import effective_rules
+    from webapp.knowledge_sync import teaching
+
+    repository = Path(repository or Path(__file__).resolve().parents[1])
+    package = repository / 'data/public-policy/snapshot.json.gz'
+    manifest = json.loads(package.with_name('manifest.json').read_text(encoding='utf-8'))
+    if digest(package.read_bytes()) != manifest['compressed_sha256']:
+        raise ValueError('公共图谱数据包哈希不一致，自动初始化已停止。')
+    package_hash = digest(pg.canonical(manifest).encode())
+    # Startup runs before workers and requests. The lock also protects repeated
+    # startup attempts in this process; SQLite rechecks the marker after BEGIN.
+    with store._lock:
+        rules = effective_rules(store, rules_dir)
+        rules_hash = digest(pg.canonical([asdict(r) for r in sorted(rules, key=lambda r: r.id)]).encode())
+
+        def installed(db):
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_knowledge_installation'").fetchone():
+                return False
+            return bool(db.execute('SELECT 1 FROM public_knowledge_installation WHERE package_hash=? AND rules_hash=?',
+                                   (package_hash, rules_hash)).fetchone())
+
+        with store.connect() as db:
+            if installed(db):
+                return {'status': 'current', 'content_sha256': manifest['content_sha256']}
+        payload = load_package(package, repository)
+        with store.connect() as db:
+            # Backup via a read connection before acquiring a write transaction.
+            backup = store.path.with_name(store.path.name + '.before-public-' +
+                                          datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ') + '.sqlite')
+            target = sqlite3.connect(backup)
+            try:
+                db.backup(target)
+                if target.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                    raise ValueError('公共图谱自动导入前备份完整性检查失败。')
+            finally:
+                target.close()
+            db.execute('BEGIN IMMEDIATE')
+            if installed(db):
+                return {'status': 'current', 'content_sha256': manifest['content_sha256']}
+            imported = import_package(db, payload, repository)
+            pg.sync_rules(db, rules)
+            education = teaching(db, rules)
+            db.execute('''CREATE TABLE IF NOT EXISTS public_knowledge_installation (
+                package_hash TEXT NOT NULL, rules_hash TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL, installed_at TEXT NOT NULL,
+                PRIMARY KEY(package_hash, rules_hash))''')
+            # This marker describes the current projection, not every historical
+            # installation; returning to an older ruleset must rebuild it too.
+            db.execute('DELETE FROM public_knowledge_installation')
+            db.execute('INSERT INTO public_knowledge_installation VALUES (?,?,?,?)',
+                       (package_hash, rules_hash, manifest['content_sha256'], datetime.now(timezone.utc).isoformat()))
+        logging.getLogger(__name__).info('公共政策图谱自动初始化完成：%s；教学知识点 %s',
+                                        manifest['content_sha256'], education['knowledge_points'])
+        return {'status': 'installed', 'content_sha256': manifest['content_sha256'],
+                'imported': imported, 'teaching': education, 'backup': str(backup)}
 
 
 def digest(data):
