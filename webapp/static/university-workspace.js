@@ -4,7 +4,7 @@
 window.universityWorkspace = (() => {
   const $ = id => document.getElementById(id);
   let identity = null, controller = null, selected = "home", loading = null;
-  const studentViews = [["home", "学习总览"], ["tasks", "课程任务"], ["practice", "练习与考证"], ["wrongs", "错题复习"], ["goals", "考证目标"], ["catalog", "学习资源"], ["knowledge", "政策与学习图谱"], ["profile", "学习档案"], ["settings", "账号设置"]];
+  const studentViews = [["home", "学习总览"], ["tasks", "课程任务"], ["practice", "练习与考证"], ["wrongs", "错题复习"], ["goals", "考证目标"], ["catalog", "找证书"], ["knowledge", "政策与学习图谱"], ["profile", "学习档案"], ["settings", "账号设置"]];
   const staffViews = [["home", "教学总览"], ["students", "师生与班级"], ["courses", "课程管理"], ["tasks", "课程与作业"], ["statistics", "学情统计"], ["knowledge", "政策与学习图谱"], ["content", "教学资源"], ["archives", "教学档案"], ["settings", "账号设置"]];
   const labels = {student:"学生", teacher:"教师", admin:"高校管理员 / 教师", school_admin:"校级管理员", unlinked:"待关联教学身份"};
   const viewsFor = (kind, role) => role === "unlinked" ? [["home", "教学工作台"]] : kind === "student" ? studentViews : staffViews.filter(([key]) => role !== "school_admin" || ["home", "students", "courses", "knowledge", "settings"].includes(key));
@@ -59,7 +59,7 @@ window.universityWorkspace = (() => {
     for(const [label,value,unit]of metrics){const card=element("div","kpi");card.append(element("div",null,label));const number=element("div","value",value);number.append(element("span","unit",unit));card.append(number);grid.append(card);}overview.append(grid);
     const actions=element("section","sheet university-home-shortcuts");actions.append(element("h2",null,identity.role==="student"?"继续学习":"继续教学"),element("p","muted",data.school+" · "+(identity.role==="student"?"查看课程任务，安排考证练习，积累学习记录。":"查看教学安排和课程进度，继续备课与复核。")));
     const row=element("div","university-home-actions");
-    for(const [view,label]of (identity.role==="student"?[["tasks","查看课程任务"],["practice","开始练习"],["knowledge","查阅政策与图谱"]]:[["students","管理师生与班级"],["tasks","备课与发布作业"],["statistics","查看学情"],["knowledge","查阅政策与图谱"]])){
+    for (const [view,label] of (identity.role==="student" ? [["catalog","找证书"],["tasks","查看课程任务"],["practice","开始练习"],["knowledge","查阅政策与图谱"]] : [["students","管理师生与班级"],["tasks","备课与发布作业"],["statistics","查看学情"],["knowledge","查阅政策与图谱"]])){
       if(!viewsFor(identity.universityKind,identity.role).some(v=>v[0]===view))continue;
       const button=element("button","btn re",label);button.onclick=()=>choose(view);row.append(button);
     }actions.append(row);overview.append(actions);
@@ -221,9 +221,10 @@ window.universityWorkspace = (() => {
       controller = (kind === "student" ? window.createTrainingStudent : window.createTrainingStaff)(scoped, {embedded:true});
       if (kind === "student") {
         $("workspace-change-password")?.addEventListener("click", () => scoped.getElementById("change-pass-btn").click());
-        for (const id of ["wb-body", "pf-list", "pr-wrong"]) scoped.getElementById(id)?.addEventListener("click", event => {
+        for (const id of ["wb-body", "pf-list", "pr-wrong", "goals"]) scoped.getElementById(id)?.addEventListener("click", event => {
           const action = event.target.closest("button[data-act]")?.dataset.act;
           if (action === "workspace-goals") choose("goals");
+          if (action === "workspace-catalog") choose("catalog");
           if (["wb-resume", "wb-practice", "history-redo", "history-new", "redo-new", "redo-same"].includes(action)) choose("practice");
         });
       }

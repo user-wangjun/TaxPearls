@@ -2738,6 +2738,352 @@ def student_knowledge_points(store, student_id: str, cert_id: str) -> list[dict[
 
 
 # ---------------------------------------------------------------------------
+# 证书检索与备考指引（学生端「找证书」）：搜索 → 详情（倒计时/重点知识点/实操）
+#
+# 口径说明（验收：不夸大、可解释）：
+# - 搜索命中原因逐条返回（名称/编码/科目/说明/知识点），多个检索词为"且"关系；
+# - "重点知识点"是确定性排序：常考标注 > 考纲能力要求（掌握/熟悉/了解）条目数
+#   > 已关联仿真规则数，不预测命题，也不承诺通过率；
+# - "实操工作"分两层：教研整理的章节实操清单（静态、标注来源）+ 由
+#   knowledge_point_link 关联出来的规则仿真案例（可点开直接练、可判分）。
+# ---------------------------------------------------------------------------
+
+FOCUS_LIMIT = 12
+RULE_LAB_LIMIT = 12
+REQUIREMENT_LABELS = (("master", "掌握"), ("familiar", "熟悉"), ("know", "了解"))
+CHAPTER_REQUIREMENT_RE = re.compile(r"掌握\s*(\d+)\s*项.*?熟悉\s*(\d+)\s*项.*?了解\s*(\d+)\s*项")
+SEARCH_FIELD_WEIGHT = {"name": 4, "code": 3, "subjects": 2, "knowledge_point": 2, "description": 1}
+
+
+def _requirement_counts(description: str | None) -> dict[str, int]:
+    """从知识点说明里数出考纲能力要求条目（形如「（掌握）」）；未标注时全为 0。"""
+    text = description or ""
+    return {key: text.count(f"（{label}）") for key, label in REQUIREMENT_LABELS}
+
+
+def _chapter_requirement(description: str | None) -> dict[str, int]:
+    """章节说明形如「官方能力要求——掌握 5 项、熟悉 2 项、了解 0 项」。"""
+    match = CHAPTER_REQUIREMENT_RE.search(description or "")
+    if not match:
+        return {"master": 0, "familiar": 0, "know": 0}
+    master, familiar, know = match.groups()
+    return {"master": int(master), "familiar": int(familiar), "know": int(know)}
+
+
+def _snippet(text: str, token: str, width: int = 24) -> str:
+    """命中词前后截一小段，用于说明"为什么搜到它"；不改写原文。"""
+    index = (text or "").lower().find((token or "").lower())
+    if index < 0:
+        return (text or "")[:width]
+    start = max(0, index - width // 2)
+    end = start + width
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+def search_certificates(store, student_id: str, query: str = "", *, limit: int = 20) -> dict[str, Any]:
+    """按证书名称/编码/科目/说明/知识点检索在架证书；空查询返回全部（充当目录）。
+
+    只返回 active 证书与 active 知识点；命中原因随结果返回，供界面写明"搜到它是因为…"。
+    """
+    tokens = [t for t in re.split(r"\s+", (query or "").strip().lower()) if t]
+    limit = max(1, min(int(limit or 20), 50))
+    with store.connect() as db:
+        certs = [dict(r) for r in db.execute(
+            "SELECT * FROM certificate WHERE active=1 ORDER BY created_at").fetchall()]
+        kp_index: dict[str, list[dict[str, Any]]] = {}
+        for r in db.execute("SELECT certificate_id, code, name FROM knowledge_point"
+                            " WHERE active=1 ORDER BY code"):
+            kp_index.setdefault(r["certificate_id"], []).append(dict(r))
+        stats: dict[str, dict[str, int]] = {}
+        for r in db.execute("SELECT certificate_id, count(*) n FROM knowledge_point"
+                            " WHERE active=1 GROUP BY certificate_id"):
+            stats.setdefault(r["certificate_id"], {})["knowledge_points"] = r["n"]
+        for r in db.execute(
+                "SELECT k.certificate_id, count(*) n FROM knowledge_point_mark m"
+                " JOIN knowledge_point k ON k.id=m.knowledge_point_id"
+                " WHERE m.mark_type='high_freq' AND k.active=1 GROUP BY k.certificate_id"):
+            stats.setdefault(r["certificate_id"], {})["high_freq"] = r["n"]
+        for r in db.execute(
+                "SELECT k.certificate_id, count(DISTINCT k.id) n FROM knowledge_point_link l"
+                " JOIN knowledge_point k ON k.id=l.knowledge_point_id"
+                " WHERE l.target_type='rule' AND l.active=1 AND k.active=1 GROUP BY k.certificate_id"):
+            stats.setdefault(r["certificate_id"], {})["practice_kps"] = r["n"]
+        dates: dict[str, list[dict[str, Any]]] = {}
+        for r in db.execute(
+                "SELECT certificate_id, id, round_label, date_type, exam_date FROM exam_date"
+                " WHERE date_type IN ('official','expected') ORDER BY exam_date"):
+            dates.setdefault(r["certificate_id"], []).append({
+                "id": r["id"], "round_label": r["round_label"], "date_type": r["date_type"],
+                "exam_date": r["exam_date"], "countdown": countdown(r["exam_date"])})
+        goals = {r["certificate_id"]: _goal_payload(db, r) for r in db.execute(
+            "SELECT * FROM student_goal WHERE student_id=? AND status='active'", (student_id,))}
+
+    results: list[dict[str, Any]] = []
+    for cert in certs:
+        subjects = json.loads(cert.get("subjects_json") or "[]")
+        fields = (("name", "证书名称", cert["name"]), ("code", "证书编码", cert["code"]),
+                  ("subjects", "科目", "、".join(subjects)),
+                  ("description", "说明", cert.get("description") or ""))
+        reasons: list[dict[str, str]] = []
+        matched = 0
+        for token in tokens:
+            hit = next(({"field": key, "label": label, "text": _snippet(text, token)}
+                        for key, label, text in fields if token in (text or "").lower()), None)
+            if hit is None:
+                hit = next(({"field": "knowledge_point", "label": "知识点",
+                             "text": f"{k['code']} {k['name']}"}
+                            for k in kp_index.get(cert["id"], [])
+                            if token in k["name"].lower() or token in k["code"].lower()), None)
+            if hit is None:
+                break  # 每个检索词都要有落点，才算匹配
+            matched += 1
+            if hit not in reasons:
+                reasons.append(hit)
+        if tokens and matched < len(tokens):
+            continue
+        upcoming = [d for d in dates.get(cert["id"], []) if not d["countdown"]["expired"]]
+        goal = goals.get(cert["id"])
+        results.append({
+            "id": cert["id"], "code": cert["code"], "name": cert["name"],
+            "description": cert.get("description") or "", "subjects": subjects,
+            "next_exam": upcoming[0] if upcoming else None,
+            "exam_dates": upcoming,
+            "counts": stats.get(cert["id"], {"knowledge_points": 0, "high_freq": 0, "practice_kps": 0}),
+            "my_goal": ({"countdown": goal["countdown"], "countdown_source": goal["countdown_source"],
+                         "planned_date": goal["planned_date"],
+                         "official_date": (goal["official_date"] or {}).get("exam_date")}
+                        if goal else None),
+            "match": reasons,
+            "score": max((SEARCH_FIELD_WEIGHT.get(r["field"], 1) for r in reasons), default=0),
+        })
+    results.sort(key=lambda x: (-x["score"],
+                                (x["next_exam"] or {}).get("exam_date", "9999-12-31"),
+                                x["name"]))
+    suggestions: list[str] = []
+    for cert in certs:
+        for subject in json.loads(cert["subjects_json"] or "[]"):
+            if subject not in suggestions:
+                suggestions.append(subject)
+    with store.connect() as db:
+        for r in db.execute(
+                "SELECT DISTINCT k.name FROM knowledge_point_mark m"
+                " JOIN knowledge_point k ON k.id=m.knowledge_point_id"
+                " WHERE m.mark_type='high_freq' AND k.active=1 ORDER BY k.code LIMIT 6"):
+            if r["name"] not in suggestions:
+                suggestions.append(r["name"])
+    return {"query": (query or "").strip(), "tokens": tokens, "total": len(results),
+            "results": results[:limit], "suggestions": suggestions[:8]}
+
+
+def certificate_guide(store, student_id: str, cert_id: str) -> dict[str, Any]:
+    """证书备考指引：倒计时、重点知识点（可解释排序）、实操工作（教研清单 + 规则案例）。"""
+    from webapp.training_practical import coverage as practical_coverage
+    from webapp.training_practical import items_for as practical_items_for
+
+    rule_by_id = {rule.id: rule for rule in _load_rules(store)}
+    with store.connect() as db:
+        cert_row = db.execute("SELECT * FROM certificate WHERE id=?", (cert_id,)).fetchone()
+        if not cert_row or not cert_row["active"]:
+            raise TrainingPortalError("证书不存在或已下架。", 404)
+        cert = dict(cert_row)
+        subjects = json.loads(cert["subjects_json"] or "[]")
+        rows = [dict(r) for r in db.execute(
+            "SELECT * FROM knowledge_point WHERE certificate_id=? AND active=1 ORDER BY code", (cert_id,))]
+        date_rows = [dict(r) | {"countdown": countdown(r["exam_date"])} for r in db.execute(
+            "SELECT id, round_label, date_type, exam_date FROM exam_date"
+            " WHERE certificate_id=? AND date_type IN ('official','expected') ORDER BY exam_date", (cert_id,))]
+        marks: dict[str, list[dict[str, Any]]] = {}
+        for m in db.execute(
+                "SELECT knowledge_point_id, level, basis_ref, basis_version FROM knowledge_point_mark"
+                " WHERE mark_type='high_freq' AND knowledge_point_id IN"
+                " (SELECT id FROM knowledge_point WHERE certificate_id=? AND active=1)", (cert_id,)):
+            marks.setdefault(m["knowledge_point_id"], []).append(dict(m))
+        links: dict[str, list[str]] = {}
+        for link in db.execute(
+                "SELECT knowledge_point_id, target_id FROM knowledge_point_link"
+                " WHERE target_type='rule' AND active=1 AND knowledge_point_id IN"
+                " (SELECT id FROM knowledge_point WHERE certificate_id=? AND active=1)", (cert_id,)):
+            links.setdefault(link["knowledge_point_id"], []).append(link["target_id"])
+        progress: dict[str, dict[str, int]] = {}
+        totals = {"attempts": 0, "perfect": 0}
+        for r in db.execute(
+                "SELECT id, knowledge_point_id, result_json FROM training_self_practice_attempts"
+                " WHERE student_id=? AND certificate_id=? AND status='scored'"
+                " AND knowledge_point_id IS NOT NULL", (student_id, cert_id)).fetchall():
+            entry = progress.setdefault(r["knowledge_point_id"], {"attempts": 0, "perfect": 0})
+            entry["attempts"] += 1
+            totals["attempts"] += 1
+            try:
+                if json.loads(r["result_json"] or "{}").get("perfect"):
+                    entry["perfect"] += 1
+                    totals["perfect"] += 1
+            except ValueError:
+                continue
+        goal_row = db.execute(
+            "SELECT * FROM student_goal WHERE student_id=? AND certificate_id=? AND status='active'",
+            (student_id, cert_id)).fetchone()
+        goal = _goal_payload(db, goal_row) if goal_row else None
+        version = resolve_active_version(db, cert_id)
+
+    # 章节树：一级为章，二级为实际学习单元；没有层级数据的证书把每个知识点当一章。
+    children: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if row["parent_id"]:
+            children.setdefault(row["parent_id"], []).append(row)
+    chapters = [row for row in rows if not row["parent_id"]]
+    if not chapters:
+        chapters = [row for row in rows if not children.get(row["id"])]
+
+    def unit_payload(chapter: dict[str, Any], unit: dict[str, Any]) -> dict[str, Any]:
+        hot = marks.get(unit["id"], [])
+        rule_ids = links.get(unit["id"], [])
+        stat = progress.get(unit["id"], {"attempts": 0, "perfect": 0})
+        required = _requirement_counts(unit.get("description"))
+        return {"id": unit["id"], "code": unit["code"], "name": unit["name"],
+                "chapter_code": chapter["code"], "chapter_name": chapter["name"],
+                "high_freq": hot, "rule_links": len(rule_ids), "rule_ids": rule_ids,
+                "required": required, "attempts": stat["attempts"], "perfect": stat["perfect"],
+                "score": (100 if hot else 0) + required["master"] * 10
+                         + required["familiar"] * 3 + min(len(rule_ids), 9)}
+
+    units: list[dict[str, Any]] = []
+    for chapter in chapters:
+        children_rows = children.get(chapter["id"]) or [chapter]
+        for unit in children_rows:
+            units.append(unit_payload(chapter, unit))
+
+    focus_sorted = sorted(units, key=lambda u: (-u["score"], u["code"]))
+    focus_items: list[dict[str, Any]] = []
+    for unit in focus_sorted[:FOCUS_LIMIT]:
+        reasons = []
+        if unit["high_freq"]:
+            basis = "、".join(sorted({m["basis_ref"] for m in unit["high_freq"] if m["basis_ref"]}))
+            reasons.append(f"大纲标注常考{f'（{basis}）' if basis else ''}")
+        if unit["required"]["master"]:
+            reasons.append(f"含 {unit['required']['master']} 项「掌握」要求")
+        if unit["rule_links"]:
+            reasons.append(f"已关联 {unit['rule_links']} 条仿真规则，可直接上手练")
+        if unit["attempts"]:
+            reasons.append(f"我已练 {unit['attempts']} 次，满分 {unit['perfect']} 次")
+        focus_items.append({
+            "kind": "knowledge_point", "id": unit["id"], "code": unit["code"], "name": unit["name"],
+            "chapter_code": unit["chapter_code"], "chapter_name": unit["chapter_name"],
+            "required": unit["required"], "high_freq": unit["high_freq"],
+            "rule_links": unit["rule_links"], "attempts": unit["attempts"], "perfect": unit["perfect"],
+            "reason": "；".join(reasons) if reasons else "该章基础知识点，按考纲要求通读并配套练习",
+        })
+
+    chapter_codes = [chapter["code"] for chapter in chapters]
+    kp_name_by_code = {unit["code"]: unit["name"] for unit in units}
+    practical = practical_items_for(chapter_codes)
+    for item in practical:
+        item["focus"] = [{"code": code, "name": kp_name_by_code.get(code, code)}
+                         for code in item["focus_codes"]]
+    rule_labs: list[dict[str, Any]] = []
+    seen_rules: set[str] = set()
+    for chapter in chapters:
+        for unit in (children.get(chapter["id"]) or [chapter]):
+            for rule_id in links.get(unit["id"], []):
+                rule = rule_by_id.get(rule_id)
+                if not rule or rule_id in seen_rules:
+                    continue
+                seen_rules.add(rule_id)
+                rule_labs.append({
+                    "rule_id": rule_id, "rule_code": rule.id, "title": rule.name,
+                    "tax_type": getattr(rule, "tax_type", ""), "severity": getattr(rule, "severity", ""),
+                    "threshold_basis": getattr(rule, "threshold_basis", ""),
+                    "inputs": dict(getattr(rule, "inputs", {}) or {}),
+                    "chapter_code": chapter["code"], "chapter_name": chapter["name"],
+                    "knowledge_point_id": unit["id"], "knowledge_point_code": unit["code"],
+                    "knowledge_point_name": unit["name"],
+                })
+                if len(rule_labs) >= RULE_LAB_LIMIT:
+                    break
+            if len(rule_labs) >= RULE_LAB_LIMIT:
+                break
+        if len(rule_labs) >= RULE_LAB_LIMIT:
+            break
+
+    subject_payload: list[dict[str, Any]] = []
+    ordered_subjects = list(subjects)
+    for row in rows:
+        name = (row["subject"] or "").strip()
+        if name and name not in ordered_subjects:
+            ordered_subjects.append(name)
+    if any(not (row["subject"] or "").strip() for row in rows):
+        ordered_subjects.append("")
+    for subject in ordered_subjects:
+        subject_chapters = [chapter for chapter in chapters if (chapter["subject"] or "").strip() == subject]
+        if not subject_chapters:
+            continue
+        chapter_items = []
+        for chapter in subject_chapters:
+            units_of_chapter = [unit for unit in units if unit["chapter_code"] == chapter["code"]]
+            chapter_items.append({
+                "code": chapter["code"], "name": chapter["name"],
+                "requirement": _chapter_requirement(chapter.get("description")),
+                "kp_count": len(units_of_chapter),
+                "high_freq_count": sum(1 for unit in units_of_chapter if unit["high_freq"]),
+                "practice_kp_count": sum(1 for unit in units_of_chapter if unit["rule_links"]),
+                "focus_count": sum(1 for item in focus_items if item["chapter_code"] == chapter["code"]),
+                "kps": [{"id": unit["id"], "code": unit["code"], "name": unit["name"],
+                         "high_freq": bool(unit["high_freq"]), "rule_links": unit["rule_links"],
+                         "required": unit["required"], "attempts": unit["attempts"],
+                         "perfect": unit["perfect"]} for unit in units_of_chapter],
+            })
+        subject_payload.append({"subject": subject or "未标注科目",
+                                "kp_count": sum(item["kp_count"] for item in chapter_items),
+                                "chapters": chapter_items})
+
+    upcoming = [row for row in date_rows if not row["countdown"]["expired"]]
+    if goal and goal.get("countdown") and not goal["countdown"]["expired"]:
+        target, target_source, scope = goal["countdown"], goal.get("countdown_source"), "goal"
+    elif upcoming:
+        target, target_source, scope = upcoming[0]["countdown"], upcoming[0]["date_type"], "certificate"
+    else:
+        target, target_source, scope = None, None, "none"
+
+    pacing: dict[str, Any] = {"days_left": None, "per_day": None}
+    if target is None:
+        pacing["note"] = "还没有未来的考试日期：先在证书详情里设定考试日（或让教师录入官方日期），才能换算每天学几个。"
+    elif not focus_items:
+        pacing["note"] = "该证书还没有配置知识点，等教师上架后可给出学习节奏。"
+    else:
+        days_left = target["days_left"]
+        per_day = -(-len(focus_items) // max(days_left, 1))
+        pacing.update({"days_left": days_left, "per_day": min(per_day, len(focus_items)),
+                       "note": (f"距考试 {days_left} 天，{len(focus_items)} 个重点知识点，"
+                                f"约每天 {per_day} 个可在考前至少过一遍；练不完就先保常考。"
+                                if days_left else
+                                f"考试就在今天，{len(focus_items)} 个重点知识点按状态量力过一遍。")})
+
+    total_kps = len(units)
+    covered = sum(1 for unit in units if unit["attempts"] > 0)
+    practical_cov = practical_coverage(chapter_codes)
+    return {
+        "certificate": {"id": cert["id"], "code": cert["code"], "name": cert["name"],
+                        "description": cert.get("description") or "",
+                        "subjects": subjects, "source_ref": cert.get("source_ref") or ""},
+        "content_version": ({"id": version["id"], "label": version["label"], "year": version["year"],
+                             "source_type": version["source_type"]} if version else None),
+        "exam": {"dates": upcoming, "next": upcoming[0] if upcoming else None,
+                 "countdown": target, "countdown_source": target_source, "countdown_scope": scope,
+                 "goal": goal},
+        "progress": {"kp_total": total_kps, "covered": covered,
+                     "attempts": totals["attempts"], "perfect": totals["perfect"]},
+        "pacing": pacing,
+        "focus": {"limit": FOCUS_LIMIT, "items": focus_items,
+                  "rule": "排序口径：常考标注 > 考纲「掌握」要求条目 > 已关联仿真规则数；仅作学习优先级，不预测命题。"},
+        "subjects": subject_payload,
+        "practical": {"version": practical_cov["version"],
+                      "source_note": practical_cov["source_note"],
+                      "chapters_with_items": practical_cov["chapters_with_items"],
+                      "chapters_total": practical_cov["chapters_total"],
+                      "items": practical, "rule_labs": rule_labs},
+    }
+
+
+# ---------------------------------------------------------------------------
 # 自主刷题闭环（FR-K06）：确定性出题 → 作答 → 判分 → 解析与错题
 # ---------------------------------------------------------------------------
 
@@ -3916,6 +4262,23 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def training_certificates(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         student(session)
         return response({"certificates": list_certificates(store_provider())})
+
+    # ---- 学生：找证书（搜索 + 备考指引）----
+
+    @app.get("/api/training/certificates/search")
+    @guarded
+    def training_certificate_search(q: str = "", limit: int = 20,
+                                    session: str | None = Cookie(default=None,
+                                                                 alias=cookie_name)) -> Response:
+        who = student(session)
+        return response(search_certificates(store_provider(), who["id"], q, limit=limit))
+
+    @app.get("/api/training/my/certificate-guide")
+    @guarded
+    def my_certificate_guide(certificate_id: str,
+                             session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response(certificate_guide(store_provider(), who["id"], certificate_id))
 
     @app.get("/api/training/my/goals")
     @guarded

@@ -645,6 +645,11 @@ def initialize(store) -> None:
         kp_columns = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_point)")}
         if "review_status" not in kp_columns:
             db.execute("ALTER TABLE knowledge_point ADD COLUMN review_status TEXT NOT NULL DEFAULT ''")
+        # 知识点-题目关联的停用标记（治理题源：停用不删行）。早期库建表时没有这一列，
+        # 缺列时学生端知识点清单的 active=1 过滤会直接报 no such column，故在此补齐。
+        link_columns = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_point_link)")}
+        if "active" not in link_columns:
+            db.execute("ALTER TABLE knowledge_point_link ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
         # 班级归属追溯（FR-U03：账号与班级归属可追溯）。整建制/单点改班各记一行，不改写历史。
         db.executescript("""
             CREATE TABLE IF NOT EXISTS roster_class_history (

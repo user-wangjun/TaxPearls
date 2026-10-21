@@ -73,10 +73,19 @@
       <div id="fb-mine" class="muted"></div>
     </div>
 
-    <div class="card" data-university-view="catalog goals">
-      <h2>证书目录</h2>
-      <p class="muted" style="margin-top:-6px;">选择要考的证书，设定考试日期后即可开始备考倒计时。</p>
-      <div id="certs"></div>
+    <div class="card" id="cert-card" data-university-view="catalog">
+      <h2>找证书 · 搜你要考的证</h2>
+      <p class="muted" style="margin-top:-6px;">输入证书名称、考试科目或知识点（例如「初级会计」「增值税」「固定资产」）。
+        点开证书就能看到：离考试还有多少天、重点该学哪些知识点、要动手做哪些实操工作。</p>
+      <div class="cert-search">
+        <input id="cert-q" type="search" placeholder="搜证书 / 科目 / 知识点" autocomplete="off"
+               aria-label="搜索证书、考试科目或知识点">
+        <button class="primary" id="cert-search-btn" type="button">搜索</button>
+      </div>
+      <div class="cert-suggest" id="cert-suggest"></div>
+      <div id="cert-results" aria-live="polite"></div>
+      <div id="cert-guide" hidden></div>
+      <div class="ok" id="cert-msg"></div>
     </div>
 
     <div class="card" id="profile-card" data-university-view="profile">
@@ -110,6 +119,6 @@
     <div class="error" id="pass-error"></div>
   </div>
 </div>
-<script src="/training-portal.js?v=20261020-platform-teaching-1"></script>
+<script src="/training-portal.js?v=20261021-cert-search-1"></script>
 </body>
 </html>
