@@ -17,7 +17,7 @@ window.universityWorkspace = (() => {
   }
   const element = (tag, cls, text) => { const node = document.createElement(tag); if(cls)node.className=cls; if(text !== undefined)node.textContent=String(text); return node; };
   const classroomViews = new Set(["students", "tasks", "statistics", "wrongs", "profile"]);
-  const nativeViews = new Set(["students", "courses", "content", "settings", "goals", "practice", "wrongs", "catalog", "profile"]);
+  const nativeViews = new Set(["students", "courses", "statistics", "content", "settings", "goals", "practice", "wrongs", "catalog", "profile"]);
   function usesNative(view=selected) { return nativeViews.has(view)||(view==="home"&&identity.universityKind==="student"); }
   function classroomCapable() { return !identity.legacy_teaching && ["admin", "teacher", "student"].includes(identity.role); }
   function setupPanels() {
