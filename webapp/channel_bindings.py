@@ -189,18 +189,29 @@ def confirm(store, session, flow_id, scope, *, notifications=False):
             raise AccessDenied(INVALID,409)
         if notifications and actor['role'] not in RECIPIENT_ROLES:
             raise AccessDenied('当前角色不支持审计风险通知。',403)
-        if db.execute('''SELECT 1 FROM channel_bindings WHERE (user_id=? AND channel=?)
-            OR (channel=? AND scope_key=? AND subject_key=?)''',
-            (actor['id'],scope.channel,scope.channel,scope_key,row['subject_key'])).fetchone():
-            raise AccessDenied('该渠道或外部身份已绑定，请取消后重新操作。',409)
-        binding_id = secrets.token_hex(16)
-        stamp = members.now()
-        db.execute('INSERT INTO channel_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-            (binding_id,actor['id'],actor['org_id'],actor['role'],scope.channel,scope_key,row['subject_key'],
-             row['recipient_key'],secrets.token_hex(16),int(notifications),stamp,stamp))
+        result = insert_verified(db, actor, scope, row['recipient_key'], notifications=notifications)
         db.execute("UPDATE channel_binding_flows SET status='completed',recipient_key=NULL WHERE id=?",(flow_id,))
-        members.log(db,actor,'channel_binding_confirm','channel_binding',binding_id,'channel='+scope.channel)
-        return {'id':binding_id,'channel':scope.channel,'notifications_enabled':notifications,'created_at':stamp}
+        return result
+
+
+def insert_verified(db, actor, scope, subject, *, notifications=False):
+    """Trusted adapters only, AFTER both identities consent; caller owns transaction."""
+    current_actor(db, actor)
+    _identifier(subject)
+    if type(notifications) is not bool or notifications and actor['role'] not in RECIPIENT_ROLES:
+        raise AccessDenied('当前角色不支持审计风险通知。',403)
+    scope_key = scope.key
+    subject_key = _digest(subject)
+    if db.execute('''SELECT 1 FROM channel_bindings WHERE (user_id=? AND channel=?)
+        OR (channel=? AND scope_key=? AND subject_key=?)''',
+        (actor['id'],scope.channel,scope.channel,scope_key,subject_key)).fetchone():
+        raise AccessDenied('该渠道或外部身份已绑定，请取消后重新操作。',409)
+    binding_id, stamp = secrets.token_hex(16), members.now()
+    db.execute('INSERT INTO channel_bindings VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        (binding_id,actor['id'],actor['org_id'],actor['role'],scope.channel,scope_key,subject_key,
+         subject,secrets.token_hex(16),int(notifications),stamp,stamp))
+    members.log(db,actor,'channel_binding_confirm','channel_binding',binding_id,'channel='+scope.channel)
+    return {'id':binding_id,'channel':scope.channel,'notifications_enabled':notifications,'created_at':stamp}
 
 
 def cancel(store, session, flow_id):
@@ -254,6 +265,8 @@ def unlink(store, session, binding_id):
         if not row:
             raise AccessDenied()
         db.execute('DELETE FROM channel_bindings WHERE id=?',(binding_id,))
+        if row['channel'] == 'feishu':
+            db.execute("UPDATE feishu_binding_requests SET state='cancelled' WHERE user_id=? AND state='web_confirmed'", (actor['id'],))
         db.execute("UPDATE channel_binding_flows SET status='cancelled',recipient_key=NULL WHERE user_id=? AND channel=?",
                    (actor['id'],row['channel']))
         _suppress(db,actor['id'],row['channel'])
