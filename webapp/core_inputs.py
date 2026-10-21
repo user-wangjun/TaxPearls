@@ -30,6 +30,8 @@ def migrate(db):
     db.execute("CREATE TABLE IF NOT EXISTS core_input_tasks (id TEXT PRIMARY KEY REFERENCES material_batches(id))")
     from webapp import core_reports
     core_reports.migrate(db)
+    from webapp import core_record_index
+    core_record_index.migrate(db)
 
 
 def latest(view, *, writable=False):
@@ -58,6 +60,12 @@ def delete_task(store, user, task_id, expected_revision):
                       "material_revisions", "material_events", "material_originals"):
             db.execute(f"DELETE FROM {table} WHERE batch_id=?", (task_id,))
         db.execute("DELETE FROM core_mapping_observations WHERE org_id=? AND task_id=?", (user["org_id"], task_id))
+        db.execute("DELETE FROM core_business_sources WHERE batch_id=?", (task_id,))
+        db.execute("DELETE FROM core_business_index_tasks WHERE batch_id=?", (task_id,))
+        db.execute("DELETE FROM core_business_versions WHERE NOT EXISTS (SELECT 1 FROM core_business_sources s "
+                   "WHERE s.version_key=core_business_versions.version_key)")
+        db.execute("DELETE FROM core_business_records WHERE NOT EXISTS (SELECT 1 FROM core_business_versions v "
+                   "WHERE v.record_key=core_business_records.record_key)")
         db.execute("DELETE FROM core_input_tasks WHERE id=?", (task_id,))
         db.execute("DELETE FROM material_batches WHERE id=?", (task_id,))
         members.log(db, user, "core_task_delete", "material_batch", task_id, "permanent")
@@ -169,6 +177,46 @@ def register(app, get_store, get_user, allow, static_dir):
 
     def read(user, task_id):
         return project(batches.read(get_store(), user, task_id))
+
+    @app.post("/api/enterprise/input-tasks/{task_id}/deduplication/resolve")
+    async def resolve_duplicate(task_id: str, request: Request,
+                                session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, store = actor(session), get_store()
+        value = await body(request)
+        if (set(value) != {"expected_revision", "source_record_id", "expected_versions", "confirm"}
+                or type(value.get("expected_revision")) is not int or value["expected_revision"] < 0
+                or not isinstance(value.get("source_record_id"), str)
+                or not isinstance(value.get("expected_versions"), list)
+                or not 1 <= len(value["expected_versions"]) <= 100
+                or any(not isinstance(v, str) or len(v) != 64 for v in value["expected_versions"])
+                or value.get("confirm") is not True):
+            raise HTTPException(422, "请核对冲突版本后明确确认，并提供当前任务版本。")
+        view = batches.read(store, user, task_id)
+        payload = deepcopy(latest(view, writable=True))
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            batch = batches._authorize(db, user, task_id)
+            if batch["revision"] != value["expected_revision"] or view["revision"] != batch["revision"]:
+                raise AccessDenied("任务版本已变化，请重新读取。", 409)
+            from webapp import core_record_index
+            core_record_index.choose(db, batch, user, payload, value["source_record_id"], value["expected_versions"])
+            batches._append(db, batch, user, "edit", payload)
+        return read(user, task_id)
+
+    @app.post("/api/enterprise/input-tasks/record-union")
+    async def record_union(request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, value = actor(session), await body(request)
+        if (set(value) != {"task_ids"} or not isinstance(value.get("task_ids"), list)
+                or not 1 <= len(value["task_ids"]) <= 100
+                or any(not isinstance(v, str) or not 0 < len(v) <= 100 for v in value["task_ids"])):
+            raise HTTPException(422, "请选择1至100个任务。")
+        with get_store().connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            from webapp import core_record_index
+            try:
+                return core_record_index.union(db, user, value["task_ids"])
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
 
     @app.get("/core-inputs.js")
     def script():

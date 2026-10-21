@@ -30,6 +30,12 @@ function all(root){return [root,...root.children.flatMap(all)];}
   const api=async(url,options)=>{calls.push({url,options});if(url.endsWith("/reports")){if(reportHold)return await reportHold;if(options?.method==="POST"){if(reportFailure)throw new Error("测试报告生成失败");const data=JSON.parse(options.body);assert.equal(data.expected_revision,sample.revision);const row={version:reports.length+1,input_revision:sample.revision,created_at:"2026-10-19T00:00:00+08:00",content_hash:"synthetic-report-hash"};reports=[row,...reports];return structuredClone(row);}if(reportListFailure)throw new Error("测试报告读取失败");return structuredClone(reports);}if(url==="/api/enterprise/input-tasks"&&!options&&holdHistory)return await holdHistory;if(delay)return await delay;
     if(url.endsWith("/complete")){if(completeFailure)throw new Error("测试归档版本冲突");const data=JSON.parse(options.body);assert.equal(data.expected_revision,sample.revision);assert.equal(data.report_version,reports[0].version);sample.completion={report_version:data.report_version,content_hash:reports[0].content_hash,completed_at:"2026-10-19T12:00:00+08:00"};sample.revision++;return structuredClone(sample);}
     if(url.endsWith("/reopen")){assert.equal(JSON.parse(options.body).expected_revision,sample.revision);delete sample.completion;sample.revision++;return structuredClone(sample);}
+    if(url.endsWith("/deduplication/resolve")){
+      const value=JSON.parse(options.body);assert.equal(value.expected_revision,sample.revision);assert.equal(value.confirm,true);
+      assert.equal(value.source_record_id,"dedup-row");assert.deepEqual(value.expected_versions,["a".repeat(64),"b".repeat(64)]);
+      sample.processing.deduplication.counts.conflict=0;sample.processing.deduplication.records[0].status="new";
+      sample.revision++;return structuredClone(sample);
+    }
     if(url.endsWith("/identity-validation")){if(identityFailure instanceof Error)throw identityFailure;return identityFailure||{valid:true,errors:{}};}
     if(url==="/api/knowledge/checks?enterprise=true")return checkRules;
     if(url==="/api/knowledge/retrieval/status")return {ai_configured:aiReady,acceptance:{passed:acceptance}};
@@ -102,6 +108,18 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.match($("coreDateRangeText").textContent,/2026-01-01.*2026-01-31/);
   const find=text=>all($("coreTaskResult")).find(n=>n.textContent===text);
   const field=label=>all($("coreTaskResult")).find(n=>n["aria-label"]===label);
+  const beforeDedup=structuredClone(sample.processing),beforeDedupRevision=sample.revision;
+  sample.processing.records=[{id:"dedup-row",material_type:"invoice_detail",source_file_id:"review-pdf",amount_excluding_tax:"120",tax_amount:"13",unit:"元"}];
+  sample.processing.deduplication={counts:{total:1,new:0,historical_duplicate:0,task_duplicate:0,conflict:1,unverified:0},records:[{
+    source_record_id:"dedup-row",file_id:"review-pdf",position:"第1页",status:"conflict",conflict_versions:["a".repeat(64),"b".repeat(64)],
+    historical_sources:[{task_id:"completed",completed:true,period:["2026-01-01","2026-01-31"],file_name:"历史.pdf",position:"第1页",values:{amount_excluding_tax:"100",tax_amount:"10",unit:"元"}}]}]};
+  await controller.openTask("task");assert.ok(find("自动去重核对"));assert.ok(all($("coreTaskResult")).some(n=>/历史已有 0 条.*版本冲突 1 条/.test(n.textContent||"")));
+  assert.ok(all($("coreTaskResult")).some(n=>/已完成任务.*历史.pdf.*税额：10/.test(n.textContent||"")));
+  const beforeChoice=calls.length;find("采用本条记录的版本").onclick();assert.equal(calls.length,beforeChoice,"opening a choice sends no request");
+  find("取消采用").onclick();assert.equal(calls.length,beforeChoice,"canceling sends no request");
+  find("采用本条记录的版本").onclick();await all($("coreTaskResult")).findLast(n=>n.textContent==="已核对原件，确认采用此版本").onclick();
+  assert.equal(calls.slice(beforeChoice).filter(call=>call.url.endsWith("/deduplication/resolve")).length,1);
+  sample.processing=beforeDedup;sample.revision=beforeDedupRevision;await controller.openTask("task");
   assert.equal(field("进项.pdf 允许未识别PDF页交给配置模型OCR（发送页图）"),undefined,"OCR fallback does not require a per-file checkbox");
   assert.equal(field("进项.pdf 已对照原页核实提取候选的字段、金额、购销方和所属期").checked,false);
   assert.equal(field("进项.pdf 确认发票方向"),undefined,"invoice direction is automatic, with no file-wide selector");
