@@ -2,6 +2,19 @@
 const fs = require("node:fs");
 const vm = require("node:vm");
 const assert = require("node:assert/strict");
+// Raw JSON coordinates are kept for evidence, while all teaching views show readable locations.
+{
+  const ctx={};vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync('webapp/static/policy-source.js','utf8'),ctx);
+  const format=ctx.formatPolicySourceLocation;
+  assert.equal(format(JSON.stringify({text_path:'增值税/source.txt',start_line:88,end_line:92})), 'source.txt · 第 88–92 行');
+  assert.equal(format(JSON.stringify({retained_text_path:'C:\\private\\source.txt',start_char:0,end_char_exclusive:8})), 'source.txt · 第 1–8 字符');
+  assert.equal(format(JSON.stringify({provenance_kind:'catalog_annotation',catalog_field:'policies[id=T]',raw_path:'catalog/政策.yaml'})), '政策.yaml · 政策目录说明 · T');
+  assert.equal(format('原件第2页'), '原件第2页');
+  assert.equal(format('{bad-json'), '{bad-json');
+  assert.equal(format('[]'), '原文位置待核对');
+  for(const file of ['index.html','training-portal.html','training-staff.html'])assert.ok(fs.readFileSync('webapp/static/'+file,'utf8').includes('/policy-source.js?'));
+}
 // Registration gives feedback before submission and rechecks both fields after edits.
 {
   const source = fs.readFileSync('webapp/static/console.js', 'utf8');

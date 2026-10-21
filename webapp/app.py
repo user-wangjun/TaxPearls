@@ -1115,6 +1115,11 @@ def graph_script():
     return FileResponse(STATIC_DIR / "graph.js", media_type="text/javascript")
 
 
+@app.get("/policy-source.js")
+def policy_source_script():
+    return FileResponse(STATIC_DIR / "policy-source.js", media_type="text/javascript")
+
+
 @app.post("/api/setup")
 def setup(body: SetupBody) -> dict[str, Any]:
     try:

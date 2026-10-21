@@ -12,6 +12,7 @@ import re
 import sqlite3
 
 from src import tax_conditions as conditions
+from src.policy_paths import database_directory, resolve_path, stored_path
 
 
 IDS = {"Policy": "policy_id", "Clause": "clause_id", "TaxRule": "rule_id", "Entity": "entity_id",
@@ -190,8 +191,8 @@ def _verified_source(db, clause_id):
             or not policy.get("raw_file_path")):
         raise ValueError("政策原件、效力、条款位置或提取复核尚未完成。")
     try:
-        raw = Path(policy["raw_file_path"]).read_bytes()
-    except OSError:
+        raw = resolve_path(policy["raw_file_path"], database_directory(db)).read_bytes()
+    except (OSError, ValueError):
         raise ValueError("政策原件不可读取。") from None
     if hashlib.sha256(raw).hexdigest() != policy["file_sha256"]:
         raise ValueError("政策原件哈希发生变化，请新增版本复核。")
@@ -300,8 +301,8 @@ def verify_source(db, policy_id, *, issuer, validity_status, effective_from, eff
     if any(c["policy_id"] != policy_id or not c.get("source_location") for c in clauses):
         raise ValueError("复核条款须属于本政策且有原文定位。")
     try:
-        actual_hash = hashlib.sha256(Path(policy["raw_file_path"]).read_bytes()).hexdigest()
-    except (OSError, TypeError):
+        actual_hash = hashlib.sha256(resolve_path(policy["raw_file_path"], database_directory(db)).read_bytes()).hexdigest()
+    except (OSError, TypeError, ValueError):
         raise ValueError("原件不可读取。") from None
     if actual_hash != policy.get("file_sha256"):
         raise ValueError("原件哈希不一致，须新增版本。")
@@ -320,6 +321,7 @@ def import_corpus(db, manifest_path, document_ids, originals_dir):
     """Import selected, already collected originals; collection is never legal approval."""
     manifest_path = Path(manifest_path).resolve()
     root, destination = manifest_path.parent, Path(originals_dir).resolve()
+    stored_path(db, destination)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     if not document_ids or len(set(document_ids)) != len(document_ids):
         raise ValueError("须明确选择不重复的政策文档 ID。")
@@ -353,7 +355,7 @@ def import_corpus(db, manifest_path, document_ids, originals_dir):
                 "policy_id": pid, "title": item["title"], "document_no": item.get("document_no"),
                 "issuer": item.get("issuer") or "发布机关待核实", "tax_type": item.get("classification", "待分类"),
                 "publish_date": item.get("publish_date"), "effective_from": item.get("version_effective_from"),
-                "source_url": item["source_url"], "raw_file_path": str(retained), "file_sha256": item["raw_sha256"],
+                "source_url": item["source_url"], "raw_file_path": stored_path(db, retained), "file_sha256": item["raw_sha256"],
                 "version": item["raw_sha256"], "validity_status": "unverified"})
             matches = list(re.finditer(r"(?m)^((?:第[一二三四五六七八九十百零〇两\d]+条)|(?:[一二三四五六七八九十百]+、))[\s　]*", text_bytes.decode("utf-8-sig")))
             text = text_bytes.decode("utf-8-sig")
