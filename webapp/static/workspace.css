@@ -1602,3 +1602,14 @@ html[data-theme] #appMain #inviteAdmin #inviteOrgTypeOptions button:focus-visibl
   #knowledgePanel #graphCanvas{flex:1;min-height:0;height:0!important}
   #knowledgePanel .graph-inspector{height:100%;box-sizing:border-box;overflow:hidden}
 }
+
+/* Public RAG shares the enlarged node conversation surface. */
+#knowledgePanel .graph-question-modes{display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);flex:none}
+#knowledgePanel .graph-question-modes[hidden]{display:none}
+#knowledgePanel .graph-question-modes button{flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-2);padding:8px;font-size:12px;cursor:pointer}
+#knowledgePanel .graph-question-modes button[aria-pressed=true]{background:var(--control-field-face,#eef4fd);color:var(--ink);font-weight:600}
+#knowledgePanel .ai-rag-source{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:12px;overflow-wrap:anywhere}
+#knowledgePanel .ai-rag-source summary{cursor:pointer;line-height:1.7;color:var(--ink-2)}
+#knowledgePanel .ai-rag-source a{color:var(--ink-2)}
+#knowledgePanel #graphMessages{min-height:120px}
+@media(max-width:520px){#knowledgePanel .graph-question-modes{padding:10px 12px}}

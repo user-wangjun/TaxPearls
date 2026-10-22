@@ -249,12 +249,14 @@ def validate(fields, allowed, *, final=False):
         raise ValueError('answer')
 
 
-async def answer_events(settings, payload, manifest, *, max_tokens):
+async def answer_events(settings, payload, manifest, *, max_tokens, prompt=PROMPT,
+                        validator=validate, refusal='当前问答围绕所选节点展开，请提问与该节点有关的内容。',
+                        context_message=None):
     allowed = {n['id']: n for n in payload['nodes']}
-    yield {'type': 'context', 'manifest': manifest, 'message': f"已读取 {len(allowed)} 个公共节点及相关原文。"}
+    yield {'type': 'context', 'manifest': manifest, 'message': context_message or f"已读取 {len(allowed)} 个公共节点及相关原文。"}
     raw, sent, gate = '', '', False
     try:
-        async with aclosing(chat_stream(settings, [{'role': 'system', 'content': PROMPT},
+        async with aclosing(chat_stream(settings, [{'role': 'system', 'content': prompt},
                                                    {'role': 'user', 'content': canonical(payload)}], max_tokens=max_tokens)) as source:
             async for delta in source:
                 raw += delta
@@ -263,7 +265,7 @@ async def answer_events(settings, payload, manifest, *, max_tokens):
                 fields = partial_fields(raw)
                 if not {'status', 'citations', 'summary'} <= fields.keys():
                     continue
-                validate(fields, allowed)
+                validator(fields, allowed)
                 if not gate:
                     gate = True
                     yield {'type': 'gate', 'status': fields['status']}
@@ -277,9 +279,9 @@ async def answer_events(settings, payload, manifest, *, max_tokens):
                         yield {'type': 'delta', 'text': answer[len(sent):]}
                         sent = answer
         final = json.loads(raw)
-        validate(final, allowed, final=True)
+        validator(final, allowed, final=True)
         if final['status'] == 'out_of_scope':
-            final['answer'] = '当前问答围绕所选节点展开，请提问与该节点有关的内容。'
+            final['answer'] = refusal
             final['summary'], final['citations'] = '', []
         # Only safe projected node data is returned; no raw database rows/paths.
         yield {'type': 'done', **final, 'citations': [allowed[c] for c in dict.fromkeys(final['citations'])],

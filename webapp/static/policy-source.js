@@ -8,7 +8,7 @@ function formatPolicySourceLocation(value) {
     catch { return source; }
   }
   if (!source || typeof source !== "object" || Array.isArray(source)) return "原文位置待核对";
-  const file = source.text_path || source.raw_path || source.retained_text_path || source.retained_raw_path;
+  const file = source.document_name || source.text_path || source.raw_path || source.retained_text_path || source.retained_raw_path;
   const parts = typeof file === "string" ? [file.replace(/\\/g, "/").split("/").pop()] : [];
   const kind = source.provenance_kind;
   if (kind === "catalog_annotation") parts.push("政策目录说明", source.catalog_field?.match(/\[id=([^\]]+)\]/)?.[1]);
