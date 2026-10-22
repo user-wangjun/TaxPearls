@@ -148,7 +148,7 @@ window.universityWorkspace = (() => {
     const group=selected==="wrongs"?"practice":selected;
     document.querySelectorAll("#universityContent [data-university-view]").forEach(card=>{
       const views=card.dataset.universityView.split(" ");
-      const visible=views.includes(group)||(group==="courses"&&views.includes("organization"))||(group==="content"&&views.includes("judge"));
+      const visible=views.includes(group)||(group==="courses"&&views.includes("organization"));
       card.classList.toggle("university-view-hidden",!visible);
     });
     document.querySelectorAll("#trainingPanel > [data-classroom-view]").forEach(card=>card.classList.toggle("university-view-hidden",!card.dataset.classroomView.split(" ").includes(selected)));

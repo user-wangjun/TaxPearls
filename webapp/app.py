@@ -65,21 +65,12 @@ async def lifespan(application):
         store = Store(keepalive=True)
     worker = NotificationWorker(lambda: store)
     worker.start()
-    judge_worker = None
-    from webapp import code_judge_queue
-    if code_judge_queue.queue_enabled():
-        # FR-J05 判题队列 worker：默认关（同步判题契约不变）；
-        # TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1 时随应用启动后台判题线程。
-        judge_worker = code_judge_queue.JudgeWorker(lambda: store)
-        judge_worker.start()
     try:
         application.state.material_worker.start()
         yield
     finally:
         application.state.material_worker.stop()
         worker.stop()
-        if judge_worker:
-            judge_worker.stop()
 
 
 app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)

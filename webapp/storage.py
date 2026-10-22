@@ -132,7 +132,7 @@ from src.snapshots import serialize_dataset, deserialize_dataset, serialize_find
 class _WriteGuard:
     """连接代理：把写事务纳入 Store 级写锁。
 
-    Store 的写方法外层已有 ``with self._lock``，但 material_jobs、code_judge_queue
+    Store 的写方法外层已有 ``with self._lock``，但 material_jobs
     等模块级函数直接 ``store.connect()`` 后写库，不经过那层锁；两个写事务并发时
     SQLite 会以 ``database is locked``（10s 超时）报错。这里按两种粒度取同一把
     可重入锁，让写事务串行、读仍可并发（全程持锁会让持连接的主线程等后台线程、
