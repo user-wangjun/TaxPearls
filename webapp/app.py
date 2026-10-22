@@ -26,7 +26,7 @@ from urllib.parse import quote, urlsplit
 
 from fastapi import BackgroundTasks, Cookie, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict, AwareDatetime, model_validator
 from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
@@ -99,6 +99,15 @@ async def sensitive_storage_failure(_request: Request, exc: SensitiveStorageErro
 
 @app.middleware("http")
 async def private_api_responses(request: Request, call_next):
+    if request.url.path in {'/api/knowledge/node-ask', '/api/knowledge/ask',
+                            '/api/training/knowledge/ask'} and request.method == 'POST':
+        parts, size = [], 0
+        async for part in request.stream():
+            size += len(part)
+            if size > 24576:
+                return JSONResponse(status_code=413, content={'detail': '问答输入过大，请缩短问题。'})
+            parts.append(part)
+        request._body = b''.join(parts)
     response = await call_next(request)
     if request.url.path.startswith('/api/'):
         response.headers['Cache-Control'] = 'private, no-store'
@@ -885,10 +894,133 @@ def status(request: Request) -> dict[str, Any]:
 
 
 class GraphQuestion(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     node_id: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=2000)
-    audit_id: str | None = None
+    audit_id: str | None = Field(default=None, min_length=1, max_length=200)
     taxpayer_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class NodeQuestion(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    node_id: str = Field(min_length=1, max_length=200)
+    question: str = Field(min_length=1, max_length=2000)
+    previous_questions: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode='after')
+    def valid_text(self):
+        for value in [self.node_id, self.question, *self.previous_questions]:
+            if any((ord(c) < 32 and c not in '\n\r\t') or 0xD800 <= ord(c) <= 0xDFFF for c in value):
+                raise ValueError('输入包含无效控制字符。')
+        return self
+
+
+node_question_limiter = RateLimiter({'actor': (12, 60)})
+_node_question_active = set()
+
+
+async def public_node_answer(body, session, *, stream=True, identity_reader=None):
+    """One shared harness for public and university node questions, including old JSON callers."""
+    import asyncio
+    from contextlib import aclosing
+    from webapp import node_qa
+    from src.settings import AISettings
+    reader = identity_reader or (lambda: _user(session))
+    user = await run_in_threadpool(reader)
+    # This application runs one process. No enterprise scope can enter this endpoint.
+    if user['id'] in _node_question_active or len(_node_question_active) >= 8:
+        raise HTTPException(429, '已有问答正在生成，请停止或等待完成后再试。')
+    if not node_question_limiter.allow(actor=user['id']):
+        raise HTTPException(429, '提问过于频繁，请稍后再试。')
+    _node_question_active.add(user['id'])
+    try:
+        def prepare():
+            from webapp.knowledge import public_graph
+            settings = ai_keys.apply(AISettings.from_env(), usage='knowledge')
+            if settings.problem():
+                raise HTTPException(503, 'AI 尚未连接，请检查模型配置。')
+            with store.connect() as db:
+                graph = public_graph(db, _effective_rules(), teaching=user.get('org_type') == 'university')
+                info = ai_keys.capability(db, settings)
+            limits = ai_probes.context_capability(info)
+            capacity = limits.get('context_window', 32768)
+            output = min(settings.max_tokens, limits.get('max_output_tokens', settings.max_tokens))
+            budget = min(48000, capacity * 3 // 5, capacity - output - 4096 - max(4096, capacity // 20))
+            if budget < 1024:
+                raise HTTPException(413, '模型可用上下文不足，请调整模型或输出额度。')
+            payload, manifest = node_qa.build_context(graph, body.node_id, body.question,
+                                                    body.previous_questions, budget=budget)
+            manifest['capacity_source'] = 'provider_models' if limits.get('context_window') else 'conservative_fallback'
+            manifest['output_reserve'] = output
+            return settings, payload, manifest, output
+        settings, payload, manifest, output = await run_in_threadpool(prepare)
+    except BaseException:
+        _node_question_active.discard(user['id'])
+        raise
+
+    async def events():
+        try:
+            # Re-check authentication after context assembly and before the paid request.
+            await run_in_threadpool(reader)
+            async with aclosing(node_qa.answer_events(settings, payload, manifest, max_tokens=output)) as source:
+                async for event in source:
+                    # Never release deltas after a session has been revoked.
+                    current = await run_in_threadpool(reader)
+                    if current['id'] != user['id']:
+                        raise HTTPException(401, '登录身份已变化。')
+                    yield event
+        except HTTPException:
+            yield {'type': 'error', 'message': '访问权限已变化，请重新登录后提问。', 'complete': False}
+        finally:
+            _node_question_active.discard(user['id'])
+
+    if not stream:
+        async with aclosing(events()) as source:
+            async for event in source:
+                if event['type'] == 'done':
+                    return event
+                if event['type'] == 'error':
+                    raise HTTPException(502, event['message'])
+        raise HTTPException(502, '回答未完成。')
+
+    async def encoded():
+        iterator = events()
+        pending = None
+        try:
+            # Heartbeats keep a quiet upstream cancellable and avoid buffering proxies.
+            while True:
+                if pending is None:
+                    pending = asyncio.create_task(anext(iterator))
+                ready, _ = await asyncio.wait({pending}, timeout=5)
+                if not ready:
+                    yield ': keepalive\n\n'
+                    continue
+                try:
+                    event = pending.result()
+                except StopAsyncIteration:
+                    break
+                pending = None
+                yield 'data: ' + json.dumps(event, ensure_ascii=False) + '\n\n'
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            await iterator.aclose()
+            _node_question_active.discard(user['id'])
+    return StreamingResponse(encoded(), media_type='text/event-stream',
+                             headers={'Cache-Control': 'private, no-store', 'X-Accel-Buffering': 'no'})
+
+
+@app.post('/api/knowledge/node-ask')
+async def knowledge_node_ask(body: NodeQuestion, request: Request,
+                             session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    def reader():
+        from webapp.university_members import session_identity
+        user = session_identity(store, request)
+        if not user:
+            raise HTTPException(401, '请先登录。')
+        return user
+    return await public_node_answer(body, session, identity_reader=reader)
 
 
 def _graph_for_user(user, audit_id, taxpayer_id=None):
@@ -1047,8 +1179,18 @@ def knowledge_graph(audit_id: str | None = None, taxpayer_id: str | None = None,
 
 
 @app.post("/api/knowledge/ask")
-def knowledge_ask(body: GraphQuestion,
+async def knowledge_ask(body: GraphQuestion,
                   session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    if body.audit_id is None and body.taxpayer_id is None:
+        try:
+            question = NodeQuestion(node_id=body.node_id, question=body.question)
+        except ValueError:
+            raise HTTPException(422, '问题包含无效字符。') from None
+        return await public_node_answer(question, session, stream=False)
+    return await run_in_threadpool(_enterprise_knowledge_ask, body, session)
+
+
+def _enterprise_knowledge_ask(body, session):
     user = _user(session)
     graph = _graph_for_user(user, body.audit_id, body.taxpayer_id)
     result = ask_graph(graph, body.node_id, body.question)

@@ -1564,3 +1564,41 @@ html[data-theme] #appMain #inviteAdmin #inviteOrgTypeOptions button:focus-visibl
 @media(max-width:1100px){#appMain #inviteAdmin .invite-issue-form,#appMain #inviteAdmin .invite-issue-form:has(#inviteStudentSeatsField:not([hidden])){grid-template-columns:1fr 1fr}}
 @media(max-width:600px){#appMain #inviteAdmin .invite-issue-form,#appMain #inviteAdmin .invite-issue-form:has(#inviteStudentSeatsField:not([hidden])){grid-template-columns:minmax(0,1fr)}}
 @media(prefers-reduced-motion:reduce){#appMain #inviteOrgTypeOptions::before{transition:none}}
+
+#graphStop{width:100%;margin-top:8px}.ai-reference-scope,.ai-reason-summary{margin:10px 0;border:1px solid #e0e7f0;border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto}.ai-reference-scope summary,.ai-reason-summary summary{cursor:pointer;color:#526884}.ai-answer[data-incomplete="true"]>.muted{color:#975b20}#graphMessages{overflow-wrap:anywhere}
+
+/* Give node conversations a full-height workspace with a pinned composer. */
+#knowledgePanel .graph-workspace{grid-template-columns:minmax(0,1.05fr) minmax(420px,1fr);align-items:stretch}
+#knowledgePanel .graph-inspector{display:flex;flex-direction:column;min-height:0;height:auto;max-height:none}
+#knowledgePanel .inspector-tabs{flex:none;padding:12px 16px;gap:8px}
+#knowledgePanel .inspector-tabs button{font-size:14px;padding:10px 12px}
+#knowledgePanel #graphAssistant:not([hidden]){display:flex;flex:1;min-height:0;max-height:none;overflow:hidden;flex-direction:column;padding:0}
+#knowledgePanel #knowledgeDetail{flex:1;min-height:0;max-height:none;overflow:auto;padding:20px}
+#knowledgePanel #graphAIContext{flex:none;margin:0;padding:12px 20px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;font-size:13px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-2)}
+#knowledgePanel #graphAIStatus:not([hidden]){flex:none;margin:12px 20px 0;padding:8px 10px}
+#knowledgePanel .ai-prompts{flex:none;padding:12px 20px 0;gap:8px}
+#knowledgePanel .ai-prompts button{font-size:12px;padding:7px 10px}
+#knowledgePanel #graphMessages{flex:1;min-height:240px;overflow:auto;padding:8px 20px 20px;scrollbar-width:thin}
+#knowledgePanel .ai-answer{margin-top:12px;padding-top:14px}
+#knowledgePanel .ai-answer:first-child{border-top:0;margin-top:0}
+#knowledgePanel .ai-question{font-size:14px;line-height:1.7}
+#knowledgePanel .ai-text{font-size:14px;line-height:1.9}
+#knowledgePanel #graphQuestionForm{flex:none;margin:0;padding:14px 20px 16px;border-top:1px solid var(--line)}
+#knowledgePanel #graphQuestion{display:block;box-sizing:border-box;min-height:78px;height:78px;max-height:150px;width:100%;margin:0;resize:vertical;font-size:14px;padding:12px}
+#knowledgePanel .graph-compose-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:10px}
+#knowledgePanel #graphSend,#knowledgePanel #graphStop{width:auto;min-width:90px;margin:0;padding:9px 18px;font-size:13px}
+#knowledgePanel .ai-reference-scope,#knowledgePanel .ai-reason-summary{border-color:var(--line)}
+#knowledgePanel .ai-reference-scope summary,#knowledgePanel .ai-reason-summary summary{color:var(--ink-2)}
+
+@media(max-width:1150px) and (min-width:951px){#knowledgePanel .graph-workspace{grid-template-columns:minmax(0,1fr) minmax(380px,1fr)}}
+@media(max-width:950px){#knowledgePanel .graph-workspace{grid-template-columns:1fr}#knowledgePanel .graph-inspector{height:640px;max-height:none}#knowledgePanel #graphMessages{min-height:180px}}
+@media(max-width:520px){#knowledgePanel .graph-inspector{height:620px}#knowledgePanel .inspector-tabs{padding:10px 12px}#knowledgePanel #graphAIContext{padding:12px 16px}#knowledgePanel .ai-prompts{padding:10px 16px 0}#knowledgePanel #graphMessages{padding:8px 16px 16px}#knowledgePanel #graphQuestionForm{padding:12px 16px 14px}#knowledgePanel #graphQuestion{font-size:16px}}
+
+@media(min-width:951px){
+  #knowledgePanel .graph-workspace{height:clamp(680px,78vh,860px);grid-template-rows:minmax(0,1fr)}
+  #knowledgePanel .graph-stage{display:flex;flex-direction:column;min-height:0}
+  #knowledgePanel .graph-stage-heading,#knowledgePanel .graph-toolbar,#knowledgePanel .graph-legend,#knowledgePanel .graph-hint{flex:none}
+  #knowledgePanel .graph-toolbar{align-self:flex-start}
+  #knowledgePanel #graphCanvas{flex:1;min-height:0;height:0!important}
+  #knowledgePanel .graph-inspector{height:100%;box-sizing:border-box;overflow:hidden}
+}

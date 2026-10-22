@@ -9,6 +9,7 @@ let graphScopes=new Map();
 for(const [kind,[label,color]]of Object.entries(graphKinds)){const item=el("span",null,label);item.style.setProperty("--node-color",color);$("graphLegend").append(item);}
 function graphCurrent(ticket,owner){return ticket===graphRequest&&currentUser?.id===owner&&$("knowledgePanel").classList.contains("active");}
 function clearGraph(message=""){
+  stopNodeQuestion();nodeQuestionHistory=[];nodeQuestionKey=null;
   graphSelected=null;graphData={nodes:[],edges:[]};graphVisible=new Set();graphAllowed=new Set();graphPositions=new Map();graphFocused=false;graphTransform={x:0,y:0,k:1};graphDrag=null;updateGraphRegions();
   for(const id of ["knowledgeDetail","graphMessages","graphSummary"])$(id).replaceChildren();
   graphCanvas.replaceChildren();graphCanvas.style.height="";graphCanvas.setAttribute("viewBox","0 0 960 680");
@@ -55,7 +56,7 @@ async function loadGraph({throwOnError=false}={}){
     graphData=data;graphPositions=new Map();graphFocused=false;graphTransform={x:0,y:0,k:1};
     if(data.boundary){$("graphCoverage").hidden=false;$("graphCoverage").textContent=data.boundary;}
     if(data.related_paths?.truncated){$("graphCoverage").hidden=false;$("graphCoverage").textContent=`关联方网络仅展示前 ${data.related_paths.shown} 条已复核关系候选路径，并非全部交易；G-001 的冻结结论仍基于全部路径，命中证据卡最多展示前 20 条。请结合原始台账核对其余路径。`;}
-    $("graphAIStatus").textContent=data.ai.configured?"已配置模型 · "+data.ai.model:"AI 尚未连接 · 填写项目模型配置后启用";
+    $("graphAIStatus").textContent=data.ai.configured?"":"AI 尚未连接，请先配置模型。";$("graphAIStatus").hidden=data.ai.configured;
     $("graphSend").disabled=!data.ai.configured||graphBusy;
     updateGraphRegions();filterGraph(true);focusGraph();if(data.empty)$("graphCount").textContent="该企业尚无审查记录，完成材料审查后可查看企业图谱。";
   }catch(e){if(graphCurrent(ticket,owner)){clearGraph(e.message);if(throwOnError)throw e;}}
@@ -171,7 +172,12 @@ function renderNode(){
   for(const url of n.references||[]){if(!/^https?:\/\//i.test(url))continue;const a=el("a","kv","官方来源 ↗");a.href=url;a.target="_blank";a.rel="noopener noreferrer";box.append(a,el("br"));}
   box.append(el("p","ev-title","相邻节点"));for(const e of graphData.edges.filter(e=>e.source===n.id||e.target===n.id)){const other=graphData.nodes.find(v=>v.id===(e.source===n.id?e.target:e.source));if(!graphAllowed.has(other.id))continue;box.append(action(e.label+" · "+other.label,()=>{graphVisible.add(other.id);if(!graphPositions.has(other.id))layoutGraph();selectGraphNode(other.id);}));}
 }
-function updateAIContext(){const n=graphData.nodes.find(n=>n.id===graphSelected);$("graphAIContext").textContent=n?"当前上下文："+n.label+(n.audit_period?" · "+n.audit_period:""):"请先在图谱中选择一个节点";}
+function updateAIContext(){
+  const n=graphData.nodes.find(n=>n.id===graphSelected),key=[graphRequest,currentUser?.id,graphSelected].join(":");
+  if(key!==nodeQuestionKey){stopNodeQuestion();nodeQuestionKey=key;nodeQuestionHistory=[];$("graphMessages").replaceChildren();}
+  $("graphAIContext").textContent=n?"围绕："+n.label+(n.audit_period?" · "+n.audit_period:""):"请先在图谱中选择一个节点";
+  $("graphSend").disabled=!n||!graphData.ai?.configured||graphBusy;
+}
 function focusGraph(){if(!graphSelected)return;graphFocused=true;graphVisible=neighbors(new Set([graphSelected]));limitGraphView();layoutGraph();graphTransform={x:0,y:0,k:1};drawGraph();}
 $("graphFocus").addEventListener("click",focusGraph);
 $("graphExpand").addEventListener("click",()=>{graphVisible=neighbors(graphVisible);layoutGraph();drawGraph();});
@@ -190,11 +196,76 @@ window.addEventListener("pointerup",()=>{graphDrag=null;});window.addEventListen
 function graphTab(ai){$("graphAssistant").hidden=!ai;$("knowledgeDetail").hidden=ai;$("nodeTab").classList.toggle("active",!ai);$("aiTab").classList.toggle("active",ai);}
 $("nodeTab").addEventListener("click",()=>graphTab(false));$("aiTab").addEventListener("click",()=>graphTab(true));
 document.querySelectorAll("[data-question]").forEach(b=>b.addEventListener("click",()=>{$("graphQuestion").value=b.dataset.question;$("graphQuestion").focus();}));
+let nodeQuestionController=null,nodeQuestionHistory=[],nodeQuestionKey=null;
+function stopNodeQuestion(){
+  if(nodeQuestionController){nodeQuestionController.abort();nodeQuestionController=null;graphBusy=false;}
+  $("graphStop").hidden=true;
+}
+$("graphStop").addEventListener("click",()=>{if(nodeQuestionController)nodeQuestionController.abort();});
+const nodeGateLabels={answerable:"正在生成 · 引用待核对",clarify:"需要澄清",out_of_scope:"超出当前节点范围",insufficient:"当前依据不足"};
+async function readNodeStream(response,onEvent){
+  if(!response.ok){let body;try{body=await response.json();}catch{}throw new Error(typeof body?.detail==="string"?body.detail:"提问失败，请检查输入后重试。");}
+  if(!response.body||!response.headers.get("content-type")?.includes("text/event-stream"))throw new Error("服务未返回问答流。");
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="",done=false;
+  try{
+    while(true){
+      const part=await reader.read();buffer+=decoder.decode(part.value||new Uint8Array(),{stream:!part.done});
+      let lineEnd;while((lineEnd=buffer.indexOf("\n"))>=0){
+        const line=buffer.slice(0,lineEnd).trimEnd();buffer=buffer.slice(lineEnd+1);
+        if(!line.startsWith("data:"))continue;
+        const event=JSON.parse(line.slice(5));onEvent(event);if(event.type==="done")done=true;
+        if(event.type==="error")throw new Error(event.message);
+      }
+      if(buffer.length>1048576)throw new Error("回答过大，已停止。");
+      if(part.done)break;
+    }
+    if(!done)throw new Error("连接中断，回答未完成，请重试。");
+  }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+}
 $("graphQuestionForm").addEventListener("submit",async e=>{
-  e.preventDefault();if(graphBusy)return;if(!graphSelected)return;const question=$("graphQuestion").value.trim();if(!question)return;
-  const node=graphSelected,audit=graphData.audit_id,taxpayer=graphData.taxpayer_id,version=graphRequest,owner=currentUser?.id,box=$("graphMessages"),turn=el("div","ai-answer");turn.append(el("p","ai-question",question),el("p","muted","正在检索关联证据并生成解释…"));box.append(turn);graphBusy=true;$("graphSend").disabled=true;
-  try{const result=await api(currentUser?.org_type==="university"?"/api/training/knowledge/ask":"/api/knowledge/ask",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(currentUser?.org_type==="university"?{node_id:node,question}:{node_id:node,audit_id:audit,taxpayer_id:taxpayer,question})});if(!graphCurrent(version,owner))return;turn.replaceChildren(el("p","ai-question",question),el("p","ai-text",result.answer),el("p","muted","证据引用 · 点击定位"));for(const cited of result.citations)turn.append(action(cited.label,()=>{graphSelected=cited.id;focusGraph();renderNode();}));if($("graphQuestion").value.trim()===question)$("graphQuestion").value="";
-  }catch(err){if(graphCurrent(version,owner))turn.replaceChildren(el("p","ai-question",question),el("p","ai-text",err.message));}finally{graphBusy=false;$("graphSend").disabled=!graphData.ai?.configured;}
+  e.preventDefault();if(graphBusy||!graphSelected)return;
+  const question=$("graphQuestion").value.trim();if(!question)return;
+  const node=graphSelected,audit=graphData.audit_id,taxpayer=graphData.taxpayer_id,version=graphRequest,owner=currentUser?.id;
+  const publicMode=!audit&&!taxpayer,controller=new AbortController(),key=nodeQuestionKey;
+  nodeQuestionController=controller;
+  const box=$("graphMessages"),turn=el("div","ai-answer"),state=el("p","muted","正在读取节点及关联依据…"),text=el("p","ai-text","");
+  turn.append(el("p","ai-question",question),state,text);box.append(turn);box.scrollTop=box.scrollHeight;
+  graphBusy=true;$("graphSend").disabled=true;$("graphStop").hidden=false;
+  const current=()=>graphCurrent(version,owner)&&nodeQuestionKey===key&&!controller.signal.aborted;
+  try{
+    if(publicMode){
+      const response=await fetch("/api/knowledge/node-ask",{method:"POST",credentials:"same-origin",signal:controller.signal,
+        headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:node,question,previous_questions:nodeQuestionHistory})});
+      await readNodeStream(response,event=>{
+        if(!current())return;
+        if(event.type==="context"){
+          state.textContent=event.message;
+          const details=el("details","ai-reference-scope");details.append(el("summary",null,"本次参考范围"));
+          for(const id of event.manifest.node_ids){const n=graphData.nodes.find(n=>n.id===id);details.append(el("p","muted",n?.label||id));}
+          if(event.manifest.capacity_source==="conservative_fallback")details.append(el("p","muted","模型未提供容量，使用保守容量限制。"));
+          turn.insertBefore(details,text);
+        }else if(event.type==="gate")state.textContent=nodeGateLabels[event.status]||"正在生成…";
+        else if(event.type==="summary"&&event.text){const details=el("details","ai-reason-summary");details.append(el("summary",null,"回答依据说明"),el("p","ai-text",event.text));turn.insertBefore(details,text);}
+        else if(event.type==="delta"){const nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<80;text.textContent+=event.text;if(nearBottom)box.scrollTop=box.scrollHeight;}
+        else if(event.type==="done"){
+          text.textContent=event.answer;state.textContent=event.status==="answerable"?"已完成 · 引用节点已核对，原文状态请见来源":nodeGateLabels[event.status];
+          if(event.citations.length)turn.append(el("p","muted","参考节点 · 点击查看"));
+          for(const cited of event.citations)turn.append(action(cited.label,()=>{selectGraphNode(cited.id);focusGraph();renderNode();}));
+          if(event.status==="answerable")nodeQuestionHistory=[...nodeQuestionHistory,question.slice(0,500)].slice(-3);
+        }
+      });
+    }else{
+      // Existing enterprise answers stay on their original, non-streaming endpoint.
+      const result=await api("/api/knowledge/ask",{method:"POST",signal:controller.signal,headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:node,audit_id:audit,taxpayer_id:taxpayer,question})});
+      if(!current())return;text.textContent=result.answer;state.textContent="已完成";
+      for(const cited of result.citations)turn.append(action(cited.label,()=>{selectGraphNode(cited.id);focusGraph();renderNode();}));
+    }
+    if(current()&&$("graphQuestion").value.trim()===question)$("graphQuestion").value="";
+  }catch(err){
+    if(graphCurrent(version,owner)&&nodeQuestionKey===key){state.textContent=controller.signal.aborted?"已停止 · 回答未完成":err.message;turn.dataset.incomplete="true";}
+  }finally{
+    if(nodeQuestionController===controller){nodeQuestionController=null;graphBusy=false;$("graphStop").hidden=true;$("graphSend").disabled=!graphSelected||!graphData.ai?.configured;}
+  }
 });
 
 let graphResizeTimer;window.addEventListener("resize",()=>{clearTimeout(graphResizeTimer);graphResizeTimer=setTimeout(()=>{if(graphData.nodes.length){layoutGraph();drawGraph();}},250);});
