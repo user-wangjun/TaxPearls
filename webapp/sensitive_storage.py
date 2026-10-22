@@ -36,6 +36,7 @@ REGISTRY = {
     'training_mistake_cases': (('id',), ('errors_json',)),
     'training_practice_attempts': (('id',), ('result_json',)),
     'training_self_practice_attempts': (('id',), ('result_json',)),
+    'teaching_case_delivery': (('task_id', 'student_id', 'step'), ('content',)),
 }
 PROTECTED_COLUMNS = frozenset(c for _, columns in REGISTRY.values() for c in columns)
 
