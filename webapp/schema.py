@@ -708,6 +708,9 @@ def initialize(store) -> None:
         # 必须放在上面这两张表建好之后，否则首次建库会漏掉这两张旁挂表。
         from webapp import teaching_case_tasks
         teaching_case_tasks.migrate(db)
+        # 四维量规（B4 后半）：外键指向 teaching_case_task，必须排在它建表之后
+        from webapp import teaching_rubric
+        teaching_rubric.migrate(db)
         # 考纲升版核对状态（第四条就绪：逐条核对升版在现行树上进行）。
         # ''=非核对树；pending=待核对 confirmed=沿用 updated=已按新纲修改
         # added=新版新增（激活时才对学生可见） removed=新版删除（激活时停用）。

@@ -1610,6 +1610,8 @@ from webapp import training_submissions as training_submission_routes
 training_submission_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
 from webapp import teaching_case_tasks as case_task_routes
 case_task_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import teaching_rubric as rubric_routes
+rubric_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
