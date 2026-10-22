@@ -129,15 +129,26 @@ def _progress(db, assignment_ids: list[str], student_id: str | None) -> dict[str
     return {"submitted": int(row["c"] or 0), "reviewed": int(row["r"] or 0)}
 
 
+def answers_open(release: str, released_at: str | None, due_at: str | None, submitted: bool) -> bool:
+    """答案与解析是否已对学生开放。任务卡与作业结果页共用这一份口径。
+
+    ``after_due`` 且任务没有截止时间时按「交后即可看」处理：沿用历史口径，
+    避免教师只建了作业、没设截止就把学生已交的成绩藏起来。
+    """
+    if release == "manual":
+        return bool(released_at)
+    if release == "after_submit":
+        return bool(submitted)
+    if not due_at:
+        return bool(submitted)
+    return now() >= due_at
+
+
 def _answers_visible(task: dict[str, Any], who: dict[str, Any]) -> bool:
     if who["role"] == "teacher":
         return True
-    if task["answer_release"] == "manual":
-        return bool(task["answer_released_at"])
-    if task["answer_release"] == "after_submit":
-        return bool(task["fully_submitted"])
-    # after_due：截止后才开放；已交但未到截止同样不给
-    return bool(task["due_at"] and now() >= task["due_at"])
+    return answers_open(task["answer_release"], task["answer_released_at"],
+                        task["due_at"], bool(task["fully_submitted"]))
 
 
 def _can_submit(task: dict[str, Any], remaining: int) -> bool:

@@ -130,8 +130,11 @@ def main() -> int:
           ",".join(sorted({item["my_status"] for item in mine})))
 
     # 订正闭环：重复提交拦截 → 待复核 → 复核 → 退回 → 再交 → 旧分留在版本里
-    first = call_expect(f"/api/assignments/{single['id']}/submit", {"selected_rule_ids": []})
-    check("学生首次提交成功", first == 200, f"status={first}")
+    first = call(f"/api/assignments/{single['id']}/submit", {"selected_rule_ids": []})
+    # 默认 after_due 且截止在 7 天后：回执只确认已提交，不带分数与解析
+    check("学生首次提交成功且回执按策略不给分", first.get("result_released") is False
+          and first.get("score") is None and not first.get("missed"),
+          f"released={first.get('result_released')} score={first.get('score')}")
     again = call_expect(f"/api/assignments/{single['id']}/submit", {"selected_rule_ids": []})
     check("重复提交被拦截", again == 409, f"status={again}")
     pending = call(f"/api/assignments/{single['id']}/progress")
@@ -160,6 +163,34 @@ def main() -> int:
     check("旧分数留在版本里", len(history) == 1 and history[0]["adjusted_score"] == 88.0
           and history[0]["feedback"] == "第一次口径写错",
           f"versions={len(history)} adjusted={history[0]['adjusted_score'] if history else None}")
+
+    # 结果页按策略下发：after_due 未到截止，作业详情只回执「已提交」
+    gated = call(f"/api/assignments/{single['id']}").get("submission") or {}
+    check("未开放时结果页只回执已提交", gated.get("result_released") is False
+          and gated.get("score") is None and gated.get("details") == {},
+          f"released={gated.get('result_released')} score={gated.get('score')}")
+    check("未开放时给出原因文案", "截止后开放" in (gated.get("result_note") or ""),
+          (gated.get("result_note") or "")[:24])
+    # 学习档案按版本展开：旧版本的复核分与评语跟着记录走
+    profile = call("/api/training/profile")
+    mine_record = next((r for r in profile["records"] if r["id"] == single["id"]), None)
+    versions_in_profile = (mine_record or {}).get("versions") or []
+    check("学习档案按版本展开", len(versions_in_profile) == 1
+          and versions_in_profile[0]["adjusted_score"] == 88.0
+          and versions_in_profile[0]["feedback"] == "第一次口径写错",
+          f"versions={len(versions_in_profile)}")
+
+    # 教师改成「交后即可看」，学生再打开作业页应能看到分数与解析
+    call("/api/logout", {})
+    call("/api/login", {"username": teacher["username"], "password": password})
+    call(f"/api/training/tasks/assignment/{single['id']}/settings",
+         {"answer_release": "after_submit"}, method="PUT")
+    call("/api/logout", {})
+    call("/api/login", {"username": student["username"], "password": password})
+    released = call(f"/api/assignments/{single['id']}").get("submission") or {}
+    check("改成交后即可看后结果页给分", released.get("result_released") is True
+          and released.get("score") is not None and bool(released.get("details")),
+          f"score={released.get('score')}")
 
     # 再退一次，留给浏览器验证「已退回 + 订正次数用尽」的页面态
     call("/api/logout", {})

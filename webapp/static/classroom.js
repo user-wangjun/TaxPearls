@@ -262,6 +262,17 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
       const card = el("div", "training-card"); card.append(el("h3", null, record.title));
       card.append(el("p", "muted", `${record.published ? "已发布" : "已撤回"} · 最新保存：${record.submitted_at ? dueText(record.submitted_at) : "时间不可用"}`));
       card.append(el("p", record.valid ? null : "training-stat-warning", record.valid ? `当前评分 ${scoreText(record.score)} · 自动评分 ${scoreText(record.automatic_score)} · 漏检 ${record.missed} · 误报 ${record.false_positive} · 材料不足仍标风险 ${record.unsupported}` : record.warning));
+      if (record.versions && record.versions.length) {
+        const history = el("details");
+        history.append(el("summary", null, `提交版本（${record.versions.length} 次）`));
+        history.append(el("p", "muted", "历次提交与当时的复核分、教师评语按原样保留；当前成绩以最新一次为准。"));
+        history.append(statisticsTable("历次提交", ["版本", "类型", "提交时间", "自动评分", "复核分", "教师评语"],
+          record.versions.map(v => [`第 ${v.version} 次`, v.kind === "correct" ? "订正" : "原始提交",
+            v.submitted_at ? dueText(v.submitted_at) : "时间不可用", scoreText(v.score),
+            v.adjusted_score === null || v.adjusted_score === undefined ? "未复核" : scoreText(v.adjusted_score),
+            v.feedback || ""])));
+        card.append(history);
+      }
       if (record.valid) { const view = el("button", null, "查看这份作业"); view.type = "button"; view.onclick = () => openExercise(record.id); card.append(view); }
       records.append(card);
     }

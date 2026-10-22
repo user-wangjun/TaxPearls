@@ -100,19 +100,45 @@ def migrate(db) -> None:
 
 # --------------------------------------------------------------------------- 读取
 
-def settings_for(db, assignment_id: str) -> dict[str, int]:
-    """任务级限制：题目归属试卷时以试卷为准，否则取作业自身。"""
+def task_row(db, assignment_id: str) -> tuple[dict[str, Any], str | None]:
+    """取这道作业所属任务的策略行与截止时间。
+
+    ``training_assignment_settings`` 只登记有班级或归属试卷的作业；单独点发给某个
+    学生的作业没有这一行。此时退回作业自身的策略行与 ``assignments.deadline_at``，
+    否则教师给这类作业配的策略会形同虚设。
+    """
     row = db.execute(
-        """SELECT s.paper_id,t.submit_limit,t.correction_limit,t.retake_policy FROM training_assignment_settings s
+        """SELECT t.submit_limit,t.correction_limit,t.retake_policy,t.answer_release,
+                  t.answer_released_at,s.deadline_at,s.paper_id,p.deadline_at AS paper_deadline
+           FROM training_assignment_settings s
+           LEFT JOIN training_papers p ON p.id=s.paper_id
            LEFT JOIN training_task_settings t
              ON t.subject_kind=CASE WHEN s.paper_id IS NULL THEN 'assignment' ELSE 'paper' END
             AND t.subject_id=COALESCE(s.paper_id,s.assignment_id)
            WHERE s.assignment_id=?""",
         (assignment_id,),
     ).fetchone()
-    limit = int(row["submit_limit"] or 1) if row else 1
-    correction = int(row["correction_limit"] if row and row["correction_limit"] is not None else 1)
-    policy = (row["retake_policy"] if row and row["retake_policy"] else "teacher_return")
+    if row:
+        return dict(row), (row["deadline_at"] or row["paper_deadline"])
+    base = {"submit_limit": None, "correction_limit": None, "retake_policy": None,
+            "answer_release": None, "answer_released_at": None}
+    own = db.execute(
+        "SELECT * FROM training_task_settings WHERE subject_kind='assignment' AND subject_id=?",
+        (assignment_id,),
+    ).fetchone()
+    if own:
+        base.update({k: own[k] for k in base if k in own.keys()})
+    # 截止时间只存在于 training_assignment_settings / training_papers，
+    # 没有登记行的作业本身就没有截止，after_due 对它等同于「交后即可看」。
+    return base, None
+
+
+def settings_for(db, assignment_id: str) -> dict[str, int]:
+    """任务级限制：题目归属试卷时以试卷为准，否则取作业自身。"""
+    row, _ = task_row(db, assignment_id)
+    limit = int(row["submit_limit"] or 1)
+    correction = int(row["correction_limit"] if row["correction_limit"] is not None else 1)
+    policy = row["retake_policy"] or "teacher_return"
     return {"submit_limit": max(limit, 1), "correction_limit": max(correction, 0),
             "retake_policy": policy if policy in {"free", "teacher_return"} else "teacher_return"}
 
@@ -326,6 +352,71 @@ def return_for_revision(store, db, assignment_id: str, student_id: str, teacher:
                                        assignment_id, student_id),
               returned_by=teacher["id"], returned_at=now(), correct_due_at=correct_due_at)
     return progress(db, assignment_id, student_id, store)
+
+
+# --------------------------------------------------------------------------- 结果开放
+
+NOTES = {"unsubmitted": "尚未提交，暂不提供结果。",
+         "manual": "教师尚未开放答案与解析。",
+         "after_due": "答案与解析在截止后开放；如需提前查看，请联系任课教师调整任务设置。"}
+
+
+def answer_policy(db, assignment_id: str) -> dict[str, Any]:
+    """答案开放策略取任务级设置；组卷题目按所属试卷的截止时间算。"""
+    from webapp import training_tasks
+    row, due = task_row(db, assignment_id)
+    release = row["answer_release"] or "after_due"
+    return {"release": release if release in training_tasks.ANSWER_RELEASE else "after_due",
+            "released_at": row["answer_released_at"], "due": due}
+
+
+def result_visible(db, assignment_id: str, student_id: str) -> tuple[bool, str]:
+    """学生能不能看这份作业的分数与逐项解析。未提交一律不给。
+
+    判定口径与任务卡 ``answers_visible`` 共用 ``training_tasks.answers_open``，
+    避免任务卡写「尚未开放」而作业页却把分数发下去。
+    """
+    from webapp import training_tasks
+    submitted = bool(db.execute(
+        "SELECT 1 FROM submissions WHERE assignment_id=? AND student_id=?", (assignment_id, student_id)
+    ).fetchone())
+    if not submitted:
+        return False, NOTES["unsubmitted"]
+    policy = answer_policy(db, assignment_id)
+    if training_tasks.answers_open(policy["release"], policy["released_at"], policy["due"], True):
+        return True, ""
+    note = NOTES["manual"] if policy["release"] == "manual" else NOTES["after_due"]
+    return False, note
+
+
+def result_gate(store, assignment_id: str, student_id: str) -> tuple[bool, str]:
+    """提交回执用：这次提交的分数与解析能不能当场发回给学生。"""
+    with store.connect() as db:
+        db.execute("BEGIN")
+        return result_visible(db, assignment_id, student_id)
+
+
+def result_for_student(store, assignment_id: str, student_id: str) -> dict[str, Any] | None:
+    """下发给学生的提交结果：策略未开放时只回执「已提交」，不给分数与解析。"""
+    with store.connect() as db:
+        db.execute("BEGIN")
+        visible, note = result_visible(db, assignment_id, student_id)
+        row = db.execute(
+            "SELECT * FROM submissions WHERE assignment_id=? AND student_id=?", (assignment_id, student_id)
+        ).fetchone()
+    if not row:
+        return None
+    item = dict(row)
+    item["answers"] = json.loads(item.pop("answers_json"))
+    details = json.loads(item.pop("details_json"))
+    item["details"] = details if visible else {}
+    if not visible:
+        item["score"] = None
+        item["adjusted_score"] = None
+        item["feedback"] = None
+    item["result_released"] = visible
+    item["result_note"] = note
+    return item
 
 
 # --------------------------------------------------------------------------- 接口

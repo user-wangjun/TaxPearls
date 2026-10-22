@@ -1680,8 +1680,13 @@ async function openExercise(id) {
     $("btnSubmitExercise").style.display=currentUser.role === "student" ? "inline-block" : "none";
     updateExerciseDeadline(a);
     $("scoreResult").textContent="";
-    if (a.submission) showScore(a.submission.details);
-    if(a.submission?.adjusted_score!==null&&a.submission?.adjusted_score!==undefined)$("scoreResult").append(el("p","muted","教师复核："+a.submission.adjusted_score+" 分 · "+(a.submission.feedback||"")));
+    if(a.submission){
+      if(a.submission.result_released===false) showResultNote(a.submission.result_note);
+      else{
+        showScore(a.submission.details);
+        if(a.submission.adjusted_score!==null&&a.submission.adjusted_score!==undefined)$("scoreResult").append(el("p","muted","教师复核："+a.submission.adjusted_score+" 分 · "+(a.submission.feedback||"")));
+      }
+    }
     $("exerciseBox").scrollIntoView({block:"start"});
     window.dispatchEvent(new CustomEvent("tp:exercise-open",{detail:{assignment:id}}));
   } catch (err) { if(request===exerciseOpenRequest&&loadVersion===trainingLoadRequest)showError(err.message); }
@@ -1690,9 +1695,15 @@ async function openExercise(id) {
 $("btnSubmitExercise").addEventListener("click", async () => {
   const assignment=openAssignmentId,button=$("btnSubmitExercise");if(!assignment||button.disabled)return;button.disabled=true;
   const ids=Array.from($("exerciseRules").querySelectorAll("input:checked")).map((n)=>n.value);
-  try { const result=await api("/api/assignments/"+assignment+"/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({selected_rule_ids:ids})});if(openAssignmentId===assignment)showScore(result);await loadAssignments(); }
+  try { const result=await api("/api/assignments/"+assignment+"/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({selected_rule_ids:ids})});if(openAssignmentId===assignment){if(result.result_released===false)showResultNote(result.result_note);else showScore(result);}await loadAssignments(); }
   catch(err){if(openAssignmentId===assignment){showError(err.message);if(err.status===404||err.status===409)await loadAssignments();else button.disabled=false;}}
 });
+
+function showResultNote(note){
+  const box=$("scoreResult"); box.textContent="";
+  box.appendChild(el("div","score","已提交"));
+  box.appendChild(el("p","muted",note||"成绩与解析暂未开放。"));
+}
 
 function showScore(result) {
   const box=$("scoreResult"); box.textContent=""; box.appendChild(el("div","score",result.score+" 分"));

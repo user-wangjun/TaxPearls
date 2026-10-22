@@ -58,6 +58,20 @@ class ClassroomTests(unittest.TestCase):
                            (kind, subject, self.teacher['org_id']))
         return aid
 
+    def open_answers_after_submit(self, kind, subject_id):
+        """本套件断言的是提交回执里的机器分，显式选「交后即可看」。
+
+        2026-10-22 起默认 after_due（截止后才开放答案与解析），而这里的作业截止
+        在 2032 年；不显式放开，提交回执里的分数会被策略挡掉。
+        """
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO training_task_settings
+                            (subject_kind,subject_id,org_id,answer_release,updated_at)
+                          VALUES (?,?,?,'after_submit','2026-01-01T00:00:00+00:00')
+                          ON CONFLICT(subject_kind,subject_id)
+                          DO UPDATE SET answer_release='after_submit'""",
+                       (kind, subject_id, self.teacher['org_id']))
+
     def tearDown(self):
         self.client.__exit__(None,None,None);module.store=self.old;self.tmp.cleanup();self.env.stop()
 
@@ -182,7 +196,9 @@ class ClassroomTests(unittest.TestCase):
         self.assertEqual([self.store.get_audit(c['audit_id']) for c in self.cases],snapshots)
 
     def test_weighted_paper_progress_scores_and_reviewed_scores(self):
-        pid=self.paper(True);items=self.paper_cases(pid);self.login(self.student)
+        pid=self.paper(True);items=self.paper_cases(pid)
+        self.open_answers_after_submit('paper',pid)
+        self.login(self.student)
         self.assertIsNone(self.client.get('/api/papers/'+pid).json()['progress']['score'])
         first=self.submit(items[0]['id'],self.cases[0]['metadata']['standard_answer'])
         self.assertEqual(first.json()['score'],100)

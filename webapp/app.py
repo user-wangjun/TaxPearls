@@ -1980,7 +1980,9 @@ def assignment_detail(assignment_id: str,
         # Answer options must not inherit the audit's hit-first ordering.
         "rules": [{"id": f.rule.id, "name": f.rule.name, "category": f.rule.category}
                   for f in sorted(entry["findings"], key=lambda finding: finding.rule.id)],
-        "submission": store.get_submission(assignment_id, user["id"]) if user["role"] == "student" else None,
+        # 学生端结果按任务策略下发：未开放时只回执已提交，不给分数与逐项解析
+        "submission": (training_submission_routes.result_for_student(store, assignment_id, user["id"])
+                       if user["role"] == "student" else None),
     }
 
 
@@ -2008,7 +2010,13 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
         store.save_submission(assignment_id, user["id"], body.selected_rule_ids, result["score"], result,user=user)
     except classroom.ClassroomError as exc:
         raise HTTPException(exc.status,str(exc)) from None
-    return result
+    # 答案与解析按任务策略下发：after_due / manual 未到时点，回执里只确认已提交
+    visible, note = training_submission_routes.result_gate(store, assignment_id, user["id"])
+    if visible:
+        return {**result, "result_released": True, "result_note": ""}
+    return {"result_released": False, "result_note": note, "score": None,
+            "correct": [], "missed": [], "false_positives": [],
+            "false_positive_deduction": result.get("false_positive_deduction")}
 
 
 @app.post("/api/assignments/{assignment_id}/feedback")
