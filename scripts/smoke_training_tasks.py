@@ -102,6 +102,8 @@ def main() -> int:
     paper = call("/api/papers", {"title": "冒烟综合卷", "class_id": cls["id"], "deadline_at": due,
                                  "published": True,
                                  "items": [{"audit_id": case["audit_id"], "points": 100}]})
+    draft_task = call("/api/assignments", {"title": "冒烟草稿作业", "audit_id": case["audit_id"],
+                                           "published": True, "class_id": cls["id"], "deadline_at": due})
     check("教师创建单案例作业与试卷", bool(single.get("id") and paper.get("id")),
           json.dumps({"assignment": single.get("id"), "paper": paper.get("id")}, ensure_ascii=False))
     for kind, subject in (("assignment", single["id"]), ("paper", paper["id"])):
@@ -110,7 +112,8 @@ def main() -> int:
               f"state={task.get('state')} expected={task.get('expected')}")
     listed = call("/api/training/tasks")["items"]
     check("教师清单含两类任务且不重复列题", {(i["kind"], i["id"]) for i in listed} ==
-          {("assignment", single["id"]), ("paper", paper["id"])}, f"{len(listed)} 项")
+          {("assignment", single["id"]), ("paper", paper["id"]), ("assignment", draft_task["id"])},
+          f"{len(listed)} 项")
     preview = call(f"/api/training/tasks/assignment/{single['id']}/preview")
     check("预览返回学生视角与题目顺序", preview["task"]["preview"] and len(preview["task"]["questions"]) == 1,
           preview["note"][:24])
@@ -118,10 +121,13 @@ def main() -> int:
     call("/api/logout", {})
     call("/api/login", {"username": student["username"], "password": password})
     mine = call("/api/training/tasks")["items"]
-    check("学生看到在班任务", {i["id"] for i in mine} == {single["id"], paper["id"]}, f"{len(mine)} 项")
+    check("学生看到在班任务", {i["id"] for i in mine} == {single["id"], paper["id"], draft_task["id"]},
+          f"{len(mine)} 项")
     detail = call(f"/api/training/tasks/assignment/{single['id']}")
     check("学生详情默认答案不开放", detail["answers_visible"] is False and detail["can_submit"] is True,
           f"release={detail['answer_release']}")
+    check("学生任务卡带本人进度", all("my_status" in item for item in mine),
+          ",".join(sorted({item["my_status"] for item in mine})))
 
     # 订正闭环：重复提交拦截 → 待复核 → 复核 → 退回 → 再交 → 旧分留在版本里
     first = call_expect(f"/api/assignments/{single['id']}/submit", {"selected_rule_ids": []})
@@ -154,6 +160,16 @@ def main() -> int:
     check("旧分数留在版本里", len(history) == 1 and history[0]["adjusted_score"] == 88.0
           and history[0]["feedback"] == "第一次口径写错",
           f"versions={len(history)} adjusted={history[0]['adjusted_score'] if history else None}")
+
+    # 再退一次，留给浏览器验证「已退回 + 订正次数用尽」的页面态
+    call("/api/logout", {})
+    call("/api/login", {"username": teacher["username"], "password": password})
+    call(f"/api/assignments/{single['id']}/return",
+         {"student_id": student["id"], "reason": "第二步口径仍不对，先看复核意见"})
+    call("/api/logout", {})
+    call("/api/login", {"username": student["username"], "password": password})
+    check("二次退回可记录", call(f"/api/assignments/{single['id']}/progress")["status"] == "returned",
+          "status=returned")
 
     from playwright.sync_api import sync_playwright
 
@@ -224,9 +240,43 @@ def main() -> int:
               f"{mode2} · {text2.split(chr(10))[0]}")
         page2.get_by_role("button", name="任务说明").first.click()
         page2.wait_for_selector("#task-board-card .tb-detail", timeout=10000)
-        check("学生任务说明可展开", "提交次数" in page2.locator("#task-board-card .tb-detail").first.inner_text())
+        detail_text = page2.locator("#task-board-card .tb-detail").first.inner_text()
+        check("学生任务说明可展开", "提交情况" in detail_text and "订正" in detail_text,
+              detail_text.split(chr(10))[4][:36] if len(detail_text.split(chr(10))) > 4 else "")
         if shots:
             page2.screenshot(path=str(Path(shots) / "task-board-student.png"), full_page=True)
+
+        # 草稿面板：直接打开作业页（不依赖列表顺序）
+        page2.evaluate("id => window.openExercise(id)", draft_task["id"])
+        page2.wait_for_selector("#tp-submission-panel", timeout=15000)
+        panel_text = page2.locator("#tp-submission-panel").first.inner_text()
+        check("作业页显示提交状态面板", "未开始" in panel_text and "限交" not in panel_text,
+              panel_text.split(chr(10))[0][:40])
+        page2.get_by_role("button", name="保存草稿").first.click()
+        page2.wait_for_function("""() => (document.querySelector('#tp-submission-panel')?.textContent || '')
+                                          .includes('草稿已保存')""", timeout=10000)
+        check("草稿可在页面保存", True, "面板出现「草稿已保存」")
+        check("提交按钮仍可用", page2.locator("#btnSubmitExercise").is_enabled(), "未提交时不禁用")
+
+        # 已提交并被退回的作业：面板给出退回原因，按钮按订正次数封住
+        page2.evaluate("id => window.openExercise(id)", single["id"])
+        page2.wait_for_function("""() => (document.querySelector('#tp-submission-panel')?.textContent || '')
+                                          .includes('退回')""", timeout=15000)
+        returned_text = page2.locator("#tp-submission-panel").first.inner_text()
+        check("退回原因在作业页可见", "第二步" in returned_text, returned_text.split(chr(10))[0][:40])
+        check("订正次数用尽后按钮禁用", page2.locator("#btnSubmitExercise").is_disabled(),
+              page2.locator("#btnSubmitExercise").inner_text())
+        if shots:
+            page2.screenshot(path=str(Path(shots) / "submission-panel-student.png"), full_page=True)
+            page2.locator("#tp-submission-panel").first.screenshot(
+                path=str(Path(shots) / "submission-panel-only.png"))
+
+        # 教师端复核列表里的退回入口
+        page.evaluate("() => window.loadAssignments()")
+        page.wait_for_timeout(2000)
+        check("复核列表有退回入口",
+              page.locator("#submissionList").get_by_role("button", name="退回要求订正").count() > 0,
+              f"rows={page.locator('#submissionList .data-item').count()}")
         browser.close()
 
     check("浏览器控制台无 JS 错误", not errors, "; ".join(errors[:3]))

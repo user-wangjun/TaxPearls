@@ -832,6 +832,11 @@ def training_tasks_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "training-tasks.js", media_type="text/javascript")
 
 
+@app.get("/training-submission-ui.js")
+def training_submission_ui_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-submission-ui.js", media_type="text/javascript")
+
+
 
 
 @app.get("/console.js")

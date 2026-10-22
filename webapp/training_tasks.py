@@ -148,6 +148,23 @@ def _can_submit(task: dict[str, Any], remaining: int) -> bool:
 
 # --------------------------------------------------------------------------- 视图
 
+
+def _my_state(db, assignment_ids: list[str], student_id: str) -> dict[str, Any]:
+    """学生本人的订正进度：取最“需要他动手”的那个状态。"""
+    from webapp import training_submissions
+    # 越靠前越需要学生动手；done 放最后，避免一份卷里只交了一题就显示已完成
+    order = ["returned", "pending_review", "submitted", "in_progress", "not_started", "done"]
+    picked = None
+    for assignment_id in assignment_ids:
+        state = training_submissions.state_of(db, assignment_id, student_id)
+        if picked is None or order.index(state["status"]) < order.index(picked["status"]):
+            picked = state
+    if picked is None:
+        return {"my_status": "not_started", "my_return_reason": None,
+                "my_attempts": 0, "my_corrections": 0}
+    return {"my_status": picked["status"], "my_return_reason": picked["return_reason"],
+            "my_attempts": int(picked["attempts"]), "my_corrections": int(picked["corrections"])}
+
 def _assignment_task(db, row, who) -> dict[str, Any]:
     sett = _settings(db, "assignment", row["id"])
     due_at = row["deadline_at"]
@@ -185,6 +202,8 @@ def _assignment_task(db, row, who) -> dict[str, Any]:
         "question_count": 1, "total_points": 100.0,
     }
     task["fully_submitted"] = task["submitted_mine"] >= 1
+    if who["role"] == "student":
+        task.update(_my_state(db, [row["id"]], who["id"]))
     task["answers_visible"] = _answers_visible(task, who)
     task["can_submit"] = bool(who["role"] == "student" and _can_submit(task, task["submit_limit"] - task["submitted_mine"]))
     return task
@@ -228,6 +247,8 @@ def _paper_task(db, row, who) -> dict[str, Any]:
     }
     # 组卷按题提交，整份"已提交"以全部题目都已作答为准
     task["fully_submitted"] = bool(ids) and submitted_mine >= len(ids)
+    if who["role"] == "student":
+        task.update(_my_state(db, ids, who["id"]))
     task["answers_visible"] = _answers_visible(task, who)
     remaining = len(ids) - submitted_mine
     task["can_submit"] = bool(who["role"] == "student" and _can_submit(task, remaining))

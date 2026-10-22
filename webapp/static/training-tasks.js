@@ -9,6 +9,8 @@
     return node;
   };
   const STATE = {draft: "草稿", scheduled: "未到开放时间", published: "进行中", closed: "已截止", archived: "已归档"};
+  const MINE = {not_started: "未开始", in_progress: "进行中", submitted: "待复核",
+    pending_review: "待复核", returned: "待订正", done: "已完成"};
   const RELEASE = {after_submit: "交卷后开放", after_due: "截止后开放", manual: "教师统一开放"};
 
   async function api(path, options = {}) {
@@ -194,13 +196,21 @@
     const row = el("div", "tb-row");
     const head = el("div", "tb-head");
     const main = el("div", "tb-main");
-    const limits = [`限交 ${task.submit_limit} 次`, task.submitted_mine ? "已交" : "未交"];
+    const limits = [`限交 ${task.submit_limit} 次`, `已交 ${task.my_attempts || 0} 次`];
     if (task.kind === "paper") limits.push(`已交 ${task.submitted_mine}/${task.question_count} 题`);
+    const mine = MINE[task.my_status] || "";
+    if (mine) limits.unshift("我的进度：" + mine);
     main.append(el("strong", null, task.title),
       el("p", "muted", summary(task)),
       el("p", "muted", `${limits.join(" · ")} · 答案${RELEASE[task.answer_release]}${task.answers_visible ? "（已可看）" : ""}`));
+    if (task.my_status === "returned" && task.my_return_reason) {
+      main.append(el("p", "muted", "教师退回原因：" + task.my_return_reason));
+    }
     const acts = el("div", "tb-acts");
-    const open = el("button", "btn re", task.can_submit ? "进入作答" : (task.answers_visible ? "查看结果" : "查看任务"));
+    const label = task.my_status === "returned" ? "去订正"
+      : task.can_submit ? "进入作答"
+      : (task.my_status === "done" ? "查看结果" : "查看任务");
+    const open = el("button", "btn re", label);
     open.onclick = () => enterTask(task);
     const more = el("button", null, "任务说明");
     more.onclick = () => toggleDetail(task, row);
@@ -218,7 +228,7 @@
       `班级：${task.class_name || "全机构学生"}`,
       `开放时间：${when(task.open_at)}`,
       `截止时间：${when(task.due_at)}`,
-      `提交次数：${task.submit_limit} 次（当前${task.submitted_mine ? "已提交" : "未提交"}）`,
+      `提交情况：已提交 ${task.my_attempts || 0} 次 / 限交 ${task.submit_limit} 次，订正 ${task.my_corrections || 0}/${task.correction_limit} 次`,
       `答案开放：${RELEASE[task.answer_release]}${task.answers_visible ? "，当前已可查看" : "，当前不可查看"}`,
     ];
     if (task.kind === "paper") lines.push(`本次试卷 ${task.question_count} 题，合计 ${task.total_points} 分，按题评分。`);
