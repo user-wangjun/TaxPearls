@@ -118,26 +118,47 @@ class Codec:
         except (InvalidTag, ValueError, TypeError, KeyError, IndexError, UnicodeError, binascii.Error):
             raise SensitiveStorageError('敏感字段完整性校验失败或密钥不匹配，请核查备份。') from None
 
+    @staticmethod
+    def owner_table(column, names):
+        """判定本行的 column 是否确实属于某个受保护表；判不出就返回 None。
+
+        PROTECTED_COLUMNS 是全局列名集合，而 SQLite 返回的行不携带表名。仅凭列名
+        判定会把与受保护列同名的普通列（例如 student_kp_notes.content、
+        training_trial_feedback.content）误判成"明文泄漏"而拒绝读取——注册一条新
+        表即可让无关的旧查询全线 500。这里要求本行同时暴露该表的身份列，才认定该
+        列属于这张受保护表。
+        """
+        for table, (keys, columns) in REGISTRY.items():
+            if column in columns and all(key in names for key in keys):
+                return table
+        return None
+
     def row(self, cursor, values):
         names = [c[0] for c in cursor.description]
         result = list(values)
         for index, value in enumerate(values):
-            if names[index] not in PROTECTED_COLUMNS or value is None:
+            column = names[index]
+            if column not in PROTECTED_COLUMNS or value is None:
                 continue
             marker = PREFIX.encode() if isinstance(value, bytes) else PREFIX
-            if not isinstance(value, (str, bytes)) or not value.startswith(marker):
+            if isinstance(value, (str, bytes)) and value.startswith(marker):
+                plain, context = self.open(value)
+                table, sealed_column, *identity = context
+                if column != sealed_column:
+                    raise SensitiveStorageError('敏感字段查询须保留原列名。')
+                for key, expected in zip(REGISTRY[table][0], identity):
+                    # Joined teaching queries expose an audit as audit_id, while
+                    # id belongs to their assignment. Standalone reads expose id.
+                    name = 'audit_id' if table == 'audits' and key == 'id' and 'audit_id' in names else key
+                    if name not in names or str(values[names.index(name)]) != expected:
+                        raise SensitiveStorageError('敏感字段查询或对象关联不一致。')
+                result[index] = plain
+                continue
+            # 非信封只有在该列确实属于某张受保护表时才算存储被污染。写入侧由
+            # migrate() 安装的 BEFORE INSERT/UPDATE 触发器封死，受保护列不会凭空
+            # 出现明文；读侧这条是兜底，不做无法判定的误伤。
+            if self.owner_table(column, names) is not None:
                 raise SensitiveStorageError('已加密存储出现明文或损坏字段，拒绝读取。')
-            plain, context = self.open(value)
-            table, column, *identity = context
-            if names[index] != column:
-                raise SensitiveStorageError('敏感字段查询须保留原列名。')
-            for key, expected in zip(REGISTRY[table][0], identity):
-                # Joined teaching queries expose an audit as audit_id, while id
-                # belongs to their assignment. Standalone audit reads expose id.
-                name = 'audit_id' if table == 'audits' and key == 'id' and 'audit_id' in names else key
-                if name not in names or str(values[names.index(name)]) != expected:
-                    raise SensitiveStorageError('敏感字段查询或对象关联不一致。')
-            result[index] = plain
         return sqlite3.Row(cursor, tuple(result))
 
 
