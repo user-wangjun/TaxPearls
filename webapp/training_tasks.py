@@ -62,7 +62,8 @@ def _settings(db, kind: str, subject_id: str) -> dict[str, Any]:
         "SELECT * FROM training_task_settings WHERE subject_kind=? AND subject_id=?",
         (kind, subject_id),
     ).fetchone()
-    base = {"open_at": None, "submit_limit": 1, "answer_release": "after_due",
+    base = {"open_at": None, "submit_limit": 1, "correction_limit": 1,
+            "retake_policy": "teacher_return", "answer_release": "after_due",
             "answer_released_at": None, "archived_at": None, "updated_at": None}
     if row:
         base.update({k: row[k] for k in base if k in row.keys()})
@@ -173,6 +174,8 @@ def _assignment_task(db, row, who) -> dict[str, Any]:
         "published": bool(row["published"]), "open_at": sett["open_at"], "due_at": due_at,
         "state": _task_state(bool(row["published"]), bool(sett["archived_at"]), sett["open_at"], due_at),
         "submit_limit": int(sett["submit_limit"]),
+        "correction_limit": int(sett["correction_limit"]),
+        "retake_policy": sett["retake_policy"],
         "answer_release": sett["answer_release"], "answer_released_at": sett["answer_released_at"],
         "expected": _class_scope(db, who["org_id"], row["class_id"]),
         "submitted_total": submitted_mine if who["role"] == "teacher" else None,
@@ -213,6 +216,8 @@ def _paper_task(db, row, who) -> dict[str, Any]:
         "published": bool(row["published"]), "open_at": sett["open_at"], "due_at": due_at,
         "state": _task_state(bool(row["published"]), bool(sett["archived_at"]), sett["open_at"], due_at),
         "submit_limit": int(sett["submit_limit"]),
+        "correction_limit": int(sett["correction_limit"]),
+        "retake_policy": sett["retake_policy"],
         "answer_release": sett["answer_release"], "answer_released_at": sett["answer_released_at"],
         "question_count": len(ids), "total_points": float(sum(float(i["points"]) for i in items)),
         "expected": _class_scope(db, who["org_id"], row["class_id"]),
@@ -362,18 +367,20 @@ def update_settings(db, who: dict[str, Any], kind: str, subject_id: str, body) -
         raise TaskError("开放时间必须早于截止时间。")
     previous = _settings(db, kind, subject_id)
     has_submissions = bool(task["submitted_total"] or task["submitted_mine"])
-    if has_submissions and (body.open_at != previous["open_at"] or body.submit_limit != previous["submit_limit"]):
+    if has_submissions and (body.open_at != previous["open_at"]
+                            or body.submit_limit != previous["submit_limit"]):
         raise TaskError("已有学生作答，排期和提交次数不能再改；需要调整请归档后新建任务，保留原记录。", 409)
     db.execute(
         """INSERT INTO training_task_settings
-             (subject_kind,subject_id,org_id,open_at,submit_limit,answer_release,updated_by,updated_at)
-           VALUES (?,?,?,?,?,?,?,?)
+             (subject_kind,subject_id,org_id,open_at,submit_limit,correction_limit,retake_policy,answer_release,updated_by,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
            ON CONFLICT(subject_kind,subject_id) DO UPDATE SET
              open_at=excluded.open_at, submit_limit=excluded.submit_limit,
+             correction_limit=excluded.correction_limit, retake_policy=excluded.retake_policy,
              answer_release=excluded.answer_release, updated_by=excluded.updated_by,
              updated_at=excluded.updated_at""",
         (kind, subject_id, who["org_id"], body.open_at, body.submit_limit,
-         body.answer_release, who["id"], now()),
+         body.correction_limit, body.retake_policy, body.answer_release, who["id"], now()),
     )
     return detail(db, who, kind, subject_id)
 
@@ -417,6 +424,8 @@ class SettingsBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     open_at: str | None = None
     submit_limit: int = Field(default=1, ge=1, le=9)
+    correction_limit: int = Field(default=1, ge=0, le=5)
+    retake_policy: Literal["teacher_return", "free"] = "teacher_return"
     answer_release: Literal["after_submit", "after_due", "manual"] = "after_due"
 
 

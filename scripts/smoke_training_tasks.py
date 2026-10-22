@@ -66,18 +66,31 @@ def main() -> int:
     student = store.create_user("smoke-task-student", password, "冒烟学生", "student", "smoke-college")
 
     import http.cookiejar
+    import urllib.error
     import urllib.request
 
     jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
 
-    def call(path: str, payload=None):
+    def call(path: str, payload=None, method: str | None = None):
+        data = None if payload is None else json.dumps(payload).encode()
+        request = urllib.request.Request(base + path, data=data,
+                                         method=method or ("POST" if data else "GET"),
+                                         headers={"Content-Type": "application/json"})
+        with opener.open(request, timeout=20) as response:
+            return json.loads(response.read() or b"{}")
+
+    def call_expect(path: str, payload=None) -> int:
+        """只取状态码，用于预期失败的调用（被拒也是结果，不该让脚本崩）。"""
         data = None if payload is None else json.dumps(payload).encode()
         request = urllib.request.Request(base + path, data=data,
                                          method="POST" if data else "GET",
                                          headers={"Content-Type": "application/json"})
-        with opener.open(request, timeout=20) as response:
-            return json.loads(response.read() or b"{}")
+        try:
+            with opener.open(request, timeout=20) as response:
+                return response.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
 
     errors: list[str] = []
     call("/api/login", {"username": teacher["username"], "password": password})
@@ -109,6 +122,38 @@ def main() -> int:
     detail = call(f"/api/training/tasks/assignment/{single['id']}")
     check("学生详情默认答案不开放", detail["answers_visible"] is False and detail["can_submit"] is True,
           f"release={detail['answer_release']}")
+
+    # 订正闭环：重复提交拦截 → 待复核 → 复核 → 退回 → 再交 → 旧分留在版本里
+    first = call_expect(f"/api/assignments/{single['id']}/submit", {"selected_rule_ids": []})
+    check("学生首次提交成功", first == 200, f"status={first}")
+    again = call_expect(f"/api/assignments/{single['id']}/submit", {"selected_rule_ids": []})
+    check("重复提交被拦截", again == 409, f"status={again}")
+    pending = call(f"/api/assignments/{single['id']}/progress")
+    check("提交后为待复核", pending["status"] == "pending_review" and pending["attempts"] == 1,
+          f"status={pending['status']} attempts={pending['attempts']}")
+
+    call("/api/logout", {})
+    call("/api/login", {"username": teacher["username"], "password": password})
+    subs = call(f"/api/submissions?assignment_id={single['id']}")
+    sub_id = next((row["id"] for row in subs), None)
+    check("教师能看到学生提交", bool(sub_id), f"submission={sub_id}")
+    call(f"/api/submissions/{sub_id}/review", {"adjusted_score": 88, "feedback": "第一次口径写错"}, method="PUT")
+    returned = call(f"/api/assignments/{single['id']}/return",
+                    {"student_id": student["id"], "reason": "口径写错了，按三步重新算"})
+    check("教师退回成功", returned.get("status") == "returned", f"status={returned.get('status')}")
+
+    call("/api/logout", {})
+    call("/api/login", {"username": student["username"], "password": password})
+    mine_progress = call(f"/api/assignments/{single['id']}/progress")
+    check("学生看到退回原因", mine_progress["status"] == "returned"
+          and "口径写错" in (mine_progress.get("return_reason") or ""),
+          f"status={mine_progress['status']}")
+    again_ok = call_expect(f"/api/assignments/{single['id']}/submit", {"selected_rule_ids": []})
+    check("退回后可再次提交", again_ok == 200, f"status={again_ok}")
+    history = call(f"/api/assignments/{single['id']}/versions")["items"]
+    check("旧分数留在版本里", len(history) == 1 and history[0]["adjusted_score"] == 88.0
+          and history[0]["feedback"] == "第一次口径写错",
+          f"versions={len(history)} adjusted={history[0]['adjusted_score'] if history else None}")
 
     from playwright.sync_api import sync_playwright
 

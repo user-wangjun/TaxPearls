@@ -35,6 +35,29 @@ class ClassroomTests(unittest.TestCase):
         self.class_id=self.client.post('/api/classes',json={'name':'审计一班','student_ids':[self.student['id']]}).json()['id']
         self.future=datetime(2032,1,1,tzinfo=UTC)
 
+
+    def allow_free_retake(self, aid):
+        """本套件验证的是提交/复核/日志的回滚与计数，不是订正闸门口径。
+
+        2026-10-22 起默认「必须教师退回才能订正」，这里显式保留自由重交，
+        避免把两种语义混在同一个用例里。
+        """
+        with self.store.connect() as db:
+            # 组卷题目按试卷的策略走，命中的任务对象可能是 paper 而不是 assignment
+            row = db.execute("SELECT paper_id FROM training_assignment_settings WHERE assignment_id=?",
+                             (aid,)).fetchone()
+            subjects = [('assignment', aid)]
+            if row and row['paper_id']:
+                subjects.append(('paper', row['paper_id']))
+            for kind, subject in subjects:
+                db.execute("""INSERT INTO training_task_settings
+                                (subject_kind,subject_id,org_id,retake_policy,updated_at)
+                              VALUES (?,?,?,'free','2026-01-01T00:00:00+00:00')
+                              ON CONFLICT(subject_kind,subject_id)
+                              DO UPDATE SET retake_policy='free'""",
+                           (kind, subject, self.teacher['org_id']))
+        return aid
+
     def tearDown(self):
         self.client.__exit__(None,None,None);module.store=self.old;self.tmp.cleanup();self.env.stop()
 
@@ -71,6 +94,7 @@ class ClassroomTests(unittest.TestCase):
         single = self.client.post('/api/assignments', json=single_body).json()['id']
         self.login(self.student)
         self.assertEqual(self.submit(aid, []).status_code, 200)
+        self.allow_free_retake(aid)
         submission = self.store.get_submission(aid, self.student['id'])['id']
         operations = [
             (self.teacher, 'post', '/api/classes', {'name': '新班', 'student_ids': [self.other['id']]}, 'create_class'),

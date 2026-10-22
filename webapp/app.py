@@ -1610,6 +1610,8 @@ from webapp import ai_coach as ai_coach_routes
 ai_coach_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
 from webapp import training_tasks as training_task_routes
 training_task_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import training_submissions as training_submission_routes
+training_submission_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)

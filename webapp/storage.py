@@ -1657,6 +1657,10 @@ class Store:
             if not account or (user and user["id"] != student_id):
                 raise classroom.ClassroomError("作业不存在。",404)
             classroom.check_submission(db,assignment_id,user or dict(account))
+            # 提交版本与订正闸门：不改 submissions 结构，只在覆盖前把旧版本快照进明细表
+            from webapp import training_submissions
+            training_submissions.guard_submit(db, assignment_id, student_id)
+            training_submissions.snapshot_current(self, db, assignment_id, student_id)
             db.execute(
                 """INSERT INTO submissions(id,assignment_id,student_id,answers_json,score,details_json,submitted_at)
                    VALUES (?,?,?,?,?,?,?)
@@ -1668,6 +1672,7 @@ class Store:
                  self._field_codec.seal(_json(details), 'submissions', 'details_json', assignment_id, student_id), _now()),
             )
             mistake_book.capture(db, assignment_id, student_id, force=True)
+            training_submissions.record_submitted(db, assignment_id, student_id)
             self._log(db, user or dict(account), "submit_assignment", "assignment", assignment_id, f"score={score}")
         return submission_id
 

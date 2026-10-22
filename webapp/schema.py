@@ -235,6 +235,8 @@ def initialize(store) -> None:
         ai_coach.migrate(db)
         from webapp import training_tasks
         training_tasks.migrate(db)
+        from webapp import training_submissions
+        training_submissions.migrate(db)
         mistake_book.migrate(db)
         members.migrate(db)
         from webapp import material_batches
@@ -561,6 +563,16 @@ def initialize(store) -> None:
             db.execute(
                 "ALTER TABLE training_self_practice_attempts"
                 " ADD COLUMN bank_question_id TEXT REFERENCES training_bank_question(id)")
+        # 题源与出题时规则版本：建表语句里有、但旧库（CREATE IF NOT EXISTS 不会补列）
+        # 缺这两列，_scored_view 取 row["source_type"] 会 IndexError -> 提交接口 500。
+        if "source_type" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts"
+                " ADD COLUMN source_type TEXT NOT NULL DEFAULT 'simulated'")
+        if "rule_version" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts"
+                " ADD COLUMN rule_version TEXT NOT NULL DEFAULT ''")
         # 真题授权与题库、考纲升版、试用反馈（第四条就绪三件套）。
         db.executescript("""
             CREATE TABLE IF NOT EXISTS training_source_authorization (
