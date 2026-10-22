@@ -7,19 +7,20 @@ from decimal import Decimal, InvalidOperation
 import json
 from pathlib import Path
 import re
+from time import monotonic
 from threading import Lock
 
 from fastapi import Cookie, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.kg_retrieval import bundle, metrics, relation_search, semantic_search, outbound
+from src.kg_retrieval import batching, bundle, metrics, relation_search, semantic_search, outbound
 from src.kg_retrieval.common import digest, implementation_fingerprint
 from webapp import core_inputs, material_batches as batches, members
 from webapp.access import AccessDenied, current_actor
 
 ROOT = Path(__file__).resolve().parents[1]
 _LOCK, _ACTIVE = Lock(), set()
-AI_VALIDATION_VERSION = 4
+AI_VALIDATION_VERSION = 5
 _AUTHORIZE_BATCH = ContextVar('knowledge_authorize_batch', default=None)
 
 
@@ -139,11 +140,12 @@ def analyze(package, prior=None):
     if package["batching"]["unsplittable"]:
         return {"status": "needs_review", "validated": False, "assessments": [], "external_api_calls": 0,
                 "reason": "单条结构化记录或基础核查信息仍超出本次容量，已保留完整内容，请核对模型容量或缩小核查范围。"}
-    from webapp.knowledge import _chat_json, ai_config, SELECTED_SETTINGS
-    from src.ai_transport import USAGE_OBSERVER
+    from webapp.knowledge import _chat_json, ai_config, SELECTED_SETTINGS, ContextLengthExceeded
+    from src.ai_transport import USAGE_OBSERVER, chat_payload
     from src.settings import AISettings
     from webapp import ai_keys
     settings = ai_keys.apply(AISettings.from_env(), usage='knowledge')
+    deadline = monotonic() + settings.batch_timeout
     profile = package['batching'].get('model_context')
     if profile and profile['model'] != settings.effective_model:
         raise HTTPException(409, '分析模型已变化，请重新开始检查以按当前容量分批。')
@@ -156,13 +158,21 @@ def analyze(package, prior=None):
     if delivery["outbound_gate"] == "blocked":
         raise HTTPException(422, "外送安全检查未通过：" + "；".join(delivery["reasons"]))
     all_claims, models, calls, usage = [], [], 0, []
-    batches = [{'part_number': p['part_number'], 'category': p.get('batch_category', 'complete_check'),
-                'category_name': p.get('batch_category_name', '本项完整核对'),
-                'group': p.get('batch_group_name', p.get('batch_group', '')), 'status': 'pending'} for p in delivery['parts']]
+    def batch_meta(part, path):
+        return {'part_number': path, 'category': part.get('batch_category', 'complete_check'),
+                'category_name': part.get('batch_category_name', '本项完整核对'),
+                'group': part.get('batch_group_name', part.get('batch_group', '')), 'status': 'pending'}
+
+    batches = [batch_meta(part, part['part_number']) for part in delivery['parts']]
+    original_metas = list(batches)
     results, reused = [], 0
     profile_id = analysis_profile(settings)
+    matching_prior = ((prior or {}).get('batch_profile') == profile_id and
+                      (prior or {}).get('validation_version') == AI_VALIDATION_VERSION)
     cached = {r['batch_id']: r for r in (prior or {}).get('batch_results', []) if r.get('status') == 'completed'} \
-        if (prior or {}).get('batch_profile') == profile_id and (prior or {}).get('validation_version') == AI_VALIDATION_VERSION else {}
+        if matching_prior else {}
+    prior_splits = (prior or {}).get('context_splits', {}) if matching_prior else {}
+    context_splits, refinements = {}, 0
     joint_review = package['batching']['part_count'] > 1
 
     def outcome(validated, reason=None):
@@ -176,61 +186,125 @@ def analyze(package, prior=None):
                  'usage': usage, 'outbound_gate': delivery['outbound_gate'],
                  'analysis_mode': 'review_only' if joint_review or not validated else delivery['analysis_mode'],
                  'batches': batches, 'batch_results': results, 'batch_profile': profile_id,
-                 'reused_batches': reused, 'risk_assessment': risk}
+                 'reused_batches': reused, 'risk_assessment': risk, 'context_splits': context_splits}
         if reason:
             value['reason'] = reason
         return value
 
-    for part in delivery["parts"]:
+    def process(part, path, depth=0, meta=None):
+        nonlocal reused, calls, joint_review, refinements
         authorizer = _AUTHORIZE_BATCH.get()
         if authorizer:
             authorizer()
-        payload = part
-        required_type = "insufficient_evidence" if package["bundle_status"] != "ready" or joint_review else {
+        payload = deepcopy(part)
+        partial = package['batching']['part_count'] > 1 or depth > 0
+        required_type = "insufficient_evidence" if package["bundle_status"] != "ready" or partial else {
             "condition_met": "risk_clue", "condition_not_met": "condition_not_met", "excluded": "excluded"
         }.get(package["check"].get("disposition"), "insufficient_evidence")
         payload["response_constraints"] = {"required_type": required_type,
             "fact_assessment_is_readonly": True, "policy_readiness_is_independent_of_numeric_difference": True}
-        if joint_review:
+        if partial:
+            payload['bundle_status'] = 'needs_review'
             payload['analysis_mode'] = 'review_only'
             payload['response_constraints']['partial_batch_is_not_a_complete_check'] = True
-        if profile:
-            envelope = len(json.dumps(payload, ensure_ascii=False).encode()) + len(ANALYSIS_PROMPT.encode()) + 256
-            if envelope + profile['output_reserve'] + profile['safety_reserve'] > profile['planning_context_window']:
-                raise HTTPException(422, '实际请求含分析指令后超过所选模型容量，请调小单批容量后重试。')
         batch_id = digest(payload)
-        meta = batches[part['part_number'] - 1]
+
+        def refine(budget=None, *, replay=False):
+            nonlocal joint_review, refinements
+            # Only explicit capacity rejection (or local preflight) permits a
+            # smaller request. Timeouts, rate limits and invalid output stop.
+            size = batching.encoded_size(part)
+            target = min(budget or size // 2, size // 2)
+            if depth >= 4 or not replay and refinements >= 8 or target < 256:
+                meta.update(status='failed', reason='已达到自动分批恢复上限，原始证据已保留。')
+                return False
+            child_package = {**deepcopy(part), 'bundle_id': package['bundle_id'],
+                             'metric_definitions': package.get('metric_definitions', {})}
+            plan = batching.split(child_package, target)
+            if plan['unsplittable'] or not plan['parts'] or any(
+                    batching.encoded_size(child) >= size for child in plan['parts']):
+                meta.update(status='failed', reason='必要核查信息仍超过容量，原始证据已保留，需核对模型容量。')
+                return False
+            child_package['batching'] = plan
+            children = outbound.prepare(child_package, authorized=True, destination=destination)
+            if children['outbound_gate'] == 'blocked':
+                meta.update(status='failed', reason='细分批次未通过外送安全检查。')
+                return False
+            if not replay:
+                refinements += 1
+            context_splits[batch_id] = target
+            joint_review = True
+            meta.update(status='split', reason='容量不足，已自动细分并保留完整证据。')
+            child_metas = [batch_meta(child, f'{path}.{index}') for index, child in enumerate(children['parts'], 1)]
+            position = next(i for i, item in enumerate(batches) if item is meta) + 1
+            batches[position:position] = child_metas
+            for child, child_meta in zip(children['parts'], child_metas):
+                child['required_clause_ids'] = sorted(set(child.get('required_clause_ids', [])) |
+                                                    set(part.get('required_clause_ids', [])))
+                if not process(child, child_meta['part_number'], depth + 1, child_meta):
+                    return False
+            return True
+
+        if batch_id in prior_splits:
+            saved_budget = prior_splits[batch_id]
+            if type(saved_budget) is int and 256 <= saved_budget <= batching.MAX_BUDGET:
+                return refine(saved_budget, replay=True)
+        if profile:
+            envelope = len(chat_payload(settings, [
+                {'role': 'system', 'content': ANALYSIS_PROMPT},
+                {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
+            ], temperature=0.2, max_tokens=settings.max_tokens))
+            available = profile['planning_context_window'] - profile['output_reserve'] - profile['safety_reserve']
+            if envelope > available:
+                return refine(min(batching.encoded_size(part) // 2,
+                                  available - len(ANALYSIS_PROMPT.encode()) - 1024))
         if batch_id in cached:
             previous = cached[batch_id]
             answer, model = {'assessments': deepcopy(previous['assessments'])}, previous['model']
             reused += 1
         else:
+            remaining = deadline - monotonic()
+            if remaining <= 1:
+                meta.update(status='failed', reason='本次分析已达到执行时限，已停止后续请求。')
+                return False
             observer = USAGE_OBSERVER.set(usage.append)
-            selected = SELECTED_SETTINGS.set(settings)
+            selected = SELECTED_SETTINGS.set(replace(settings, timeout=min(settings.timeout, remaining)))
+            capacity_rejected = False
             try:
+                calls += 1
                 answer, model = _chat_json(ANALYSIS_PROMPT, payload, 'AI 分析未返回有效的材料引用，请重试。')
+            except ContextLengthExceeded:
+                capacity_rejected = True
             except HTTPException as exc:
                 if exc.status_code not in (502, 503):
                     raise
                 meta.update(status='failed', reason=str(exc.detail))
-                return outcome(False, f"第 {part['part_number']} 批未完成：{exc.detail} 已保存完成批次，重新开始时只重试未完成批次；失败请求是否计费以服务商为准。")
+                return False
             finally:
                 USAGE_OBSERVER.reset(observer)
                 SELECTED_SETTINGS.reset(selected)
-            calls += 1
+            if capacity_rejected:
+                return refine()
         # Validate against the actual transmitted part, not untransmitted evidence.
         transmitted = {**package, "facts": part['facts'], "policy_evidence": part["policy_evidence"], "policy_leads": part["policy_leads"]}
-        if part["part_count"] > 1:
+        if partial:
             transmitted["bundle_status"] = "needs_review"
         try:
             validated = validate_answer(answer, transmitted)
         except (ValueError, TypeError, KeyError) as exc:
             meta.update(status='invalid', reason=str(exc))
-            return outcome(False, str(exc))
+            return False
         all_claims.extend(validated["assessments"])
         models.append(model)
         meta.update(status='completed', clause_ids=[p['clause_id'] for p in [*part['policy_evidence'], *part['policy_leads']]])
         results.append({'batch_id': batch_id, 'status': 'completed', 'model': model, 'assessments': validated['assessments']})
+        return True
+
+    for part, meta in zip(delivery['parts'], original_metas):
+        if not process(part, part['part_number'], meta=meta):
+            failed = next(b for b in batches if b['status'] in {'failed', 'invalid'})
+            return outcome(False, f"第 {failed['part_number']} 批未完成：{failed.get('reason', '分析未完成')} "
+                           '已保存完成批次，重新开始时只重试未完成批次；失败请求是否计费以服务商为准。')
     return outcome(True)
 
 

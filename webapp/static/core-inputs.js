@@ -570,8 +570,9 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       const capacity=pack.batching?.model_context;
       if(capacity)card.append(el("p","muted",(capacity.context_window?`模型上下文：${capacity.context_window.toLocaleString()} Token。`:"上游未提供模型上下文容量，使用保守容量。")+`本次单批输入估算上限 ${capacity.input_budget.toLocaleString()}（含缓存输入），输出预留 ${capacity.output_reserve.toLocaleString()} Token。`));
       if(ai?.batches?.length){
-        const {details:batches}=checkDisclosure(`${foldKey}:batches`,`分析批次：已完成 ${ai.batches.filter(b=>b.status==="completed").length}/${pack.batching.part_count} 批`);
-        for(const batch of ai.batches)batches.append(el("p","muted",`${batch.part_number}/${pack.batching.part_count} · ${batch.category_name}${batch.group?" · "+batch.group:""} · ${batch.status==="completed"?"已完成":"待复核"}`));
+        const active=ai.batches.filter(b=>b.status!=="split"),total=Math.max(pack.batching.part_count,active.length);
+        const {details:batches}=checkDisclosure(`${foldKey}:batches`,`分析批次：已完成 ${active.filter(b=>b.status==="completed").length}/${total} 批`);
+        for(const batch of ai.batches)batches.append(el("p","muted",`批次 ${batch.part_number} · ${batch.category_name}${batch.group?" · "+batch.group:""} · ${batch.status==="completed"?"已完成":batch.status==="split"?"容量不足，已自动细分":"待复核"}`));
         card.append(batches);
       }
       const assessments=legacy?checkDisclosure(`${foldKey}:assessments`,"历史分析说明（仅供追溯）").details:card;
