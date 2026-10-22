@@ -288,6 +288,14 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.ok(!reviewNodes().some(n=>n.textContent==="收入核对 · 旧版结果，需重新检查"));
   assert.ok(reviewNodes().some(n=>n.textContent==="系统处理：1 类问题 · 1 项"),"current budget failures remain visible");
   assert.ok(reviewNodes().some(n=>n.textContent==="当前结构化记录仍超出容量。"));
+  const recovered=structuredClone(savedChecks["R-001"]);
+  recovered.bundle.batching.part_count=1;
+  recovered.ai.batches=[{part_number:1,category_name:"政策依据",status:"split"},
+    {part_number:"1.1",category_name:"政策依据",status:"completed"},
+    {part_number:"1.2",category_name:"政策依据",status:"completed"}];
+  sample.tax_checks={"R-001":recovered};await controller.openTask("task");
+  assert.ok(reviewNodes().some(n=>n.textContent==="分析批次：已完成 2/2 批"));
+  assert.ok(reviewNodes().some(n=>/容量不足，已自动细分/.test(n.textContent||"")));
   sample.tax_checks=savedChecks;await controller.openTask("task");
   assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,noRequests,"viewing and grouping saved results never triggers AI or rewrites history");
   sample.tax_checks=Object.fromEntries(Array.from({length:25},(_,i)=>{const slot=structuredClone(savedChecks["R-001"]);slot.bundle.check={rule_id:`page-rule-${i+1}`,topic:`分页检查${i+1}`};return [slot.bundle.check.rule_id,slot];}));
