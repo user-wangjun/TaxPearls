@@ -116,10 +116,14 @@ def _payload(row, db) -> dict[str, Any]:
     case = db.execute("SELECT * FROM teaching_case WHERE id=?", (row["case_id"],)).fetchone()
     assignment = db.execute("SELECT id,title,published FROM assignments WHERE id=?",
                             (row["assignment_id"],)).fetchone()
+    # 班级只在主链的旁挂设置里：评分要按班级名单取人，不从全机构捞
+    settings = db.execute("SELECT class_id FROM training_assignment_settings WHERE assignment_id=?",
+                          (row["assignment_id"],)).fetchone()
     return {
         "id": row["id"],
         "case_id": row["case_id"],
         "assignment_id": row["assignment_id"],
+        "class_id": settings["class_id"] if settings else None,
         "assignment_title": assignment["title"] if assignment else None,
         "steps": json.loads(row["steps_json"]),
         "step_labels": [STEP_LABELS[s] for s in json.loads(row["steps_json"])],
@@ -423,6 +427,41 @@ def register(app, store_provider: Callable[[], Any], user_fn: Callable[..., dict
         if user["role"] not in {"teacher", "student"}:
             raise HTTPException(403, "当前账号没有课程任务权限。")
         return user
+
+    @app.get("/api/training/teaching/certificates")
+    @guarded
+    def certificates(session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
+        """教师挑证书用：单元与案例都挂在证书下，列表接口必须有 certificate_id。"""
+        user = actor(session)
+        if user["role"] != "teacher":
+            raise HTTPException(403, "只有任课教师可以查看证书。")
+        with store_provider().connect() as db:
+            db.execute("BEGIN")
+            current_actor(db, user, {"teacher"})
+            rows = db.execute(
+                "SELECT id,code,name FROM certificate WHERE active=1 ORDER BY name").fetchall()
+        return response({"items": [dict(r) for r in rows]})
+
+    @app.get("/api/training/teaching/publish-cases")
+    @guarded
+    def publish_cases(certificate_id: str,
+                      session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
+        """发布表单挑案例用：只列已发布的，草稿不能发布成任务。
+
+        为什么不复用 ``teaching_units`` 的 ``/api/training/teaching/cases``：那个走
+        staff 会话 cookie，教学面板（#trainingPanel）这边拿不到，路径也已被占用。
+        """
+        user = actor(session)
+        if user["role"] != "teacher":
+            raise HTTPException(403, "只有任课教师可以查看案例。")
+        with store_provider().connect() as db:
+            db.execute("BEGIN")
+            current_actor(db, user, {"teacher"})
+            rows = db.execute(
+                """SELECT id,name,scenario,desensitization_note FROM teaching_case
+                   WHERE certificate_id=? AND status='published' ORDER BY name""",
+                (certificate_id,)).fetchall()
+        return response({"items": [dict(r) for r in rows]})
 
     @app.post("/api/training/teaching/cases/{case_id}/publish")
     @guarded
