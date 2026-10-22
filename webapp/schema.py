@@ -655,6 +655,55 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_training_trial_feedback_student
                 ON training_trial_feedback(student_id, created_at DESC);
         """)
+        # 教学单元与实操案例（重设计方案 B1，全部 additive）。
+        # 单元/案例只存 rule_code（R-001…R-024），不存 YAML 文件路径——执行源仍是
+        # rules/*.yaml，图谱 TaxRule 存版本快照；将来 YAML 退役教学侧不用改。
+        # 依据链（TaxRule→USES_METRIC→Metric、→Clause→Policy）实时查图谱；
+        # 本库 Clause/Policy 为 0，凡引用条款一律展示「依据待专业复核」。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS teaching_unit (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 所属证书（外键）
+                name TEXT NOT NULL,                       -- 单元名称（证书内唯一）
+                stage TEXT NOT NULL DEFAULT 'voucher'
+                    CHECK (stage IN ('voucher','data','conclusion')),
+                                                          -- 三段标准：凭证层/数据层/结论层
+                standard TEXT NOT NULL DEFAULT '',        -- 一句话标准（学生要能回答的问题）
+                knowledge_point_ids_json TEXT NOT NULL DEFAULT '[]',  -- 关联知识点 id（JSON 数组）
+                rule_codes_json TEXT NOT NULL DEFAULT '[]',  -- 关联规则（rule_code，JSON 数组）
+                deliverables TEXT NOT NULL DEFAULT '',    -- 学生要交的证据说明
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','published','archived')),  -- 草稿/已发布/已归档
+                sort_order INTEGER NOT NULL DEFAULT 0,    -- 排序
+                created_by TEXT REFERENCES college_user(id),  -- 创建人（外键）
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(certificate_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_teaching_unit_cert
+                ON teaching_unit(certificate_id, status, sort_order);
+            CREATE TABLE IF NOT EXISTS teaching_case (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 所属证书（外键）
+                unit_id TEXT REFERENCES teaching_unit(id),  -- 所属教学单元（外键，可空=独立案例）
+                name TEXT NOT NULL,                       -- 案例名称（证书内唯一）
+                scenario TEXT NOT NULL DEFAULT '',        -- 背景说明（脱敏仿真情境）
+                rule_codes_json TEXT NOT NULL DEFAULT '[]',  -- 绑定规则（rule_code，JSON 数组）
+                materials_json TEXT NOT NULL DEFAULT '[]',   -- 材料包清单（[{"name":…,"note":…}]）
+                standard_conclusion_json TEXT NOT NULL DEFAULT '[]',  -- 标准结论（提交后才对学生开放）
+                desensitization_note TEXT NOT NULL DEFAULT '',  -- 脱敏说明
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','published','archived')),
+                created_by TEXT REFERENCES college_user(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(certificate_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_teaching_case_cert
+                ON teaching_case(certificate_id, status);
+            CREATE INDEX IF NOT EXISTS idx_teaching_case_unit
+                ON teaching_case(unit_id);
+        """)
         # 考纲升版核对状态（第四条就绪：逐条核对升版在现行树上进行）。
         # ''=非核对树；pending=待核对 confirmed=沿用 updated=已按新纲修改
         # added=新版新增（激活时才对学生可见） removed=新版删除（激活时停用）。
