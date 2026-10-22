@@ -444,7 +444,7 @@
 
 </style>
 <link rel="stylesheet" href="/university.css?v=university-personal-12">
-<link rel="stylesheet" href="/workspace.css?v=public-node-layout-20261021">
+<link rel="stylesheet" href="/workspace.css?v=public-rag-simple-20261022">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -650,7 +650,7 @@
       </details>
       <div class="graph-workspace">
         <div class="graph-stage"><div class="graph-stage-heading"><div><span class="graph-live-dot"></span><strong>证据关系网络</strong><p id="graphCount"></p></div><span class="graph-mode" id="graphMode">关联视图</span></div><div class="graph-toolbar"><button id="graphOverview">全景</button><button id="graphFocus">聚焦关联</button><button id="graphExpand">展开一层</button><button id="graphZoomIn" aria-label="放大图谱">＋</button><button id="graphZoomOut" aria-label="缩小图谱">−</button><button id="graphCenter" title="恢复当前视图的布局与缩放">居中</button><button id="graphReset" title="清空筛选，恢复当前图谱的初始视图">复位</button></div><svg id="graphCanvas" viewBox="0 0 960 680" aria-label="交互式知识图谱"></svg><div id="graphLegend" class="graph-legend"></div><p class="graph-hint">滚轮缩放 · 拖动画布或节点 · 点击节点查看证据</p></div>
-        <aside class="graph-inspector"><div class="inspector-tabs"><button id="nodeTab" class="active">节点详情</button><button id="aiTab">✦ AI 助手</button></div><div id="knowledgeDetail" aria-live="polite"></div><div id="graphAssistant" hidden><p id="graphAIStatus" class="muted" hidden></p><div id="graphAIContext" class="ai-context"></div><div class="ai-prompts"><button data-question="请用通俗语言解释当前节点，并说明依据和待核实之处。">解释节点</button><button data-question="当前节点有哪些判断条件和例外？没有依据的部分请说明。">条件与例外</button><button data-question="当前节点的原文依据在哪里？相关关系是否已经审核？">查看依据</button></div><div id="graphMessages" aria-live="polite"></div><form id="graphQuestionForm"><textarea id="graphQuestion" aria-label="向图谱 AI 提问" placeholder="围绕当前节点提问…" maxlength="2000" required></textarea><div class="graph-compose-actions"><button id="graphStop" class="btn" type="button" hidden>停止生成</button><button id="graphSend" class="btn pdf">发送 ↗</button></div></form></div></aside>
+        <aside class="graph-inspector"><div class="inspector-tabs"><button id="nodeTab" class="active">节点详情</button><button id="aiTab">✦ AI 助手</button></div><div id="knowledgeDetail" aria-live="polite"></div><div id="graphAssistant" hidden><div id="graphQuestionModes" class="graph-question-modes" role="group" aria-label="问答范围"><button id="graphAskPublic" type="button" aria-pressed="true">问公共知识库</button><button id="graphAskNode" type="button" aria-pressed="false">问当前节点</button></div><p id="graphAIStatus" class="muted" hidden></p><div id="graphAIContext" class="ai-context"></div><div class="ai-prompts"><button data-question="请用通俗语言解释当前节点，并说明依据和待核实之处。">解释节点</button><button data-question="当前节点有哪些判断条件和例外？没有依据的部分请说明。">条件与例外</button><button data-question="当前节点的原文依据在哪里？相关关系是否已经审核？">查看依据</button></div><div id="graphMessages" aria-live="polite"></div><form id="graphQuestionForm"><textarea id="graphQuestion" aria-label="向图谱 AI 提问" placeholder="围绕当前节点提问…" maxlength="2000" required></textarea><div class="graph-compose-actions"><button id="graphStop" class="btn" type="button" hidden>停止生成</button><button id="graphSend" class="btn pdf">发送 ↗</button></div></form></div></aside>
       </div>
     </section>
     <section class="panel" id="uploadPanel">
@@ -1031,7 +1031,7 @@
 <script src="/console.js?v=quota-confirm-20261021"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261020-native-1"></script>
-<script src="/graph.js?v=public-node-layout-20261021"></script>
+<script src="/graph.js?v=public-rag-simple-20261022"></script>
 <script src="/rule-bindings.js?v=20261016"></script>
 <script src="/knowledge-retrieval.js?v=20261018-32580db4e0ef"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>

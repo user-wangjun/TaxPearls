@@ -99,7 +99,7 @@ async def sensitive_storage_failure(_request: Request, exc: SensitiveStorageErro
 
 @app.middleware("http")
 async def private_api_responses(request: Request, call_next):
-    if request.url.path in {'/api/knowledge/node-ask', '/api/knowledge/ask',
+    if request.url.path in {'/api/knowledge/node-ask', '/api/knowledge/rag-ask', '/api/knowledge/ask',
                             '/api/training/knowledge/ask'} and request.method == 'POST':
         parts, size = [], 0
         async for part in request.stream():
@@ -901,17 +901,32 @@ class GraphQuestion(BaseModel):
     taxpayer_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
-class NodeQuestion(BaseModel):
+class PublicQuestion(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
-    node_id: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=2000)
     previous_questions: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(default_factory=list, max_length=3)
 
     @model_validator(mode='after')
     def valid_text(self):
-        for value in [self.node_id, self.question, *self.previous_questions]:
+        for value in [getattr(self, 'node_id', ''), self.question, *self.previous_questions]:
             if any((ord(c) < 32 and c not in '\n\r\t') or 0xD800 <= ord(c) <= 0xDFFF for c in value):
                 raise ValueError('输入包含无效控制字符。')
+        return self
+
+
+class NodeQuestion(PublicQuestion):
+    node_id: str = Field(min_length=1, max_length=200)
+
+
+class RAGQuestion(PublicQuestion):
+    as_of: date | None = None
+    region: str = Field(default='', max_length=30, pattern=r'^(?:CN(?:-[A-Za-z0-9]+)*)?$')
+
+    @model_validator(mode='after')
+    def valid_region(self):
+        from webapp.public_rag import normalize_region
+        if normalize_region(self.region) is None:
+            raise ValueError('检索地区无效。')
         return self
 
 
@@ -919,11 +934,11 @@ node_question_limiter = RateLimiter({'actor': (12, 60)})
 _node_question_active = set()
 
 
-async def public_node_answer(body, session, *, stream=True, identity_reader=None):
+async def public_node_answer(body, session, *, stream=True, identity_reader=None, rag=False):
     """One shared harness for public and university node questions, including old JSON callers."""
     import asyncio
     from contextlib import aclosing
-    from webapp import node_qa
+    from webapp import node_qa, public_rag
     from src.settings import AISettings
     reader = identity_reader or (lambda: _user(session))
     user = await run_in_threadpool(reader)
@@ -937,10 +952,10 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
         def prepare():
             from webapp.knowledge import public_graph
             settings = ai_keys.apply(AISettings.from_env(), usage='knowledge')
-            if settings.problem():
+            if settings.problem() and not rag:
                 raise HTTPException(503, 'AI 尚未连接，请检查模型配置。')
             with store.connect() as db:
-                graph = public_graph(db, _effective_rules(), teaching=user.get('org_type') == 'university')
+                graph = public_graph(db, _effective_rules(), teaching=user.get('org_type') == 'university') if not rag else None
                 info = ai_keys.capability(db, settings)
             limits = ai_probes.context_capability(info)
             capacity = limits.get('context_window', 32768)
@@ -948,8 +963,15 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
             budget = min(48000, capacity * 3 // 5, capacity - output - 4096 - max(4096, capacity // 20))
             if budget < 1024:
                 raise HTTPException(413, '模型可用上下文不足，请调整模型或输出额度。')
-            payload, manifest = node_qa.build_context(graph, body.node_id, body.question,
-                                                    body.previous_questions, budget=budget)
+            if rag:
+                with store.connect() as db:
+                    payload, manifest = public_rag.retrieve(db, body.question, body.previous_questions,
+                                                           region=body.region, as_of=body.as_of, budget=budget)
+                if payload['nodes'] and settings.problem():
+                    raise HTTPException(503, 'AI 尚未连接，请检查模型配置；检索已找到原文。')
+            else:
+                payload, manifest = node_qa.build_context(graph, body.node_id, body.question,
+                                                        body.previous_questions, budget=budget)
             manifest['capacity_source'] = 'provider_models' if limits.get('context_window') else 'conservative_fallback'
             manifest['output_reserve'] = output
             return settings, payload, manifest, output
@@ -962,7 +984,8 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
         try:
             # Re-check authentication after context assembly and before the paid request.
             await run_in_threadpool(reader)
-            async with aclosing(node_qa.answer_events(settings, payload, manifest, max_tokens=output)) as source:
+            handler = public_rag.answer_events if rag else node_qa.answer_events
+            async with aclosing(handler(settings, payload, manifest, max_tokens=output)) as source:
                 async for event in source:
                     # Never release deltas after a session has been revoked.
                     current = await run_in_threadpool(reader)
@@ -1021,6 +1044,17 @@ async def knowledge_node_ask(body: NodeQuestion, request: Request,
             raise HTTPException(401, '请先登录。')
         return user
     return await public_node_answer(body, session, identity_reader=reader)
+
+
+@app.post('/api/knowledge/rag-ask')
+async def knowledge_rag_ask(body: RAGQuestion, request: Request):
+    def reader():
+        from webapp.university_members import session_identity
+        user = session_identity(store, request)
+        if not user:
+            raise HTTPException(401, '请先登录。')
+        return user
+    return await public_node_answer(body, None, identity_reader=reader, rag=True)
 
 
 def _graph_for_user(user, audit_id, taxpayer_id=None):
