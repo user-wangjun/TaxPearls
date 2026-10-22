@@ -533,6 +533,84 @@ function renderOutline() {
   box.innerHTML = current + (history ? `<h3 style="margin-top:14px;">升版历史</h3>${history}` : "");
 }
 
+/* ---- B2：教学单元与实操案例的加载与渲染 ---- */
+
+async function loadTeachingUnits() {
+  if (!state.currentId) { state.units = []; renderTeachingUnits(); return; }
+  const data = await api(`/api/training/teaching/units?certificate_id=${encodeURIComponent(state.currentId)}`);
+  state.units = data.units;
+  renderTeachingUnits();
+}
+
+function renderTeachingUnits() {
+  const box = document.getElementById("teaching-units");
+  if (!box) return;
+  const rows = state.units || [];
+  if (!rows.length) {
+    box.innerHTML = '<p class="muted">还没有教学单元。可新建单元，把知识点与规则拼成一次课的能力单元。</p>';
+    return;
+  }
+  box.innerHTML = rows.map((u) => `<div class="data-item">
+    <div><b>${esc(u.name)}</b>
+      <div class="muted">${esc(u.stage_label)} · 规则 ${u.rule_codes.length} 条 · 知识点 ${u.knowledge_point_ids.length} 个</div>
+      ${u.standard ? `<div>${esc(u.standard)}</div>` : ""}
+      ${u.deliverables ? `<div class="muted">要交的证据：${esc(u.deliverables)}</div>` : ""}
+    </div>
+    <span class="chip">${esc(u.status === "published" ? "已发布" : u.status === "archived" ? "已归档" : "草稿")}</span>
+  </div>`).join("");
+}
+
+async function loadTeachingCases() {
+  if (!state.currentId) { state.cases = []; renderTeachingCases(); return; }
+  const data = await api(`/api/training/teaching/cases?certificate_id=${encodeURIComponent(state.currentId)}`);
+  state.cases = data.cases;
+  renderTeachingCases();
+}
+
+function renderTeachingCases() {
+  const box = document.getElementById("teaching-cases");
+  if (!box) return;
+  const rows = state.cases || [];
+  if (!rows.length) {
+    box.innerHTML = '<p class="muted">还没有实操案例。案例为脱敏仿真材料包，绑定规则与标准结论。</p>';
+    return;
+  }
+  box.innerHTML = rows.map((c) => `<div class="data-item">
+    <div><b>${esc(c.name)}</b>
+      <div class="muted">规则 ${c.rule_codes.length} 条 · 材料 ${c.materials.length} 份${c.unit_id ? " · 已挂单元" : ""}</div>
+      ${c.scenario ? `<div>${esc(c.scenario)}</div>` : ""}
+      ${c.desensitization_note ? `<div class="muted">${esc(c.desensitization_note)}</div>` : ""}
+    </div>
+    <span class="chip">${esc(c.status === "published" ? "已发布" : c.status === "archived" ? "已归档" : "草稿")}</span>
+  </div>`).join("");
+}
+
+function fillUnitSelects() {
+  const rules = document.getElementById("uf-rules");
+  if (rules && (state.rules || []).length) {
+    rules.innerHTML = state.rules.map((r) =>
+      `<option value="${esc(r.id || r.rule_code || r.code)}">${esc(r.id || r.rule_code || r.code)} ${esc(r.name || "")}</option>`).join("");
+  }
+  const kps = document.getElementById("uf-kps");
+  if (kps) {
+    kps.innerHTML = (state.kps || []).map((k) =>
+      `<option value="${esc(k.id)}">${esc(k.code)} ${esc(k.name)}</option>`).join("");
+  }
+}
+
+function fillCaseSelects() {
+  const rules = document.getElementById("cf-case-rules");
+  if (rules && (state.rules || []).length) {
+    rules.innerHTML = state.rules.map((r) =>
+      `<option value="${esc(r.id || r.rule_code || r.code)}">${esc(r.id || r.rule_code || r.code)} ${esc(r.name || "")}</option>`).join("");
+  }
+  const unit = document.getElementById("cf-case-unit");
+  if (unit) {
+    unit.innerHTML = '<option value="">（不挂单元）</option>' +
+      (state.units || []).map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join("");
+  }
+}
+
 async function loadTrial() {
   const [fb, stats] = await Promise.all([
     api("/api/training/staff/trial-feedback"),
@@ -603,6 +681,8 @@ async function load() {
     await loadSourceAuths().catch(() => { state.auths = []; renderAuths(); });
     await loadBank().catch(() => { state.bank = []; renderBank(); });
     await loadOutline().catch(() => { state.outline = null; renderOutline(); });
+    await loadTeachingUnits().catch(() => { state.units = []; renderTeachingUnits(); });
+    await loadTeachingCases().catch(() => { state.cases = []; renderTeachingCases(); });
   }
   state.rules = (await api("/api/training/staff/rules")).rules;
   await loadStudents();
@@ -1609,6 +1689,54 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       if (!window.confirm("确认删除该规则关联？")) return;
       withCert(async () => { await api(`/api/training/staff/links/${id}`, { method: "DELETE" }); flash("规则关联已删除。"); });
     },
+
+    /* ---- 教学单元与实操案例（B2，接口 /api/training/teaching/*） ---- */
+    "refresh-teaching-units": () => loadTeachingUnits().catch((err) => flash(err.message, true)),
+    "refresh-teaching-cases": () => loadTeachingCases().catch((err) => flash(err.message, true)),
+    "show-unit-form": () => {
+      const form = q("#unit-form");
+      if (form) { form.hidden = !form.hidden; if (!form.hidden) { fillUnitSelects(); form.scrollIntoView({ behavior: "smooth" }); } }
+    },
+    "cancel-unit": () => { const form = q("#unit-form"); if (form) form.hidden = true; },
+    "create-unit": () => withCert(async () => {
+      const name = q("#uf-name").value.trim();
+      if (!name) { flash("请填单元名称。", true); return; }
+      const rules = [...q("#uf-rules").selectedOptions].map((o) => o.value);
+      const kps = [...q("#uf-kps").selectedOptions].map((o) => o.value);
+      if (!rules.length) { flash("请至少关联一条规则编号。", true); return; }
+      const created = await api("/api/training/teaching/units", { method: "POST", body: {
+        certificate_id: cert.id, name, stage: q("#uf-stage").value,
+        standard: q("#uf-standard").value, knowledge_point_ids: kps, rule_codes: rules,
+        deliverables: q("#uf-deliverables").value } });
+      await api(`/api/training/teaching/units/${created.unit.id}`, {
+        method: "PUT", body: { status: "published" } });
+      ["#uf-name", "#uf-standard", "#uf-deliverables"].forEach((sel) => { q(sel).value = ""; });
+      q("#unit-form").hidden = true;
+      flash("教学单元已创建并发布。");
+    }),
+    "show-case-form": () => {
+      const form = q("#case-form");
+      if (form) { form.hidden = !form.hidden; if (!form.hidden) { fillCaseSelects(); form.scrollIntoView({ behavior: "smooth" }); } }
+    },
+    "cancel-case": () => { const form = q("#case-form"); if (form) form.hidden = true; },
+    "create-case": () => withCert(async () => {
+      const name = q("#cf-case-name").value.trim();
+      if (!name) { flash("请填案例名称。", true); return; }
+      const rules = [...q("#cf-case-rules").selectedOptions].map((o) => o.value);
+      if (!rules.length) { flash("请至少关联一条规则编号。", true); return; }
+      const materials = q("#cf-case-materials").value.split("\n").map((l) => l.trim()).filter(Boolean)
+        .map((line) => { const [mname, ...rest] = line.split("|"); return { name: mname.trim(), note: rest.join("|").trim() }; });
+      const created = await api("/api/training/teaching/cases", { method: "POST", body: {
+        certificate_id: cert.id, name, unit_id: q("#cf-case-unit").value || null,
+        scenario: q("#cf-case-scenario").value, rule_codes: rules, materials,
+        desensitization_note: q("#cf-case-note").value } });
+      await api(`/api/training/teaching/cases/${created.case.id}`, {
+        method: "PUT", body: { status: "published" } });
+      ["#cf-case-name", "#cf-case-scenario", "#cf-case-materials", "#cf-case-note"]
+        .forEach((sel) => { q(sel).value = ""; });
+      q("#case-form").hidden = true;
+      flash("实操案例已创建并发布。");
+    }),
   };
 
   if (handlers[act]) handlers[act](btn);

@@ -220,6 +220,57 @@
         <div class="actions"><button class="primary small" data-act="create-kp">创建</button></div>
       </div>
       <div id="kps"></div>
+      <div id="tu-block" class="inline-form">
+        <h3 style="font-size:14px;font-weight:500;margin:16px 0 4px;">教学单元
+          <button class="small" data-act="refresh-teaching-units">刷新</button>
+          <button class="small" data-act="show-unit-form">＋ 新建单元</button>
+        </h3>
+        <p class="muted" style="margin-top:0;">把知识点与规则编成「一次课能讲清的能力单元」。单元只绑定规则编号（如 R-002），不绑定规则文件；本库图谱缺少条款原文时，依据一律标注「依据待专业复核」，不作为已审法定标准。</p>
+        <div id="unit-form" hidden>
+          <div class="row">
+            <div><label>名称</label><input id="uf-name" placeholder="如 数据层·账申勾稽"></div>
+            <div><label>所属段</label>
+              <select id="uf-stage">
+                <option value="voucher">凭证层（票合法吗）</option>
+                <option value="data">数据层（数对得上吗）</option>
+                <option value="conclusion">结论层（判断可回溯吗）</option>
+              </select></div>
+          </div>
+          <div><label>一句话标准（学生要能回答的问题）</label>
+            <input id="uf-standard" placeholder="如 账、表、票、申报四方口径一致，差异有调节过程"></div>
+          <div><label>关联规则（多选，按规则编号）</label><select id="uf-rules" multiple size="6"></select></div>
+          <div><label>关联知识点（多选）</label><select id="uf-kps" multiple size="6"></select></div>
+          <div><label>学生要交的证据</label><input id="uf-deliverables" placeholder="如 勾稽底稿 + 差异调节表"></div>
+          <div class="actions">
+            <button class="primary small" data-act="create-unit">创建并发布</button>
+            <button class="small" data-act="cancel-unit">收起</button>
+          </div>
+        </div>
+        <div id="teaching-units"></div>
+      </div>
+      <div id="tc-block" class="inline-form">
+        <h3 style="font-size:14px;font-weight:500;margin:16px 0 4px;">实操案例
+          <button class="small" data-act="refresh-teaching-cases">刷新</button>
+          <button class="small" data-act="show-case-form">＋ 新建案例</button>
+        </h3>
+        <p class="muted" style="margin-top:0;">案例是脱敏仿真材料包，绑定规则编号与标准结论，可挂到上面的单元。案例发布后，再到教学面板的「实操案例任务」里发布成班级作业；学生的提交与解析等沿用任务主链的答案开放策略。</p>
+        <div id="case-form" hidden>
+          <div class="row">
+            <div><label>名称</label><input id="cf-case-name" placeholder="如 样板·账申勾稽"></div>
+            <div><label>所属教学单元（选填）</label><select id="cf-case-unit"></select></div>
+          </div>
+          <div><label>背景说明</label><input id="cf-case-scenario" placeholder="如 某商贸公司 2026 年 9 月属期仿真账表"></div>
+          <div><label>绑定规则（多选）</label><select id="cf-case-rules" multiple size="6"></select></div>
+          <div><label>材料清单（每行一条：材料名 | 说明）</label>
+            <textarea id="cf-case-materials" placeholder="科目余额表 | 仿真生成"></textarea></div>
+          <div><label>脱敏说明</label><input id="cf-case-note" placeholder="如 全部数据由合成样例派生"></div>
+          <div class="actions">
+            <button class="primary small" data-act="create-case">创建并发布</button>
+            <button class="small" data-act="cancel-case">收起</button>
+          </div>
+        </div>
+        <div id="teaching-cases"></div>
+      </div>
     </div>
 
     <div data-university-view="content" class="card">
