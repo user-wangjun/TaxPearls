@@ -10,7 +10,7 @@ from webapp.access import AccessDenied, current_actor, teaching_actor
 
 
 class LearningQuestion(BaseModel):
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     node_id: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=2000)
 
@@ -161,13 +161,16 @@ def register(app, store_provider, effective_rules, ai_config):
         return response(store.list_audits(actor))
 
     @app.post('/api/training/knowledge/ask')
-    def ask(body: LearningQuestion, request: Request):
+    async def ask(body: LearningQuestion, request: Request):
         store = store_provider()
-        identity(store, request)
-        from webapp.knowledge import ask_graph, public_graph
-        with store.connect() as db:
-            graph = public_graph(db, effective_rules(), teaching=True)
-        return response(ask_graph(graph, body.node_id, body.question))
+        from webapp.app import NodeQuestion, public_node_answer
+        try:
+            question = NodeQuestion(node_id=body.node_id, question=body.question)
+        except ValueError:
+            raise HTTPException(422, '问题包含无效字符。') from None
+        result = await public_node_answer(question, None,
+                                          stream=False, identity_reader=lambda: identity(store, request))
+        return response(result)
 
     @app.get('/api/teaching/courses')
     def courses(request: Request):

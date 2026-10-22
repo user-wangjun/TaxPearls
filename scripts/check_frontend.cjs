@@ -369,11 +369,11 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   const graphCtx={graphKinds:{},currentUser:{id:'owner',role:'org_admin'},graphCanvas:{...node(),style:{},setAttribute(){}},
     URLSearchParams,
     $:id=>{if(!graphNodes.has(id))graphNodes.set(id,{...node(),value:'',style:{},addEventListener(){}});return graphNodes.get(id);},
-    option:(select,value)=>select.append(value),updateAIContext(){},
+    option:(select,value)=>select.append(value),updateAIContext(){},stopNodeQuestion(){},
     api:url=>new Promise((resolve,reject)=>graphCalls.push({url,resolve,reject})),
     filterGraph:()=>graphDraws.push(vm.runInContext('graphData.audit_id',graphCtx)),focusGraph(){}};
   vm.createContext(graphCtx);
-  vm.runInContext('let graphMatchedCount=0,graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
+  vm.runInContext('let nodeQuestionHistory=[],nodeQuestionKey=null,graphMatchedCount=0,graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
     graph.slice(graph.indexOf('function graphCurrent('),graph.indexOf('$("graphAudit").addEventListener'))+
     graph.slice(graph.indexOf('function updateGraphRegions('),graph.indexOf('for(const id of ["knowledgeSearch"')),graphCtx);
   const listOld=graphCtx.loadKnowledge(),oldList=graphCalls.shift();
