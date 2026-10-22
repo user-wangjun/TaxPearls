@@ -157,6 +157,22 @@ class SubmissionVersionTests(unittest.TestCase):
         response = self.client.put(f"/api/assignments/{self.aid}/draft", json={"answers": []})
         self.assertEqual(response.status_code, 409, response.text)
 
+    def test_paper_question_draft_is_kept_without_counting_as_submitted(self):
+        """组卷每题都是一道独立作业，草稿按题存；不写 submissions 就不算已交。"""
+        self.login(self.teacher)
+        paper = self.client.post("/api/papers", json={
+            "title": "综合风险卷", "class_id": self.class_id, "deadline_at": self.future,
+            "published": True,
+            "items": [{"audit_id": self.case["audit_id"], "points": 100}]}).json()
+        question = self.client.get("/api/papers/" + paper["id"]).json()["items"][0]["id"]
+        self.login(self.student)
+        saved = self.client.put(f"/api/assignments/{question}/draft", json={"answers": ["R-001"]})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        loaded = self.client.get(f"/api/assignments/{question}/draft").json()["draft"]
+        self.assertEqual(loaded["answers"], ["R-001"])
+        progress = self.client.get("/api/papers/" + paper["id"]).json()["progress"]
+        self.assertEqual((progress["completed"], progress["score"]), (0, None))
+
     def test_return_requires_reason_and_an_existing_submission(self):
         self.login(self.teacher)
         # 没有提交记录：先判「不能退回」，与原因无关

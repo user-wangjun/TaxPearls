@@ -191,6 +191,13 @@ def main() -> int:
     check("改成交后即可看后结果页给分", released.get("result_released") is True
           and released.get("score") is not None and bool(released.get("details")),
           f"score={released.get('score')}")
+    # 组卷单题草稿：按题存，但没正式提交就不算已交
+    question = call(f"/api/papers/{paper['id']}")["items"][0]["id"]
+    saved = call(f"/api/assignments/{question}/draft", {"answers": []}, method="PUT")
+    check("组卷单题可存草稿", bool(saved.get("saved_at")), f"saved_at={saved.get('saved_at')}")
+    paper_progress = call(f"/api/papers/{paper['id']}")["progress"]
+    check("草稿不算已交", paper_progress["completed"] == 0 and paper_progress["score"] is None,
+          f"completed={paper_progress['completed']}")
 
     # 再退一次，留给浏览器验证「已退回 + 订正次数用尽」的页面态
     call("/api/logout", {})

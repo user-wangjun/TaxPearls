@@ -499,8 +499,8 @@ def register(app, store_provider: Callable[[], Any], user_fn: Callable[..., dict
             item = accessible(db, assignment_id, user)
             if not item["can_submit"]:
                 raise SubmissionError("已到截止时间，不能再保存草稿。", 409)
-            if item["paper_id"]:
-                raise SubmissionError("组卷题目请在试卷内保存，避免拆散整份进度。", 409)
+            # 组卷每题本来就是一道独立作业，草稿按题存不会拆散整份进度：
+            # 草稿不写 submissions，试卷的 completed / earned_points 只认正式提交。
             value = save_draft(db, assignment_id, user["id"], body.answers)
             repo._log(db, user, "save_draft", "assignment", assignment_id, f"answers={len(body.answers)}")
         return response(value)
