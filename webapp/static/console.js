@@ -1203,12 +1203,13 @@ async function loadNotifications() {
     if (admin) {
       const recipients = $("noticeRecipients"); recipients.textContent = "";
       for (const member of members) {
-        const row = el("div", "row"); row.append(el("span", null, member.display_name + " · " + member.org_id));
+        const row = el("div", "notice-recipient"), events = el("div", "notice-recipient-events");
+        row.append(el("span", "notice-recipient-name", member.display_name + " · " + member.org_id));
         const inputs = {};
         for (const [key, title] of [["audit_completed","审计完成"],["high_risk","高风险"]]) {
-          const label = el("label"); const input = el("input"); input.type = "checkbox"; input.checked = member[key]; inputs[key] = input; label.append(input, document.createTextNode(title)); row.append(label);
+          const label = el("label"); const input = el("input"); input.type = "checkbox"; input.checked = member[key]; inputs[key] = input; label.append(input, document.createTextNode(title)); events.append(label);
         }
-        row.append(el("span", "muted", member.email_enabled ? "本人已同意邮件" : "本人未开邮件"));
+        row.append(events, el("span", "muted notice-recipient-email", member.email_enabled ? "本人已同意邮件" : "本人未开邮件"));
         const save = el("button", "btn re", "保存接收事件"); save.onclick = () => noticeAction(() => api("/api/notifications/recipients/" + member.id, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({audit_completed:inputs.audit_completed.checked, high_risk:inputs.high_risk.checked, email_enabled:member.email_enabled})}), "接收事件已保存。"); row.append(save); recipients.append(row);
       }
     }

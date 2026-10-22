@@ -1295,6 +1295,26 @@ html[data-theme=dark] #appMain #userAdmin .quota-editor input:disabled { color:#
 @media(max-width:760px) { .probe-form { grid-template-columns:1fr; } .probe-heading .probe-header-actions { width:100%; } .probe-page-meta { flex-direction:column; gap:12px; } .probe-help { text-align:left; } }
 @media(max-width:600px) { #aiKeysPanel .probe-card { grid-template-columns:minmax(0,1fr); padding:22px 20px 18px; gap:18px; } .probe-balance-brief,.probe-purpose,.probe-card .probe-actions { grid-column:1; } .probe-purpose { max-width:none; } .probe-card .probe-actions { grid-template-columns:repeat(4,minmax(0,1fr)); gap:6px; } .probe-card .probe-actions .btn { padding:10px 4px; font-size:12px; } .probe-detail-body { grid-template-columns:1fr; gap:0; } .probe-service-icon { flex-basis:40px; height:40px; border-radius:12px; } .probe-identity { gap:12px; } .probe-add-dialog { width:calc(100vw - 24px); max-height:calc(100dvh - 24px); } #aiKeyAddForm { max-height:calc(100dvh - 26px); } .probe-editor-heading { padding:22px 20px 18px; } .probe-editor-body { padding:20px; gap:22px; } .probe-editor-grid,.probe-endpoint-fields { grid-template-columns:minmax(0,1fr); gap:22px; } .probe-editor-footer { padding:16px 20px; flex-wrap:wrap; gap:10px; } .probe-editor-footer > p:not(:empty) { flex-basis:100%; } .probe-editor-heading h2 { font-size:22px; } .probe-edit-options summary span { display:block; margin:7px 0 0 16px; } }
 
+/* Notification recipients keep event choices aligned with their save action. */
+#noticeRecipients { min-width:0; }
+#notificationPanel .notice-recipient { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(112px,max-content) auto; align-items:center; gap:16px; padding:18px 0; border-top:1px solid var(--line); min-width:0; }
+#notificationPanel .notice-recipient-name { min-width:0; overflow-wrap:anywhere; line-height:1.6; }
+#notificationPanel .notice-recipient-events { display:flex; flex-wrap:wrap; align-items:center; gap:12px 20px; min-width:0; }
+#notificationPanel .notice-recipient-events label { display:inline-flex; align-items:center; gap:8px; margin:0; line-height:1.5; white-space:nowrap; cursor:pointer; }
+#notificationPanel .notice-recipient-events input { flex:0 0 16px; width:16px; height:16px; margin:0; }
+#notificationPanel .notice-recipient-email { font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+#notificationPanel .notice-recipient > .btn { margin:0; white-space:normal; }
+@media(max-width:1100px) {
+  #notificationPanel .notice-recipient { grid-template-columns:minmax(0,1fr) auto; gap:12px 16px; }
+  #notificationPanel .notice-recipient-name { grid-column:1/-1; }
+  #notificationPanel .notice-recipient-events,#notificationPanel .notice-recipient-email { grid-column:1; }
+  #notificationPanel .notice-recipient > .btn { grid-column:2; grid-row:2/4; }
+}
+@media(max-width:600px) {
+  #notificationPanel .notice-recipient { grid-template-columns:minmax(0,1fr); }
+  #notificationPanel .notice-recipient > .btn { grid-column:1; grid-row:auto; width:100%; }
+}
+
 /* Core evidence preparation stays inside the enterprise upload page. */
 #coreLegacyToggle:not([hidden]) ~ #legacyInputFlow { display:none; }
 #coreLegacyToggle[open] ~ #legacyInputFlow { display:block; }
