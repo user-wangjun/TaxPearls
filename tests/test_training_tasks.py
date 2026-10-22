@@ -1,4 +1,5 @@
-"""课程任务主链：统一清单、策略旁挂、答案开放与越权边界。"""
+"""课程任务主链：统一清单、策略旁挂、答案开放、冻结快照与越权边界。"""
+import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
@@ -192,6 +193,98 @@ class TrainingTaskTests(unittest.TestCase):
                                          json={"answer_release": "after_submit"}).status_code, 403)
         self.assertEqual(self.client.post(f"/api/training/tasks/assignment/{single}/archive",
                                           json={"archived": True}).status_code, 403)
+
+    def test_published_task_freezes_a_version_and_stays_idempotent(self):
+        single = self.single()
+        first = self.detail("assignment", single).json()["frozen"]
+        self.assertIsNotNone(first)
+        self.assertTrue(first["material_sha256"])
+        self.assertEqual(first["answer_release"], "after_due")
+        # 重复读取不新建版本：内容没变，指纹相同
+        again = self.detail("assignment", single).json()["frozen"]
+        self.assertEqual(first["id"], again["id"])
+        with self.store.connect() as db:
+            count = db.execute("SELECT COUNT(*) c FROM training_task_version WHERE subject_id=?",
+                               (single,)).fetchone()["c"]
+        self.assertEqual(count, 1)
+
+    def test_draft_task_is_not_frozen_until_published(self):
+        single = self.single(published=False)
+        task = self.detail("assignment", single).json()
+        self.assertIsNone(task["frozen"])
+        self.assertFalse(task["version_drift"]["frozen"])
+        with self.store.connect() as db:
+            count = db.execute("SELECT COUNT(*) c FROM training_task_version WHERE subject_id=?",
+                               (single,)).fetchone()["c"]
+        self.assertEqual(count, 0)
+
+    def test_answer_policy_change_creates_a_new_frozen_version(self):
+        single = self.single()
+        before = self.detail("assignment", single).json()["frozen"]
+        self.client.put(f"/api/training/tasks/assignment/{single}/settings",
+                        json={"answer_release": "after_submit", "submit_limit": 1, "open_at": None})
+        after = self.detail("assignment", single).json()["frozen"]
+        self.assertNotEqual(before["id"], after["id"])
+        self.assertEqual(after["answer_release"], "after_submit")
+
+    def test_submission_records_the_frozen_version_it_was_graded_under(self):
+        single = self.single()
+        frozen = self.detail("assignment", single).json()["frozen"]
+        self.login(self.student)
+        self.client.post(f"/api/assignments/{single}/submit", json={"selected_rule_ids": []})
+        with self.store.connect() as db:
+            state = db.execute("SELECT task_version_id FROM training_submission_state"
+                               " WHERE assignment_id=?", (single,)).fetchone()
+        self.assertEqual(state["task_version_id"], frozen["id"])
+
+        # 之后改策略产生新版本：既有记录不跟着漂移，仍指向判分时那一版
+        self.login(self.teacher)
+        self.client.put(f"/api/training/tasks/assignment/{single}/settings",
+                        json={"answer_release": "after_submit", "submit_limit": 1, "open_at": None})
+        later = self.detail("assignment", single).json()["frozen"]
+        with self.store.connect() as db:
+            unchanged = db.execute("SELECT task_version_id FROM training_submission_state"
+                                   " WHERE assignment_id=?", (single,)).fetchone()
+        self.assertEqual(unchanged["task_version_id"], frozen["id"])
+
+        # 退回后订正：被覆盖的那一次归档成版本 1，标的是它当初判分用的快照；
+        # 新的这一次才记当下的新快照。
+        self.assertEqual(self.client.post(f"/api/assignments/{single}/return", json={
+            "student_id": self.student["id"], "reason": "按新口径重算"}).status_code, 200)
+        self.login(self.student)
+        self.client.post(f"/api/assignments/{single}/submit", json={"selected_rule_ids": []})
+        with self.store.connect() as db:
+            archived = db.execute("SELECT task_version_id FROM training_submission_version"
+                                  " WHERE assignment_id=? AND version=1", (single,)).fetchone()
+            current = db.execute("SELECT task_version_id FROM training_submission_state"
+                                 " WHERE assignment_id=?", (single,)).fetchone()
+        self.assertEqual(archived["task_version_id"], frozen["id"])
+        self.assertEqual(current["task_version_id"], later["id"])
+
+    def test_paper_freezes_one_version_covering_every_question(self):
+        paper_id = self.paper()
+        frozen = self.detail("paper", paper_id).json()["frozen"]
+        self.assertIsNotNone(frozen)
+        self.assertEqual(len(frozen["rules"]), 1)
+        self.assertEqual(frozen["rules"][0]["assignment_id"], self.paper_items(paper_id)[0]["id"])
+
+    def test_drift_reports_public_knowledge_update_without_rotating_task(self):
+        single = self.single()
+        frozen = self.detail("assignment", single).json()["frozen"]
+        self.assertEqual(self.detail("assignment", single).json()["version_drift"]["changed_rules"], [])
+        # 模拟公共知识更新：把快照 id 改成别的值，等价于规则版本被刷新
+        with self.store.connect() as db:
+            rules = json.loads(db.execute("SELECT rules_json FROM training_task_version WHERE id=?",
+                                          (frozen["id"],)).fetchone()["rules_json"])
+            for entry in rules:
+                entry["rule_snapshot_ids"] = ["stale-snapshot"]
+            db.execute("UPDATE training_task_version SET rules_json=? WHERE id=?",
+                       (json.dumps(rules), frozen["id"]))
+        drift = self.detail("assignment", single).json()["version_drift"]
+        self.assertTrue(drift["changed_rules"])
+        self.assertIn("新建任务", drift["note"])
+        # 任务本身没有被自动轮换
+        self.assertEqual(self.detail("assignment", single).json()["frozen"]["id"], frozen["id"])
 
 
 if __name__ == "__main__":

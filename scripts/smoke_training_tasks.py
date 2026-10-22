@@ -114,6 +114,18 @@ def main() -> int:
     check("教师清单含两类任务且不重复列题", {(i["kind"], i["id"]) for i in listed} ==
           {("assignment", single["id"]), ("paper", paper["id"]), ("assignment", draft_task["id"])},
           f"{len(listed)} 项")
+    # 内容版本冻结：发布即存快照，内容不变不重复建；策略变化会产生新快照
+    frozen = call(f"/api/training/tasks/assignment/{single['id']}")["frozen"]
+    check("已发布任务带冻结快照", bool((frozen or {}).get("id")) and bool((frozen or {}).get("material_sha256")),
+          f"release={frozen.get('answer_release') if frozen else None}")
+    again_frozen = call(f"/api/training/tasks/assignment/{single['id']}")["frozen"]
+    check("快照幂等（内容不变不新建）", again_frozen["id"] == frozen["id"], f"id={again_frozen['id']}")
+    check("冻结后默认无漂移", call(f"/api/training/tasks/assignment/{single['id']}")["version_drift"]
+          ["changed_rules"] == [], "changed_rules=[]")
+    paper_frozen = call(f"/api/training/tasks/paper/{paper['id']}")["frozen"]
+    check("试卷一份快照覆盖全部题目", len(paper_frozen["rules"]) == 1
+          and paper_frozen["rules"][0]["assignment_id"] == call(f"/api/papers/{paper['id']}")["items"][0]["id"],
+          f"rules={len(paper_frozen['rules'])}")
     preview = call(f"/api/training/tasks/assignment/{single['id']}/preview")
     check("预览返回学生视角与题目顺序", preview["task"]["preview"] and len(preview["task"]["questions"]) == 1,
           preview["note"][:24])
@@ -163,6 +175,8 @@ def main() -> int:
     check("旧分数留在版本里", len(history) == 1 and history[0]["adjusted_score"] == 88.0
           and history[0]["feedback"] == "第一次口径写错",
           f"versions={len(history)} adjusted={history[0]['adjusted_score'] if history else None}")
+    check("归档版本记着它当初判分用的快照", history[0].get("task_version_id") == frozen["id"],
+          f"version_id={history[0].get('task_version_id')}")
 
     # 结果页按策略下发：after_due 未到截止，作业详情只回执「已提交」
     gated = call(f"/api/assignments/{single['id']}").get("submission") or {}
@@ -185,6 +199,11 @@ def main() -> int:
     call("/api/login", {"username": teacher["username"], "password": password})
     call(f"/api/training/tasks/assignment/{single['id']}/settings",
          {"answer_release": "after_submit"}, method="PUT")
+    refrozen = call(f"/api/training/tasks/assignment/{single['id']}")["frozen"]
+    check("改策略后冻结出新版本", refrozen["id"] != frozen["id"]
+          and refrozen["answer_release"] == "after_submit", f"release={refrozen['answer_release']}")
+    check("既有提交不跟着漂移", history[0].get("task_version_id") == frozen["id"],
+          f"still={history[0].get('task_version_id')}")
     call("/api/logout", {})
     call("/api/login", {"username": student["username"], "password": password})
     released = call(f"/api/assignments/{single['id']}").get("submission") or {}

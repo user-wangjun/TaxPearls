@@ -12,6 +12,9 @@
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import secrets
 from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, Callable, Literal
@@ -52,7 +55,27 @@ def migrate(db) -> None:
             updated_at TEXT NOT NULL,
             PRIMARY KEY (subject_kind, subject_id)
         );
+        -- 任务级冻结快照：发布/首次下发时把材料、规则快照与策略固化成一份，
+        -- 之后公共知识更新不影响已发布任务与历史成绩（设计方案 §5.3）。
+        CREATE TABLE IF NOT EXISTS training_task_version (
+            id TEXT PRIMARY KEY,
+            subject_kind TEXT NOT NULL CHECK (subject_kind IN ('assignment','paper')),
+            subject_id TEXT NOT NULL,
+            org_id TEXT NOT NULL,
+            material_sha256 TEXT NOT NULL,      -- 材料（案例账套/生成材料）指纹
+            rules_json TEXT NOT NULL,           -- [{"assignment_id","rule_codes":[..],"rule_snapshot_ids":[..]}]
+            content_version_id TEXT REFERENCES training_content_version(id),
+            answer_release TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,          -- 上述内容的 sha256，同指纹不重复建版本
+            frozen_by TEXT REFERENCES users(id),
+            frozen_at TEXT NOT NULL,
+            UNIQUE(subject_kind, subject_id, fingerprint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_training_task_version_subject
+            ON training_task_version(subject_kind, subject_id, frozen_at DESC);
     """)
+    # 注意：training_submission_version 的 task_version_id 列在
+    # training_submissions.migrate 里补（它建表，且本模块在它之前执行）。
 
 
 # --------------------------------------------------------------------------- 读取工具
@@ -94,6 +117,137 @@ def _course(db, subject_kind: str, subject_ids: list[str]) -> tuple[str | None, 
         tuple(subject_ids),
     ).fetchone()
     return (row["id"], row["name"]) if row else (None, None)
+
+
+# --------------------------------------------------------------------------- 冻结快照
+
+def _rule_snapshot_ids(db, rule_codes: list[str]) -> list[str]:
+    from webapp import teaching_units
+    ids = []
+    for code in rule_codes:
+        snapshot_id = teaching_units.rule_snapshot_id(db, code)
+        if snapshot_id:
+            ids.append(snapshot_id)
+    return ids
+
+
+def subject_assignments(db, kind: str, subject_id: str) -> list[str]:
+    """任务覆盖的作业 id：单案例作业是它自己，组卷是它的每道题。"""
+    if kind == "assignment":
+        return [subject_id]
+    rows = db.execute(
+        "SELECT assignment_id FROM training_assignment_settings WHERE paper_id=? ORDER BY position",
+        (subject_id,),
+    ).fetchall()
+    return [row["assignment_id"] for row in rows]
+
+
+def freeze(db, who: dict[str, Any], kind: str, subject_id: str) -> dict[str, Any] | None:
+    """发布/首次下发时冻结内容版本；内容没变就不新建版本（同指纹幂等）。
+
+    ``fingerprint`` 覆盖材料指纹、每道题的规则快照 id、内容版本与答案策略。
+    公共知识后续更新会改变下一次计算出的快照 id，于是产生新版本，而已经
+    按旧版本提交的记录仍指向旧版本 —— 这就是「旧任务与旧分数不漂移」的落点。
+    """
+    assignment_ids = subject_assignments(db, kind, subject_id)
+    if not assignment_ids:
+        return None
+    marks = ",".join("?" for _ in assignment_ids)
+    rules: list[dict[str, Any]] = []
+    materials: list[str] = []
+    for row in db.execute(
+        f"""SELECT a.id,a.audit_id,a.weights_json,a.false_positive_penalty,f.findings_json,
+                   g.metadata_sha256
+            FROM assignments a LEFT JOIN audits f ON f.id=a.audit_id
+            LEFT JOIN generated_exercises g ON g.audit_id=a.audit_id
+            WHERE a.id IN ({marks}) ORDER BY a.id""",
+        tuple(assignment_ids),
+    ).fetchall():
+        # findings_json 由行工厂解密为明文（拓扑写入前是脱敏结构，只取 rule id）
+        try:
+            parsed = json.loads(row["findings_json"] or "[]")
+        except (TypeError, ValueError):
+            parsed = []
+        codes = sorted({f.get("rule", {}).get("id") if isinstance(f.get("rule"), dict) else f.get("id")
+                        for f in parsed if isinstance(f, dict)} - {None})
+        rules.append({"assignment_id": row["id"], "rule_codes": codes,
+                      "rule_snapshot_ids": _rule_snapshot_ids(db, codes)})
+        materials.append(row["metadata_sha256"] or "")
+    # 内容版本取全库最新的启用版本：证书不按机构分区，任务侧只记「发布当时用的是哪一版」
+    content_version = db.execute(
+        """SELECT id FROM training_content_version WHERE status='active'
+           ORDER BY created_at DESC, id LIMIT 1""").fetchone()
+    sett = _settings(db, kind, subject_id)
+    body = {"materials": materials, "rules": rules,
+            "content_version_id": content_version["id"] if content_version else None,
+            "answer_release": sett["answer_release"]}
+    fingerprint = hashlib.sha256(
+        json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    found = db.execute(
+        "SELECT * FROM training_task_version WHERE subject_kind=? AND subject_id=? AND fingerprint=?",
+        (kind, subject_id, fingerprint),
+    ).fetchone()
+    if found:
+        return _version_payload(found)
+    version_id = secrets.token_hex(12)
+    material_sha = hashlib.sha256("".join(materials).encode()).hexdigest()
+    db.execute(
+        """INSERT INTO training_task_version
+             (id,subject_kind,subject_id,org_id,material_sha256,rules_json,content_version_id,
+              answer_release,fingerprint,frozen_by,frozen_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (version_id, kind, subject_id, who["org_id"], material_sha,
+         json.dumps(rules, ensure_ascii=False), body["content_version_id"],
+         sett["answer_release"], fingerprint, who["id"], now()),
+    )
+    return _version_payload(db.execute("SELECT * FROM training_task_version WHERE id=?",
+                                       (version_id,)).fetchone())
+
+
+def _version_payload(row) -> dict[str, Any]:
+    item = dict(row)
+    item["rules"] = json.loads(item.pop("rules_json") or "[]")
+    return item
+
+
+def ensure_frozen(db, who: dict[str, Any], kind: str, subject_id: str) -> dict[str, Any] | None:
+    """已发布任务必须有冻结版本；历史上先发布后加本功能的任务在首次读取时补冻。"""
+    row = db.execute(
+        "SELECT * FROM training_task_version WHERE subject_kind=? AND subject_id=?"
+        " ORDER BY frozen_at DESC, rowid DESC LIMIT 1", (kind, subject_id)).fetchone()
+    if row:
+        return _version_payload(row)
+    task_published = (
+        db.execute("SELECT published FROM assignments WHERE id=?", (subject_id,)).fetchone()
+        if kind == "assignment" else
+        db.execute("SELECT published FROM training_papers WHERE id=?", (subject_id,)).fetchone())
+    if not task_published or not task_published["published"]:
+        return None
+    return freeze(db, who, kind, subject_id)
+
+
+def task_version(db, kind: str, subject_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        "SELECT * FROM training_task_version WHERE subject_kind=? AND subject_id=?"
+        " ORDER BY frozen_at DESC, rowid DESC LIMIT 1", (kind, subject_id)).fetchone()
+    return _version_payload(row) if row else None
+
+
+def drift(db, kind: str, subject_id: str) -> dict[str, Any]:
+    """冻结后公共知识是否已更新：只提示，不自动轮换（设计方案 §5.3）。"""
+    frozen = task_version(db, kind, subject_id)
+    if not frozen:
+        return {"frozen": False, "changed_rules": [], "note": "任务发布后自动冻结内容版本。"}
+    changed: list[str] = []
+    for entry in frozen["rules"]:
+        current = _rule_snapshot_ids(db, entry["rule_codes"])
+        if current != entry["rule_snapshot_ids"]:
+            changed.extend(code for code in entry["rule_codes"])
+    return {"frozen": True, "frozen_at": frozen["frozen_at"],
+            "content_version_id": frozen["content_version_id"],
+            "changed_rules": sorted(set(changed)),
+            "note": ("公共知识已有更新，本任务仍按发布时的冻结版本判定；如需采用新口径请新建任务。"
+                     if changed else "与发布时冻结的规则快照一致。")}
 
 
 def _task_state(published: bool, archived: bool, open_at: str | None, due_at: str | None) -> str:
@@ -360,6 +514,17 @@ def detail(db, who: dict[str, Any], kind: str, subject_id: str) -> dict[str, Any
             ).fetchone()
             if not member and row.get("target_student_id") != who["id"]:
                 raise TaskError("任务不存在。", 404)
+    # 已发布任务必须带冻结版本；从没发布过的草稿不冻结（内容还在改）
+    if task["published"]:
+        owner = who if who["role"] == "teacher" else {
+            "id": row["created_by"] if kind == "assignment" else row["owner_id"],
+            "org_id": task.get("org_id") or who["org_id"]}
+        task["frozen"] = ensure_frozen(db, owner, kind, subject_id)
+        task["version_drift"] = drift(db, kind, subject_id)
+    else:
+        task["frozen"] = None
+        task["version_drift"] = {"frozen": False, "changed_rules": [],
+                                 "note": "草稿尚未发布，发布时自动冻结内容版本。"}
     return task
 
 
@@ -529,7 +694,12 @@ def register(app, store_provider: Callable[[], Any], user_fn: Callable[..., dict
     @guarded
     def settings(kind: str, subject_id: str, body: SettingsBody,
                  session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
-        return write(session, lambda db, user: update_settings(db, user, kind, subject_id, body))
+        def handler(db, user):
+            value = update_settings(db, user, kind, subject_id, body)
+            value["frozen"] = freeze(db, user, kind, subject_id)   # 答案策略属于冻结内容
+            value["version_drift"] = drift(db, kind, subject_id)
+            return value
+        return write(session, handler)
 
     @app.post("/api/training/tasks/{kind}/{subject_id}/answers/release")
     @guarded
@@ -540,4 +710,9 @@ def register(app, store_provider: Callable[[], Any], user_fn: Callable[..., dict
     @guarded
     def archive(kind: str, subject_id: str, body: ArchiveBody,
                 session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
-        return write(session, lambda db, user: set_archived(db, user, kind, subject_id, body.archived))
+        def handler(db, user):
+            value = set_archived(db, user, kind, subject_id, body.archived)
+            value["frozen"] = task_version(db, kind, subject_id)
+            value["version_drift"] = drift(db, kind, subject_id)
+            return value
+        return write(session, handler)

@@ -96,6 +96,14 @@ def migrate(db) -> None:
     # 重交策略：teacher_return=必须教师退回（默认，2026-10-22 口径）；free=沿用历史覆盖式重交
     if columns and "retake_policy" not in columns:
         db.execute("ALTER TABLE training_task_settings ADD COLUMN retake_policy TEXT NOT NULL DEFAULT 'teacher_return'")
+    # 提交关联任务冻结快照：历史回看优先读快照，不实时拼接最新图谱（设计方案 §5.3）
+    state_columns = {r["name"] for r in db.execute("PRAGMA table_info(training_submission_state)")}
+    if state_columns and "task_version_id" not in state_columns:
+        db.execute("ALTER TABLE training_submission_state ADD COLUMN task_version_id TEXT")
+    # 版本表也要记冻结快照：快照在建表之后才由 training_tasks 建，所以在这里补列
+    version_columns = {r["name"] for r in db.execute("PRAGMA table_info(training_submission_version)")}
+    if version_columns and "task_version_id" not in version_columns:
+        db.execute("ALTER TABLE training_submission_version ADD COLUMN task_version_id TEXT")
 
 
 # --------------------------------------------------------------------------- 读取
@@ -149,7 +157,8 @@ def state_of(db, assignment_id: str, student_id: str) -> dict[str, Any]:
         (assignment_id, student_id),
     ).fetchone()
     base = {"status": "not_started", "attempts": 0, "corrections": 0, "return_reason": None,
-            "returned_by": None, "returned_at": None, "correct_due_at": None, "updated_at": None}
+            "returned_by": None, "returned_at": None, "correct_due_at": None, "updated_at": None,
+            "task_version_id": None}
     if row:
         base.update({k: row[k] for k in base if k in row.keys()})
     return base
@@ -173,7 +182,7 @@ def versions(store, db, assignment_id: str, student_id: str) -> list[dict[str, A
     # 身份列必须一起 SELECT：行工厂按 assignment_id/student_id 校验解密上下文
     rows = db.execute(
         """SELECT assignment_id,student_id,id,version,kind,answers_json,score,adjusted_score,
-                  feedback,reviewed_by,reviewed_at,submitted_at
+                  feedback,reviewed_by,reviewed_at,submitted_at,task_version_id
            FROM training_submission_version WHERE assignment_id=? AND student_id=? ORDER BY version""",
         (assignment_id, student_id),
     ).fetchall()
@@ -220,6 +229,22 @@ def guard_submit(db, assignment_id: str, student_id: str) -> None:
             f"订正次数已用尽（限 {limits['correction_limit']} 次），请联系任课教师。", 409)
 
 
+def task_version_id(db, assignment_id: str) -> str | None:
+    """这道题当前应关联的冻结快照：单案例作业取自身，组卷题目取所属试卷。"""
+    row = db.execute(
+        """SELECT COALESCE(s.paper_id,a.id) AS subject_id,
+                  CASE WHEN s.paper_id IS NULL THEN 'assignment' ELSE 'paper' END AS subject_kind
+           FROM assignments a LEFT JOIN training_assignment_settings s ON s.assignment_id=a.id
+           WHERE a.id=?""", (assignment_id,)).fetchone()
+    if not row:
+        return None
+    found = db.execute(
+        "SELECT id FROM training_task_version WHERE subject_kind=? AND subject_id=?"
+        " ORDER BY frozen_at DESC, rowid DESC LIMIT 1",
+        (row["subject_kind"], row["subject_id"])).fetchone()
+    return found["id"] if found else None
+
+
 def snapshot_current(store, db, assignment_id: str, student_id: str) -> int | None:
     """把即将被覆盖的那一次提交存成历史版本，返回版本号。
 
@@ -233,6 +258,9 @@ def snapshot_current(store, db, assignment_id: str, student_id: str) -> int | No
     if not row:
         return None
     codec = _codec(store)
+    # 这一次提交当初是在哪个冻结快照下判的分：取状态行里记的那一版，
+    # 而不是「现在的」最新快照——否则旧版本会跟着公共知识更新一起漂移。
+    graded_under = state_of(db, assignment_id, student_id)["task_version_id"] or task_version_id(db, assignment_id)
     last = db.execute(
         "SELECT COALESCE(MAX(version),0) v FROM training_submission_version WHERE assignment_id=? AND student_id=?",
         (assignment_id, student_id),
@@ -244,8 +272,8 @@ def snapshot_current(store, db, assignment_id: str, student_id: str) -> int | No
     db.execute(
         """INSERT INTO training_submission_version
              (id,assignment_id,student_id,version,kind,answers_json,score,details_json,
-              adjusted_score,feedback,reviewed_by,reviewed_at,submitted_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              adjusted_score,feedback,reviewed_by,reviewed_at,submitted_at,task_version_id)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (secrets.token_hex(12), assignment_id, student_id, version,
          # 版本 1 是原始提交，之后每次因退回产生的都是订正
          "submit" if version == 1 else "correct",
@@ -254,7 +282,7 @@ def snapshot_current(store, db, assignment_id: str, student_id: str) -> int | No
          row["adjusted_score"],
          codec.seal(feedback, "training_submission_version", "feedback", assignment_id, student_id, version)
          if feedback is not None else None,
-         row["reviewed_by"], None, row["submitted_at"]),
+         row["reviewed_by"], None, row["submitted_at"], graded_under),
     )
     return version
 
@@ -273,6 +301,16 @@ def record_submitted(db, assignment_id: str, student_id: str) -> None:
              return_reason=NULL, returned_by=NULL, returned_at=NULL, correct_due_at=NULL,
              updated_at=excluded.updated_at""",
         (assignment_id, student_id, corrections, now()),
+    )
+    # 这一次提交关联「当下」的冻结快照：此后即使公共知识更新，这条记录仍指向旧版本。
+    # 用 excluded 覆盖而不是 COALESCE 保留旧值——订正是按新内容判的分，就该记新快照；
+    # 只有在没有快照可关联（任务未发布等）时才保留上一次记录，避免把已有证据抹成空。
+    db.execute(
+        """INSERT INTO training_submission_state (assignment_id,student_id,status,updated_at,task_version_id)
+           VALUES (?,?,'submitted',?,?) ON CONFLICT(assignment_id,student_id) DO UPDATE SET
+             task_version_id=COALESCE(excluded.task_version_id,
+                                     training_submission_state.task_version_id)""",
+        (assignment_id, student_id, now(), task_version_id(db, assignment_id)),
     )
     db.execute("DELETE FROM training_submission_draft WHERE assignment_id=? AND student_id=?",
                (assignment_id, student_id))
