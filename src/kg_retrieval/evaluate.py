@@ -4,6 +4,7 @@ from time import perf_counter
 from .bundle import build
 from .common import by_id, digest, implementation_fingerprint
 from .relation_search import rule_context
+from .passages import exact_source
 
 
 def case_input(db, case):
@@ -83,9 +84,13 @@ def evaluate(db, cases, *, model_dir=None, offline=True, token_budget=6000):
             source_total += 1
             try:
                 original = by_id(db, "Clause", "clause_id", item["clause_id"])
-                require(original["content"] == item["text"], "条款原文被截断或修改")
+                exact = exact_source(item, original['content'])
+                require(exact, "条款原文或片段坐标、哈希不一致")
+                if item.get('partial_clause'):
+                    require(any(g['code'] == 'retrieval_context_partial' and g.get('clause_id') == item['clause_id']
+                                for g in bundle['gaps']), '局部取回未明确记录完整性缺口')
                 require(bool(item["source_location"] and item["source_url"] and item["file_sha256"]), "来源不可追溯")
-                traceable += bool(original["content"] == item["text"] and item["source_location"] and item["source_url"] and item["file_sha256"])
+                traceable += bool(exact and item["source_location"] and item["source_url"] and item["file_sha256"])
             except ValueError:
                 invented += 1
                 failures.append("出现不存在的条款引用")

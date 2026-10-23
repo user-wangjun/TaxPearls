@@ -20,7 +20,7 @@ from webapp.access import AccessDenied, current_actor
 
 ROOT = Path(__file__).resolve().parents[1]
 _LOCK, _ACTIVE = Lock(), set()
-AI_VALIDATION_VERSION = 5
+AI_VALIDATION_VERSION = 6
 _AUTHORIZE_BATCH = ContextVar('knowledge_authorize_batch', default=None)
 
 
@@ -34,10 +34,12 @@ ANALYSIS_PROMPT = (
     "优先级最高：只看check.evaluation判断整体核查状态。bundle_status不是ready时，所有数组项的type都必须为insufficient_evidence，"
     "不得另加condition_not_met或risk_clue项。check.fact_evaluation和conditions中的FALSE/TRUE只是计算事实，不能覆盖整体UNKNOWN；可在证据不足项的text中解释这些事实。"
     "金额只在amounts里按{metric_id:指标ID,value:十进制字符串}引用，正文不重复金额；dates只使用包内ISO日期。"
-    "规则阈值也属于金额，禁止在text中写数字金额或数字阈值，统一用‘内部筛查阈值’代称；具体比较值保留在程序条件中。"
+    "规则门槛也属于金额，禁止在text中写数字金额或数字阈值，具体比较值保留在程序条件中。"
+    "仅程序明确标为内部筛查参数的门槛可称内部筛查阈值；法定免税标准等仍称法定标准，不得改称内部筛查阈值。来源性质未明确时只称规则所列门槛。"
     "fact_assessment为程序已保存事实，不能改写；风险待核查不能否定已确认差额。"
     "每项type必须严格使用response_constraints.required_type，不得因事实差额为零或已知而改成其他类型。"
     "所有引用必须来自本包，缺少企业事实时source_ids和amounts可为空。政策条款存在时必须引用；没有政策不得编造引用。列出需补材料。"
+    "优先合并同类缺口，最多返回三项简洁分析，不重复长段原文。严格逐字使用response_constraints中的允许ID，不补造来源。"
 )
 
 def legal_claim(text):
@@ -202,7 +204,10 @@ def analyze(package, prior=None):
             "condition_met": "risk_clue", "condition_not_met": "condition_not_met", "excluded": "excluded"
         }.get(package["check"].get("disposition"), "insufficient_evidence")
         payload["response_constraints"] = {"required_type": required_type,
-            "fact_assessment_is_readonly": True, "policy_readiness_is_independent_of_numeric_difference": True}
+            "fact_assessment_is_readonly": True, "policy_readiness_is_independent_of_numeric_difference": True,
+            "allowed_rule_id": payload['check']['rule_id'],
+            "allowed_clause_ids": sorted({p['clause_id'] for p in payload['policy_evidence'] + payload['policy_leads']}),
+            "allowed_source_ids": sorted({s for f in payload['facts'] for s in f.get('source_ids', [])})}
         if partial:
             payload['bundle_status'] = 'needs_review'
             payload['analysis_mode'] = 'review_only'
@@ -343,7 +348,7 @@ def register(app, get_store, get_user, allow):
         from src import vat_reconciliation as vat
         user, store = get_user(session), get_store()
         allow(user, "org_admin", "accountant")
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         if view["revision"] != body.expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         payload = deepcopy(core_inputs.latest(view, writable=True))
@@ -362,7 +367,7 @@ def register(app, get_store, get_user, allow):
     def recheck(task_id: str, body: RecheckBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         user, store = get_user(session), get_store()
         allow(user, "org_admin", "accountant")
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         if view["revision"] != body.expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         payload = deepcopy(core_inputs.latest(view, writable=True))
@@ -441,7 +446,9 @@ def register(app, get_store, get_user, allow):
         view, payload = None, None
         if body.task_id:
             allow(user, "org_admin", "accountant")
-            view = batches.read(store, user, body.task_id)
+            from webapp.knowledge_runs import require_idle
+            view = batches.read_current(store, user, body.task_id)
+            require_idle(user, body.task_id)
             if body.expected_revision != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
             payload = deepcopy(core_inputs.latest(view, writable=True))
@@ -486,6 +493,7 @@ def register(app, get_store, get_user, allow):
                 return {**old, "revision": view["revision"], "cached": True, "saved": True}
             key = (user["org_id"], body.task_id, package["content_hash"])
             with _LOCK:
+                require_idle(user, body.task_id)
                 if key in _ACTIVE:
                     raise HTTPException(409, "相同检查正在处理，请稍后重新读取。")
                 _ACTIVE.add(key)
@@ -525,3 +533,6 @@ def register(app, get_store, get_user, allow):
                     _ACTIVE.discard(key)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+
+    from webapp.knowledge_runs import register as register_runs
+    register_runs(app, get_store, get_user, allow)

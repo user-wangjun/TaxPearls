@@ -343,6 +343,39 @@ def append_revision(store, actor, batch_id, expected_revision, kind, payload):
     return revision
 
 
+def read_current(store, actor, batch_id):
+    """Current business snapshot; historical evidence stays available through read()."""
+    # Fetch encrypted immutable rows in a short snapshot, then decrypt outside
+    # the write transaction. Never load earlier payloads or event history here.
+    with store.connect() as db:
+        db.execute('BEGIN')
+        batch = dict(_authorize(db, actor, batch_id))
+        row = db.execute('SELECT * FROM material_revisions WHERE batch_id=? AND revision=?',
+                         (batch_id, batch['revision'])).fetchone()
+        originals = list(db.execute('SELECT id,metadata_cipher,uploaded_by,uploaded_at,deleted_at '
+                                    'FROM material_originals WHERE batch_id=? ORDER BY uploaded_at,rowid', (batch_id,)))
+    result = {**batch, 'files': [], 'versions': [], 'events': [], 'jobs': [], 'executions': []}
+    for original in originals:
+        metadata = json.loads(_open(original['metadata_cipher'],
+                                   _context(batch['org_id'], batch_id, 'metadata', original['id'])))
+        result['files'].append({**metadata, **{k: original[k] for k in
+                               ('id', 'uploaded_by', 'uploaded_at', 'deleted_at')}})
+    if row:
+        payload = json.loads(_open(row['payload_cipher'],
+                                  _context(batch['org_id'], batch_id, 'revision:' + row['kind'], row['revision'])))
+        result['versions'].append({**{k: row[k] for k in ('revision', 'kind', 'created_by', 'created_at')}, 'payload': payload})
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        current = _authorize(db, actor, batch_id)
+        if current['revision'] != batch['revision']:
+            raise AccessDenied('资料已变化，请重新读取。', 409)
+        if row and payload.get('core_task'):
+            from webapp import core_record_index
+            core_record_index.observe(db, current, actor, payload)
+        _event(db, current, actor, 'view', {'revision': current['revision']})
+    return result
+
+
 def read(store, actor, batch_id):
     """One permission snapshot for metadata, immutable versions and event history."""
     with store.connect() as db:
