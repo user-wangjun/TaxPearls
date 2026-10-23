@@ -142,7 +142,8 @@
     if (!report.courses.length) body.append(el('p', 'muted', '本院校还没有启用中的课程。'));
     else {
       body.append(table(['课程', '学期', '教师', '班级', '任务', '应交', '已交', '提交率', '均分', '备注'],
-        report.courses.map(c => [c.name, c.semester || '—', c.teacher || '—', c.classes, c.tasks,
+                                 report.courses.map(c => [c.name, c.term_name || c.semester || '—',
+                                                          c.teacher || '—', c.classes, c.tasks,
                                  c.expected, c.submitted, pct(c.submit_rate), money(c.mean), c.note || ''])));
       body.append(el('p', 'muted', '课程区只算提交份数与均分，不把人头相加（一个学生可能同时修多门课）。'));
     }

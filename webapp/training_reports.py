@@ -154,9 +154,14 @@ def build_report(db: sqlite3.Connection, college: str, *, term_id: str | None = 
 
     courses = []
     for course in db.execute(
-            """SELECT c.*, u.display_name AS teacher_name FROM course c
+            """SELECT c.*, u.display_name AS teacher_name, t.name AS term_name
+                 FROM course c
                  LEFT JOIN college_user u ON u.id = c.teacher_id
+                 LEFT JOIN college_term t ON t.id = c.term_id
                 WHERE c.college=? AND c.active=1 ORDER BY c.created_at DESC""", (college,)).fetchall():
+        # 按学期筛选时，未挂学期实体的课程无从归属，一律不计入（不猜按名字）。
+        if term_id and course["term_id"] != term_id:
+            continue
         names = set(course_class_names(db, course["id"]))
         # 课程绑定的是班级名：先落到实体，再经实体找绑定的教学班；没有实体时退回同名教学班。
         hit_ids = {e["id"] for e in entities if e["name"] in names}
@@ -164,7 +169,9 @@ def build_report(db: sqlite3.Connection, college: str, *, term_id: str | None = 
         if not stats_list:
             stats_list = [stats_of(t) for t in teaching if t["name"] in names]
         totals = _finish(_merge_stats(stats_list))
-        courses.append({"id": course["id"], "name": course["name"], "semester": course["semester"],
+        courses.append({"id": course["id"], "name": course["name"],
+                        "term_id": course["term_id"], "term_name": course["term_name"],
+                        "semester": course["term_name"] or course["semester"],
                         "teacher": course["teacher_name"], "class_names": sorted(names),
                         "classes": totals["classes"], "tasks": totals["tasks"],
                         "expected": totals["expected"], "submitted": totals["submitted"],
@@ -200,6 +207,7 @@ def build_report(db: sqlite3.Connection, college: str, *, term_id: str | None = 
             "notes": [
                 "教学班与班级实体未绑定时不计入院系/专业汇总，避免把成绩算到错的院系。",
                 "「未复核」= 已提交但还没人工调分/写评语的份数，用于提醒老师补复核。",
+                "按学期筛选时，未挂学期实体的课程不计入课程区（到「课程管理」里绑定学期即可）。",
                 "考证内容层（知识点、标注、关联）为全平台共享数据，不在院校报表内按校切分。",
             ]}
 

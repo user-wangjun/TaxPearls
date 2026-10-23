@@ -872,12 +872,40 @@ function parseStudentRows(text) {
 async function loadCourses() {
   state.courses = (await api("/api/training/staff/courses")).courses;
   state.teachers = (await api("/api/training/staff/teachers")).teachers;
+  const college = (state.staff && state.staff.college) || "";
+  state.terms = college
+    ? (await api(`/api/training/staff/org/terms?college=${encodeURIComponent(college)}&include_archived=false`)).terms
+    : [];
   renderCourses();
+  renderTermOptions();
 }
 
 function teacherOptions(selectedId) {
   return state.teachers.map((t) =>
     `<option value="${esc(t.id)}" ${t.id === selectedId ? "selected" : ""}>${esc(t.display_name)}（${esc(t.username)}）</option>`).join("");
+}
+
+/** 学期下拉：只列未归档学期；没有任何学期时给出提示而非静默空列表。 */
+function termOptions(selectedId, { keepUnset = false } = {}) {
+  const head = keepUnset ? `<option value="" ${selectedId ? "" : "selected"}>（未挂学期）</option>` : "";
+  return head + state.terms.map((t) =>
+    `<option value="${esc(t.id)}" ${t.id === selectedId ? "selected" : ""}>${esc(t.name)}${t.is_current ? "（当前学期）" : ""}</option>`).join("");
+}
+
+function renderTermOptions() {
+  const select = document.getElementById("cf2-term");
+  if (!select) return;
+  if (!state.terms.length) {
+    select.innerHTML = `<option value="">（院校还没有学期，请先到「组织与学期」建立）</option>`;
+    return;
+  }
+  select.innerHTML = termOptions(null, { keepUnset: true });
+  const current = state.terms.find((t) => t.is_current);
+  if (current) select.value = current.id;
+}
+
+function courseTermLabel(c) {
+  return c.term_name || c.semester || "";
 }
 
 function renderCourses() {
@@ -890,7 +918,7 @@ function renderCourses() {
     <div class="item" id="course-${esc(c.id)}">
       <div class="item-head">
         <div><strong>${esc(c.name)}</strong>
-          ${c.semester ? `<span class="chip">${esc(c.semester)}</span>` : ""}
+          ${courseTermLabel(c) ? `<span class="chip">${esc(courseTermLabel(c))}</span>` : `<span class="badge gray">未挂学期</span>`}
           ${c.teacher_name ? `<span class="chip">授课：${esc(c.teacher_name)}</span>` : `<span class="badge gray">未指派教师</span>`}
           ${c.active ? `<span class="badge">开设中</span>` : `<span class="badge gray">已停用</span>`}
         </div>
@@ -906,7 +934,7 @@ function renderCourses() {
       <div class="inline-form" data-role="course-edit" hidden>
         <div class="row">
           <div><label>课程名称</label><input data-role="ce-name" value="${esc(c.name)}"></div>
-          <div><label>学年学期</label><input data-role="ce-semester" value="${esc(c.semester || "")}"></div>
+          <div><label>学年学期</label><select data-role="ce-term">${termOptions(c.term_id, { keepUnset: true })}</select></div>
           <div><label>授课教师</label><select data-role="ce-teacher">${teacherOptions(c.teacher_id)}</select></div>
         </div>
         <div class="row">
@@ -1485,6 +1513,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       if (!f.hidden) {
         const sel = q("#cf2-teacher");
         sel.innerHTML = `<option value="">（未指派）</option>` + teacherOptions(null);
+        renderTermOptions();
       }
     },
     "cancel-course-form": () => { q("#course-form").hidden = true; },
@@ -1496,7 +1525,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
         body: {
           name: q("#cf2-name").value.trim(),
           college: q("#cf2-college").value.trim(),
-          semester: q("#cf2-semester").value.trim() || null,
+          term_id: q("#cf2-term").value || null,
           teacher_id: q("#cf2-teacher").value || null,
           class_names: splitClassNames(q("#cf2-classes").value),
           description: q("#cf2-desc").value.trim() || null,
@@ -1535,7 +1564,7 @@ document.getElementById("app-view").addEventListener("click", (event) => {
         method: "PATCH",
         body: {
           name: form.querySelector("[data-role=ce-name]").value.trim(),
-          semester: form.querySelector("[data-role=ce-semester]").value.trim() || null,
+          term_id: form.querySelector("[data-role=ce-term]").value || null,
           teacher_id: form.querySelector("[data-role=ce-teacher]").value || null,
           class_names: splitClassNames(form.querySelector("[data-role=ce-classes]").value),
           description: form.querySelector("[data-role=ce-desc]").value.trim() || null,

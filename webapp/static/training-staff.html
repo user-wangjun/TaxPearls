@@ -324,11 +324,11 @@
         <button class="small" data-act="show-course-form">＋ 新建课程</button>
         <button class="small" data-act="refresh-courses">刷新</button>
       </h2>
-      <p class="muted" style="margin-top:-6px;">课程基本信息绑定授课教师与学籍班级；课堂任务通过“课程与教学班级”关联后发布。停用课程保留历史数据。</p>
+      <p class="muted" style="margin-top:-6px;">课程绑定学期实体、授课教师与学籍班级；学期取自「组织与学期」，报表按学期筛选依赖这里的绑定。课堂任务通过“课程与教学班级”关联后发布。停用课程保留历史数据。</p>
       <div id="course-form" class="inline-form" hidden>
         <div class="row">
           <div><label>课程名称（必填）</label><input id="cf2-name" placeholder="如 税务风险审计实训"></div>
-          <div><label>学年学期（选填）</label><input id="cf2-semester" placeholder="如 2026-2027-1"></div>
+          <div><label>学年学期</label><select id="cf2-term"></select></div>
           <div><label>授课教师</label><select id="cf2-teacher"></select></div>
         </div>
         <div class="row">

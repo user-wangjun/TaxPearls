@@ -797,6 +797,18 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_college_class_lookup
                 ON college_class(college, name);
         """)
+        # 课程挂学期实体（FR-U04 v2）：course.semester 原本是自由文本（如「2026-2027学年第一学期」），
+        # 与组织架构的学期实体（college_term）无法对账，按学期筛选报表会漏课。此处 additive 加列
+        # term_id 指向学期实体；semester 文本保留作展示快照（由服务层随学期名同步），
+        # 旧数据按「同院校、同学期名」回填。**必须排在上面 college_term 建表之后**。
+        course_columns = {row["name"] for row in db.execute("PRAGMA table_info(course)")}
+        if "term_id" not in course_columns:
+            db.execute("ALTER TABLE course ADD COLUMN term_id TEXT REFERENCES college_term(id)")
+        db.execute(
+            """UPDATE course SET term_id = (
+                   SELECT t.id FROM college_term t
+                    WHERE t.college = course.college AND t.name = course.semester)
+                WHERE term_id IS NULL AND IFNULL(semester, '') <> ''""")
         # 专业层级（FR-U01 待补）：院系 → 专业 → 班级。专业挂院系（可空），
         # 班级可选挂专业；同院校专业名唯一；既有库 additive 加列补挂 major_id。
         db.executescript("""

@@ -390,10 +390,13 @@ def set_student_active(store, student_id: str, active: bool, *, college: str, ac
 
 
 _COURSE_SELECT = """
-    SELECT c.id, c.college, c.name, c.semester, c.teacher_id, c.description,
+    SELECT c.id, c.college, c.name, c.semester, c.term_id, c.teacher_id, c.description,
            c.active, c.created_at,
-           u.display_name AS teacher_name, u.username AS teacher_username
-    FROM course c LEFT JOIN college_user u ON u.id = c.teacher_id
+           u.display_name AS teacher_name, u.username AS teacher_username,
+           t.name AS term_name, t.is_current AS term_is_current
+    FROM course c
+    LEFT JOIN college_user u ON u.id = c.teacher_id
+    LEFT JOIN college_term t ON t.id = c.term_id
 """
 
 
@@ -405,13 +408,59 @@ def _course_payload(db, row: sqlite3.Row) -> dict[str, Any]:
            WHERE s.active=1 AND s.college=? AND s.class_name IN
            (SELECT class_name FROM course_class WHERE course_id=?)""",
         (row["college"], row["id"])).fetchone()["n"]
-    return {**dict(row), "classes": classes, "student_count": enrolled}
+    payload = {**dict(row), "classes": classes, "student_count": enrolled}
+    # 学期名以实体为准，semester 文本只作旧客户端兼容的展示快照
+    payload["semester"] = row["term_name"] or row["semester"]
+    return payload
 
 
-def list_courses(store, college: str, *, include_inactive: bool = True) -> list[dict[str, Any]]:
+def _resolve_course_term(db: sqlite3.Connection, college: str, term_id: str | None,
+                         semester: str | None) -> tuple[str | None, str | None]:
+    """把课程学期落到学期实体：优先 term_id，其次按学期名文本匹配。
+
+    返回 (term_id, semester 展示文本)。规则：
+    - 给了 term_id：必须属于本院校且未归档，否则 404；展示文本强制取实体名。
+    - 只给了文本：本院校同名学期存在则自动绑定；**本院校已有学期实体但文本对不上时拒绝**
+      （否则又回到"自由文本对不上账"的老问题）；本院校还没有任何学期时按 v1 口径放行文本。
+    - 都没给：不挂学期。
+    """
+    college = (college or "").strip()
+    term_id = (term_id or "").strip() or None
+    semester = (semester or "").strip() or None
+    if term_id:
+        term = db.execute("SELECT id, name FROM college_term WHERE id=? AND college=?",
+                          (term_id, college)).fetchone()
+        if not term:
+            raise TrainingPortalError("学期不存在或不属于本院校。", 404)
+        archived = db.execute("SELECT archived FROM college_term WHERE id=?",
+                              (term_id,)).fetchone()
+        if archived and archived["archived"]:
+            raise TrainingPortalError("该学期已归档，不能再挂课程。", 409)
+        return term["id"], term["name"]
+    if semester:
+        matched = db.execute(
+            """SELECT id, name FROM college_term
+                WHERE college=? AND name=? AND archived=0""", (college, semester)).fetchone()
+        if matched:
+            return matched["id"], matched["name"]
+        if db.execute("SELECT 1 FROM college_term WHERE college=? AND archived=0 LIMIT 1",
+                      (college,)).fetchone():
+            raise TrainingPortalError(
+                f"学年学期「{semester}」不是本院校已建立的学期，请从学期列表中选择。", 422)
+        return None, semester
+    return None, None
+
+
+def list_courses(store, college: str, *, include_inactive: bool = True,
+                 term_id: str | None = None) -> list[dict[str, Any]]:
     with store.connect() as db:
         where = "" if include_inactive else " AND c.active=1"
-        rows = db.execute(f"{_COURSE_SELECT} WHERE c.college=?{where} ORDER BY c.created_at DESC", (college,)).fetchall()
+        params: list[Any] = [college]
+        if term_id:
+            where += " AND c.term_id=?"
+            params.append(term_id)
+        rows = db.execute(f"{_COURSE_SELECT} WHERE c.college=?{where} ORDER BY c.created_at DESC",
+                          params).fetchall()
         return [_course_payload(db, r) for r in rows]
 
 
@@ -420,29 +469,31 @@ def list_courses(store, college: str, *, include_inactive: bool = True) -> list[
 def create_course(store, operator_id: str, college: str, name: str, *,
                   semester: str | None = None, teacher_id: str | None = None,
                   class_names: list[str] | None = None,
-                  description: str | None = None) -> dict[str, Any]:
+                  description: str | None = None,
+                  term_id: str | None = None) -> dict[str, Any]:
     name = (name or "").strip()
-    semester = (semester or "").strip() or None
     if not name:
         raise TrainingPortalError("课程名称必填。")
     if not college:
         raise TrainingPortalError("院校必填。")
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
+        term_id, semester = _resolve_course_term(db, college, term_id, semester)
         if teacher_id and not db.execute(
                 "SELECT 1 FROM college_user WHERE id=? AND college=? AND active=1", (teacher_id, college)).fetchone():
             raise TrainingPortalError("授课教师不存在或已停用。", 404)
         dup = db.execute(
-            """SELECT id FROM course WHERE college=? AND name=? AND IFNULL(semester,'')=? AND active=1""",
-            (college, name, semester or "")).fetchone()
+            """SELECT id FROM course WHERE college=? AND name=?
+                 AND IFNULL(term_id,'')=? AND IFNULL(semester,'')=? AND active=1""",
+            (college, name, term_id or "", semester or "")).fetchone()
         if dup:
             raise TrainingPortalError(f"同院校同学期已存在开设中的课程「{name}」。")
         cid = str(uuid.uuid4())
         db.execute(
-            """INSERT INTO course (id, college, name, semester, teacher_id, description,
+            """INSERT INTO course (id, college, name, semester, term_id, teacher_id, description,
                                    active, created_at, created_by)
-               VALUES (?,?,?,?,?,?,1,?,?)""",
-            (cid, college, name, semester, teacher_id,
+               VALUES (?,?,?,?,?,?,?,1,?,?)""",
+            (cid, college, name, semester, term_id, teacher_id,
              (description or "").strip() or None, _now(), operator_id))
         for cn in sorted({(c or "").strip() for c in (class_names or []) if (c or "").strip()}):
             db.execute("INSERT INTO course_class (course_id, class_name) VALUES (?,?)", (cid, cn))
@@ -454,16 +505,27 @@ def update_course(store, course_id: str, fields: dict[str, Any],
                   class_names: list[str] | None = None) -> dict[str, Any]:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
-        course = db.execute("SELECT college FROM course WHERE id=?", (course_id,)).fetchone()
+        course = db.execute("SELECT college, name, IFNULL(term_id,'') AS term_id,"
+                            " IFNULL(semester,'') AS semester FROM course WHERE id=?",
+                            (course_id,)).fetchone()
         if not course:
             raise TrainingPortalError("课程不存在。", 404)
         if "teacher_id" in fields and fields["teacher_id"]:
             if not db.execute("SELECT 1 FROM college_user WHERE id=? AND college=? AND active=1",
                               (fields["teacher_id"], course["college"])).fetchone():
                 raise TrainingPortalError("授课教师不存在或已停用。", 404)
+        fields = dict(fields)
+        if "term_id" in fields or "semester" in fields:
+            # 学期一旦能落到实体，就同时改写 term_id 与展示文本，避免两者互相漂移
+            term_id, semester = _resolve_course_term(
+                db, course["college"], fields.get("term_id"), fields.get("semester"))
+            fields["term_id"] = term_id
+            fields["semester"] = semester
+
         sets, params = [], []
-        for key in ("name", "semester", "teacher_id", "description", "active"):
-            if key in fields and fields[key] is not None:
+        for key in ("name", "semester", "term_id", "teacher_id", "description", "active"):
+            # term_id / semester 显式传 None 表示"解绑学期"，其余字段传 None 视为不修改
+            if key in fields and (fields[key] is not None or key in ("term_id", "semester")):
                 value = fields[key]
                 if key in ("name", "description"):
                     value = (value or "").strip() or None
@@ -471,7 +533,16 @@ def update_course(store, course_id: str, fields: dict[str, Any],
                     value = (value or "").strip() or None
                 sets.append(f"{key}=?")
                 params.append(value)
+        new_name = (fields.get("name") or course["name"]).strip()
+        new_term = fields.get("term_id", course["term_id"]) or ""
+        new_text = (fields.get("semester", course["semester"]) or "")
         if sets:
+            dup = db.execute(
+                """SELECT id FROM course WHERE college=? AND name=? AND active=1 AND id!=?
+                     AND IFNULL(term_id,'')=? AND IFNULL(semester,'')=?""",
+                (course["college"], new_name, course_id, new_term, new_text)).fetchone()
+            if dup:
+                raise TrainingPortalError(f"同院校同学期已存在开设中的课程「{new_name}」。")
             params.append(course_id)
             db.execute(f"UPDATE course SET {', '.join(sets)} WHERE id=?", params)
         if class_names is not None:
@@ -534,14 +605,17 @@ def college_overview(store, college: str) -> dict[str, Any]:
             "SELECT count(*) n FROM college_user WHERE college=? AND active=1",
             (college,)).fetchone()["n"]
         courses = db.execute(
-            """SELECT c.id, c.name, c.semester, c.active,
+            """SELECT c.id, c.name, COALESCE(t.name, c.semester) AS semester,
+                      c.term_id, t.name AS term_name, c.active,
                       u.display_name AS teacher_name,
                       (SELECT count(*) FROM course_class cc WHERE cc.course_id=c.id) AS class_count,
                       (SELECT count(*) FROM student_info s WHERE s.active=1 AND s.college=c.college
                         AND s.class_name IN
                             (SELECT class_name FROM course_class cc2 WHERE cc2.course_id=c.id))
                       AS student_count
-               FROM course c LEFT JOIN college_user u ON u.id = c.teacher_id
+               FROM course c
+               LEFT JOIN college_user u ON u.id = c.teacher_id
+               LEFT JOIN college_term t ON t.id = c.term_id
                WHERE c.college=? ORDER BY c.created_at DESC""", (college,)).fetchall()
         content = {
             "knowledge_points": db.execute(
@@ -3501,6 +3575,7 @@ class CourseCreate(BaseModel):
     name: str = Field(min_length=1)
     college: str = Field(min_length=1)
     semester: str | None = None
+    term_id: str | None = None
     teacher_id: str | None = None
     class_names: list[str] = Field(default_factory=list)
     description: str | None = None
@@ -3510,6 +3585,7 @@ class CoursePatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str | None = None
     semester: str | None = None
+    term_id: str | None = None
     teacher_id: str | None = None
     description: str | None = None
     active: bool | None = None
@@ -4260,10 +4336,12 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
 
     @app.get("/api/training/staff/courses")
     @guarded
-    def staff_course_list(include_inactive: bool = True,
+    def staff_course_list(include_inactive: bool = True, term_id: str | None = None,
                           session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         who = staff(session)
-        return response({"courses": list_courses(store_provider(), who["college"], include_inactive=include_inactive)})
+        return response({"courses": list_courses(
+            store_provider(), who["college"], include_inactive=include_inactive,
+            term_id=term_id)})
 
     @app.post("/api/training/staff/courses")
     @guarded
@@ -4272,7 +4350,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         who = staff(session, body.college)
         return response({"course": create_course(
             store_provider(), who["id"], body.college, body.name,
-            semester=body.semester, teacher_id=body.teacher_id,
+            semester=body.semester, term_id=body.term_id, teacher_id=body.teacher_id,
             class_names=body.class_names, description=body.description)})
 
     @app.patch("/api/training/staff/courses/{course_id}")
