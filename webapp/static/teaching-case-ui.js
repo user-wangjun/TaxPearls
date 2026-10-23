@@ -85,7 +85,12 @@
     const box = host();
     if (!box) return false;
     if (box.classroom) {
-      card.dataset.classroomView = "case-tasks";
+      // 视图名必须落在 university-workspace.js 的 staffViews 里（home/students/courses/
+      // tasks/statistics/…）。此前写 "case-tasks" 而 staffViews 没有这一项，applyView()
+      // 的 classroomView.includes(selected) 恒为假，卡片在高校工作台里永远是 hidden
+      // ——临时库因为教师没有教学身份、不走高校工作台，测不出这个入口问题。
+      // 案例任务本质是一道作业，挂在既有的「课程与作业」视图下。
+      card.dataset.classroomView = "tasks";
       box.node.append(card);
     } else {
       card.dataset.universityView = "case-tasks";
