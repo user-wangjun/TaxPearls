@@ -21,8 +21,9 @@ let pySource = '';
 for (const file of sources) pySource += fs.readFileSync(file, 'utf8') + '\n';
 
 const registered = new Set();
-for (const match of pySource.matchAll(/@app\.(?:get|post)\("\/([^"]+)"/g)) registered.add(match[1]);
-for (const match of pySource.matchAll(/"\/([^"]+)":\s*\("/g)) registered.add(match[1]);
+// 路由写法两种都有（app.py 用双引号，rule_bindings.py 等模块用单引号），只认双引号会误报 404。
+for (const match of pySource.matchAll(/@app\.(?:get|post)\(\s*['"]\/([^'"]+)['"]/g)) registered.add(match[1]);
+for (const match of pySource.matchAll(/["']\/([^"']+)["']:\s*\(/g)) registered.add(match[1]);
 
 function fail(message) {
   console.error('FAIL ' + message);
