@@ -176,7 +176,7 @@ def register(app, get_store, get_user, allow, static_dir):
         return value
 
     def read(user, task_id):
-        return project(batches.read(get_store(), user, task_id))
+        return project(batches.read_current(get_store(), user, task_id))
 
     @app.post("/api/enterprise/input-tasks/{task_id}/deduplication/resolve")
     async def resolve_duplicate(task_id: str, request: Request,
@@ -191,7 +191,7 @@ def register(app, get_store, get_user, allow, static_dir):
                 or any(not isinstance(v, str) or len(v) != 64 for v in value["expected_versions"])
                 or value.get("confirm") is not True):
             raise HTTPException(422, "请核对冲突版本后明确确认，并提供当前任务版本。")
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         payload = deepcopy(latest(view, writable=True))
         with store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -318,7 +318,7 @@ def register(app, get_store, get_user, allow, static_dir):
              session: str | None = Cookie(default=None, alias="taxpearls_session")):
         from src import material_export
 
-        view = batches.read(get_store(), actor(session), task_id)
+        view = batches.read_current(get_store(), actor(session), task_id)
         if view["revision"] != expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取后下载。", 409)
         return material_export.build(latest(view))
@@ -333,7 +333,7 @@ def register(app, get_store, get_user, allow, static_dir):
 
     def process_work(user, task_id, revision, *, ai=False):
         store = get_store()
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         payload = deepcopy(latest(view, writable=True))
         if view["revision"] != revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
@@ -514,7 +514,7 @@ def register(app, get_store, get_user, allow, static_dir):
         task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")
     ):
         user = actor(session)
-        view = batches.read(get_store(), user, task_id)
+        view = batches.read_current(get_store(), user, task_id)
         payload = deepcopy(latest(view, writable=True))
         try:
             async with multipart(
@@ -579,7 +579,7 @@ def register(app, get_store, get_user, allow, static_dir):
         try:
             if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input"}:
                 raise InputError("请求包含未知字段。")
-            view = batches.read(get_store(), user, task_id)
+            view = batches.read_current(get_store(), user, task_id)
             payload = deepcopy(latest(view, writable=True))
             revision = value.get("expected_revision")
             if type(revision) is not int or revision != view["revision"]:
@@ -730,7 +730,7 @@ def register(app, get_store, get_user, allow, static_dir):
                 raise InputError("请求包含未知字段。")
             if "confirm" in value and type(value["confirm"]) is not bool:
                 raise InputError("确认标记须为布尔值。")
-            view = batches.read(store, user, task_id)
+            view = batches.read_current(store, user, task_id)
             if value.get("expected_revision") != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
             payload = deepcopy(latest(view, writable=True))

@@ -17,7 +17,7 @@ async def chat_stream(settings, messages, *, max_tokens):
         payload['response_format'] = {'type': 'json_object'}
     # read timeout is separate from the total deadline. Cancellation closes the socket.
     try:
-        async with asyncio.timeout(min(settings.timeout, 120)):
+        async with asyncio.timeout(min(settings.timeout, 180)):
             async with httpx.AsyncClient(follow_redirects=False, timeout=httpx.Timeout(30, connect=10)) as client:
                 last_status = None
                 for key in settings.api_keys:
@@ -38,13 +38,19 @@ async def chat_stream(settings, messages, *, max_tokens):
                         if 'text/event-stream' not in response.headers.get('content-type', ''):
                             raise TransportError('schema')
                         buffer, total, finished, done = b'', 0, False, False
+                        # SSE metadata and ignored reasoning may repeat for every
+                        # token. Bound wire traffic by the requested output size,
+                        # independently from the visible answer's own size gate.
+                        wire_limit = min(32*1024*1024, max(1024*1024, max_tokens*2048))
                         async for chunk in response.aiter_bytes():
                             total += len(chunk)
-                            if total > 1024 * 1024:
+                            if total > wire_limit:
                                 raise TransportError('oversized')
                             buffer += chunk
                             while b'\n' in buffer:
                                 line, buffer = buffer.split(b'\n', 1)
+                                if len(line) > 256*1024:
+                                    raise TransportError('oversized')
                                 line = line.rstrip(b'\r')
                                 if not line.startswith(b'data:'):
                                     continue
@@ -77,6 +83,8 @@ async def chat_stream(settings, messages, *, max_tokens):
                                         finished = True
                             if done:
                                 break
+                            if len(buffer) > 256*1024:
+                                raise TransportError('oversized')
                         if not finished or not done:
                             raise TransportError('incomplete')
                         return

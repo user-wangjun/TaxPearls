@@ -27,15 +27,20 @@ let noticeRequest = 0, noticeBusy = false, noticeReady = false, noticeHasEmail =
 let ruleEditorRequest = 0, ruleHistoryRequest = 0, ruleBusy = false, adminRequest = 0;
 
 async function api(url, options = {}) {
+  const {onEvent,...request}=options;
   let r;
   try {
-    r = await fetch(url, options);
+    r = await fetch(url, request);
   } catch (e) {
     throw new Error(location.protocol === "file:"
       ? "当前是直接打开的本地文件，请求不到后端接口。请通过服务地址访问，例如 http://127.0.0.1:8000 。"
       : "无法连接服务器，请确认服务已启动后重试。");
   }
   const ct = r.headers.get("content-type") || "";
+  if(r.ok&&onEvent){
+    if(!ct.includes("application/x-ndjson"))throw new Error("检查进度响应无效，请重新读取任务。");
+    return readCoreCheckStream(r,onEvent);
+  }
   const body = ct.includes("application/json") ? await r.json().catch(() => null) : await r.text();
   if (!r.ok) {
     const detail = body?.detail;
