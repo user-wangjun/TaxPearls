@@ -439,7 +439,7 @@ def summary(checks):
 
 def archive(store, actor, task_id, expected_revision, *, complete_report_version=None):
     # Frozen task read and final CAS both use the existing tenant/client authorization.
-    view = batches.read(store, actor, task_id)
+    view = batches.read_current(store, actor, task_id)
     if view["revision"] != expected_revision:
         raise AccessDenied("任务版本已变化，请重新读取后生成报告。", 409)
     payload = core_inputs.latest(view)
@@ -561,12 +561,12 @@ def register(app, get_store, get_user, allow):
     def complete(task_id: str, body: CompleteBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         store, user = get_store(), actor(session)
         archive(store, user, task_id, body.expected_revision, complete_report_version=body.report_version)
-        return core_inputs.project(batches.read(store, user, task_id))
+        return core_inputs.project(batches.read_current(store, user, task_id))
 
     @app.post("/api/enterprise/input-tasks/{task_id}/reopen")
     def reopen(task_id: str, body: ArchiveBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         store, user = get_store(), actor(session)
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         payload = deepcopy(core_inputs.latest(view))
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -577,7 +577,7 @@ def register(app, get_store, get_user, allow):
                 raise AccessDenied('任务尚未归档，无需重新打开。', 409)
             payload.pop('completion')
             batches._append(db, batch, user, 'edit', payload, lifecycle='reopen')
-        return core_inputs.project(batches.read(store, user, task_id))
+        return core_inputs.project(batches.read_current(store, user, task_id))
 
     @app.get("/api/enterprise/input-tasks/{task_id}/reports")
     def listing(task_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):

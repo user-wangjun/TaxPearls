@@ -1,9 +1,33 @@
 "use strict";
+async function readCoreCheckStream(response,onEvent) {
+  if(!response.body?.getReader)throw new Error("浏览器无法读取检查进度，请更新浏览器后重试。");
+  const reader=response.body.getReader(),decoder=new TextDecoder();let buffer="",terminal=null;
+  function consume(line){
+    if(!line.trim())return;
+    const event=JSON.parse(line);
+    if(terminal)throw new Error("检查进度格式无效，请重新读取任务。");
+    if(event.type==="error")throw Object.assign(new Error(event.message||"检查未完成，请重新读取任务。"),{status:event.status});
+    if(event.type==="complete")terminal=event;
+    return onEvent(event);
+  }
+  try{
+    while(true){
+      const {done,value}=await reader.read();buffer+=decoder.decode(value,{stream:!done});
+      if(buffer.length>16*1024*1024)throw new Error("检查结果过大，请重新读取任务。");
+      let end;while((end=buffer.indexOf("\n"))>=0){const line=buffer.slice(0,end);buffer=buffer.slice(end+1);if(consume(line)===false)return;}
+      if(done)break;
+    }
+    if(buffer.trim())consume(buffer);
+    if(!terminal)throw new Error("检查连接中断，已完成项目仍已保存，请重新读取任务后继续。");
+    return terminal;
+  }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
+}
+
 function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, policyUI=()=>null, openTaskPanel=()=>{}}) {
   const base = "/api/enterprise/input-tasks";
   let current = null, busy = false, dirty = false, generation = 0, policyCatalog=null;
   let checkFoldScope=null,checkPage=0;const checkFolds=new Map(),CHECK_PAGE_SIZE=5;
-  let reportState=null;
+  let reportState=null,activeCheck=null;
   let formOwner = user()?.id, clients=[], scopeDirty=false, attempted=false;
   const uploadStates=new Map(),uploadViews=new Map(),waitingUploads=[];
   let activeUpload=null,uploadRun=null,currentUpload=null,uploadsPaused=false;
@@ -379,20 +403,25 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       if(!status.ai_configured)throw new Error("尚未配置 AI 服务，请先完成 AI 服务配置后重新开始检查。");
       if(!status.acceptance?.passed)throw new Error(status.acceptance?.reason||"知识检索校验尚未通过，暂不能进行 AI 检查。");
       checkProgress.pending=rules.map(r=>r.name);checkProgress.total=rules.length;
-      for(const [index,rule] of rules.entries()){
-        if(!valid())return current;
-        stage(`正在检索依据、组装上下文并进行 AI 分析（${index+1}/${rules.length}）：${rule.name}`);
-        const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),300000);
-        let result;
-        try{result=await api("/api/knowledge/retrieve",{...json({task_id:id,expected_revision:current.revision,
-          rule_id:rule.rule_id,region_code:region,use_ai:true}),signal:controller.signal});}
-        catch(error){if(controller.signal.aborted)throw new Error("AI 分析等待超时，服务端可能仍在处理。请重新读取最新任务确认结果，避免重复发起检查。");throw error;}
-        finally{clearTimeout(timer);}
-        if(!valid())return current;
-        current.revision=result.revision;(current.tax_checks??={})[rule.rule_id]=result;
-        if(result.ai?.batches?.some(b=>b.status==="failed"))throw new Error(result.ai.reason||"本批 AI 请求未完成，已保存完成批次，请稍后重新开始检查。");
-        checkProgress.done++;checkProgress.pending.shift();renderChecks();
-      }
+      stage("正在读取本轮资料并组装检查依据…");
+      const controller=new AbortController();activeCheck=controller;let timer;
+      const watch=()=>{clearTimeout(timer);timer=setTimeout(()=>controller.abort(),300000);};
+      const completed=new Set();watch();
+      try{await api("/api/knowledge/check-runs",{...json({task_id:id,expected_revision:current.revision,
+        rule_ids:rules.map(rule=>rule.rule_id),region_code:region,use_ai:true}),signal:controller.signal,
+        onEvent:event=>{
+          if(!valid())return false;watch();
+          if(event.type==="started")stage(`正在进行 AI 分析（最多同时 ${event.concurrency} 项）…`);
+          if(event.type!=="result")return;
+          const result=event.result;current.revision=result.revision;(current.tax_checks??={})[event.rule_id]=result;
+          if(event.completed)completed.add(event.rule_id);
+          checkProgress.done=completed.size;checkProgress.pending=rules.filter(rule=>!completed.has(rule.rule_id)).map(rule=>rule.name);
+          stage(`已保存 ${completed.size}/${rules.length} 项检查结果，其余项目正在处理…`);
+        }});}
+      catch(error){if(controller.signal.aborted&&valid())throw new Error("AI 分析等待超时，服务端可能仍在处理。请重新读取最新任务确认结果，避免重复发起检查。");throw error;}
+      finally{clearTimeout(timer);if(activeCheck===controller)activeCheck=null;}
+      if(!valid())return current;
+      if(completed.size!==rules.length)throw new Error("部分检查尚未完成，请重新读取已保存结果后继续。");
       stage("正在保存并核对检查结果…");
       const fresh=await api(base+"/"+encodeURIComponent(id));if(!valid())return current;
       current=fresh;stage("检查已完成，正在生成检查报告…");
@@ -611,7 +640,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   const json = value => ({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
   const button = (text, fn) => {const n=el("button","btn re",text);n.type="button";n.onclick=fn;return n;};
   function clearScope(){regionTaskId=null;regionEdited=false;$("coreRegion").value="";$("coreRegion").setAttribute("aria-invalid","false");for(const id of Object.values(scopeIds))$(id).value="";rangeKind.value="custom";writePeriodInputs("");syncRange();$("coreClient").value="";scopeDirty=attempted=false;displayErrors({});}
-  function reset() {regionEdited=false;reportState=null;checkFolds.clear();checkFoldScope=null;checkPage=0;checkProgress=null;$("coreCheckResult").replaceChildren();$("coreCheckResult").hidden=true;$("coreActionStatus").replaceChildren();generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");if(identityDialog.open)identityDialog.close("cancel");displayErrors({});renderIdentityCandidates();clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreArchivedTasks").replaceChildren();$("coreArchivedTasks").hidden=true;taskControls(false);if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
+  function reset() {activeCheck?.abort();activeCheck=null;regionEdited=false;reportState=null;checkFolds.clear();checkFoldScope=null;checkPage=0;checkProgress=null;$("coreCheckResult").replaceChildren();$("coreCheckResult").hidden=true;$("coreActionStatus").replaceChildren();generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");if(identityDialog.open)identityDialog.close("cancel");displayErrors({});renderIdentityCandidates();clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreArchivedTasks").replaceChildren();$("coreArchivedTasks").hidden=true;taskControls(false);if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
   async function action(fn, saving=false, uploading=false, regionForNewTask=null) {
     if(busy||!enabled())return;
     if(waitingUploads.length&&!uploading){showError("还有等待上传的文件，请先继续上传或清除待上传文件。");return;}
