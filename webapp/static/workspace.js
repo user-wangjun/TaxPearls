@@ -105,9 +105,10 @@ function startClientUpload(){
   const client=dashboardData.clients.find(c=>c.taxpayer_id===$("dashboardCompany").value);
   selectedClientId=client?.id||"";switchPanel("uploadPanel");
 }
-$("dashboardUpload").addEventListener("click",startClientUpload);
+$("dashboardUpload").addEventListener("click",()=>isCampusUser()?switchPanel("examPanel"):startClientUpload());
 let dashboardRequest = 0;
 async function loadDashboard(append = false) {
+  if(isCampusUser())return loadCampusDashboard();
   const ticket = ++dashboardRequest, userId = currentUser.id;
   const body=$("dashboardBody");
   if (!append) body.replaceChildren(el("div","empty","正在读取企业业务数据……"));

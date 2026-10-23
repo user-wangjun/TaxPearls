@@ -26,7 +26,7 @@ from urllib.parse import quote, urlsplit
 
 from fastapi import BackgroundTasks, Cookie, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, ConfigDict, AwareDatetime, model_validator
 from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
@@ -63,14 +63,25 @@ async def lifespan(application):
     global store
     if store is None:
         store = Store(keepalive=True)
+    from src.public_policy_package import bootstrap
+    application.state.public_knowledge = await run_in_threadpool(bootstrap, store, RULES_DIR)
     worker = NotificationWorker(lambda: store)
     worker.start()
+    judge_worker = None
+    from webapp import code_judge_queue
+    if code_judge_queue.queue_enabled():
+        # FR-J05 判题队列 worker：默认关（同步判题契约不变）；
+        # TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1 时随应用启动后台判题线程。
+        judge_worker = code_judge_queue.JudgeWorker(lambda: store)
+        judge_worker.start()
     try:
         application.state.material_worker.start()
         yield
     finally:
         application.state.material_worker.stop()
         worker.stop()
+        if judge_worker:
+            judge_worker.stop()
 
 
 app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -88,6 +99,15 @@ async def sensitive_storage_failure(_request: Request, exc: SensitiveStorageErro
 
 @app.middleware("http")
 async def private_api_responses(request: Request, call_next):
+    if request.url.path in {'/api/knowledge/node-ask', '/api/knowledge/rag-ask', '/api/knowledge/ask',
+                            '/api/training/knowledge/ask'} and request.method == 'POST':
+        parts, size = [], 0
+        async for part in request.stream():
+            size += len(part)
+            if size > 24576:
+                return JSONResponse(status_code=413, content={'detail': '问答输入过大，请缩短问题。'})
+            parts.append(part)
+        request._body = b''.join(parts)
     response = await call_next(request)
     if request.url.path.startswith('/api/'):
         response.headers['Cache-Control'] = 'private, no-store'
@@ -104,6 +124,8 @@ async def invalid_request(_request: Request, exc: RequestValidationError):
     ]},headers={"Cache-Control":"no-store"})
 store: Store | None = None
 ai_keys.STORE_PROVIDER = lambda: store
+from webapp.feishu_binding import register as register_feishu_binding
+register_feishu_binding(app, lambda: store, COOKIE_NAME)
 login_guard = LoginGuard()
 reset_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})
 register_code_limiter = RateLimiter({"email": (1, 15 * 60), "ip": (10, 60 * 60)})
@@ -120,7 +142,8 @@ class AIProbeBody(BaseModel):
     operation: Literal['health', 'balance']
     key_id: str = Field(default='', max_length=64)
     api_key: str = Field(default='', max_length=4096, repr=False)
-    provider: Literal['configured', 'deepseek', 'openrouter'] = 'configured'
+    provider: Literal['configured', 'deepseek', 'openrouter', 'custom'] = 'configured'
+    base_url: str = Field(default='', max_length=500)
     model: str = Field(default='', max_length=200)
     balance_protocol: Literal['auto', 'deepseek', 'openrouter', 'credit_grants'] = 'auto'
 
@@ -142,7 +165,7 @@ class AIKeyCreateBody(AIKeyUsageBody):
     model_config = ConfigDict(extra='forbid')
     name: str = Field(min_length=1, max_length=80)
     api_key: str = Field(min_length=1, max_length=4096, repr=False)
-    provider: Literal['configured', 'deepseek', 'openrouter'] = 'configured'
+    provider: Literal['configured', 'deepseek', 'openrouter', 'custom'] = 'configured'
     model: str = Field(default='', max_length=200)
     base_url: str = Field(default='', max_length=500)
     usage: Literal['all', 'extraction', 'knowledge', 'report', 'tutor', 'none'] | None = None
@@ -315,7 +338,7 @@ def ai_key_probe(body: AIProbeBody, request: Request,
     try:
         settings = _environment_settings.AISettings.from_env()
         if body.key_id:
-            if body.api_key or body.provider != 'configured' or body.model:
+            if body.api_key or body.provider != 'configured' or body.model or body.base_url:
                 raise HTTPException(422, '已配置密钥检测不能混用临时密钥或覆盖模型。')
             selected_entry = next((entry for entry in ai_keys.entries(settings, store)
                                    if ai_probes.identity(entry['settings']) == body.key_id), None)
@@ -328,7 +351,9 @@ def ai_key_probe(body: AIProbeBody, request: Request,
         else:
             if not body.api_key.strip():
                 raise HTTPException(422, '请选择已配置密钥或填写临时密钥。')
-            target = ai_probes.temporary(settings, body.provider, body.api_key.strip(), body.model.strip())
+            if body.base_url and body.provider != 'custom':
+                raise HTTPException(422, '自定义接口地址须选择自定义服务。')
+            target = ai_probes.temporary(settings, body.provider, body.api_key.strip(), body.model.strip(), body.base_url)
         validation = replace(target, model=target.model or ('balance-only' if body.operation == 'balance' else ''))
         if validation.problem():
             raise HTTPException(422, '检测配置无效，请核对密钥格式、接口地址与模型名称。')
@@ -371,6 +396,7 @@ class LoginBody(BaseModel):
     username: str
     password: str
     remember: bool = False
+    college: str | None = Field(default=None, max_length=200)
 
 
 class UserBody(BaseModel):
@@ -421,9 +447,11 @@ class RegisterCompleteBody(BaseModel):
 
 
 class InviteBody(BaseModel):
-    """创始码只捆机构名称：一码一位、私聊交付，邮箱不绑定（注册侧有邮箱验证码兜底）。"""
+    """创始码捆绑机构名称和类别：一码一位、私聊交付，注册时验证邮箱。"""
     org_name: str = Field(min_length=1, max_length=120)
+    org_type: Literal['enterprise', 'university']
     seats: int = Field(default=5, ge=1, le=200)
+    student_seats: int = Field(default=0, ge=0, le=100000)
     bound_email: str = ""
     expires_days: int = Field(default=7, ge=1, le=30)
 
@@ -443,6 +471,7 @@ class AssignmentBody(BaseModel):
     false_positive_penalty: float = Field(default=5.0, ge=0, le=100,allow_inf_nan=False)
     published: bool = True
     class_id: str | None = Field(default=None,min_length=1,max_length=64)
+    course_id: str | None = Field(default=None,min_length=1,max_length=200)
     deadline_at: AwareDatetime | None = None
 
 
@@ -504,6 +533,13 @@ def _user(session: str | None) -> dict[str, Any]:
     if not user:
         raise HTTPException(status_code=401, detail="请先登录。")
     return user
+
+
+def _teaching_user(session: str | None) -> dict[str, Any]:
+    from webapp.access import teaching_actor
+    user = _user(session)
+    with store.connect() as db:
+        return teaching_actor(db, user)
 
 
 def _allow(user: dict[str, Any], *roles: str) -> None:
@@ -719,14 +755,14 @@ def _result(entry: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/")
 def index() -> FileResponse:
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html")
+    return FileResponse(STATIC_DIR / "index.html", media_type="text/html", headers={"Cache-Control":"no-store"})
 
 
 @app.get("/p/{code}")
 def member_invitation_landing(code: str) -> FileResponse:
     # This route never authenticates or reveals an institution. Full-hash
     # validation happens only after email proof in the registration transaction.
-    return FileResponse(STATIC_DIR / "index.html", media_type="text/html",
+    return FileResponse(STATIC_DIR / "join.html", media_type="text/html",
                         headers={"Cache-Control":"no-store","Referrer-Policy":"no-referrer",
                                  "X-Robots-Tag":"noindex, nofollow"})
 
@@ -779,8 +815,9 @@ def mistake_book_script() -> FileResponse:
 
 
 @app.get("/training-certificates")
-def training_portal_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "training-portal.html", media_type="text/html")
+def training_portal_page(request: Request) -> FileResponse:
+    from webapp.university_members import teaching_page
+    return teaching_page(store,request)
 
 
 @app.get("/training-portal.js")
@@ -850,15 +887,174 @@ def knowledge(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> 
 
 
 @app.get("/api/status")
-def status(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    return {"needs_setup": not store.has_users(), "user": store.user_for_token(session)}
+def status(request: Request) -> dict[str, Any]:
+    from webapp.university_members import resolve_browser_identity
+    user, conflict = resolve_browser_identity(store, request)
+    return {"needs_setup": not store.has_users(), "user": user, "session_conflict": conflict}
 
 
 class GraphQuestion(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
     node_id: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=2000)
-    audit_id: str | None = None
+    audit_id: str | None = Field(default=None, min_length=1, max_length=200)
     taxpayer_id: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class PublicQuestion(BaseModel):
+    model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
+    question: str = Field(min_length=1, max_length=2000)
+    previous_questions: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(default_factory=list, max_length=3)
+
+    @model_validator(mode='after')
+    def valid_text(self):
+        for value in [getattr(self, 'node_id', ''), self.question, *self.previous_questions]:
+            if any((ord(c) < 32 and c not in '\n\r\t') or 0xD800 <= ord(c) <= 0xDFFF for c in value):
+                raise ValueError('输入包含无效控制字符。')
+        return self
+
+
+class NodeQuestion(PublicQuestion):
+    node_id: str = Field(min_length=1, max_length=200)
+
+
+class RAGQuestion(PublicQuestion):
+    as_of: date | None = None
+    region: str = Field(default='', max_length=30, pattern=r'^(?:CN(?:-[A-Za-z0-9]+)*)?$')
+
+    @model_validator(mode='after')
+    def valid_region(self):
+        from webapp.public_rag import normalize_region
+        if normalize_region(self.region) is None:
+            raise ValueError('检索地区无效。')
+        return self
+
+
+node_question_limiter = RateLimiter({'actor': (12, 60)})
+_node_question_active = set()
+
+
+async def public_node_answer(body, session, *, stream=True, identity_reader=None, rag=False):
+    """One shared harness for public and university node questions, including old JSON callers."""
+    import asyncio
+    from contextlib import aclosing
+    from webapp import node_qa, public_rag
+    from src.settings import AISettings
+    reader = identity_reader or (lambda: _user(session))
+    user = await run_in_threadpool(reader)
+    # This application runs one process. No enterprise scope can enter this endpoint.
+    if user['id'] in _node_question_active or len(_node_question_active) >= 8:
+        raise HTTPException(429, '已有问答正在生成，请停止或等待完成后再试。')
+    if not node_question_limiter.allow(actor=user['id']):
+        raise HTTPException(429, '提问过于频繁，请稍后再试。')
+    _node_question_active.add(user['id'])
+    try:
+        def prepare():
+            from webapp.knowledge import public_graph
+            settings = ai_keys.apply(AISettings.from_env(), usage='knowledge')
+            if settings.problem() and not rag:
+                raise HTTPException(503, 'AI 尚未连接，请检查模型配置。')
+            with store.connect() as db:
+                graph = public_graph(db, _effective_rules(), teaching=user.get('org_type') == 'university') if not rag else None
+                info = ai_keys.capability(db, settings)
+            limits = ai_probes.context_capability(info)
+            capacity = limits.get('context_window', 32768)
+            output = min(settings.max_tokens, limits.get('max_output_tokens', settings.max_tokens))
+            budget = min(48000, capacity * 3 // 5, capacity - output - 4096 - max(4096, capacity // 20))
+            if budget < 1024:
+                raise HTTPException(413, '模型可用上下文不足，请调整模型或输出额度。')
+            if rag:
+                with store.connect() as db:
+                    payload, manifest = public_rag.retrieve(db, body.question, body.previous_questions,
+                                                           region=body.region, as_of=body.as_of, budget=budget)
+                if payload['nodes'] and settings.problem():
+                    raise HTTPException(503, 'AI 尚未连接，请检查模型配置；检索已找到原文。')
+            else:
+                payload, manifest = node_qa.build_context(graph, body.node_id, body.question,
+                                                        body.previous_questions, budget=budget)
+            manifest['capacity_source'] = 'provider_models' if limits.get('context_window') else 'conservative_fallback'
+            manifest['output_reserve'] = output
+            return settings, payload, manifest, output
+        settings, payload, manifest, output = await run_in_threadpool(prepare)
+    except BaseException:
+        _node_question_active.discard(user['id'])
+        raise
+
+    async def events():
+        try:
+            # Re-check authentication after context assembly and before the paid request.
+            await run_in_threadpool(reader)
+            handler = public_rag.answer_events if rag else node_qa.answer_events
+            async with aclosing(handler(settings, payload, manifest, max_tokens=output)) as source:
+                async for event in source:
+                    # Never release deltas after a session has been revoked.
+                    current = await run_in_threadpool(reader)
+                    if current['id'] != user['id']:
+                        raise HTTPException(401, '登录身份已变化。')
+                    yield event
+        except HTTPException:
+            yield {'type': 'error', 'message': '访问权限已变化，请重新登录后提问。', 'complete': False}
+        finally:
+            _node_question_active.discard(user['id'])
+
+    if not stream:
+        async with aclosing(events()) as source:
+            async for event in source:
+                if event['type'] == 'done':
+                    return event
+                if event['type'] == 'error':
+                    raise HTTPException(502, event['message'])
+        raise HTTPException(502, '回答未完成。')
+
+    async def encoded():
+        iterator = events()
+        pending = None
+        try:
+            # Heartbeats keep a quiet upstream cancellable and avoid buffering proxies.
+            while True:
+                if pending is None:
+                    pending = asyncio.create_task(anext(iterator))
+                ready, _ = await asyncio.wait({pending}, timeout=5)
+                if not ready:
+                    yield ': keepalive\n\n'
+                    continue
+                try:
+                    event = pending.result()
+                except StopAsyncIteration:
+                    break
+                pending = None
+                yield 'data: ' + json.dumps(event, ensure_ascii=False) + '\n\n'
+        finally:
+            if pending is not None:
+                pending.cancel()
+                await asyncio.gather(pending, return_exceptions=True)
+            await iterator.aclose()
+            _node_question_active.discard(user['id'])
+    return StreamingResponse(encoded(), media_type='text/event-stream',
+                             headers={'Cache-Control': 'private, no-store', 'X-Accel-Buffering': 'no'})
+
+
+@app.post('/api/knowledge/node-ask')
+async def knowledge_node_ask(body: NodeQuestion, request: Request,
+                             session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    def reader():
+        from webapp.university_members import session_identity
+        user = session_identity(store, request)
+        if not user:
+            raise HTTPException(401, '请先登录。')
+        return user
+    return await public_node_answer(body, session, identity_reader=reader)
+
+
+@app.post('/api/knowledge/rag-ask')
+async def knowledge_rag_ask(body: RAGQuestion, request: Request):
+    def reader():
+        from webapp.university_members import session_identity
+        user = session_identity(store, request)
+        if not user:
+            raise HTTPException(401, '请先登录。')
+        return user
+    return await public_node_answer(body, None, identity_reader=reader, rag=True)
 
 
 def _graph_for_user(user, audit_id, taxpayer_id=None):
@@ -874,8 +1070,8 @@ def _graph_for_user(user, audit_id, taxpayer_id=None):
     if entry is not None:
         return {**build_graph([], entry), "schema_version": 1, "view": "frozen_audit_evidence"}
     with store.connect() as db:
-        selected = policy_graph.sync_rules(db, _effective_rules())
-        return policy_graph.graph(db, selected)
+        from webapp.knowledge import public_graph
+        return public_graph(db, _effective_rules())
 
 
 class PolicyBundleBody(BaseModel):
@@ -1017,8 +1213,18 @@ def knowledge_graph(audit_id: str | None = None, taxpayer_id: str | None = None,
 
 
 @app.post("/api/knowledge/ask")
-def knowledge_ask(body: GraphQuestion,
+async def knowledge_ask(body: GraphQuestion,
                   session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    if body.audit_id is None and body.taxpayer_id is None:
+        try:
+            question = NodeQuestion(node_id=body.node_id, question=body.question)
+        except ValueError:
+            raise HTTPException(422, '问题包含无效字符。') from None
+        return await public_node_answer(question, session, stream=False)
+    return await run_in_threadpool(_enterprise_knowledge_ask, body, session)
+
+
+def _enterprise_knowledge_ask(body, session):
     user = _user(session)
     graph = _graph_for_user(user, body.audit_id, body.taxpayer_id)
     result = ask_graph(graph, body.node_id, body.question)
@@ -1089,6 +1295,11 @@ def graph_script():
     return FileResponse(STATIC_DIR / "graph.js", media_type="text/javascript")
 
 
+@app.get("/policy-source.js")
+def policy_source_script():
+    return FileResponse(STATIC_DIR / "policy-source.js", media_type="text/javascript")
+
+
 @app.post("/api/setup")
 def setup(body: SetupBody) -> dict[str, Any]:
     try:
@@ -1107,37 +1318,52 @@ def setup(body: SetupBody) -> dict[str, Any]:
 
 @app.post("/api/login")
 def login(body: LoginBody, request: Request) -> Response:
+    from webapp.university_members import authenticate_legacy,attach_platform_session,attach_session,user_context
     ip = request.client.host if request.client else "unknown"
     with login_guard.reserve(body.username, ip) as wait:
         if wait:
             return JSONResponse(status_code=429, content={"detail": "登录尝试过于频繁，请稍后重试。"},
                                 headers={"Retry-After": str(wait)})
         result = store.authenticate(body.username, body.password, remember=body.remember)
-        if not result:
+        context=user_context(store,result[0]) if result else None
+        if result and not context:
+            store.logout(result[1])
+            result=None
+        try:
+            legacy=authenticate_legacy(store,body.username,body.password,body.remember,college=body.college) if not result else None
+        except ValueError as exc:
+            login_guard.record_failure(body.username,ip)
+            return JSONResponse(status_code=409, content={"detail":str(exc), "requires_college":True})
+        if not result and not legacy:
             count = login_guard.record_failure(body.username, ip)
             store.log(None, "login_failed", "account_hash", login_guard.fingerprint(body.username.strip().lower()),
                       f"ip_hash={login_guard.fingerprint(ip)};failure_count={count}")
             return _err(401, "邮箱、用户名或密码错误。")
-        user, token = result
+        user, token = (context,result[1]) if result else (legacy['user'],legacy['token'])
         login_guard.record_success(body.username)
-    store.log(user, "login", "session", user["id"])
+    store.log(user if result else None, "login", "session", user["id"])
     response = JSONResponse({"user": user})
+    cookie=COOKIE_NAME
+    if result:
+        attach_session(store,response,user,remember=body.remember)
+    else:
+        attach_platform_session(store,response,legacy['profile']['id'],staff=legacy['staff'],remember=body.remember)
+        cookie='taxpearls_staff_session' if legacy['staff'] else 'taxpearls_training_session'
     response.set_cookie(
-        COOKIE_NAME, token, max_age=session_max_age(body.remember), httponly=True,
+        cookie, token, max_age=session_max_age(body.remember), httponly=True,
         samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1",
     )
     return response
 
 
 @app.post("/api/logout")
-def logout(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
+def logout(request: Request, session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> Response:
     user = store.user_for_token(session)
     if user:
         store.log(user, "logout", "session", user["id"])
-    store.logout(session)
     response = JSONResponse({"ok": True})
-    response.delete_cookie(COOKIE_NAME)
-    response.delete_cookie(EMAIL_COOKIE_NAME)
+    from webapp.university_members import logout_browser
+    logout_browser(store,request,response)
     return response
 
 
@@ -1168,7 +1394,13 @@ def _email_browser_response(content, browser):
 
 
 def _email_login_response(user, token):
+    from webapp.university_members import attach_session,user_context
+    user=user_context(store,user)
+    if not user:
+        store.logout(token)
+        return _err(401,'账号未关联有效身份，请联系管理员核对。')
     response=JSONResponse({'user':user,'purpose':'login'})
+    attach_session(store,response,user)
     response.set_cookie(COOKIE_NAME,token,max_age=12*3600,httponly=True,samesite='strict',
                         secure=os.environ.get('TAXPEARLS_COOKIE_SECURE')=='1')
     return response
@@ -1299,6 +1531,8 @@ def register_complete(body: RegisterCompleteBody, request: Request) -> Response:
             raise HTTPException(status_code=409, detail="该邮箱已注册，请直接登录。") from None
         raise HTTPException(status_code=409, detail="账号与现有数据冲突。") from None
     response = JSONResponse({"user": user, "org_id": user["org_id"]})
+    from webapp.university_members import attach_session
+    attach_session(store,response,user)
     response.set_cookie(
         COOKIE_NAME, token, max_age=12 * 3600, httponly=True,
         samesite="strict", secure=os.environ.get("TAXPEARLS_COOKIE_SECURE") == "1",
@@ -1313,7 +1547,7 @@ def create_invite(body: InviteBody, session: str | None = Cookie(default=None, a
     _allow(actor, "platform_admin")
     try:
         invite = store.create_invite_code(actor, body.org_name, body.seats,
-                                          body.bound_email, body.expires_days)
+                                          body.bound_email, body.expires_days, org_type=body.org_type,student_seats=body.student_seats)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     return invite
@@ -1327,8 +1561,12 @@ def list_invites(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) 
 
 
 @app.get("/api/me")
-def me(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    return _user(session)
+def me(request: Request) -> dict[str, Any]:
+    from webapp.university_members import session_identity
+    user=session_identity(store,request)
+    if not user:
+        raise HTTPException(401,'请先登录。')
+    return user
 
 
 @app.get("/api/notifications/preferences")
@@ -1540,9 +1778,9 @@ register_enterprise_materials(app, lambda: store, _user, _allow, RULES_DIR,
                              _save_audit, lambda audit_id, user: _result(_audit_or_404(audit_id, user)))
 
 from webapp.exercises import register as register_exercises
-register_exercises(app, lambda: store, _user, _allow, _audit_or_404, lambda data, enabled: _audit_rules(data,enabled),
+register_exercises(app, lambda: store, _teaching_user, _allow, _audit_or_404, lambda data, enabled: _audit_rules(data,enabled),
                    _save_audit, _trial_payload, COOKIE_NAME)
-classroom.register(app,lambda: store,_user,_allow,_is_synthetic_dataset,COOKIE_NAME)
+classroom.register(app,lambda: store,_teaching_user,_allow,_is_synthetic_dataset,COOKIE_NAME)
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
@@ -1551,6 +1789,10 @@ from webapp import rule_bindings as rule_binding_routes
 rule_binding_routes.register(app,lambda:store,_user,_allow,_effective_rules)
 from webapp.training_portal import register as register_training_portal
 register_training_portal(app, lambda: store, "taxpearls_training_session")
+from webapp import university_members
+university_members.register(app,lambda: store,_user)
+from webapp import university_workspace
+university_workspace.register(app, lambda: store, _effective_rules, ai_config)
 from webapp.training_content import register as register_training_content
 register_training_content(app, lambda: store)
 from webapp.training_graph import register as register_training_graph
@@ -1843,7 +2085,7 @@ def rule_trial(
 @app.post("/api/assignments")
 def create_assignment(body: AssignmentBody,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher")
     entry = _audit_or_404(body.audit_id, user)
     dataset: Dataset = entry["dataset"]
@@ -1861,7 +2103,7 @@ def create_assignment(body: AssignmentBody,
     try:
         assignment_id = store.create_assignment(
             user, body.title.strip(), body.audit_id, body.target_student_id,
-            body.weights, body.false_positive_penalty, body.published,body.class_id,body.deadline_at,
+            body.weights, body.false_positive_penalty, body.published,body.class_id,body.deadline_at,body.course_id,
         )
     except classroom.ClassroomError as exc:
         raise HTTPException(exc.status,str(exc)) from None
@@ -1870,7 +2112,7 @@ def create_assignment(body: AssignmentBody,
 
 @app.get("/api/assignments")
 def assignments(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher", "student")
     return store.list_assignments(user)
 
@@ -1878,7 +2120,7 @@ def assignments(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -
 @app.get("/api/assignments/{assignment_id}")
 def assignment_detail(assignment_id: str,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher", "student")
     assignment = store.get_assignment_for_user(assignment_id,user)
     if not assignment:
@@ -1910,7 +2152,7 @@ def assignment_detail(assignment_id: str,
 @app.post("/api/assignments/{assignment_id}/submit")
 def submit_assignment(assignment_id: str, body: SubmissionBody,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "student")
     assignment = store.get_assignment_for_user(assignment_id,user)
     if not assignment:
@@ -1955,18 +2197,18 @@ def teaching_feedback(assignment_id: str, body: SandboxFeedbackBody,
 @app.put("/api/submissions/{submission_id}/review")
 def review_submission(submission_id: str, body: ReviewBody,
                       session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> dict[str, Any]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher")
     if store.submission_org(submission_id,user=user) != user["org_id"]:
         raise HTTPException(status_code=404, detail="提交记录不存在。")
-    store.review_submission(submission_id, user["id"], body.adjusted_score, body.feedback.strip())
+    store.review_submission(submission_id, user["id"], body.adjusted_score, body.feedback.strip(), actor=user)
     return {"ok": True}
 
 
 @app.get("/api/submissions")
 def submissions(assignment_id: str | None = None,
                 session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
-    user = _user(session)
+    user = _teaching_user(session)
     _allow(user, "teacher")
     return store.list_submissions(user, assignment_id)
 

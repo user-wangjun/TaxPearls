@@ -1,0 +1,18 @@
+{
+  "format": "taxpearls-public-policy-v1",
+  "schema_version": 1,
+  "snapshot": "snapshot.json.gz",
+  "compressed_sha256": "d33712100edbd34d51e666184e520aa2c52cf2281d618f1568cb9f387a01559c",
+  "content_sha256": "a816259874ebc771d3fece935504522c0942fe322297ec066b85b2d44fd2128b",
+  "table_counts": {
+    "Policy": 37,
+    "Clause": 1333,
+    "TaxRule": 1257,
+    "Entity": 27,
+    "Metric": 3943,
+    "Condition": 3731,
+    "Exception": 470,
+    "Relationship": 13182
+  },
+  "original_file_count": 75
+}

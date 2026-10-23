@@ -490,7 +490,7 @@ body.workspace-ready #appFooter { background: transparent; color: var(--ink-2); 
 #appMain #uploadScope summary::before { color: #68879f; }
 #appMain #uploadScope summary:hover { background: #e8eef3; }
 #appMain #orgSettingsAdmin > .row { margin-top: 18px; }
-#appMain #inviteAdmin .invite-issue-form { display:grid; grid-template-columns:minmax(150px,.7fr) minmax(220px,1.6fr) minmax(200px,1fr) auto; align-items:end; }
+#appMain #inviteAdmin .invite-issue-form { display:grid; grid-template-columns:minmax(240px,1.5fr) minmax(220px,1fr) auto; align-items:end; }
 #appMain #inviteAdmin .invite-issue-form .field { min-width:0; margin:0; }
 #appMain #inviteAdmin .invite-issue-form > button { min-height:48px; }
 #appMain #inviteReveal[hidden] { display:none; }
@@ -921,7 +921,7 @@ html[data-theme=dark] body.workspace-ready {
   --glass-fallback: linear-gradient(145deg, #31353c, #252a30 48%, #2c3036);
   background: radial-gradient(ellipse at 70% 0%, #ffffff08, transparent 55%), var(--bg);
 }
-html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav) {
+html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav, .quota-confirm-dialog) {
   background: var(--glass-face);
   border-color: transparent;
   box-shadow: var(--glass-shadow);
@@ -931,7 +931,7 @@ html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .g
 html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review) { position: relative; }
 html[data-theme=light] #appMain :is(.sheet, .card, .material-review) :is(.sheet, .card, .material-review) { --glass-face: linear-gradient(145deg, #ffffff8c 0%, #c8d5e066 35%, #ffffff99 58%, #b8c8d64d 100%) padding-box; }
 html[data-theme=dark] #appMain :is(.sheet, .card, .material-review) :is(.sheet, .card, .material-review) { --glass-face: linear-gradient(145deg, #3a404866 0%, #171b226b 40%, #434b565e 65%, #12171d80 100%) padding-box; }
-html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav)::before {
+html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav, .quota-confirm-dialog)::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -947,10 +947,10 @@ html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .g
 html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review):focus-within { z-index: 30; }
 html[data-theme] #appMain :is(.dropzone:hover, .dropzone.drag) { background: var(--glass-face); }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav) { background: var(--glass-fallback); }
+  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav, .quota-confirm-dialog) { background: var(--glass-fallback); }
 }
 @supports not ((mask-composite: exclude) or (-webkit-mask-composite: xor)) {
-  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav)::before { display: none; }
+  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav, .quota-confirm-dialog)::before { display: none; }
 }
 
 /* Small hover/focus lift and press feedback without moving the surrounding layout. */
@@ -983,21 +983,21 @@ html[data-theme=dark] body.workspace-ready { --button-bevel: #ffffff20; --button
 }
 
 /* Appearance controls share the workspace material and keep their selection highlight. */
-#appMain #themePicker {
+#appMain :is(#themePicker, #inviteOrgTypeOptions) {
   --metal-face: var(--glass-face);
   --metal-border: #97a8bb99;
   --metal-shadow: var(--glass-shadow);
   --metal-selected: linear-gradient(165deg, #ffffffeb 0%, #bdcddbba 47%, #f5f8fbe6 78%, #9eb4c699 100%);
   --metal-fallback: var(--glass-fallback);
 }
-#appMain #themeOptions { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); -webkit-backdrop-filter: blur(10px) saturate(105%); backdrop-filter: blur(10px) saturate(105%); }
-#appMain #themeOptions::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #ffffff80, inset 0 -1px 0 #65798d24, 0 2px 4px #152b421a; }
-html[data-theme=dark] #appMain #themeOptions { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); }
-html[data-theme=dark] #appMain #themeOptions::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #eaf3ff4d, inset 0 -1px 0 #05080d66, 0 2px 4px #00000033; }
+#appMain :is(#themeOptions, #inviteOrgTypeOptions) { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); -webkit-backdrop-filter: blur(10px) saturate(105%); backdrop-filter: blur(10px) saturate(105%); }
+#appMain :is(#themeOptions, #inviteOrgTypeOptions)::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #ffffff80, inset 0 -1px 0 #65798d24, 0 2px 4px #152b421a; }
+html[data-theme=dark] #appMain :is(#themeOptions, #inviteOrgTypeOptions) { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); }
+html[data-theme=dark] #appMain :is(#themeOptions, #inviteOrgTypeOptions)::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #eaf3ff4d, inset 0 -1px 0 #05080d66, 0 2px 4px #00000033; }
 html[data-theme] #appMain #appHeader #themeCycle, html[data-theme] #appMain #appHeader #themeCycle .account-icon { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: var(--metal-shadow); }
 #appMain #appHeader #themeOptions button:is(:hover, :focus-visible, :active) { transform: none; box-shadow: none; }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  html[data-theme] #appMain #themeOptions { background: var(--metal-fallback); }
+  html[data-theme] #appMain :is(#themeOptions, #inviteOrgTypeOptions) { background: var(--metal-fallback); }
 }
 
 
@@ -1062,14 +1062,14 @@ html[data-theme=dark] #appMain input[type=file]::file-selector-button {
   border: 1px solid transparent;
   box-shadow: var(--control-shadow);
 }
-html[data-theme=dark] #appMain #themePicker {
+html[data-theme=dark] #appMain :is(#themePicker, #inviteOrgTypeOptions) {
   --metal-face: linear-gradient(145deg, #212223, #18191a);
   --metal-border: #84878966;
   --metal-selected: var(--control-face) padding-box, var(--control-active-rim) border-box;
   --metal-shadow: var(--control-shadow);
   --metal-fallback: #18191a;
 }
-html[data-theme=dark] #appMain #themeOptions::before,
+html[data-theme=dark] #appMain :is(#themeOptions, #inviteOrgTypeOptions)::before,
 html[data-theme=dark] #appMain #appHeader #themeCycle,
 html[data-theme=dark] #appMain #appHeader #themeCycle .account-icon {
   border-color: transparent;
@@ -1244,6 +1244,11 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 #coreInputs .core-delete-body h2 { margin:0 0 18px; font-size:22px; }
 #coreInputs .core-delete-body p { margin:0 0 12px; font-size:14px; line-height:1.8; overflow-wrap:anywhere; }
 .core-delete-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:12px; padding:18px 26px 24px; }
+#appMain #userAdmin .quota-editor input:disabled { opacity:1; color:#6b7280; background:#e9edf1; border-color:var(--line); box-shadow:none; cursor:not-allowed; }
+html[data-theme=dark] #appMain #userAdmin .quota-editor input:disabled { color:#969ba3; background:#272a2e; }
+.quota-confirm-dialog h2 { margin:0 0 18px; font-size:22px; }
+.quota-confirm-dialog p { margin:0 0 12px; font-size:14px; line-height:1.8; overflow-wrap:anywhere; }
+.quota-confirm-dialog #quotaConfirmChanges { margin:16px 0; font-variant-numeric:tabular-nums; }
 #appMain #coreDeleteDialog .core-delete-confirm { background:#b73535; color:#fff; border:1px solid #b73535; }
 #appMain #coreDeleteDialog .core-delete-confirm:hover { background:#9b2929; border-color:#9b2929; }
 #aiKeyAddForm { display:flex; flex-direction:column; max-height:calc(100dvh - 42px); }
@@ -1383,7 +1388,11 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 @media(max-width:380px) { #coreInputs .core-record-table td[data-label="购销方向"] { grid-column:1/-1; } }
 #coreInputs .core-task-fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:24px 32px; }
 #coreInputs .core-task-group { min-width:0; }
-#coreInputs .core-task-group h3 { margin:4px 0 16px; font-size:14px; font-weight:600; }
+#coreInputs .core-task-heading { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 12px; min-height:36px; margin:0 0 16px; }
+#coreInputs .core-task-heading h3 { margin:0; font-size:14px; font-weight:600; }
+#coreInputs .core-task-group .field > :is(.core-identity-field-heading,.core-field-label,#coreDateRangeLabel) { display:flex; align-items:center; min-height:24px; }
+#coreInputs .core-identity-field-heading { justify-content:space-between; gap:8px 12px; flex-wrap:wrap; }
+#coreInputs .core-identity-field-heading label { margin:0; font:inherit; }
 #coreInputs .core-task-group .field { display:flex; flex-direction:column; gap:8px; margin:0 0 16px; font-size:12px; color:var(--ink-2); }
 #coreInputs .core-task-group .field:last-child { margin-bottom:0; }
 #coreInputs .core-task-group input { width:100%; min-width:0; box-sizing:border-box; padding:10px 12px; font:inherit; font-size:14px; }
@@ -1447,6 +1456,160 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 
 #coreInputs #coreTaskForm [aria-invalid="true"] { border-color: #b42318; }
 .core-field-error { color: #b42318; font-size: 0.8rem; line-height: 1.5; overflow-wrap: anywhere; }
+html[data-theme=dark] #coreInputs .core-field-error { color:#ff9b9b; }
+html[data-theme=dark] #appMain #coreInputs #coreTaskForm [aria-invalid="true"] { border-color:#ff9b9b; }
+#coreInputs .core-identity-actions { margin:0; max-width:100%; }
+#appMain #coreInputs .core-identity-actions .btn { margin:0; min-height:32px; padding:5px 10px; font-size:12px; line-height:1.5; white-space:normal; }
+.core-identity-dialog { width:min(640px,calc(100vw - 32px)); }
+.core-identity-dialog[open] { display:flex; flex-direction:column; }
+.core-identity-dialog .core-delete-body { min-height:0; overflow-y:auto; }
+.core-identity-dialog .core-delete-actions { flex-shrink:0; }
+.core-identity-change { margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:10px; }
+#coreInputs .core-identity-change h3 { margin:0 0 10px; font-size:15px; }
+.core-identity-current { overflow-wrap:anywhere; }
+#coreInputs .core-identity-option { display:flex; align-items:flex-start; gap:10px; margin:8px 0; cursor:pointer; font-size:14px; line-height:1.7; }
+#coreInputs .core-identity-option input { flex:0 0 16px; width:16px; margin-top:5px; }
+#coreInputs .core-identity-option > span { min-width:0; overflow-wrap:anywhere; }
+#coreInputs .core-identity-option small { display:block; font-size:12px; }
+#coreInputs .core-identity-different { color:#b42318; }
+#coreInputs mark.core-identity-different { background:none; font-weight:inherit; }
+html[data-theme=dark] #coreInputs .core-identity-different { color:#ff9b9b; }
+#coreInputs .core-identity-sources { margin:4px 0 12px 26px; font-size:12px; line-height:1.7; }
+#coreInputs .core-identity-sources summary { cursor:pointer; color:var(--ink-2); }
+#coreInputs .core-identity-sources ul { margin:6px 0 0; padding-left:16px; }
+#coreInputs .core-identity-sources li { overflow-wrap:anywhere; margin-bottom:4px; }
+#coreInputs .core-identity-candidates { margin:0; }
+#appMain #coreInputs .core-identity-link { padding:0; border:0; background:none; box-shadow:none; color:var(--ink-2); font-size:12px; text-decoration:underline; cursor:pointer; min-height:24px; }
+#appMain #coreInputs .core-identity-link:hover { color:var(--ink); }
 
 #coreInputs .core-client-field { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; font-size: 12px; color: var(--ink-2); }
 #coreInputs #coreClient { width: 100%; min-width: 0; min-height: 46px; box-sizing: border-box; }
+
+.core-check-result{margin:20px 0;padding:20px;border:1px solid var(--line,#64748b);border-radius:16px;scroll-margin-top:24px;overflow-wrap:anywhere}.core-check-result h3{margin-top:0}.core-check-result>.material-card{margin:12px 0}.core-check-result details>summary{cursor:pointer}.core-check-result details details{margin:12px 0}.core-check-result[hidden]{display:none}
+.core-check-disclosure>summary{position:relative;padding:10px 66px 10px 0;min-height:24px;line-height:1.6;touch-action:manipulation}
+.core-check-toggle{position:absolute;right:0;top:10px;font-size:14px;color:var(--ink-3);white-space:nowrap}
+.core-check-disclosure>summary:focus-visible{outline:2px solid var(--gold,#688aa6);outline-offset:3px;border-radius:4px}
+.core-report-actions{padding:16px 0;border-block:1px solid var(--line);margin:16px 0}
+.core-report-actions h4{margin:0 0 8px}
+.core-report-buttons{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.core-report-buttons .btn{margin:0;text-decoration:none}
+#coreInputs .core-check-pagination{display:grid;grid-template-columns:auto minmax(0,1fr) auto}
+#coreInputs .core-check-pagination>span{margin:0;text-align:center}
+@media(max-width:600px){#coreInputs .core-check-pagination{grid-template-columns:1fr 1fr}#coreInputs .core-check-pagination>span{grid-column:1/-1;grid-row:1}#coreInputs .core-check-pagination>button:first-child{justify-self:start}#coreInputs .core-check-pagination>button:last-child{justify-self:end}}
+
+/* Teaching stays inside the existing workspace and inherits its theme and components. */
+#userAdmin>.campus-hidden,.training-embedded [data-legacy-members]{display:none!important}
+.training-embedded{min-width:0}.training-embedded [hidden]{display:none!important}.training-embedded h2{font-size:20px}.training-embedded h3{font-size:16px}.training-embedded .row{flex-wrap:wrap;gap:12px}.training-embedded .row>*{min-width:0}.training-embedded label{display:block;margin:12px 0 6px}.training-embedded input,.training-embedded select,.training-embedded textarea{max-width:100%;box-sizing:border-box}.training-embedded input[type=checkbox],.training-embedded input[type=radio]{width:auto}.training-embedded .tabs,.training-embedded .actions,.training-embedded .item-head{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.training-embedded .item-head{justify-content:space-between}.training-embedded .data-item{display:block}.training-embedded .data-item .actions{margin-top:12px}.training-embedded .detail{margin:12px 0;padding:14px;border:1px solid var(--line);border-radius:12px}.training-embedded .error{color:var(--danger,#a63434)}.training-embedded .ok{color:var(--ink-2)}.training-embedded .badge,.training-embedded .chip{display:inline-block;margin:3px}.training-embedded .tabs{margin:16px 0}.training-embedded [role=tab][aria-selected=true]{font-weight:600;border-color:var(--ink)}.training-embedded table{display:block;max-width:100%;overflow:auto;border-collapse:collapse}.training-embedded td,.training-embedded th{padding:10px;border-bottom:1px solid var(--line)}
+@media(max-width:760px){.training-embedded .sheet{padding:20px 16px}.training-embedded .row>div{flex-basis:100%}.training-embedded input,.training-embedded select,.training-embedded textarea{font-size:16px}}
+
+/* Institution choices reuse the appearance picker's material above. */
+#appMain #inviteOrgTypeOptions {
+  --choice-index: 0;
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  padding: 2px;
+  min-height: 56px;
+  box-sizing: border-box;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 999px;
+}
+#appMain #inviteOrgTypeOptions::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  z-index: -1;
+  top: 3px;
+  left: calc(3px + var(--choice-index) * ((100% - 8px) / 2 + 2px));
+  width: calc((100% - 8px) / 2);
+  height: calc(100% - 6px);
+  box-sizing: border-box;
+  border-width: 1px;
+  border-style: solid;
+  border-radius: 999px;
+  transition: left .3s cubic-bezier(.22, 1, .36, 1), opacity .15s;
+  opacity: 0;
+}
+#appMain #inviteOrgTypeOptions[data-value=university] { --choice-index: 1; }
+#appMain #inviteOrgTypeOptions:not([data-value=""])::before { opacity: 1; }
+html[data-theme] #appMain #inviteAdmin #inviteOrgTypeOptions button,
+html[data-theme] #appMain #inviteAdmin #inviteOrgTypeOptions button:is(:hover, :focus-visible, :active) {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 20px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink-2);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+  transform: none;
+  filter: none;
+}
+html[data-theme] #appMain #inviteAdmin #inviteOrgTypeOptions button[aria-pressed=true] { color: var(--ink); }
+html[data-theme] #appMain #inviteAdmin #inviteOrgTypeOptions button:focus-visible { outline: 2px solid var(--ink); outline-offset: -4px; }
+#appMain #inviteOrgTypeOptions svg { width: 20px; height: 20px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+#appMain #inviteAdmin .invite-type-row{margin:24px 0;display:flex}
+#appMain #inviteAdmin .invite-type-field{width:320px;max-width:100%;min-width:0;margin:0}#appMain #inviteAdmin .invite-type-field .field-label{display:block;font-size:12px;color:var(--ink-2);margin-bottom:10px}
+#appMain #inviteAdmin .invite-issue-form:has(#inviteStudentSeatsField:not([hidden])){grid-template-columns:minmax(220px,1.4fr) minmax(220px,1fr) minmax(140px,.7fr) auto}
+@media(max-width:1100px){#appMain #inviteAdmin .invite-issue-form,#appMain #inviteAdmin .invite-issue-form:has(#inviteStudentSeatsField:not([hidden])){grid-template-columns:1fr 1fr}}
+@media(max-width:600px){#appMain #inviteAdmin .invite-issue-form,#appMain #inviteAdmin .invite-issue-form:has(#inviteStudentSeatsField:not([hidden])){grid-template-columns:minmax(0,1fr)}}
+@media(prefers-reduced-motion:reduce){#appMain #inviteOrgTypeOptions::before{transition:none}}
+
+#graphStop{width:100%;margin-top:8px}.ai-reference-scope,.ai-reason-summary{margin:10px 0;border:1px solid #e0e7f0;border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto}.ai-reference-scope summary,.ai-reason-summary summary{cursor:pointer;color:#526884}.ai-answer[data-incomplete="true"]>.muted{color:#975b20}#graphMessages{overflow-wrap:anywhere}
+
+/* Give node conversations a full-height workspace with a pinned composer. */
+#knowledgePanel .graph-workspace{grid-template-columns:minmax(0,1.05fr) minmax(420px,1fr);align-items:stretch}
+#knowledgePanel .graph-inspector{display:flex;flex-direction:column;min-height:0;height:auto;max-height:none}
+#knowledgePanel .inspector-tabs{flex:none;padding:12px 16px;gap:8px}
+#knowledgePanel .inspector-tabs button{font-size:14px;padding:10px 12px}
+#knowledgePanel #graphAssistant:not([hidden]){display:flex;flex:1;min-height:0;max-height:none;overflow:hidden;flex-direction:column;padding:0}
+#knowledgePanel #knowledgeDetail{flex:1;min-height:0;max-height:none;overflow:auto;padding:20px}
+#knowledgePanel #graphAIContext{flex:none;margin:0;padding:12px 20px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;font-size:13px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-2)}
+#knowledgePanel #graphAIStatus:not([hidden]){flex:none;margin:12px 20px 0;padding:8px 10px}
+#knowledgePanel .ai-prompts{flex:none;padding:12px 20px 0;gap:8px}
+#knowledgePanel .ai-prompts button{font-size:12px;padding:7px 10px}
+#knowledgePanel #graphMessages{flex:1;min-height:240px;overflow:auto;padding:8px 20px 20px;scrollbar-width:thin}
+#knowledgePanel .ai-answer{margin-top:12px;padding-top:14px}
+#knowledgePanel .ai-answer:first-child{border-top:0;margin-top:0}
+#knowledgePanel .ai-question{font-size:14px;line-height:1.7}
+#knowledgePanel .ai-text{font-size:14px;line-height:1.9}
+#knowledgePanel #graphQuestionForm{flex:none;margin:0;padding:14px 20px 16px;border-top:1px solid var(--line)}
+#knowledgePanel #graphQuestion{display:block;box-sizing:border-box;min-height:78px;height:78px;max-height:150px;width:100%;margin:0;resize:vertical;font-size:14px;padding:12px}
+#knowledgePanel .graph-compose-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:10px}
+#knowledgePanel #graphSend,#knowledgePanel #graphStop{width:auto;min-width:90px;margin:0;padding:9px 18px;font-size:13px}
+#knowledgePanel .ai-reference-scope,#knowledgePanel .ai-reason-summary{border-color:var(--line)}
+#knowledgePanel .ai-reference-scope summary,#knowledgePanel .ai-reason-summary summary{color:var(--ink-2)}
+
+@media(max-width:1150px) and (min-width:951px){#knowledgePanel .graph-workspace{grid-template-columns:minmax(0,1fr) minmax(380px,1fr)}}
+@media(max-width:950px){#knowledgePanel .graph-workspace{grid-template-columns:1fr}#knowledgePanel .graph-inspector{height:640px;max-height:none}#knowledgePanel #graphMessages{min-height:180px}}
+@media(max-width:520px){#knowledgePanel .graph-inspector{height:620px}#knowledgePanel .inspector-tabs{padding:10px 12px}#knowledgePanel #graphAIContext{padding:12px 16px}#knowledgePanel .ai-prompts{padding:10px 16px 0}#knowledgePanel #graphMessages{padding:8px 16px 16px}#knowledgePanel #graphQuestionForm{padding:12px 16px 14px}#knowledgePanel #graphQuestion{font-size:16px}}
+
+@media(min-width:951px){
+  #knowledgePanel .graph-workspace{height:clamp(680px,78vh,860px);grid-template-rows:minmax(0,1fr)}
+  #knowledgePanel .graph-stage{display:flex;flex-direction:column;min-height:0}
+  #knowledgePanel .graph-stage-heading,#knowledgePanel .graph-toolbar,#knowledgePanel .graph-legend,#knowledgePanel .graph-hint{flex:none}
+  #knowledgePanel .graph-toolbar{align-self:flex-start}
+  #knowledgePanel #graphCanvas{flex:1;min-height:0;height:0!important}
+  #knowledgePanel .graph-inspector{height:100%;box-sizing:border-box;overflow:hidden}
+}
+
+/* Public RAG shares the enlarged node conversation surface. */
+#knowledgePanel .graph-question-modes{display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);flex:none}
+#knowledgePanel .graph-question-modes[hidden]{display:none}
+#knowledgePanel .graph-question-modes button{flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-2);padding:8px;font-size:12px;cursor:pointer}
+#knowledgePanel .graph-question-modes button[aria-pressed=true]{background:var(--control-field-face,#eef4fd);color:var(--ink);font-weight:600}
+#knowledgePanel .ai-rag-source{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:12px;overflow-wrap:anywhere}
+#knowledgePanel .ai-rag-source summary{cursor:pointer;line-height:1.7;color:var(--ink-2)}
+#knowledgePanel .ai-rag-source a{color:var(--ink-2)}
+#knowledgePanel #graphMessages{min-height:120px}
+@media(max-width:520px){#knowledgePanel .graph-question-modes{padding:10px 12px}}

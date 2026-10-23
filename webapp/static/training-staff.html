@@ -5,39 +5,28 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>考证内容管理 · 税海拾珠</title>
 <link rel="stylesheet" href="/training-dark.css">
+<link rel="stylesheet" href="/member-links.css?v=20261020-members-3">
 </head>
-<body>
+<body class="training-members-page">
 <header>
   <h1>税海拾珠 · 考证内容管理</h1>
   <div id="who" class="muted"></div>
 </header>
 <main>
-  <section id="login-view" class="card" style="max-width:420px;margin:40px auto;">
-    <h2>教师 / 管理员登录</h2>
-    <label for="username">用户名</label>
-    <input id="username" autocomplete="username">
-    <label for="password">密码</label>
-    <input id="password" type="password" autocomplete="current-password">
-    <label style="display:flex;align-items:center;gap:6px;margin-top:12px;">
-      <input type="checkbox" id="remember" style="width:auto;"> 保持登录 30 天
-    </label>
-    <div class="row" style="margin-top:14px;">
-      <button class="primary" id="login-btn" style="flex:1;">登录</button>
-    </div>
-    <div class="error" id="login-error"></div>
-  </section>
-
   <section id="app-view" hidden>
+    <div class="card" data-university-view="home" id="staff-workbench"><h2>教学工作台</h2><div id="staff-workbench-body"></div></div>
+    <section data-university-view="students" class="card" id="school-membership" aria-label="成员邀请与席位"></section>
     <div class="toolbar">
       <select id="cert-select"></select>
       <button class="primary" id="new-cert-btn" data-act="new-cert-btn">＋ 新建证书</button>
     </div>
 
-    <div id="pass-form" class="card" hidden>
+    <div data-university-view="settings" id="pass-form" class="card" hidden>
       <h2>修改我的密码</h2>
+      <p class="muted" id="staff-password-rule">密码须为 10–128 位，包含大写字母、小写字母、数字、符号中的至少三类；不能使用常见弱口令或包含邮箱 @ 前部分。</p>
       <div class="row">
         <div><label>当前密码</label><input id="pw-old" type="password" autocomplete="current-password"></div>
-        <div><label>新密码（至少 8 位）</label><input id="pw-new" type="password" autocomplete="new-password"></div>
+        <div><label>新密码（10–128 位）</label><input id="pw-new" aria-describedby="staff-password-rule" type="password" autocomplete="new-password"></div>
         <div><label>再输一遍新密码</label><input id="pw-new2" type="password" autocomplete="new-password"></div>
       </div>
       <div class="actions"><button class="primary small" data-act="change-pass">确认修改</button>
@@ -45,7 +34,7 @@
       <p class="muted">修改成功后所有登录会话失效，需用新密码重新登录（包括本页）。</p>
     </div>
 
-    <div id="new-cert-form" class="card" hidden>
+    <div data-university-view="content" id="new-cert-form" class="card" hidden>
       <h2>新建证书</h2>
       <div class="row">
         <div><label>证书编码（唯一）</label><input id="nc-code" placeholder="如 cjkj"></div>
@@ -63,7 +52,7 @@
       </div>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>证书信息 <span id="cert-state"></span></h2>
       <div id="cert-form" hidden>
         <div class="row">
@@ -84,7 +73,7 @@
       <p class="muted" id="cert-empty" hidden>请先选择或新建证书。</p>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>考试日期 <button class="small" data-act="show-date-form">＋ 录入日期</button></h2>
       <div id="date-form" class="inline-form" hidden>
         <div class="row">
@@ -98,7 +87,7 @@
       <div id="dates"></div>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>内容版本（题源治理） <button class="small" data-act="show-version-form">＋ 发布新版本</button></h2>
       <p class="muted" style="margin-top:-6px;">当前题源为规则仿真题；真题/回忆题/模拟题类型已预留，须获授权后才能启用，生成题不冒充真题。同一证书仅一个启用版本，发布新版本会自动退役旧版本，旧作答仍按当时版本回溯。</p>
       <div id="version-form" class="inline-form" hidden>
@@ -121,7 +110,7 @@
       <div id="versions"></div>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>考纲知识点
         <button class="small" data-act="show-kp-form">＋ 新增知识点</button>
         <button class="small" data-act="show-import-form">⇪ 批量导入</button>
@@ -160,18 +149,19 @@
       <div id="kps"></div>
     </div>
 
-    <div class="card">
+    <div data-university-view="content" class="card">
       <h2>内容运营统计（按三类标注口径） <button class="small" data-act="refresh-mark-stats">刷新</button></h2>
       <p class="muted" style="margin-top:-6px;">标注是内容层事实，统计范围=证书×标注依据版本；只统计教师维护的标注与题目关联，不含学生个人作答数据。个人易错情况请在学生作答统计中查看，不反向写入公共标注。</p>
       <div id="mark-stats"></div>
     </div>
-    <div class="card">
+    <div data-university-view="students" class="card" data-legacy-members>
       <h2>学生管理（考证线名册）
         <button class="small" data-act="show-student-form">＋ 添加学生</button>
         <button class="small" data-act="show-student-import">⇪ 批量导入</button>
         <button class="small" data-act="refresh-students">刷新</button>
       </h2>
       <p class="muted" style="margin-top:-6px;">学生以「学号 + 密码」登录学生页；停用后立即无法登录且会话失效。批量导入支持粘贴文本（每行：学号,姓名,班级）或直接上传 Excel 名册（.xlsx）。重置密码会立即踢下线。</p>
+      <p class="muted" id="student-password-rule">密码须为 10–128 位，包含大写字母、小写字母、数字、符号中的至少三类；不能使用常见弱口令或包含邮箱 @ 前部分。</p>
       <div id="student-form" class="inline-form" hidden>
         <div class="row">
           <div><label>院校</label><input id="sf-college" readonly></div>
@@ -180,7 +170,7 @@
           <div><label>班级（选填）</label><input id="sf-class"></div>
         </div>
         <div class="row">
-          <div><label>初始密码（留空 = Tp#学号2026）</label><input id="sf-pass"></div>
+          <div><label>初始密码（留空 = Tp#学号2026）</label><input id="sf-pass" aria-describedby="student-password-rule"></div>
           <div><label>邮箱（选填）</label><input id="sf-email"></div>
         </div>
         <div class="actions"><button class="primary small" data-act="create-student">添加学生</button></div>
@@ -189,7 +179,7 @@
         <div class="row">
           <div><label>院校</label><input id="si-college" readonly></div>
           <div><label>默认班级（选填，行内可覆盖）</label><input id="si-class"></div>
-          <div><label>统一初始密码（至少 8 位）</label><input id="si-pass" placeholder="如 Class2026!"></div>
+          <div><label>统一初始密码（10–128 位）</label><input id="si-pass" aria-describedby="student-password-rule" placeholder="如 Class2026!"></div>
         </div>
         <label>名单（每行：学号,姓名,班级可选；空行自动忽略）</label>
         <textarea id="si-text" style="min-height:140px;font-family:ui-monospace,monospace;" placeholder="2026001,张三,会计2601&#10;2026002,李四"></textarea>
@@ -205,12 +195,12 @@
       </div>
       <div id="students" class="muted">加载中…</div>
     </div>
-    <div class="card">
-      <h2>课程管理（FR-U04）
+    <div data-university-view="courses" class="card">
+      <h2>课程管理
         <button class="small" data-act="show-course-form">＋ 新建课程</button>
         <button class="small" data-act="refresh-courses">刷新</button>
       </h2>
-      <p class="muted" style="margin-top:-6px;">课程绑定授课教师与班级（同课可绑多班）；花名册按绑定班级聚合在读学生。停用课程不删数据；课程级作业序列在后续版本接入。</p>
+      <p class="muted" style="margin-top:-6px;">课程基本信息绑定授课教师与学籍班级；课堂任务通过“课程与教学班级”关联后发布。停用课程保留历史数据。</p>
       <div id="course-form" class="inline-form" hidden>
         <div class="row">
           <div><label>课程名称（必填）</label><input id="cf2-name" placeholder="如 税务风险审计实训"></div>
@@ -230,14 +220,14 @@
       </div>
       <div id="courses" class="muted">加载中…</div>
     </div>
-    <div class="card" id="overview-card" hidden>
+    <div data-university-view="home" class="card" id="overview-card" hidden>
       <h2>院校教学概况（管理员） <button class="small" data-act="refresh-overview">刷新</button></h2>
       <div id="overview-body" class="muted">加载中…</div>
     </div>
-    <div class="card">
-      <h2>班级与教师名册
+    <div data-university-view="students" class="card">
+      <h2>学籍班级与教师名册
         <button class="small" data-act="refresh-roster">刷新</button>
-        <button class="small" id="teacher-import-btn" data-act="show-teacher-import" hidden>⇪ 教师批量导入（管理员）</button>
+        <button class="small" id="teacher-import-btn" data-legacy-members data-act="show-teacher-import" hidden>⇪ 教师批量导入（管理员）</button>
       </h2>
       <p class="muted" style="margin-top:-6px;">班级为名册「班级」字段的聚合。学期初整建制迁移：把一个班级的全部在读学生整体改入新班级，逐生写入归属追溯（可审计、不改写历史）；停用学生保持原班级。教师批量导入仅限管理员，只建教师角色账号，每行：登录名,姓名,邮箱可选（空行忽略，重复/错误行带原因反馈）。</p>
       <div id="class-migrate-form" class="inline-form">
@@ -250,10 +240,11 @@
         <div class="actions"><button class="primary small" data-act="migrate-class">整建制迁移</button></div>
         <div id="class-migrate-result"></div>
       </div>
-      <div id="teacher-import-form" class="inline-form" hidden>
+      <div id="teacher-import-form" data-legacy-members class="inline-form" hidden>
+        <p class="muted" id="teacher-password-rule">密码须为 10–128 位，包含大写字母、小写字母、数字、符号中的至少三类；不能使用常见弱口令或包含邮箱 @ 前部分。</p>
         <div class="row">
           <div><label>院校</label><input id="ti-college" readonly></div>
-          <div><label>统一初始密码（至少 8 位）</label><input id="ti-pass" placeholder="如 Staff2026!"></div>
+          <div><label>统一初始密码（10–128 位）</label><input id="ti-pass" aria-describedby="teacher-password-rule" placeholder="如 Staff2026!"></div>
         </div>
         <label>教师名单（每行：登录名,姓名,邮箱可选）</label>
         <textarea id="ti-text" style="min-height:120px;font-family:ui-monospace,monospace;" placeholder="teacher01,王老师&#10;teacher02,李老师,t@demo.edu"></textarea>
@@ -264,7 +255,7 @@
       <h3 style="margin-top:16px;">班级归属追溯（最近变更）</h3>
       <div id="class-history" class="muted"></div>
     </div>
-    <div class="card">
+    <div data-university-view="organization" class="card">
       <h2>组织架构（院系 / 学期 / 班级实体）</h2>
       <p class="muted" style="margin-top:-6px;">与现有学生名册并存：学生「班级」字段照常聚合，班级实体作为注册表经名称对齐在读人数，层级变更不改写既有数据归属。写操作仅限实训管理员；班级按学期重建只复制实体元数据，学生归属调整仍用上方「整建制迁移」。</p>
       <h3 style="margin-top:12px;">院系</h3>
@@ -292,18 +283,44 @@
       </div>
       <div id="org-classes" class="muted">加载中…</div>
       <h3 style="margin-top:16px;">席位与配额</h3>
-      <p class="muted" style="margin-top:-6px;">教师/学生分席核销：创建即占用、停用即腾出；未配置院校按默认档（教师 10 / 学生 200）放行。批量导入遇席位满逐行说明原因，不中断整批。调整仅限管理员，逐次留痕。</p>
+      <p class="muted" style="margin-top:-6px;">教职工含高校管理员；学生按教师名下额度核销。学校总额度由平台顶级管理员设置，高校管理员在总额度内分配。</p>
       <div id="org-quota" class="muted">加载中…</div>
-      <div id="org-quota-form" class="row" hidden>
-        <div><label>教师配额</label><input id="oq-teacher" type="number" min="1" max="10000"></div>
-        <div><label>学生配额</label><input id="oq-student" type="number" min="1" max="10000"></div>
-        <div class="actions"><button class="primary small" data-act="org-quota-save">保存配额</button></div>
-      </div>
+
       <div id="org-quota-history" class="muted" style="margin-top:10px;"></div>
+    </div>
+    <div data-university-view="judge" class="card">
+      <h2>判题管理 <span class="muted" style="font-weight:400;">（编程题）</span></h2>
+      <div class="row">
+        <div><label>编程题</label><select id="judge-problem"></select></div>
+        <div style="flex:0 0 auto;"><button class="primary small" id="judge-load-subs">加载提交</button></div>
+      </div>
+      <div id="judge-submissions" class="muted" style="margin-top:10px;">选择题目后加载提交列表。</div>
+
+      <h3 style="margin-top:16px;">代码查重</h3>
+      <div class="row">
+        <div><label>相似度阈值（0~1，默认 0.85）</label><input id="judge-plag-threshold" type="number" min="0" max="1" step="0.05" value="0.85"></div>
+        <div style="flex:0 0 auto;"><button class="small" id="judge-plag-scan" style="margin-bottom:2px;">扫描查重</button></div>
+      </div>
+      <div id="judge-plag-flags" class="muted" style="margin-top:8px;">未扫描。</div>
+
+      <h3 style="margin-top:16px;">判题队列</h3>
+      <div class="row">
+        <div><label>状态过滤</label>
+          <select id="judge-task-state">
+            <option value="">全部</option><option value="queued">排队中</option>
+            <option value="running">运行中</option><option value="done">已完成</option>
+            <option value="failed">失败</option>
+          </select></div>
+        <div style="flex:0 0 auto;"><button class="small" id="judge-tasks-refresh" style="margin-bottom:2px;">刷新队列</button></div>
+      </div>
+      <div id="judge-tasks" class="muted" style="margin-top:8px;">未加载。</div>
+      <p class="muted" style="margin-top:8px;">质量分与判题明细可在提交列表展开；查重结果仅作教师复核的参考提示，不自动定性抄袭。判题进度与失败原因以提交记录为准。</p>
     </div>
     <div class="error" id="app-error"></div>
   </section>
 </main>
-<script src="/training-staff.js"></script>
+<script src="/policy-source.js?v=public-policy-1"></script>
+<script src="/member-links.js?v=20261020-members-3"></script>
+<script src="/training-staff.js?v=20261020-platform-teaching-1"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@ from dataclasses import replace
 import hashlib
 import json
 import secrets
+from threading import Lock
 
 from fastapi import HTTPException
 from webapp.access import current_actor
@@ -10,6 +11,8 @@ from webapp import ai_probes
 from src import ai_reasoning
 
 STORE_PROVIDER = lambda: None
+_CONTEXT_LOCK = Lock()
+_CONTEXT_ATTEMPTED = set()
 USES = {'all': '通用（当前模型）', 'extraction': '材料提取兜底', 'knowledge': '知识问答',
         'report': '风险解读与报告', 'tutor': '教学答疑', 'none': '仅检测'}
 PROTOCOLS = {'auto', 'deepseek', 'openrouter', 'credit_grants'}
@@ -80,6 +83,40 @@ def save_capabilities(db, settings, data):
     db.execute('DELETE FROM ai_model_capabilities WHERE credential_id=?', (cid,))
     db.executemany('INSERT INTO ai_model_capabilities VALUES (?,?,?,?)',
                    [(cid, model, json.dumps(info), store_now()) for model, info in data.items()])
+
+
+def context_budget(settings, store=None):
+    """Budget the selected credential/model; reserve output, instructions and headroom."""
+    store = store if store is not None else STORE_PROVIDER()
+    info = {}
+    if store is not None:
+        with store.connect() as db:
+            info = capability(db, settings)
+        identity = (credential_id(settings), settings.effective_model)
+        if not info.get('context_window') and not settings.problem():
+            with _CONTEXT_LOCK:
+                refresh = identity not in _CONTEXT_ATTEMPTED
+                _CONTEXT_ATTEMPTED.add(identity)
+            if refresh:
+                try:
+                    data = ai_probes.models(settings, with_capabilities=True)['capabilities']
+                    with store.connect() as db:
+                        save_capabilities(db, settings, data)
+                        info = capability(db, settings)
+                except ai_probes.TransportError:
+                    pass  # Unknown capacity stays explicitly labelled; never guess 1M.
+    limits = ai_probes.context_capability(info)
+    capacity = limits.get('context_window', 128000)
+    output = min(settings.max_tokens, limits.get('max_output_tokens', settings.max_tokens))
+    instructions, headroom = 8192, max(4096, capacity // 20)
+    available = max(256, capacity - output - instructions - headroom)
+    target = min(128000, capacity * 3 // 5, available)
+    return {'model': settings.effective_model, 'context_window': limits.get('context_window'),
+            'capacity_source': 'provider_models' if limits.get('context_window') else 'conservative_fallback',
+            'planning_context_window': capacity, 'output_reserve': output,
+            'instruction_reserve': instructions, 'safety_reserve': headroom,
+            'input_budget': max(256, target), 'default_input_target': 128000, 'cache_tokens_included': True,
+            'estimator': 'utf8_bytes_upper_bound', 'checked_at': info.get('checked_at')}
 
 
 def _reasoning_settings(db, target, effort):
@@ -194,7 +231,7 @@ def catalog(settings, store, user):
 
 def add(store, user, settings, *, name, key, provider, model, base_url='', usage=None,
         balance_protocol='auto', json_mode=None, vision=None, disable_thinking=None, reasoning_effort=None, usages=None):
-    target = ai_probes.temporary(settings, provider, key.strip(), model.strip())
+    target = ai_probes.temporary(settings, provider, key.strip(), model.strip(), base_url)
     if base_url:
         target = replace(target, base_url=base_url.strip().rstrip('/'))
     target = replace(target, json_mode=target.json_mode if json_mode is None else json_mode,

@@ -2,6 +2,19 @@
 const fs = require("node:fs");
 const vm = require("node:vm");
 const assert = require("node:assert/strict");
+// Raw JSON coordinates are kept for evidence, while all teaching views show readable locations.
+{
+  const ctx={};vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync('webapp/static/policy-source.js','utf8'),ctx);
+  const format=ctx.formatPolicySourceLocation;
+  assert.equal(format(JSON.stringify({text_path:'增值税/source.txt',start_line:88,end_line:92})), 'source.txt · 第 88–92 行');
+  assert.equal(format(JSON.stringify({retained_text_path:'C:\\private\\source.txt',start_char:0,end_char_exclusive:8})), 'source.txt · 第 1–8 字符');
+  assert.equal(format(JSON.stringify({provenance_kind:'catalog_annotation',catalog_field:'policies[id=T]',raw_path:'catalog/政策.yaml'})), '政策.yaml · 政策目录说明 · T');
+  assert.equal(format('原件第2页'), '原件第2页');
+  assert.equal(format('{bad-json'), '{bad-json');
+  assert.equal(format('[]'), '原文位置待核对');
+  for(const file of ['index.html','training-portal.html','training-staff.html'])assert.ok(fs.readFileSync('webapp/static/'+file,'utf8').includes('/policy-source.js?'));
+}
 // Registration gives feedback before submission and rechecks both fields after edits.
 {
   const source = fs.readFileSync('webapp/static/console.js', 'utf8');
@@ -152,7 +165,7 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 // Refresh restores the actual selected workspace view, while role-hidden views stay unavailable.
 {
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
-  const code = source.slice(source.indexOf("function defaultWorkspacePanel()"), source.indexOf("/* ---------- 多材料上传"));
+  const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("/* ---------- 多材料上传"));
   const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel"];
   const permitted = {
     org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel"].includes(id)),
@@ -221,8 +234,42 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 
 // Run the actual role-selection function with a small API/DOM boundary.
 const graph = fs.readFileSync("webapp/static/graph.js", "utf8");
-const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), graph.indexOf("async function loadGraph()"));
+const selection = graph.slice(graph.indexOf("async function loadKnowledge("), graph.indexOf("async function loadGraph("));
 (async () => {
+  // Empty/hidden founder results must never overwrite the clipboard or claim success.
+  {
+    const source = fs.readFileSync("webapp/static/console.js", "utf8");
+    const code = source.slice(source.indexOf("function inviteOrgTypeLabel("), source.indexOf('$("btnCreateClient").addEventListener'));
+    const nodes = new Map(), handlers = new Map(), writes = [], errors = [], toasts = [];
+    const node = id => {
+      if(!nodes.has(id))nodes.set(id,{value:"",textContent:"",hidden:false,disabled:false,dataset:{},attributes:{},setAttribute(name,value){this.attributes[name]=value;},
+        addEventListener:(_event,handler)=>handlers.set(id,handler)});
+      return nodes.get(id);
+    };
+    const context = {$:node, showError:message=>errors.push(message),showToast:message=>toasts.push(message),
+      navigator:{clipboard:{writeText:async value=>{writes.push(value);}}},
+      api:async()=>({code:"ABCD2345EFGH",org_name:"测试高校",org_type:"university",seats:20}),loadAdmin:async()=>{}};
+    vm.createContext(context);vm.runInContext(code,context);
+    for(const [hidden,value] of [[false,""],[false,"   "],[true,"ABCD2345EFGH"]]){
+      node("inviteReveal").hidden=hidden;node("inviteRevealCode").textContent=value;
+      await handlers.get("btnCopyInvite")();
+      assert.equal(writes.length,0);assert.equal(toasts.length,0);
+    }
+    node("inviteOrgName").value="测试高校";node("inviteOrgType").value="university";node("inviteSeats").value="20";
+    node("btnCopyInvite").disabled=true;
+    await handlers.get("btnCreateInvite")();
+    assert.equal(node("btnCopyInvite").disabled,false);
+    await handlers.get("btnCopyInvite")();
+    assert.deepEqual(writes,["ABCD2345EFGH"]);assert.equal(toasts.length,1);
+    context.navigator.clipboard.writeText=async()=>{throw new Error("denied");};
+    await handlers.get("btnCopyInvite")();
+    assert.equal(toasts.length,1);assert.ok(errors.length>=4);
+    handlers.get("btnHideInvite")();
+    assert.equal(node("inviteReveal").hidden,true);assert.equal(node("btnCopyInvite").disabled,true);
+    assert.equal(node("inviteRevealCode").textContent,"");
+    await handlers.get("btnCopyInvite")();
+    assert.deepEqual(writes,["ABCD2345EFGH"]);assert.equal(toasts.length,1);
+  }
   for (const role of ["platform_admin", "student", "org_admin", "accountant", "teacher"]) {
     const calls = [], errors = [], choices = [], nodes = new Map();
     const context = {currentUser:{id:'user',role}, graphRequest:0, graphScopes:new Map(), graphCurrent:()=>true, clearGraph(){},
@@ -245,7 +292,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
   // in application code; this tiny boundary provides only the needed DOM/API.
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
   // Settings reuses self-only preferences; stale reads/writes may not alter another view/account.
-  const settingsCode = source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
+  const settingsCode = source.slice(source.indexOf("function isCampusUser("), source.indexOf("async function teachingRequest("))+source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
   function settingsBoundary(role = "accountant") {
     const nodes = new Map(), calls = [], navigated = []; let active = true;
     const user = {id:"settings-user", role, username:"<account>", display_name:"<name>", created_at:"2026-10-01T00:00:00+00:00"};
@@ -319,14 +366,14 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
     classList:{contains:()=>true}, replaceChildren(){this.children=[];},
     append(...items){this.children.push(...items);}, get childElementCount(){return this.children.length;}});
   const graphNodes=new Map(),graphCalls=[],graphDraws=[];
-  const graphCtx={currentUser:{id:'owner',role:'org_admin'},graphCanvas:{...node(),style:{},setAttribute(){}},
+  const graphCtx={graphKinds:{},currentUser:{id:'owner',role:'org_admin'},graphCanvas:{...node(),style:{},setAttribute(){}},
     URLSearchParams,
     $:id=>{if(!graphNodes.has(id))graphNodes.set(id,{...node(),value:'',style:{},addEventListener(){}});return graphNodes.get(id);},
-    option:(select,value)=>select.append(value),updateAIContext(){},
+    option:(select,value)=>select.append(value),updateAIContext(){},stopNodeQuestion(){},
     api:url=>new Promise((resolve,reject)=>graphCalls.push({url,resolve,reject})),
     filterGraph:()=>graphDraws.push(vm.runInContext('graphData.audit_id',graphCtx)),focusGraph(){}};
   vm.createContext(graphCtx);
-  vm.runInContext('let graphMatchedCount=0,graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
+  vm.runInContext('let nodeQuestionHistory=[],nodeQuestionKey=null,graphMatchedCount=0,graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
     graph.slice(graph.indexOf('function graphCurrent('),graph.indexOf('$("graphAudit").addEventListener'))+
     graph.slice(graph.indexOf('function updateGraphRegions('),graph.indexOf('for(const id of ["knowledgeSearch"')),graphCtx);
   const listOld=graphCtx.loadKnowledge(),oldList=graphCalls.shift();
@@ -493,3 +540,161 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge()"), g
 // Core inputs must be loaded before the shared console creates its controller.
 assert.ok(indexMarkup.indexOf('/core-inputs.js') < indexMarkup.indexOf('/console.js'));
 assert.ok(indexMarkup.includes('id="coreInputs"'));
+
+// Material history stays in management and is fetched only after an explicit query.
+(async()=>{
+  const source=fs.readFileSync("webapp/static/console.js","utf8"),start=source.indexOf("function renderAdminLogs("),end=source.indexOf("\nasync function loadAdmin()",start);
+  const node=(tag,cls="",text="")=>({tag,className:cls,textContent:text,children:[],hidden:false,disabled:false,append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
+  const root=node("div"),calls=[];let pending=null,fail=false,current=true;
+  const ctx={$:()=>root,el:node,currentUser:{id:"admin",role:"org_admin"},Intl,Date,
+    api:async url=>{calls.push(url);if(pending)return await pending;if(fail)throw Error("权限已变化");return {id:"task/id",revision:2,versions:[{revision:2,kind:"edit",created_at:"2026-10-17T13:43:30+00:00",created_by:"admin"}],events:[{action:"view",created_at:"2026-10-17T13:43:30+00:00",actor_id:"admin",revision:2}]};}};
+  vm.createContext(ctx);vm.runInContext(source.slice(start,end),ctx);
+  const rows=[{target_type:"material_batch",target_id:"task/id",action:"material_edit",created_at:"2026-10-17T13:43:30+00:00"}];
+  const all=n=>[n,...n.children.flatMap(all)],button=()=>all(root).find(n=>n.tag==="button");
+  ctx.renderAdminLogs(rows,()=>current);assert.equal(calls.length,0,"management only requests history on demand");
+  await button().onclick();assert.deepEqual(calls,["/api/enterprise/materials/task%2Fid/trace"]);
+  assert.ok(all(root).some(n=>n.textContent.includes("保存资料核对")&&n.textContent.includes("21:43:30")),"timestamps use Asia/Shanghai");
+  const trace=all(root).find(n=>n.tag==="div"&&n.children.some(c=>c.textContent.includes("材料任务 task/id")));
+  await button().onclick();assert.equal(trace.hidden,true);assert.equal(calls.length,1);
+  await button().onclick();assert.equal(calls.length,2,"reopening reauthorizes the trace on the server");
+  await button().onclick();fail=true;await button().onclick();assert.ok(all(root).some(n=>n.textContent==="查询失败：权限已变化"));
+  fail=false;ctx.renderAdminLogs(rows,()=>current);let resolve;pending=new Promise(done=>{resolve=done;});const request=button().onclick();current=false;
+  resolve({id:"stale-private-task",revision:3,versions:[],events:[]});await request;
+  assert.ok(!all(root).some(n=>n.textContent.includes("stale-private-task")),"late responses cannot repopulate an inactive session or panel");
+  for(const role of ["accountant","teacher","platform_admin"]){ctx.currentUser.role=role;ctx.renderAdminLogs(rows,()=>true);assert.equal(button(),undefined);}
+  ctx.renderAdminLogs([{action:"set_university_capacity",target_type:"org",target_id:"school",created_at:"2026-10-21T01:00:00Z",
+    detail:JSON.stringify({actor:{id:"actor-1",username:"root",display_name:"平台管理员"},organization_id:"school",organization_name:"模拟高校",source_ip:"2001:db8::21",before:{teacher_quota:5,student_quota:1},after:{teacher_quota:6,student_quota:3},old_revision:1,new_revision:2})},
+    {action:"set_member_quota",target_type:"org",target_id:"company",detail:"seats=5;revision=1"}],()=>true);
+  const quotaText=all(root).map(n=>n.textContent).join("\n");
+  assert.match(quotaText,/来源 IP：2001:db8::21/);assert.match(quotaText,/教职工总额度：5 → 6/);
+  assert.match(quotaText,/学生总额度：1 → 3/);assert.match(quotaText,/配置版本：1 → 2/);
+  assert.match(quotaText,/历史记录未保存完整前后额度及来源 IP/);
+  console.log("Admin material trace: on-demand query, close/reopen authorization, failure and stale-session guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Identity and workspace selection come from the authenticated server record.
+{
+  const nodes = new Map();
+  const node = id => {
+    if (!nodes.has(id)) nodes.set(id,{value:"",dataset:{view:"login",setup:"0"},hidden:false,disabled:false,addEventListener(){}});
+    return nodes.get(id);
+  };
+  const ctx={window:{},document:{getElementById:node}};vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync("webapp/static/university-workspace.js","utf8"),ctx);
+  const workspace=ctx.window.universityWorkspace;
+  assert.ok(workspace.viewsFor("student","student").some(v=>v[0]==="tasks"));
+  for(const workspaceValue of ["/training-staff","university",null]){
+    const user=workspace.resolveIdentity({id:"campus",org_type:"university",workspace:workspaceValue,role:"org_admin",education_role:"admin"});
+    assert.equal(user.workspace,"university");assert.equal(user.role,"admin");
+  }
+  const unlinked=workspace.resolveIdentity({org_type:"university",role:"org_admin"});
+  assert.equal(unlinked.role,"unlinked","Unlinked university accounts must never fall through to enterprise menus");
+  assert.equal(workspace.resolveIdentity({org_type:"enterprise",role:"org_admin"}),null);
+  const teacher=workspace.viewsFor("staff","admin").map(v=>v[0]);
+  for(const key of ["home","tasks","statistics","knowledge","archives"])assert.ok(teacher.includes(key));
+  const school=workspace.viewsFor("staff","school_admin").map(v=>v[0]);
+  assert.ok(school.includes("home")&&!school.includes("content")&&!school.includes("judge"));
+  workspace.updateLogin();
+  assert.equal(node("loginCollegeField").hidden,true);
+  assert.equal(node("loginCollege").disabled,true);
+  node("loginCollege").dataset.needed="1";workspace.updateLogin();
+  assert.equal(node("loginCollegeField").hidden,false);
+  assert.equal(node("loginCollege").required,true);
+  node("authForm").dataset.view="signup";workspace.updateLogin();
+  assert.equal(node("loginCollege").disabled,true,"disambiguation must not block registration or reset");
+  console.log("University navigation and conditional ownership disambiguation passed.");
+}
+
+// Selected-organization capacity must survive refreshes without leaking stale school data.
+(async()=>{
+  const source=fs.readFileSync("webapp/static/console.js","utf8"),nodes=new Map(),calls=[];
+  const node=(tag,cls,text="")=>({tag,value:"",textContent:text,hidden:true,disabled:true,children:[],style:{},open:false,
+    append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},reportValidity(){return this.valid!==false;},focus(){},
+    showModal(){this.open=true;},close(){this.open=false;this.onclose?.();},
+    addEventListener(event,handler){if(event==="close")this.onclose=handler;else this[event]=handler;}});
+  const ctx={currentUser:{id:"root",role:"platform_admin"},memberRequest:0,memberSnapshot:null,
+    $:id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);},el:node,
+    clearMemberInvitations(){},renderMemberInvitations(){},renderAdminLogs(){},showError(){},
+    api:(url,options)=>url==="/api/audit-log"?Promise.resolve([]):new Promise((resolve,reject)=>calls.push({url,options,resolve,reject}))};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf("function memberCurrent("),source.indexOf("function clearMemberInvitations("))+
+    source.slice(source.indexOf("let memberQuotaEdit="),source.indexOf('$("btnSaveInvitationPolicy").addEventListener'))+
+    source.slice(source.indexOf("async function loadMembers("),source.indexOf('$("memberOrg").addEventListener')),ctx);
+  const school={org_id:"school",org_type:"university",members:[],quota:{seats:5,used:2,remaining:3},
+    university_quota:{college:"school/college",teacher_quota:5,student_quota:1,teachers_used:1,students_used:1,teacher_remaining:4,student_remaining:0,allocated:1,unallocated:0,revision:7}};
+  const enterprise={org_id:"company",org_type:"enterprise",members:[],quota:{seats:5,used:2,remaining:3,revision:1}};
+  const respond=(result)=>{calls.shift().resolve(result);calls.shift().resolve({links:[]});};
+  const unlock=async(kind)=>{ctx.$(kind==="university"?"btnEditUniversityCapacity":"btnEditMemberQuota").click();await ctx.$("quotaConfirmAccept").click();};
+  const save=(kind)=>{ctx.$(kind==="university"?"btnSaveUniversityCapacity":"btnSaveMemberQuota").click();return ctx.$("quotaConfirmAccept").click();};
+  ctx.$("memberOrg").value="school";
+  let pending=ctx.loadMembers();respond(school);await pending;
+  assert.equal(ctx.$("universityCapacityPanel").hidden,false);
+  assert.equal(ctx.$("memberQuotaEditor").hidden,true);
+  assert.match(ctx.$("memberQuotaStatus").textContent,/教职工 1 \/ 5.*学生 1 \/ 1/);
+  assert.ok(!ctx.$("memberQuotaStatus").textContent.includes("2 / 5"));
+  assert.equal(ctx.$("universityTeacherQuota").disabled,true);
+  assert.equal(ctx.$("btnSaveUniversityCapacity").hidden,true);
+  ctx.$("btnEditUniversityCapacity").click();assert.equal(ctx.$("quotaConfirmDialog").open,true);
+  ctx.$("quotaConfirmCancel").click();assert.equal(ctx.$("universityTeacherQuota").disabled,true);assert.equal(calls.length,0);
+  await unlock("university");assert.equal(ctx.$("universityTeacherQuota").disabled,false);
+  ctx.$("universityTeacherQuota").value="6";ctx.$("universityStudentQuota").value="3";
+  ctx.$("btnSaveUniversityCapacity").click();assert.equal(calls.length,0);
+  assert.ok(ctx.$("quotaConfirmChanges").children.some(n=>n.textContent.includes("5 → 6")));
+  ctx.$("quotaConfirmCancel").click();assert.equal(calls.length,0);assert.equal(ctx.$("universityTeacherQuota").value,"6");
+  pending=save("university");
+  const write=calls.shift();assert.equal(write.url,"/api/universities/school%2Fcollege/capacity");
+  assert.deepEqual(JSON.parse(write.options.body),{teacher_quota:6,student_quota:3,revision:7});
+  write.resolve({});await new Promise(resolve=>setImmediate(resolve));
+  respond({...school,university_quota:{...school.university_quota,teacher_quota:6,student_quota:3,teacher_remaining:5,student_remaining:2,revision:8}});
+  await pending;assert.equal(ctx.$("universityCapacityStatus").textContent,"席位修改已保存。");
+  assert.equal(ctx.$("universityTeacherQuota").disabled,true);
+  assert.match(ctx.$("memberQuotaStatus").textContent,/教职工 1 \/ 6.*学生 1 \/ 3/);
+  const stale=ctx.loadMembers(),old=calls.splice(0);
+  assert.equal(ctx.$("universityCapacityPanel").hidden,true);
+  ctx.$("memberOrg").value="company";pending=ctx.loadMembers();respond(enterprise);await pending;
+  old[0].resolve(school);old[1].resolve({links:[]});await stale;
+  assert.equal(ctx.$("universityCapacityPanel").hidden,true);
+  assert.equal(ctx.$("memberQuotaEditor").hidden,false);
+  assert.equal(ctx.$("memberQuotaStatus").textContent,"席位 2 / 5，剩余 3。");
+  assert.equal(ctx.$("memberSeats").disabled,true);
+  await unlock("enterprise");ctx.$("memberSeats").value="9";
+  ctx.$("btnCancelMemberQuota").click();assert.equal(ctx.$("memberSeats").value,5);assert.equal(ctx.$("memberSeats").disabled,true);
+  await unlock("enterprise");ctx.$("memberSeats").value="9";ctx.$("memberSeats").valid=false;
+  ctx.$("btnSaveMemberQuota").click();assert.equal(ctx.$("quotaConfirmDialog").open,false);assert.equal(calls.length,0);
+  ctx.$("memberSeats").valid=true;pending=save("enterprise");
+  const enterpriseWrite=calls.shift();assert.equal(enterpriseWrite.url,"/api/members/company/quota");
+  assert.deepEqual(JSON.parse(enterpriseWrite.options.body),{seats:9,revision:1});
+  enterpriseWrite.reject(new Error("版本冲突，请刷新"));await pending;
+  assert.match(ctx.$("memberQuotaSaveStatus").textContent,/版本冲突/);assert.equal(ctx.$("memberSeats").value,"9");
+  ctx.$("btnCancelMemberQuota").click();
+  ctx.$("memberOrg").value="school";pending=ctx.loadMembers();respond({...school,university_quota:null});await pending;
+  assert.equal(ctx.$("universityCapacityPanel").hidden,true);assert.match(ctx.$("memberQuotaStatus").textContent,/尚未关联/);
+  pending=ctx.loadMembers();respond(school);await pending;
+  await unlock("university");ctx.$("universityTeacherQuota").value="7";
+  const saving=save("university"),lateWrite=calls.shift();
+  ctx.$("memberOrg").value="company";pending=ctx.loadMembers();respond(enterprise);await pending;
+  lateWrite.resolve({});await saving;assert.equal(calls.length,0);
+  assert.equal(ctx.$("universityCapacityStatus").textContent,"");
+  ctx.$("memberOrg").value="school";pending=ctx.loadMembers();respond(school);await pending;
+  ctx.$("btnEditUniversityCapacity").click();ctx.currentUser={id:"other",role:"platform_admin"};
+  await ctx.$("quotaConfirmAccept").click();assert.equal(calls.length,0);assert.equal(ctx.$("universityTeacherQuota").disabled,true);
+  ctx.currentUser={id:"owner",role:"org_admin"};ctx.renderMemberQuota(school);
+  assert.equal(ctx.$("universityCapacityPanel").hidden,true);
+  console.log("Member capacity: locked defaults, unlock/save confirmations, cancellations, failed saves, school/enterprise accounting and stale read/write/session guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// A late profile refresh must preserve open note drafts, scoped to the same point.
+{
+  const source=fs.readFileSync("webapp/static/training-portal.js","utf8");
+  const ctx={};vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf("function noteDrafts("),source.indexOf("function renderProfile(")),ctx);
+  const item=(id,text,hidden=false)=>{const textarea={value:text},editor={hidden,querySelector:()=>textarea};return {id,querySelector:()=>editor,editor,textarea};};
+  const old=[item("point-a","unsaved draft"),item("point-b","cancelled",true)];
+  const drafts=ctx.noteDrafts({querySelectorAll:()=>old});
+  assert.equal(drafts.length,1);
+  const fresh=[item("point-a","server note",true),item("point-c","other point",true)];
+  ctx.restoreNoteDrafts({querySelectorAll:()=>fresh},drafts);
+  assert.equal(fresh[0].textarea.value,"unsaved draft");assert.equal(fresh[0].editor.hidden,false);
+  assert.equal(fresh[1].textarea.value,"other point");assert.equal(fresh[1].editor.hidden,true);
+  console.log("Profile refresh preserves open drafts and does not transfer drafts across knowledge points.");
+}

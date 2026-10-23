@@ -5,7 +5,8 @@ function element(tag = "div", className = "", text = "") {
   const node = {tag, children:[], classes:new Set((className || "").split(" ")), events:{}, value:"", disabled:false,
     append(...items) { this.children.push(...items); },
     replaceChildren(...items) { this.children = items; text = ""; },
-    setAttribute() {}, removeAttribute() {}, reset() {}, close() {},
+    setAttribute() {}, removeAttribute() {}, reset() {}, close() {}, focus() {},
+    reportValidity() { return !!this.value; },
     addEventListener(name, fn) { this.events[name] = fn; },
     querySelectorAll() { return []; },
     get textContent() { return text + this.children.map(item => item.textContent).join(""); },
@@ -36,6 +37,41 @@ function harness() {
 }
 
 (async () => {
+  const custom = harness();
+  custom.$("aiKeyAddProvider").value = "custom";
+  custom.$("aiKeyAddProvider").events.change();
+  assert.equal(custom.$("aiKeyAddURL").value, "");
+  assert.equal(custom.$("aiKeyAddModel").value, "");
+  custom.$("aiKeyAddURL").value = "https://custom.example/v1";
+  custom.$("aiKeyAddURL").events.input();
+  assert.equal(custom.$("aiKeyAddProvider").value, "custom");
+  custom.$("aiTemporaryProvider").value = "custom";
+  custom.$("aiTemporaryProvider").events.change();
+  assert.equal(custom.$("aiTemporaryURLField").hidden, false);
+  assert.equal(custom.$("aiTemporaryURL").required, true);
+  custom.$("aiTemporaryKey").value = "synthetic-temporary-key";
+  custom.$("btnTemporaryHealth").events.click();
+  assert.equal(custom.pending.length, 0, "empty URL must not submit or clear the key");
+  assert.equal(custom.$("aiTemporaryKey").value, "synthetic-temporary-key");
+  custom.$("aiTemporaryURL").value = "https://custom.example/v1";
+  custom.$("btnTemporaryHealth").events.click();
+  assert.equal(custom.pending.length, 0, "custom health needs an explicit model");
+  custom.$("aiTemporaryModel").value = "custom-model";
+  custom.$("btnTemporaryHealth").events.click();
+  assert.equal(custom.$("aiTemporaryKey").value, "");
+  assert.deepEqual(JSON.parse(custom.pending.shift().options.body), {operation:"health",provider:"custom",
+    api_key:"synthetic-temporary-key",model:"custom-model",base_url:"https://custom.example/v1",balance_protocol:""});
+  custom.$("aiTemporaryProvider").value = "deepseek";
+  custom.$("aiTemporaryProvider").events.change();
+  assert.equal(custom.$("aiTemporaryURLField").hidden, true);
+  assert.equal(custom.$("aiTemporaryURL").disabled, true);
+  custom.$("aiTemporaryKey").value = "synthetic-official-key";
+  custom.$("btnTemporaryBalance").events.click();
+  assert.equal(Object.hasOwn(JSON.parse(custom.pending.shift().options.body),"base_url"),false);
+  custom.controller.reset();
+  assert.equal(custom.$("aiTemporaryURL").value, "");
+  assert.equal(custom.$("aiTemporaryURLField").hidden, true);
+
   const h = harness();
   const opening = h.controller.load();
   h.pending.shift().resolve(h.catalog); await tick();

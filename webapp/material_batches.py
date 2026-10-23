@@ -285,8 +285,28 @@ def listing(store, actor, *, workflow='all', include_latest=False):
     return rows
 
 
-def _append(db, batch, actor, kind, payload, *, job_id=None):
+def _require_active_core(db, batch, *, reopening=False):
+    if batch['revision']:
+        previous = db.execute('SELECT r.kind,r.payload_cipher FROM material_revisions r JOIN core_input_tasks ci ON ci.id=r.batch_id WHERE r.batch_id=? AND r.revision=?',
+                              (batch['id'], batch['revision'])).fetchone()
+        if previous:
+            saved = json.loads(_open(previous['payload_cipher'], _context(
+                batch['org_id'], batch['id'], 'revision:' + previous['kind'], batch['revision'])))
+            if saved.get('completion') and not reopening:
+                raise AccessDenied('任务已完成并归档，请先重新打开任务。', 409)
+
+
+def _append(db, batch, actor, kind, payload, *, job_id=None, lifecycle=None):
+    _require_active_core(db, batch, reopening=lifecycle == 'reopen')
+    if lifecycle in {'complete', 'reopen'}:
+        # Lifecycle revisions preserve the exact checked evidence and frozen report.
+        revision = _save_revision(db, batch, actor, kind, payload, job_id=job_id, event_action="core_" + lifecycle)
+        from webapp import core_record_index
+        core_record_index.index_payload(db, batch, payload, revision)
+        return revision
     if payload.get('core_task'):
+        from webapp import core_record_index
+        core_record_index.compare(db, batch, actor, payload, revision=batch['revision'] + 1)
         from src.rule_bindings import restore
         restore(payload)
     if payload.get('core_task') and payload.get('tax_checks'):
@@ -294,12 +314,16 @@ def _append(db, batch, actor, kind, payload, *, job_id=None):
         mark_stale(payload)
         from webapp.core_reports import summary
         payload['tax_check_summary'] = summary(payload['tax_checks'])
+    return _save_revision(db, batch, actor, kind, payload, job_id=job_id)
+
+
+def _save_revision(db, batch, actor, kind, payload, *, job_id=None, event_action=None):
     revision = batch['revision'] + 1
     cipher = _seal(_json(payload), _context(batch['org_id'], batch['id'], 'revision:' + kind, revision))
     db.execute('INSERT INTO material_revisions VALUES (?,?,?,?,?,?)',
                (batch['id'], revision, kind, cipher, actor['id'], members.now()))
     db.execute('UPDATE material_batches SET revision=? WHERE id=?', (revision, batch['id']))
-    _event(db, batch, actor, kind, {'revision': revision}, revision=revision,job_id=job_id,system=job_id is not None)
+    _event(db, batch, actor, event_action or kind, {'revision': revision}, revision=revision,job_id=job_id,system=job_id is not None)
     return revision
 
 
@@ -317,6 +341,39 @@ def append_revision(store, actor, batch_id, expected_revision, kind, payload):
             raise AccessDenied('材料已变化，请重新读取并核对当前版本。', 409)
         revision = _append(db, batch, actor, kind, payload)
     return revision
+
+
+def read_current(store, actor, batch_id):
+    """Current business snapshot; historical evidence stays available through read()."""
+    # Fetch encrypted immutable rows in a short snapshot, then decrypt outside
+    # the write transaction. Never load earlier payloads or event history here.
+    with store.connect() as db:
+        db.execute('BEGIN')
+        batch = dict(_authorize(db, actor, batch_id))
+        row = db.execute('SELECT * FROM material_revisions WHERE batch_id=? AND revision=?',
+                         (batch_id, batch['revision'])).fetchone()
+        originals = list(db.execute('SELECT id,metadata_cipher,uploaded_by,uploaded_at,deleted_at '
+                                    'FROM material_originals WHERE batch_id=? ORDER BY uploaded_at,rowid', (batch_id,)))
+    result = {**batch, 'files': [], 'versions': [], 'events': [], 'jobs': [], 'executions': []}
+    for original in originals:
+        metadata = json.loads(_open(original['metadata_cipher'],
+                                   _context(batch['org_id'], batch_id, 'metadata', original['id'])))
+        result['files'].append({**metadata, **{k: original[k] for k in
+                               ('id', 'uploaded_by', 'uploaded_at', 'deleted_at')}})
+    if row:
+        payload = json.loads(_open(row['payload_cipher'],
+                                  _context(batch['org_id'], batch_id, 'revision:' + row['kind'], row['revision'])))
+        result['versions'].append({**{k: row[k] for k in ('revision', 'kind', 'created_by', 'created_at')}, 'payload': payload})
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        current = _authorize(db, actor, batch_id)
+        if current['revision'] != batch['revision']:
+            raise AccessDenied('资料已变化，请重新读取。', 409)
+        if row and payload.get('core_task'):
+            from webapp import core_record_index
+            core_record_index.observe(db, current, actor, payload)
+        _event(db, current, actor, 'view', {'revision': current['revision']})
+    return result
 
 
 def read(store, actor, batch_id):
@@ -342,6 +399,9 @@ def read(store, actor, batch_id):
                                       _context(batch['org_id'], batch_id, 'revision:' + row['kind'], row['revision'])))
             result['versions'].append({'revision': row['revision'], 'kind': row['kind'], 'payload': payload,
                                        'created_by': row['created_by'], 'created_at': row['created_at']})
+        if result['versions'] and result['versions'][-1]['payload'].get('core_task'):
+            from webapp import core_record_index
+            core_record_index.observe(db, batch, actor, result['versions'][-1]['payload'])
         for row in db.execute('SELECT * FROM material_events WHERE batch_id=? ORDER BY seq', (batch_id,)):
             detail = json.loads(_open(row['detail_cipher'],
                                      _context(batch['org_id'], batch_id, 'event:' + row['action'], row['id'])))
@@ -394,6 +454,7 @@ def delete_original(store, actor, batch_id, file_id, expected_revision):
         current_actor(db, actor, {'org_admin'})
         if type(expected_revision) is not int or batch['revision'] != expected_revision:
             raise AccessDenied('材料已变化，请重新查看删除影响。', 409)
+        _require_active_core(db, batch)
         row = db.execute('SELECT deleted_at FROM material_originals WHERE id=? AND batch_id=?', (file_id, batch_id)).fetchone()
         if not row:
             raise AccessDenied()
@@ -402,6 +463,7 @@ def delete_original(store, actor, batch_id, file_id, expected_revision):
             return False
         db.execute('UPDATE material_originals SET bytes_cipher=NULL,deleted_at=?,deleted_by=? WHERE id=?',
                    (members.now(), actor['id'], file_id))
+        db.execute('UPDATE core_business_sources SET active=0 WHERE batch_id=? AND file_id=?', (batch_id, file_id))
         revision = batch['revision'] + 1
         payload = _seal(_json({'deleted_file_id': file_id, 'requires_confirmation': True}),
                         _context(batch['org_id'], batch_id, 'revision:material_change', revision))

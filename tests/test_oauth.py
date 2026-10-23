@@ -17,7 +17,9 @@ from webapp.storage import Store
 class OAuthStoreTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.store=Store(Path(self.tmp.name)/'oauth.db')
+        # 主 Store 开哨兵：WAL 辅助文件常驻，消除 Windows 上 SQLITE_READONLY 抖动。
+        self.store=Store(Path(self.tmp.name)/'oauth.db',keepalive=True)
+        self.addCleanup(self.store.close)
         self.password='Secure-identity-2026!'
         self.owner=self.store.create_user('owner',self.password,'机构甲','org_admin','alpha','owner@example.com')
         self.peer=self.store.create_user('peer',self.password,'机构乙','org_admin','beta','peer@example.com')

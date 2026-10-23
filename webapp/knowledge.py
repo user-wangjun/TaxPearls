@@ -6,6 +6,7 @@ import json
 import re
 from src.ai_transport import chat_content, TransportError
 from itertools import islice
+from contextvars import ContextVar
 
 from fastapi import HTTPException
 from src import related_graph
@@ -15,6 +16,53 @@ from webapp import ai_keys
 
 def node_id(kind, label):
     return kind + ":" + hashlib.sha256(label.encode()).hexdigest()[:16]
+
+
+def public_graph(db, rules, *, teaching=False):
+    """One public-policy catalog and graph contract for both workspaces.
+
+    Learning objects reference canonical rule IDs. They never assert a legal
+    derivation or add enterprise facts to the shared public catalog.
+    """
+    from webapp import policy_graph
+    selected = policy_graph.sync_rules(db, rules)
+    graph = policy_graph.graph(db, selected)
+    graph.update(public_source='shared_policy_catalog', view='public_policy')
+    if not teaching:
+        return graph
+    from webapp.training_graph import TYPE_LABELS
+    nodes, edges = graph['nodes'], graph['edges']
+    known = {n['id'] for n in nodes}
+    for row in db.execute('SELECT * FROM certificate WHERE active=1 ORDER BY id'):
+        key = 'Certificate:' + row['id']
+        nodes.append({'id':key,'record_id':row['id'],'kind':'certificate','schema_type':'Certificate',
+                      'label':row['name'],'source':row['source_ref'],'requirement':row['description'],
+                      'review_status':'teaching_reference'})
+        known.add(key)
+    for row in db.execute('SELECT * FROM knowledge_point WHERE active=1 ORDER BY id'):
+        certificate = 'Certificate:' + row['certificate_id']
+        if certificate not in known:
+            continue
+        key = 'KnowledgePoint:' + row['id']
+        nodes.append({'id':key,'record_id':row['id'],'kind':'knowledge_point','schema_type':'KnowledgePoint',
+                      'label':row['name'],'source':row['source_ref'],'version':row['outline_version'],
+                      'requirement':row['description'],'review_status':'teaching_reference'})
+        known.add(key)
+        edges.append({'source':certificate,'target':key,'label':'包含学习知识点','relation_type':'HAS_LEARNING_POINT','schema_type':'LearningRelationship'})
+    for row in db.execute("SELECT * FROM knowledge_point_link WHERE target_type='rule' ORDER BY id"):
+        source = 'KnowledgePoint:' + row['knowledge_point_id']
+        if source in known and row['target_id'] in known:
+            edges.append({'source':source,'target':row['target_id'],'label':'学习关联规则','relation_type':'TEACHES_RULE',
+                          'schema_type':'LearningRelationship','record_id':row['id']})
+    for row in db.execute('SELECT * FROM knowledge_point_relation ORDER BY id'):
+        source, target = 'KnowledgePoint:' + row['from_kp_id'], 'KnowledgePoint:' + row['to_kp_id']
+        if source in known and target in known:
+            edges.append({'source':source,'target':target,'label':TYPE_LABELS[row['relation_type']],
+                          'relation_type':row['relation_type'],'source_ref':row['basis_ref'],
+                          'version':row['basis_version'],'schema_type':'LearningRelationship'})
+    graph['view'] = 'public_teaching'
+    graph['boundary'] += ' 学习关系来自明确的教学关联，不代表法律推导或学生掌握结论；既有作答继续使用发布时的冻结版本。'
+    return graph
 
 
 def build_graph(rules, entry=None):
@@ -112,20 +160,29 @@ def build_graph(rules, entry=None):
             "audit_id": entry["id"] if entry else None, "related_paths": related_paths}
 
 
+SELECTED_SETTINGS = ContextVar('knowledge_selected_settings', default=None)
+
+
 def ai_config():
     settings = ai_keys.apply(AISettings.from_env(), usage='knowledge')
     return (settings.base_url if not settings.problem() else ""), settings.effective_model, settings.api_key
 
 
+class ContextLengthExceeded(HTTPException):
+    def __init__(self):
+        super().__init__(502, '模型明确拒绝了超出上下文容量的请求。')
+
+
 def _chat_json(system_prompt, user_payload, failure_message, *, usage='knowledge'):
-    settings = ai_keys.apply(AISettings.from_env(), usage=usage)
+    settings = SELECTED_SETTINGS.get() or ai_keys.apply(AISettings.from_env(), usage=usage)
     if settings.problem():
         raise HTTPException(503, "AI 尚未连接：请检查项目模型配置。")
     try:
         content = chat_content(settings, [
             {"role":"system", "content":system_prompt},
             {"role":"user", "content":json.dumps(user_payload, ensure_ascii=False)},
-        ], min(settings.timeout, 60), temperature=0.2, max_tokens=min(settings.max_tokens, 2048))
+        ], min(settings.timeout, 60), temperature=0.2,
+           max_tokens=settings.max_tokens if SELECTED_SETTINGS.get() is not None else min(settings.max_tokens, 2048))
         if content.startswith("```"):
             content = content.split("\n", 1)[1].rsplit("```", 1)[0]
         answer = json.loads(content)
@@ -133,6 +190,10 @@ def _chat_json(system_prompt, user_payload, failure_message, *, usage='knowledge
             raise ValueError("Invalid answer schema")
         return answer, settings.effective_model
     except TransportError as exc:
+        if exc.kind == 'context_length':
+            raise ContextLengthExceeded() from None
+        if exc.kind == 'incomplete':
+            raise HTTPException(502, 'AI 输出未完整结束，可能达到输出上限；已停止本批，请调整输出容量或缩小批次后重试。') from None
         if exc.kind == "keys_unavailable" or (exc.kind == "http" and exc.status in {401, 402}):
             raise HTTPException(502, "AI 密钥暂不可用（密钥无效或余额不足）；请检查主用及备用密钥和余额。备用列表中的失败密钥五分钟后可重试，重启服务可立即重试。") from None
         raise HTTPException(502, failure_message) from None

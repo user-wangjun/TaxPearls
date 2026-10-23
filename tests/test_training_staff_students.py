@@ -9,9 +9,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 import uuid
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
+from openpyxl import Workbook
 from argon2 import PasswordHasher
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -33,7 +35,11 @@ class StaffStudentManagementTests(unittest.TestCase):
         app = FastAPI()
         register(app, lambda: self.store, STUDENT_COOKIE)
         self.client = TestClient(app)
+        self.student_client = TestClient(app)
         self._seed()
+        with self.store.connect() as db:
+            staff=db.execute("SELECT id FROM college_user WHERE username=?",('admin1',)).fetchone()[0]
+            db.execute("INSERT INTO teacher_student_quotas VALUES (?,?,?,1,?,?)",(staff,COLLEGE,50,staff,NOW))
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -66,14 +72,14 @@ class StaffStudentManagementTests(unittest.TestCase):
         self._staff_login()
         res = self.client.post("/api/training/staff/students", json={
             "college": COLLEGE, "student_no": "2026101", "name": "张一",
-            "class_name": "会计2601", "initial_password": "Abcd1234!"})
+            "class_name": "会计2601", "initial_password": "Abcd12345!"})
         self.assertEqual(res.status_code, 200, res.text)
         stu = res.json()["student"]
         self.assertEqual(stu["student_no"], "2026101")
         self.assertEqual(stu["class_name"], "会计2601")
         # 新密码可直接登录
-        login = self.client.post("/api/training/auth/login", json={
-            "student_no": "2026101", "password": "Abcd1234!", "college": COLLEGE})
+        login = self.student_client.post("/api/training/auth/login", json={
+            "student_no": "2026101", "password": "Abcd12345!", "college": COLLEGE})
         self.assertEqual(login.status_code, 200, login.text)
 
     def test_create_student_default_password(self):
@@ -81,7 +87,7 @@ class StaffStudentManagementTests(unittest.TestCase):
         res = self.client.post("/api/training/staff/students", json={
             "college": COLLEGE, "student_no": "2026102", "name": "李二"})
         self.assertEqual(res.status_code, 200, res.text)
-        login = self.client.post("/api/training/auth/login", json={
+        login = self.student_client.post("/api/training/auth/login", json={
             "student_no": "2026102", "password": "Tp#20261022026", "college": COLLEGE})
         self.assertEqual(login.status_code, 200, login.text)
 
@@ -118,7 +124,7 @@ class StaffStudentManagementTests(unittest.TestCase):
         self.assertEqual(len(data["created"]), 2)
         self.assertEqual(len(data["skipped"]), 1)
         # 默认密码 + 默认班级生效
-        login = self.client.post("/api/training/auth/login", json={
+        login = self.student_client.post("/api/training/auth/login", json={
             "student_no": "2026201", "password": "Class2026!", "college": COLLEGE})
         self.assertEqual(login.status_code, 200, login.text)
         listing = self.client.get("/api/training/staff/students").json()["students"]
@@ -131,27 +137,27 @@ class StaffStudentManagementTests(unittest.TestCase):
         self._staff_login()
         self.client.post("/api/training/staff/students", json={
             "college": COLLEGE, "student_no": "2026301", "name": "周五",
-            "initial_password": "OldPass123"})
-        login = self.client.post("/api/training/auth/login", json={
-            "student_no": "2026301", "password": "OldPass123", "college": COLLEGE})
+            "initial_password": "OldPass123!"})
+        login = self.student_client.post("/api/training/auth/login", json={
+            "student_no": "2026301", "password": "OldPass123!", "college": COLLEGE})
         self.assertEqual(login.status_code, 200)
-        self.assertEqual(self.client.get("/api/training/my/goals").status_code, 200)
+        self.assertEqual(self.student_client.get("/api/training/my/goals").status_code, 200)
         reset = self.client.post("/api/training/staff/students/2026301/reset-password",
-                                 json={"new_password": "NewPass456"})
+                                 json={"new_password": "NewPass456!"})
         self.assertEqual(reset.status_code, 404)  # 学号不是 id，不泄露其他院校记录
         listing = self.client.get("/api/training/staff/students").json()["students"]
         sid = [s for s in listing if s["student_no"] == "2026301"][0]["id"]
         reset = self.client.post(f"/api/training/staff/students/{sid}/reset-password",
-                                 json={"new_password": "NewPass456"})
+                                 json={"new_password": "NewPass456!"})
         self.assertEqual(reset.status_code, 200, reset.text)
         # 旧会话失效
-        self.assertEqual(self.client.get("/api/training/my/goals").status_code, 401)
+        self.assertEqual(self.student_client.get("/api/training/my/goals").status_code, 401)
         # 新密码可登录、旧密码不可
-        old = self.client.post("/api/training/auth/login", json={
-            "student_no": "2026301", "password": "OldPass123", "college": COLLEGE})
+        old = self.student_client.post("/api/training/auth/login", json={
+            "student_no": "2026301", "password": "OldPass123!", "college": COLLEGE})
         self.assertEqual(old.status_code, 401)
-        new = self.client.post("/api/training/auth/login", json={
-            "student_no": "2026301", "password": "NewPass456", "college": COLLEGE})
+        new = self.student_client.post("/api/training/auth/login", json={
+            "student_no": "2026301", "password": "NewPass456!", "college": COLLEGE})
         self.assertEqual(new.status_code, 200, new.text)
 
     # ---- 停用/启用 ------------------------------------------------------
@@ -160,21 +166,21 @@ class StaffStudentManagementTests(unittest.TestCase):
         self._staff_login()
         self.client.post("/api/training/staff/students", json={
             "college": COLLEGE, "student_no": "2026401", "name": "吴六",
-            "initial_password": "Pass12345"})
+            "initial_password": "Pass12345!"})
         listing = self.client.get("/api/training/staff/students").json()["students"]
         sid = [s for s in listing if s["student_no"] == "2026401"][0]["id"]
         off = self.client.post(f"/api/training/staff/students/{sid}/toggle",
                                json={"active": False})
         self.assertEqual(off.status_code, 200, off.text)
         self.assertEqual(off.json()["student"]["active"], 0)
-        denied = self.client.post("/api/training/auth/login", json={
-            "student_no": "2026401", "password": "Pass12345", "college": COLLEGE})
+        denied = self.student_client.post("/api/training/auth/login", json={
+            "student_no": "2026401", "password": "Pass12345!", "college": COLLEGE})
         self.assertEqual(denied.status_code, 401)
         on = self.client.post(f"/api/training/staff/students/{sid}/toggle",
                               json={"active": True})
         self.assertEqual(on.json()["student"]["active"], 1)
-        ok = self.client.post("/api/training/auth/login", json={
-            "student_no": "2026401", "password": "Pass12345", "college": COLLEGE})
+        ok = self.student_client.post("/api/training/auth/login", json={
+            "student_no": "2026401", "password": "Pass12345!", "college": COLLEGE})
         self.assertEqual(ok.status_code, 200, ok.text)
 
 
@@ -201,6 +207,114 @@ class StaffStudentManagementTests(unittest.TestCase):
         new = self.client.post("/api/training/staff/auth/login", json={
             "username": "admin1", "password": "BrandNew88"})
         self.assertEqual(new.status_code, 200, new.text)
+
+    def test_password_policy_rejects_invalid_values_at_every_setting_endpoint(self):
+        self._staff_login()
+        created = self.client.post("/api/training/staff/students", json={
+            "college": COLLEGE, "student_no": "policy01", "name": "规则测试",
+            "initial_password": "Zebra!Forest92"})
+        sid = created.json()["student"]["id"]
+        self.assertEqual(self.student_client.post("/api/training/auth/login", json={
+            "college": COLLEGE, "student_no": "policy01", "password": "Zebra!Forest92"}).status_code, 200)
+        workbook = Workbook()
+        workbook.active.append(["学号", "姓名"])
+        workbook.active.append(["policy02", "导入测试"])
+        stream = BytesIO()
+        workbook.save(stream)
+        workbook.close()
+        for password in ("Abcd1234!", "aB8!" * 32 + "x", "alllowercase2026", "Password123!",
+                         "Ｐａｓｓｗｏｒｄ１２３！", "Ab9" + "😀" * 6):
+            requests = [
+                ("/api/training/staff/students", {
+                    "college": COLLEGE, "student_no": "policy02", "name": "测试", "initial_password": password}),
+                ("/api/training/staff/students/import", {
+                    "college": COLLEGE, "default_password": password,
+                    "rows": [{"student_no": "policy02", "name": "测试"}]}),
+                ("/api/training/staff/teachers/import", {
+                    "college": COLLEGE, "default_password": password,
+                    "rows": [{"username": "policyteacher", "display_name": "测试"}]}),
+                (f"/api/training/staff/students/{sid}/reset-password", {"new_password": password}),
+                ("/api/training/auth/change-password", {
+                    "old_password": "Zebra!Forest92", "new_password": password}),
+                ("/api/training/staff/auth/change-password", {
+                    "old_password": "staff-pass", "new_password": password}),
+            ]
+            for url, body in requests:
+                with self.subTest(url=url, length=len(password)):
+                    client = self.student_client if url.startswith("/api/training/auth/") else self.client
+                    self.assertEqual(client.post(url, json=body).status_code, 422)
+            uploaded = self.client.post("/api/training/staff/students/import-xlsx",
+                                        data={"college": COLLEGE, "default_password": password},
+                                        files={"file": ("roster.xlsx", stream.getvalue(),
+                                               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+            self.assertEqual(uploaded.status_code, 422, uploaded.text)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM student_info").fetchone()[0], 1)
+            self.assertEqual(db.execute("SELECT count(*) FROM college_user").fetchone()[0], 1)
+        # Teacher and student are separate browsers; rejected settings preserve both sessions.
+        self.assertEqual(self.student_client.get("/api/training/auth/me").status_code, 200)
+        self.assertEqual(self.client.get("/api/training/staff/auth/me").status_code, 200)
+
+    def test_email_prefix_checked_on_creation_import_change_and_reset(self):
+        self._staff_login()
+        password = "Zebra!Forest92"
+        body = {"college": COLLEGE, "student_no": "policy01", "name": "规则测试",
+                "initial_password": password, "email": "ZEBRA@example.com"}
+        self.assertEqual(self.client.post("/api/training/staff/students", json=body).status_code, 422)
+        body["email"] = "learner@example.com"
+        created = self.client.post("/api/training/staff/students", json=body)
+        sid = created.json()["student"]["id"]
+        self.student_client.post("/api/training/auth/login", json={
+            "college": COLLEGE, "student_no": "policy01", "password": password})
+        with self.store.connect() as db:
+            db.execute("UPDATE student_info SET email='ZEBRA@example.com' WHERE id=?", (sid,))
+            db.execute("UPDATE college_user SET email='ZEBRA@example.com' WHERE id=?", (self.staff_id,))
+        for url, payload in [
+            (f"/api/training/staff/students/{sid}/reset-password", {"new_password": password}),
+            ("/api/training/auth/change-password", {"old_password": password, "new_password": "Zebra!Forest93"}),
+            ("/api/training/staff/auth/change-password", {"old_password": "staff-pass", "new_password": password}),
+        ]:
+            with self.subTest(url=url):
+                client = self.student_client if url.startswith("/api/training/auth/") else self.client
+                response = client.post(url, json=payload)
+                self.assertEqual(response.status_code, 422, response.text)
+                self.assertIn("@ 前部分", response.json()["detail"])
+        result = self.client.post("/api/training/staff/teachers/import", json={
+            "college": COLLEGE, "default_password": password, "rows": [
+                {"username": "policybad", "display_name": "不可导入", "email": "ZEBRA@example.com"},
+                {"username": "policygood", "display_name": "可导入", "email": "teacher@example.com"},
+            ]})
+        self.assertEqual(result.status_code, 200, result.text)
+        self.assertEqual(len(result.json()["import"]["created"]), 1)
+        skipped = result.json()["import"]["skipped"]
+        self.assertEqual(len(skipped), 1)
+        self.assertIn("@ 前部分", skipped[0]["reason"])
+
+    def test_empty_explicit_password_does_not_fall_back_to_default(self):
+        self._staff_login()
+        response = self.client.post("/api/training/staff/students", json={
+            "college": COLLEGE, "student_no": "policy01", "name": "规则测试", "initial_password": ""})
+        self.assertEqual(response.status_code, 422, response.text)
+
+    def test_import_and_reset_preserve_password_whitespace(self):
+        self._staff_login()
+        password = " Zebra!Forest92 "
+        response = self.client.post("/api/training/staff/teachers/import", json={
+            "college": COLLEGE, "default_password": password,
+            "rows": [{"username": "policyteacher", "display_name": "教师"}]})
+        self.assertEqual(len(response.json()["import"]["created"]), 1, response.text)
+        response = self.client.post("/api/training/staff/students/import", json={
+            "college": COLLEGE, "default_password": password,
+            "rows": [{"student_no": "policy01", "name": "学生"}]})
+        sid = response.json()["import"]["created"][0]["id"]
+        reset = self.client.post(f"/api/training/staff/students/{sid}/reset-password",
+                                 json={"new_password": " Forest!Zebra93 "})
+        self.assertEqual(reset.status_code, 200, reset.text)
+        with self.store.connect() as db:
+            staff_hash = db.execute("SELECT password_hash FROM college_user WHERE username='policyteacher'").fetchone()[0]
+            student_hash = db.execute("SELECT password_hash FROM student_info WHERE id=?", (sid,)).fetchone()[0]
+        self.assertTrue(_passwords.verify(staff_hash, password))
+        self.assertTrue(_passwords.verify(student_hash, " Forest!Zebra93 "))
 
 
 class TrainingCollegeIsolationTests(unittest.TestCase):
@@ -234,6 +348,8 @@ class TrainingCollegeIsolationTests(unittest.TestCase):
             self.foreign_ids[kind] = result.json()[key]["id"]
 
     def login(self, username):
+        with self.store.connect() as db:
+            db.execute("INSERT OR IGNORE INTO student_teacher_memberships VALUES ('local-student','teacher',?)",(COLLEGE,))
         self.client.cookies.clear()
         result = self.client.post("/api/training/staff/auth/login",
                                   json={"username": username, "password": "staff-pass"})

@@ -20,7 +20,8 @@ class TrainingProfileTests(unittest.TestCase):
         self.env.start()
         self.tmp = TemporaryDirectory()
         self.old = module.store
-        self.store = Store(Path(self.tmp.name) / 'profiles.db')
+        # 主 Store 开哨兵：WAL 辅助文件常驻，消除 Windows 上 SQLITE_READONLY 抖动。
+        self.store = Store(Path(self.tmp.name) / 'profiles.db', keepalive=True)
         module.store = self.store
         self.password = 'Training-profile-2026!'
         self.teacher = self.person('profile-teacher', 'teacher')
@@ -47,6 +48,7 @@ class TrainingProfileTests(unittest.TestCase):
     def tearDown(self):
         self.client.__exit__(None, None, None)
         module.store = self.old
+        self.store.close()
         self.tmp.cleanup()
         self.env.stop()
 

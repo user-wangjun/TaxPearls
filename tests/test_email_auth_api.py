@@ -19,7 +19,9 @@ from webapp.storage import Store
 class EmailAuthApiTests(unittest.TestCase):
     def setUp(self):
         self.tmp=TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.store=Store(Path(self.tmp.name)/'api.db')
+        # 主 Store 开哨兵：WAL 辅助文件常驻，消除 Windows 上 SQLITE_READONLY 抖动。
+        self.store=Store(Path(self.tmp.name)/'api.db',keepalive=True)
+        self.addCleanup(self.store.close)
         self.password='Secure-browser-2026!'
         self.root=self.store.create_user('root',self.password,'平台','platform_admin','platform','chief@example.com')
         self.owner=self.store.create_user('owner',self.password,'机构','org_admin','alpha','owner@example.com')

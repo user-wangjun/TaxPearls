@@ -126,6 +126,43 @@ class ProbeTransportTests(unittest.TestCase):
             self.assertEqual(caps[model]['state'],'unknown',model)
         self.assertEqual(caps['all-levels']['levels'],list(ai_reasoning.EFFORTS))
 
+    def test_model_context_limits_are_retained_without_guessing_or_accepting_booleans(self):
+        FakeUpstream.response={'data':[
+            {'id':'large','context_window':1048576,'max_output_tokens':393216},
+            {'id':'small','context_length':32000},
+            {'id':'invalid','context_window':True,'max_output_tokens':'1000000'},
+            {'id':'duplicate','context_window':1048576},{'id':'duplicate','context_window':4096}]}
+        caps=ai_probes.models(self.settings,with_capabilities=True)['capabilities']
+        self.assertEqual(caps['large']['context_window'],1048576)
+        self.assertEqual(caps['large']['max_output_tokens'],393216)
+        self.assertEqual(caps['small']['context_window'],32000)
+        self.assertNotIn('context_window',caps['invalid'])
+        self.assertNotIn('context_window',caps['duplicate'])
+        from webapp import ai_keys
+        with patch.object(ai_keys,'STORE_PROVIDER',return_value=None):
+            unknown=ai_keys.context_budget(self.settings)
+        self.assertIsNone(unknown['context_window'])
+        self.assertEqual(unknown['capacity_source'],'conservative_fallback')
+
+    def test_analysis_output_limit_matches_reserved_capacity_and_cache_usage_is_reported(self):
+        from webapp import knowledge
+        from src.ai_transport import USAGE_OBSERVER
+        FakeUpstream.response={'choices':[{'finish_reason':'stop','message':{'content':'{"probe":"ok"}'}}],
+            'usage':{'prompt_tokens':10000,'completion_tokens':300,'total_tokens':10300,
+                     'prompt_cache_hit_tokens':9000,'prompt_cache_miss_tokens':1000}}
+        observations=[]
+        selected=knowledge.SELECTED_SETTINGS.set(replace(self.settings,max_tokens=8192))
+        observed=USAGE_OBSERVER.set(observations.append)
+        try:
+            answer,_=knowledge._chat_json('return JSON',{'synthetic':True},'failed')
+        finally:
+            knowledge.SELECTED_SETTINGS.reset(selected)
+            USAGE_OBSERVER.reset(observed)
+        self.assertEqual(answer,{'probe':'ok'})
+        self.assertEqual(FakeUpstream.calls[-1][2]['max_tokens'],8192)
+        self.assertEqual(observations[0]['usage']['prompt_tokens'],10000)
+        self.assertEqual(observations[0]['usage']['prompt_cache_hit_tokens'],9000)
+
     def test_real_reasoning_business_and_probe_payloads_are_provider_specific(self):
         FakeUpstream.response={'choices':[{'finish_reason':'stop','message':{'content':'{"probe":"ok"}'}}]}
         for protocol,effort,expected in [
@@ -305,6 +342,61 @@ class ProbeAPITests(unittest.TestCase):
                 response=self.client.post('/api/admin/ai-keys/probe',json=body)
                 self.assertEqual(response.status_code,422,response.text); self.assertNotIn(SECRET,response.text)
             run.assert_not_called()
+
+    def test_custom_temporary_endpoint_and_model_are_isolated_and_not_saved(self):
+        self.login(self.root)
+        body={'operation':'health','provider':'custom','api_key':SECRET,
+              'base_url':' https://custom.example/v1/ ','model':'custom-model'}
+        outcome={'operation':'health','status':'ok','message':'检测成功'}
+        with patch.object(ai_probes,'run',return_value=outcome) as run:
+            response=self.client.post('/api/admin/ai-keys/probe',json=body)
+            self.assertEqual(response.status_code,200,response.text)
+            target=run.call_args.args[0]
+            self.assertEqual(target.base_url,'https://custom.example/v1')
+            self.assertEqual(target.model,'custom-model')
+            self.assertEqual(target.api_keys,(SECRET,))
+            self.assertFalse(target.disable_thinking)
+            self.assertEqual(target.reasoning_effort,'')
+        logs=json.dumps(self.store.list_logs(self.root))
+        self.assertNotIn(SECRET,logs); self.assertNotIn('custom.example',logs)
+        self.assertEqual(len(self.client.get('/api/admin/ai-keys').json()['keys']),2)
+        with patch.object(ai_probes,'run',return_value={'operation':'balance','status':'unsupported'}) as run:
+            body.update(operation='balance',model='',balance_protocol='credit_grants')
+            self.assertEqual(self.client.post('/api/admin/ai-keys/probe',json=body).status_code,200)
+            self.assertEqual(run.call_args.args[2],'credit_grants')
+            self.assertEqual(run.call_args.args[0].model,'')
+
+    def test_invalid_custom_endpoints_never_send_credentials_or_fall_back(self):
+        self.login(self.root)
+        body={'operation':'health','provider':'custom','api_key':SECRET,
+              'base_url':'https://custom.example/v1','model':'custom-model'}
+        key=self.client.get('/api/admin/ai-keys').json()['keys'][0]['id']
+        with patch.object(ai_probes,'run') as run:
+            for change in [{'base_url':''},{'base_url':' '},{'model':''},
+                           {'base_url':'http://private.example/v1'},
+                           {'base_url':'https://host.example/v1?secret=x'},
+                           {'base_url':'https://host.example/chat/completions'},
+                           {'base_url':'https://user:pass@host.example/v1'},
+                           {'provider':'configured'},{'provider':'deepseek'},
+                           {'key_id':key,'api_key':'','provider':'configured','model':''}]:
+                response=self.client.post('/api/admin/ai-keys/probe',json={**body,**change})
+                self.assertEqual(response.status_code,422,response.text)
+                self.assertNotIn(SECRET,response.text)
+            run.assert_not_called()
+
+    def test_custom_key_can_be_saved_and_reopened_without_configured_defaults(self):
+        self.login(self.root)
+        body={'name':'自定义服务','provider':'custom','api_key':'synthetic-custom-key',
+              'base_url':'https://custom.example/v1/','model':'custom-model','usages':[]}
+        for change in [{'base_url':''},{'model':''}]:
+            self.assertEqual(self.client.post('/api/admin/ai-keys',json={**body,**change}).status_code,422)
+        response=self.client.post('/api/admin/ai-keys',json=body)
+        self.assertEqual(response.status_code,200,response.text)
+        row=next(row for row in self.client.get('/api/admin/ai-keys').json()['keys'] if row['name']==body['name'])
+        self.assertEqual(row['base_url'],'https://custom.example/v1')
+        self.assertEqual(row['model'],'custom-model')
+        self.assertFalse(row['disable_thinking'])
+        self.assertNotIn(body['api_key'],json.dumps(row))
 
     def test_role_revocation_during_probe_discards_sensitive_result(self):
         self.login(self.root)

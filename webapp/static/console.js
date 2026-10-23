@@ -27,26 +27,67 @@ let noticeRequest = 0, noticeBusy = false, noticeReady = false, noticeHasEmail =
 let ruleEditorRequest = 0, ruleHistoryRequest = 0, ruleBusy = false, adminRequest = 0;
 
 async function api(url, options = {}) {
+  const {onEvent,...request}=options;
   let r;
   try {
-    r = await fetch(url, options);
+    r = await fetch(url, request);
   } catch (e) {
     throw new Error(location.protocol === "file:"
       ? "当前是直接打开的本地文件，请求不到后端接口。请通过服务地址访问，例如 http://127.0.0.1:8000 。"
       : "无法连接服务器，请确认服务已启动后重试。");
   }
   const ct = r.headers.get("content-type") || "";
+  if(r.ok&&onEvent){
+    if(!ct.includes("application/x-ndjson"))throw new Error("检查进度响应无效，请重新读取任务。");
+    return readCoreCheckStream(r,onEvent);
+  }
   const body = ct.includes("application/json") ? await r.json().catch(() => null) : await r.text();
   if (!r.ok) {
     const detail = body?.detail;
     const message = Array.isArray(detail) ? detail.map(e=>e.msg||"字段校验失败").join("；") : detail;
-    const error = new Error(message || (typeof body === "string" && body ? body : "") || `请求失败（${r.status}）`); error.status=r.status; throw error;
+    const error = new Error(message || (typeof body === "string" && body ? body : "") || `请求失败（${r.status}）`); error.status=r.status; error.requiresCollege=body?.requires_college===true; throw error;
   }
   return body;
 }
 
 const aiKeyProbes = createAIKeyProbes({api, el, $, user:()=>currentUser});
+let universityMembersUI=null,teachingViewOwner=null;
+const teachingWorkspace=window.createTrainingWorkspace({api,valid:()=>!!currentUser&&currentUser.id===teachingViewOwner});
+function isCampusUser(user=currentUser){return user?.org_type==="university";}
+function campusStudent(user=currentUser){return isCampusUser(user)&&(user.education_role==="student"||user.role==="student");}
+function accountRoleName(user){return isCampusUser(user)&&["admin","school_admin"].includes(user.education_role)?"高校管理员 / 教师":({teacher:"教师",student:"学生",org_admin:isCampusUser(user)?"高校管理员":"机构管理员",accountant:"会计",platform_admin:"平台管理员"}[user.role]||user.role);}
+async function teachingRequest(path,options={}){
+  const owner=currentUser?.id,request={...options};if(request.body&&typeof request.body!=="string"){request.headers={"Content-Type":"application/json",...request.headers};request.body=JSON.stringify(request.body);}
+  try{return await api(path,request);}catch(error){
+    if(error.status!==401||currentUser?.id!==owner)throw error;
+    await api('/api/training/membership/session',{method:'POST'});
+    if(currentUser?.id!==owner)throw new Error('登录信息已变化，请重新打开。');
+    return api(path,request);
+  }
+}
+function loadCampusMembers(){
+  universityMembersUI?.destroy();const owner=currentUser.id;
+  universityMembersUI=TPMemberLinks.school($('universityMembers'),{embedded:true,request:teachingRequest,valid:()=>currentUser?.id===owner});
+}
+function openTeachingWorkspace(){
+  if(teachingViewOwner===currentUser.id&&$('examWorkspace').children.length)return;
+  teachingViewOwner=currentUser.id;
+  teachingWorkspace.mount($('examWorkspace'),!campusStudent());
+}
+async function loadCampusDashboard(){
+  const owner=currentUser.id,body=$('dashboardBody');body.replaceChildren(el('p','muted','正在读取高校教学信息…'));
+  try{
+    const data=await teachingRequest('/api/training/membership');if(currentUser?.id!==owner)return;
+    const grid=el('div','kpi-grid');
+    const stats=data.administrator?[["教职工（含管理员）",data.quota.teachers_used+" / "+data.quota.teacher_quota],["学生席位",data.quota.students_used+" / "+data.quota.student_quota],["学生额度待分配",data.quota.unallocated],["我的学生",data.mine.used]]:[["我的学生额度",data.mine.seats],["已使用",data.mine.used],["剩余可用",data.mine.remaining]];
+    for(const [label,value]of stats){const card=el('div','kpi');card.append(el('div','label',label),el('div','value',value));grid.append(card);}
+    const actions=el('div','sheet row');for(const [label,panel]of [["成员与席位","adminPanel"],["考证教学","examPanel"]]){const button=el('button','btn re',label);button.onclick=()=>switchPanel(panel);actions.append(button);}
+    body.replaceChildren(grid,actions);
+  }catch(error){if(currentUser?.id===owner)body.replaceChildren(el('p','error-box',error.message));}
+}
 function defaultWorkspacePanel() {
+  if(campusStudent())return "examPanel";
+  if(currentUser?.legacy_teaching)return "examPanel";
   return currentUser?.role === "student" ? "trainingPanel" : currentUser?.role === "platform_admin" ? "adminPanel" : "dashboardPanel";
 }
 function canOpenWorkspacePanel(id) {
@@ -66,6 +107,7 @@ function rememberWorkspacePanel(id) {
 
 function switchPanel(id) {
   if (!currentUser) return;
+  if (currentUser.workspace === "university") { universityWorkspace.choose(({userSettingsPanel:"settings",trainingPanel:"tasks",knowledgePanel:"knowledge"})[id] || "home"); return; }
   if (!canOpenWorkspacePanel(id)) id = defaultWorkspacePanel();
   if(currentUser?.role==="platform_admin" && !["adminPanel","aiKeysPanel","knowledgePanel","userSettingsPanel"].includes(id)) id="adminPanel";
   if (id !== "notificationPanel") noticeRequest++;
@@ -80,6 +122,7 @@ function switchPanel(id) {
   if (id === "notificationPanel") loadNotifications();
   if (id === "userSettingsPanel") loadUserSettings();
   if (id === "trainingPanel") loadAssignments();
+  if (id === "examPanel") openTeachingWorkspace();
   if (id === "adminPanel") loadAdmin();
   if (id === "aiKeysPanel") aiKeyProbes.load();
   else aiKeyProbes.reset();
@@ -92,7 +135,7 @@ function switchPanel(id) {
 const dz = $("dropzone"), fi = $("fileInput");
 let materialDraft = null, materialCards = [], originalUrls = [];
 let materialRequest = 0;
-const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError, policyUI:()=>enterpriseMaterials.policyUI,
+const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError, policyUI:()=>enterpriseMaterials.policyUI,openTaskPanel:()=>switchPanel("uploadPanel"),
   continueCheck:id=>window.KnowledgeRetrieval?.openTask(id)});
 const enterpriseMaterials = createEnterpriseMaterials({api, el, $, user:()=>currentUser,
   clear:clearMaterials, showError, showResult:result=>{renderResult(result);switchPanel("auditPanel");},
@@ -687,9 +730,13 @@ async function bootstrap() {
   $("authForm").dataset.setup = setup ? "1" : "0";
   $("loginPass").autocomplete = setup ? "new-password" : "current-password";
   if (pendingEmailToken && !setup) return showAuthView("emailMagic");
-  if (s.user) return enterApp(s.user);
+  const signedUser=s.user;
+  if(signedUser)return enterApp(signedUser);
   if (inviteCode && !setup) return showAuthView("signup");
   showAuthView("login");
+  const notice = params.get("notice");
+  if (notice) showToast(notice);
+  if (s.session_conflict) showToast("检测到多个登录状态，请重新登录以确认当前账号。");
 }
 
 const authViews = ["viewLogin", "viewForgot", "viewReset", "viewSignup", "viewEmailLogin", "viewEmailMagic"];
@@ -732,9 +779,9 @@ function showAuthView(view) {
   const form = $("authForm");
   const setup = form.dataset.setup === "1";
   const [title, submitText, step] = authViewLabels[view] || authViewLabels.login;
-  $("loginUserLabel").textContent = setup ? "用户名" : "邮箱或用户名";
-  $("loginUser").placeholder = setup ? "设置管理员用户名" : "请输入邮箱或用户名";
-  $("loginUser").inputMode = setup ? "text" : "email";
+  $("loginUserLabel").textContent = setup ? "用户名" : "邮箱或账号";
+  $("loginUser").placeholder = setup ? "设置管理员用户名" : "请输入邮箱、用户名或学号";
+  $("loginUser").inputMode = "text";
   $("loginRememberField").hidden = setup || view !== "login";
   $("loginRemember").disabled = setup || view !== "login";
   (view==="emailLogin"?$("emailLoginVerification"):$("viewSignup")).append($("emailVerificationFields"));
@@ -772,6 +819,7 @@ function showAuthView(view) {
   }
   updateSignupPasswordValidation();
   if(view==="emailLogin"||(view==="signup"&&!verified))loadCaptcha();
+  universityWorkspace.updateLogin();
 }
 for (const id of ["signupPass", "signupPass2"]) {
   $(id).addEventListener("input", updateSignupPasswordValidation);
@@ -908,33 +956,49 @@ $("authForm").addEventListener("submit", async (e) => {
     }
     const setup = form.dataset.setup === "1";
     const body = {username: $("loginUser").value.trim(), password: $("loginPass").value, remember: !setup && $("loginRemember").checked};
+    if (!setup && $("loginCollege").dataset.needed === "1") body.college = $("loginCollege").value.trim();
     if (setup) body.display_name = body.username;
-    await api(setup ? "/api/setup" : "/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
-    if (setup) { form.dataset.setup = "0"; await api("/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({username:body.username,password:body.password})}); }
-    const user = await api("/api/me");
+    let loginResult = await api(setup ? "/api/setup" : "/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+    if (setup) { form.dataset.setup = "0"; loginResult = await api("/api/login", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({username:body.username,password:body.password})}); }
+    const user = loginResult.user;
     $("loginPass").value = "";
     if(version===authViewVersion)enterApp(user);
-  } catch (err) { if(version===authViewVersion)showToast(err.message); }
+  } catch (err) {
+    if (version === authViewVersion) {
+      if (err.requiresCollege) { $("loginCollege").dataset.needed = "1"; universityWorkspace.updateLogin(); $("loginCollege").focus(); }
+      showToast(err.message);
+    }
+  }
   finally{authSubmitBusy=false;$("authSubmit").disabled=false;if(version===authViewVersion)$("authSubmit").textContent=submitLabel;}
 });
 
 function enterApp(user) {
+  universityMembersUI?.destroy();universityMembersUI=null;teachingWorkspace.destroy();teachingViewOwner=null;$('examWorkspace').replaceChildren();
   $("loginRemember").checked = false;
   authViewVersion++;pendingEmailToken="";emailRegistrationProof=null;authResetProof="";
   for(const id of ["signupPass","signupPass2","newPass","newPass2","signupEmailCode","loginPass"])$(id).value="";
   trainingLoadRequest++; exerciseOpenRequest++; sandboxFeedbackRequest++; openAssignmentId=null;
   clearTimeout(exerciseDeadlineTimer); classroomUI.reset(); $("exerciseBox").style.display="none";
   $("exerciseGenerationResult").textContent=""; $("exerciseGenerationResult").hidden=true;
-  currentUser = user;
+  const campusIdentity=universityWorkspace.resolveIdentity(user);
+  currentUser=campusIdentity?{...user,workspace:"university",role:campusIdentity.role==="admin"?"teacher":user.role}:user;
+  $("loginCollege").value="";delete $("loginCollege").dataset.needed;$("loginCollegeField").hidden=true;$("loginCollege").disabled=true;
+  if(campusIdentity){universityWorkspace.enter(campusIdentity);return;}
   settingsRequest++; settingsReady = false;
   memberRequest++; memberSnapshot=null; $("memberOrg").textContent=""; $("userList").textContent="";
   clearMemberInvitations(); $("signupCode").value=""; delete $("authForm").dataset.inviteCode;
   $("memberQuotaStatus").textContent="尚未加载成员信息。"; $("memberQuotaEditor").hidden=true;
+  resetMemberQuotaEditor();$("universityCapacityPanel").hidden=true;$("universityCapacityStatus").textContent="";
+  $("btnSaveUniversityCapacity").disabled=true;$("universityTeacherQuota").value="";$("universityStudentQuota").value="";
   $("authScreen").style.display = "none";
   document.body.classList.add("workspace-ready");
   $("appHeader").style.display = "block"; $("appMain").style.display = "block"; $("appFooter").style.display = "block";
   $("nav").style.display = "flex";
-  $("currentUser").textContent = user.display_name + " · " + ({teacher:"教师",student:"学生",org_admin:"机构管理员",accountant:"会计",platform_admin:"平台管理员"}[user.role] || user.role);
+  $("currentUser").textContent = user.display_name + " · " + accountRoleName(user);
+  const campus=isCampusUser(user),staff=campus&&!campusStudent(user);
+  for(const [panel,text]of [["uploadPanel","上传材料"],["auditPanel","审计详情"],["historyPanel","历史档案"]])document.querySelector('[data-panel="'+panel+'"] .nav-label').textContent=text;
+  const caption=campus?"高校工作空间":user.role==="platform_admin"?"平台管理":user.org_type==="enterprise"?"企业工作空间":"机构工作空间";
+  $('nav').setAttribute('aria-label',caption);document.querySelector('#nav .nav-caption').textContent=caption;
   aiKeyProbes.reset();
   document.querySelector('[data-panel="aiKeysPanel"]').style.display = user.role === "platform_admin" ? "" : "none";
   document.querySelectorAll(".training-nav").forEach((n) => n.style.display = ["teacher","student"].includes(user.role) ? "" : "none");
@@ -954,10 +1018,29 @@ function enterApp(user) {
   document.querySelector('[data-panel="auditPanel"]').style.display = businessUser ? "" : "none";
   document.querySelectorAll(".business-nav, [data-panel='historyPanel'], [data-panel='notificationPanel']").forEach(n => n.style.display = businessUser ? "" : "none");
   document.querySelector('[data-panel="orgReportPanel"]').style.display = user.role === "org_admin" ? "" : "none";
+  document.querySelector('[data-panel="examPanel"]').style.display=campus&&user.education_role?"":"none";
+  document.querySelector('[data-panel="examPanel"] .nav-label').textContent=campusStudent(user)?"考证备考":"考证教学";
+  document.querySelector('#examPanel h2').textContent=campusStudent(user)?"考证备考":"考证教学";
+  if(campus){
+    $('clientAdmin').style.display='none';$('ruleAdmin').style.display='none';$('logAdmin').style.display='none';
+    $('userAdmin').style.display=staff?'block':'none';$('createUserRow').style.display='none';
+    document.querySelector('[data-panel="adminPanel"]').style.display=staff?'':'none';
+    document.querySelector('[data-panel="orgReportPanel"]').style.display='none';
+    if(user.legacy_teaching)for(const panel of ['trainingPanel','uploadPanel','auditPanel','historyPanel','notificationPanel','knowledgePanel','dashboardPanel'])document.querySelector('[data-panel="'+panel+'"]').style.display='none';
+    for(const [panel,text]of [['uploadPanel','案例材料'],['auditPanel','案例详情'],['historyPanel','案例档案']])document.querySelector('[data-panel="'+panel+'"] .nav-label').textContent=text;
+  }
+  for(const child of $('userAdmin').children)child.classList.toggle('campus-hidden',campus&&!['universityMembers','userAdminHint'].includes(child.id)&&child.tagName!=='H2');
+  $('universityMembers').hidden=!staff;
+  if(!staff)$('universityMembers').replaceChildren();
+  $('userAdminHint').textContent=campus?(staff?'高校管理员邀请教师并分配学生额度；每位教师邀请自己的学生，管理员也可给自己分配。学校总额度由平台顶级管理员设置。':'学生可在教学面板查看自己的学习任务。'):'机构管理员管理本机构员工；加入时核销席位，停用释放席位并撤销会话，恢复后须重新登录。';
+  $('dashboardFilters').hidden=campus;
+  document.querySelector('#dashboardPanel .page-head h2').textContent=campus?'教学工作台':'工作台';
+  document.querySelector('#dashboardPanel .page-head .muted').textContent=campus?'汇总教学与学生席位，管理成员邀请和学习任务。':'从企业业务数据出发，了解经营表现与税务风险。';
+  $('dashboardUpload').textContent=campus?'进入教学 ↗':'上传材料 ↗';
   switchPanel(initialWorkspacePanel());
 }
 
-$("btnLogout").addEventListener("click", async () => { await api("/api/logout", {method:"POST"}); location.reload(); });
+$("btnLogout").addEventListener("click", async () => { if (currentUser?.workspace === "university") { try { await universityWorkspace.logout(); } catch (err) { showToast(err.message); } return; } await api("/api/logout", {method:"POST"}); location.reload(); });
 document.querySelectorAll("#nav [data-panel]").forEach((b) => b.addEventListener("click", () => switchPanel(b.dataset.panel)));
 
 /* ---------- 用户设置：复用本人通知偏好与现有报告入口 ---------- */
@@ -966,6 +1049,7 @@ function settingsCurrent(request, owner) {
   return request === settingsRequest && currentUser?.id === owner && $("userSettingsPanel").classList.contains("active");
 }
 function settingsNotificationAccess() {
+  if(currentUser?.legacy_teaching)return false;
   return ["org_admin", "accountant", "teacher"].includes(currentUser?.role);
 }
 function settingsControls() {
@@ -978,7 +1062,7 @@ function settingsControls() {
 }
 function renderSettingsAccount() {
   const user = currentUser;
-  const role = {teacher:"教师",student:"学生",org_admin:"机构管理员",accountant:"会计",platform_admin:"平台管理员"}[user.role] || user.role;
+  const role = accountRoleName(user);
   $("currentUser").textContent = (user.display_name || user.username) + " · " + role;
   $("settingsUsername").textContent = user.username || "—";
   $("settingsDisplayName").textContent = user.display_name || "—";
@@ -1346,6 +1430,7 @@ function lookupVerification(){return performVerification(false);}
 $("verificationLookup").onclick=lookupVerification;$("verificationCheck").onclick=()=>performVerification(true);
 $("verificationId").oninput=invalidateVerification;$("verificationFormat").onchange=invalidateVerification;$("verificationFile").onchange=invalidateVerification;
 async function loadHistory(page = 1) {
+  void coreInputs.renderArchived();
   const request = ++historyRequest;
   $("historyPrev").disabled = $("historyNext").disabled = true;
   $("historyStatus").textContent = "正在检索……";
@@ -1480,21 +1565,28 @@ function updateExerciseDeadline(a) {
   $("btnSubmitExercise").disabled=!a.can_submit || !!expired;
   if(a.deadline_at && !expired)exerciseDeadlineTimer=setTimeout(()=>{if(openAssignmentId===a.id)updateExerciseDeadline(a);},Math.min(60000,Math.max(100,Date.parse(a.deadline_at)-Date.now())));
 }
-async function loadAssignments() {
+async function loadAssignments({throwOnError=false}={}) {
   const request=++trainingLoadRequest,uid=currentUser?.id,isTeacher=currentUser?.role==="teacher";
   classroomUI.invalidatePending();
   try {
-    const [rows,classes,papers,students,audits,submissions]=await Promise.all([
+    const [rows,classes,papers,students,audits,submissions,courses]=await Promise.all([
       api("/api/assignments"),api("/api/classes"),api("/api/papers"),
-      isTeacher?api("/api/classes/students"):[],isTeacher?api("/api/audits"):[],isTeacher?api("/api/submissions"):[]
+      isTeacher?api("/api/classes/students"):[],isTeacher?api(currentUser.org_type==="university"?"/api/teaching/cases":"/api/audits"):[],isTeacher?api("/api/submissions"):[],isTeacher&&currentUser.org_type==="university"?api("/api/teaching/courses"):[]
     ]);
     if(request!==trainingLoadRequest||uid!==currentUser?.id)return;
     classroomUI.render({classes,papers,students,audits});
+    for(const [id, classId]of [["assignmentCourse","assignmentClass"],["paperCourse","paperClass"]]){
+      const select=$(id);if(!select)continue;const previous=select.value;select.replaceChildren(new Option("独立作业 / 不关联课程",""));
+      for(const course of courses)select.append(new Option(course.name,course.id));select.value=courses.some(c=>c.id===previous)?previous:"";
+      select.onchange=()=>{const course=courses.find(c=>c.id===select.value),classSelect=$(classId);for(const option of classSelect.options)option.disabled=!!course&&!course.class_ids.includes(option.value);if(course&&!course.class_ids.includes(classSelect.value))classSelect.value="";};select.onchange();
+    }
+
     if(openAssignmentId){const current=rows.find(a=>a.id===openAssignmentId);if(current)updateExerciseDeadline(current);else{openAssignmentId=null;exerciseOpenRequest++;sandboxFeedbackRequest++;clearTimeout(exerciseDeadlineTimer);$("exerciseBox").style.display="none";$("exerciseData").textContent="";$("scoreResult").textContent="";}}
     const box = $("assignmentList"); box.textContent = "";
     const singles=rows.filter(row=>!row.paper_id);
     for (const row of singles) {
       const item = el("div","training-card"); item.appendChild(el("h3",null,row.title));
+      if(row.course_name)item.append(el("p","muted","课程："+row.course_name));
       item.append(el("p","muted",classroomUI.status(row)+" · 截止："+classroomUI.dueText(row.deadline_at)));
       const btn = el("button",null,currentUser.role === "student" ? "开始 / 查看评分" : "查看");
       btn.addEventListener("click",() => openExercise(row.id)); item.appendChild(btn);
@@ -1509,13 +1601,13 @@ async function loadAssignments() {
       for(const s of submissions){const item=el("div","data-item");const shown=s.adjusted_score===null?s.score:s.adjusted_score;item.appendChild(el("span",null,s.display_name+" · "+s.title+" · "+shown+" 分"));const b=el("button",null,"复核调整");b.addEventListener("click",async()=>{try{const value=window.prompt("调整后分数（0-100）",String(shown));if(value===null)return;const feedback=window.prompt("教师评语",s.feedback||"")||"";await api("/api/submissions/"+s.id+"/review",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({adjusted_score:Number(value),feedback})});await loadAssignments();}catch(error){showError(error.message);}});item.appendChild(b);sb.appendChild(item);}if(!submissions.length)sb.appendChild(el("div","data-item","暂无学生提交。"));
       if(exerciseRulesYear===null)await refreshExerciseRules();
     }
-  } catch (err) { if(request===trainingLoadRequest&&uid===currentUser?.id)showError(err.message); }
+  } catch (err) { if(request===trainingLoadRequest&&uid===currentUser?.id){showError(err.message);if(throwOnError)throw err;} }
 }
 
 $("btnAssignment").addEventListener("click", async () => {
   const button=$("btnAssignment");if(button.disabled)return;button.disabled=true;
   try {
-    await api("/api/assignments", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:$("assignmentTitle").value,audit_id:$("assignmentAudit").value,false_positive_penalty:Number($("assignmentPenalty").value),published:$("assignmentPublished").checked,class_id:$("assignmentClass").value||null,deadline_at:classroomUI.deadlineInput($("assignmentDeadline"))})});
+    await api("/api/assignments", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({title:$("assignmentTitle").value,audit_id:$("assignmentAudit").value,false_positive_penalty:Number($("assignmentPenalty").value),published:$("assignmentPublished").checked,class_id:$("assignmentClass").value||null,course_id:$("assignmentCourse")?.value||null,deadline_at:classroomUI.deadlineInput($("assignmentDeadline"))})});
     await loadAssignments();
   } catch (err) { showError(err.message); } finally {button.disabled=false;}
 });
@@ -1724,26 +1816,14 @@ function clearMemberInvitations(){
   $("memberDomains").value="";$("memberDomainEnabled").checked=false;
 }
 function renderMemberInvitations(result,uid,org){
-  $("memberInvitationPanel").hidden=false;
+  $("memberInvitationPanel").hidden=memberSnapshot?.org_type==="university";
   $("btnIssueMemberInvite").disabled=false;$("btnSaveInvitationPolicy").disabled=false;
   $("memberDomainEnabled").checked=result.policy.enabled;$("memberDomains").value=result.policy.domains.join("\n");
-  const names={accountant:"会计",teacher:"教师",student:"学生"};
-  for(const link of result.links){
-    const item=el("div","data-item"),text=el("div"),actions=el("div","row");
-    text.append(el("div",null,names[link.role]+" · "+(link.active?"可用":"已停用")+" · 凭证 "+link.id),el("p","muted","累计注册 "+link.used_count+" 人 · 当前剩余席位 "+(result.quota.remaining??"未配置")+" · 最后使用 "+(link.last_used_at||"尚未使用")+" · 版本 "+link.revision));
-    const refresh=el("button",null,"刷新链接"),toggle=el("button",null,link.active?"停用链接":"启用链接");
-    refresh.addEventListener("click",()=>{
-      if(memberCurrent(uid,org)&&confirm("刷新将立即作废旧链接，但不影响已注册成员。继续？"))
-        mutateMemberInvitation("/invitations/"+encodeURIComponent(link.id)+"/refresh","POST",{revision:link.revision});
-    });
-    toggle.addEventListener("click",()=>{
-      if(memberCurrent(uid,org)&&confirm(link.active?"停用后不能用该链接注册，现有账号不受影响。继续？":"重新启用会恢复当前链接的注册能力。继续？"))
-        mutateMemberInvitation("/invitations/"+encodeURIComponent(link.id)+"/state","PUT",{revision:link.revision,active:!link.active});
-    });
-    actions.append(refresh,toggle);item.append(text,actions);$("memberInvitationList").append(item);
-  }
-  if(!result.links.length)$("memberInvitationList").append(el("p","muted","尚未签发成员邀请链接。"));
+  TPMemberLinks.links($("memberInvitationList"),{links:result.links.filter(link=>link.role==="accountant"),valid:()=>memberCurrent(uid,org),
+    refresh:link=>mutateMemberInvitation("/invitations/"+encodeURIComponent(link.id)+"/refresh","POST",{revision:link.revision}),
+    toggle:link=>mutateMemberInvitation("/invitations/"+encodeURIComponent(link.id)+"/state","PUT",{revision:link.revision,active:!link.active})});
 }
+
 async function mutateMemberInvitation(suffix,method,body){
   const uid=currentUser?.id,org=$("memberOrg").value,request=memberRequest;
   if(!memberSnapshot||memberSnapshot.org_id!==org)return;
@@ -1760,6 +1840,96 @@ async function mutateMemberInvitation(suffix,method,body){
   }
 }
 $("btnIssueMemberInvite").addEventListener("click",()=>mutateMemberInvitation("/invitations","POST",{role:$("memberInviteRole").value}));
+let memberQuotaEdit=null,memberQuotaConfirmation=null;
+function memberQuotaControls(context,saving=false){
+  for(const [kind,inputs,edit,save,cancel] of [
+    ["university",["universityTeacherQuota","universityStudentQuota"],"btnEditUniversityCapacity","btnSaveUniversityCapacity","btnCancelUniversityCapacity"],
+    ["enterprise",["memberSeats"],"btnEditMemberQuota","btnSaveMemberQuota","btnCancelMemberQuota"]]){
+    const editing=context?.kind===kind;
+    for(const id of inputs)$(id).disabled=!editing||saving;
+    $(edit).hidden=editing;$(save).hidden=$(cancel).hidden=!editing;
+    $(save).disabled=$(cancel).disabled=saving||!editing;
+  }
+}
+function resetMemberQuotaEditor(){
+  memberQuotaEdit=null;memberQuotaConfirmation=null;
+  if($("quotaConfirmDialog").open)$("quotaConfirmDialog").close();
+  memberQuotaControls(null);$("universityCapacityStatus").textContent="";$("memberQuotaSaveStatus").textContent="";
+}
+function memberQuotaContext(kind){
+  const data=memberSnapshot,org=$("memberOrg").value;
+  if(currentUser?.role!=="platform_admin"||!data||data.org_id!==org||
+    (kind==="university"?data.org_type!=="university"||!data.university_quota:data.org_type==="university"))return null;
+  return {kind,org,uid:currentUser.id,request:memberRequest,snapshot:data};
+}
+function memberQuotaValid(context){
+  return !!context&&currentUser?.role==="platform_admin"&&memberCurrent(context.uid,context.org)&&
+    memberRequest===context.request&&memberSnapshot===context.snapshot;
+}
+function memberQuotaStatus(context){return $(context.kind==="university"?"universityCapacityStatus":"memberQuotaSaveStatus");}
+function openMemberQuotaConfirmation(kind,stage){
+  const context=stage==="unlock"?memberQuotaContext(kind):memberQuotaEdit;
+  if(!memberQuotaValid(context)||context.kind!==kind)return;
+  const school=kind==="university",q=school?context.snapshot.university_quota:context.snapshot.quota;
+  const fields=school?[["教职工总额度","universityTeacherQuota",q.teacher_quota],["学生总额度","universityStudentQuota",q.student_quota]]:[["机构总席位","memberSeats",q.seats]];
+  if(stage==="save"&&!fields.every(([,id])=>$(id).reportValidity()))return;
+  const values=fields.map(([,id])=>Number($(id).value));
+  if(stage==="save"&&fields.every(([, ,old],i)=>old===values[i])){memberQuotaStatus(context).textContent="额度未变化，无需保存。";return;}
+  const body=school?{teacher_quota:values[0],student_quota:values[1],revision:q.revision}:{seats:values[0],revision:q.revision};
+  memberQuotaConfirmation={...context,stage,body};
+  $("quotaConfirmTitle").textContent=stage==="unlock"?"确认修改席位":"确认保存席位修改";
+  $("quotaConfirmOrganization").textContent="管理机构："+($("memberOrg").selectedOptions?.[0]?.textContent||context.org);
+  $("quotaConfirmDescription").textContent=stage==="unlock"?"确认后可编辑席位额度；当前额度不会立即改变。":"请核对以下修改，确认后提交保存。";
+  $("quotaConfirmChanges").replaceChildren(...fields.map(([label,,old],i)=>el("p",null,label+"："+(old??"未配置")+(stage==="save"?" → "+values[i]:""))));
+  $("quotaConfirmAccept").textContent=stage==="unlock"?"确认修改":"确认保存";
+  $("quotaConfirmDialog").showModal();
+}
+async function saveMemberQuota(context,body){
+  if(!memberQuotaValid(context))return;
+  const school=context.kind==="university",q=context.snapshot.university_quota,status=memberQuotaStatus(context);
+  memberQuotaControls(context,true);status.textContent="正在保存席位修改…";
+  try{
+    await api(school?"/api/universities/"+encodeURIComponent(q.college)+"/capacity":"/api/members/"+encodeURIComponent(context.org)+"/quota",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+    if(!memberQuotaValid(context))return;
+    await loadMembers();
+    const refreshed=()=>memberCurrent(context.uid,context.org)&&memberRequest===context.request+1&&memberSnapshot&&currentUser?.role==="platform_admin";
+    if(!refreshed())return;
+    status.textContent="席位修改已保存。";
+    try{const logs=await api("/api/audit-log");if(refreshed())renderAdminLogs(logs,refreshed);}
+    catch{if(refreshed())status.textContent="席位修改已保存，操作记录加载失败，请刷新管理页查看。";}
+  }catch(err){if(memberQuotaValid(context)){status.textContent=err.message;memberQuotaControls(context);}}
+}
+$("quotaConfirmCancel").addEventListener("click",()=>$("quotaConfirmDialog").close());
+$("quotaConfirmDialog").addEventListener("close",()=>{memberQuotaConfirmation=null;});
+$("quotaConfirmAccept").addEventListener("click",async()=>{
+  const context=memberQuotaConfirmation;
+  if(!memberQuotaValid(context)){resetMemberQuotaEditor();return;}
+  $("quotaConfirmDialog").close();
+  if(context.stage==="unlock"){
+    memberQuotaEdit=context;memberQuotaControls(context);memberQuotaStatus(context).textContent="修改后请保存；取消将保留原额度。";
+    $(context.kind==="university"?"universityTeacherQuota":"memberSeats").focus();
+  }else await saveMemberQuota(context,context.body);
+});
+for(const [kind,edit,save,cancel] of [["university","btnEditUniversityCapacity","btnSaveUniversityCapacity","btnCancelUniversityCapacity"],["enterprise","btnEditMemberQuota","btnSaveMemberQuota","btnCancelMemberQuota"]]){
+  $(edit).addEventListener("click",()=>openMemberQuotaConfirmation(kind,"unlock"));
+  $(save).addEventListener("click",()=>openMemberQuotaConfirmation(kind,"save"));
+  $(cancel).addEventListener("click",()=>{if(memberQuotaValid(memberQuotaEdit)){resetMemberQuotaEditor();renderMemberQuota(memberSnapshot);}});
+}
+function renderMemberQuota(result){
+  const school=result.org_type==="university",q=school?result.university_quota:result.quota;
+  $("memberQuotaEditor").hidden=currentUser?.role!=="platform_admin"||school;
+  $("universityCapacityPanel").hidden=currentUser?.role!=="platform_admin"||!school||!q;
+  if(school){
+    $("userAdminHint").textContent="高校教职工与学生分别核销席位；平台管理员调整学校总额度，高校管理员在额度内分配。停用释放对应席位并撤销会话，恢复后须重新登录。";
+    $("memberQuotaStatus").textContent=q?"教职工 "+q.teachers_used+" / "+q.teacher_quota+"，剩余 "+q.teacher_remaining+"；学生 "+q.students_used+" / "+q.student_quota+"，剩余 "+q.student_remaining+"。学生额度已分配 "+q.allocated+"，未分配 "+q.unallocated+"。":"高校席位信息尚未关联，请先核对学校关联后再配置额度。";
+    if(q){$("universityTeacherQuota").value=q.teacher_quota;$("universityStudentQuota").value=q.student_quota;}
+  }else{
+    $("userAdminHint").textContent="机构管理员管理本机构员工；加入时核销席位，停用释放席位并撤销会话，恢复后须重新登录。";
+    $("memberQuotaStatus").textContent=q.seats===null?"在岗 "+q.used+" 人；席位尚未配置，创建或恢复成员前须由平台配置。":"席位 "+q.used+" / "+q.seats+"，剩余 "+q.remaining+(q.over_quota?"；现有成员超额，须先处理或调整配额。":"。");
+    $("memberSeats").value=q.seats??"";
+  }
+  memberQuotaControls(null);
+}
 $("btnSaveInvitationPolicy").addEventListener("click",()=>{
   if(!memberSnapshot?.invitations)return;
   mutateMemberInvitation("/invitation-policy","PUT",{enabled:$("memberDomainEnabled").checked,domains:$("memberDomains").value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean),revision:memberSnapshot.invitations.policy.revision});
@@ -1771,8 +1941,11 @@ $("btnCopyMemberInvite").addEventListener("click",async()=>{
 });
 async function loadMembers(refreshOrganizations=false){
   const uid=currentUser?.id,role=currentUser?.role,request=++memberRequest;
+  resetMemberQuotaEditor();
   if(!["platform_admin","org_admin"].includes(role))return;
   memberSnapshot=null;$("btnSaveMemberQuota").disabled=true;$("memberQuotaStatus").textContent="正在读取成员与席位…";
+  $("universityCapacityPanel").hidden=true;$("btnSaveUniversityCapacity").disabled=true;$("universityCapacityStatus").textContent="";
+  $("universityTeacherQuota").value="";$("universityStudentQuota").value="";
   clearMemberInvitations();
   $("userList").textContent="";$("memberQuotaEditor").hidden=true;
   try{
@@ -1789,9 +1962,7 @@ async function loadMembers(refreshOrganizations=false){
     const [result,invites]=await Promise.all([api("/api/members/"+encodeURIComponent(org)),api("/api/members/"+encodeURIComponent(org)+"/invitations")]);
     if(request!==memberRequest||!memberCurrent(uid,org))return;
     memberSnapshot={...result,invitations:invites};renderMemberInvitations(invites,uid,org);
-    const q=result.quota;
-    $("memberQuotaStatus").textContent=q.seats===null?"在岗 "+q.used+" 人；席位尚未配置，创建或恢复成员前须由平台配置。":"席位 "+q.used+" / "+q.seats+"，剩余 "+q.remaining+(q.over_quota?"；现有成员超额，须先处理或调整配额。":"。");
-    $("memberQuotaEditor").hidden=role!=="platform_admin";$("memberSeats").value=q.seats??"";$("btnSaveMemberQuota").disabled=false;
+    renderMemberQuota(result);
     const names={platform_admin:"平台管理员",org_admin:"机构管理员",accountant:"会计",teacher:"教师",student:"学生"};
     const sources={founder:"创始码开户",admin_created:"机构管理员创建",member_invitation:"机构邀请链接",legacy:"现有账号（来源未登记）"};
     for(const person of result.members){
@@ -1816,20 +1987,57 @@ async function loadMembers(refreshOrganizations=false){
 }
 $("memberOrg").addEventListener("change",()=>loadMembers());
 $("btnRefreshMembers").addEventListener("click",()=>loadMembers(true));
-$("btnSaveMemberQuota").addEventListener("click",async()=>{
-  const uid=currentUser?.id,org=$("memberOrg").value,data=memberSnapshot,seats=Number($("memberSeats").value);
-  if(currentUser?.role!=="platform_admin"||!data||data.org_id!==org)return;
-  if(!Number.isInteger(seats)||seats<1||seats>200){showError("席位须为 1–200 的整数。");return;}
-  $("btnSaveMemberQuota").disabled=true;
-  try{await api("/api/members/"+encodeURIComponent(org)+"/quota",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({seats,revision:data.quota.revision})});}
-  catch(err){if(memberCurrent(uid,org))showError(err.message);}
-  finally{if(memberCurrent(uid,org))await loadMembers();}
-});
+
+function renderAdminLogs(logs,current){
+  const root=$("logList");root.replaceChildren();
+  const localTime=value=>{const time=new Date(value);return Number.isNaN(time.getTime())?"时间未记录":new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).format(time);};
+  const kinds={analysis:"资料分析快照",edit:"保存资料核对",confirmation:"确认检查结果",material_change:"材料变更"};
+  for(const log of logs.slice(0,80)){
+    const row=el("div","data-item"),content=el("div");
+    content.append(el("p","",`${localTime(log.created_at)}（北京时间） · ${log.action} · ${log.target_type} ${log.target_id}`));row.append(content);root.append(row);
+    if(["set_member_quota","set_university_capacity"].includes(log.action)){
+      let detail;try{detail=JSON.parse(log.detail);}catch{}
+      if(detail?.before&&detail?.after){
+        content.append(el("p","",`管理机构：${detail.organization_name||detail.organization_id} · 操作人：${detail.actor?.display_name||"未记录"}（${detail.actor?.username||detail.actor?.id||"未记录"}） · 来源 IP：${detail.source_ip||"未记录"}`));
+        const labels={seats:"机构总席位",teacher_quota:"教职工总额度",student_quota:"学生总额度"};
+        for(const [key,label]of Object.entries(labels))if(Object.hasOwn(detail.after,key))content.append(el("p","muted",`${label}：${detail.before[key]??"未配置"} → ${detail.after[key]}`));
+        content.append(el("p","muted",`配置版本：${detail.old_revision} → ${detail.new_revision} · 操作人 ID：${detail.actor?.id||"未记录"} · 机构 ID：${detail.organization_id}`));
+      }else content.append(el("p","muted","历史记录未保存完整前后额度及来源 IP。"));
+    }
+    if(currentUser?.role!=="org_admin"||log.target_type!=="material_batch")continue;
+    const trace=el("div");trace.hidden=true;
+    const button=el("button","btn re","查看材料追溯");button.type="button";
+    const valid=()=>current()&&currentUser?.role==="org_admin";
+    button.onclick=async()=>{
+      if(!valid())return;
+      if(!trace.hidden){trace.hidden=true;button.textContent="查看材料追溯";return;}
+      trace.hidden=false;trace.replaceChildren(el("p","muted","正在查询材料追溯…"));button.disabled=true;
+      try{
+        const result=await api("/api/enterprise/materials/"+encodeURIComponent(log.target_id)+"/trace");
+        if(!valid())return;
+        trace.replaceChildren(el("p","muted",`材料任务 ${result.id} · 当前版本 ${result.revision}`));
+        for(const version of [...(result.versions||[])].reverse()){
+          trace.append(el("p","",`第 ${version.revision} 版 · ${kinds[version.kind]||version.kind} · ${localTime(version.created_at)}（北京时间） · 操作人 ${version.created_by||"未记录"}`));
+        }
+        const events=el("details");events.append(el("summary","",`上传、核对与访问记录（${result.events?.length||0} 条）`));
+        for(const event of [...(result.events||[])].reverse())events.append(el("p","muted",`${localTime(event.created_at)}（北京时间） · ${event.action} · 操作人 ${event.actor_id||"系统"} · 版本 ${event.revision??"未记录"}`));
+        trace.append(events);button.textContent="收起材料追溯";
+      }catch(error){if(valid()){trace.replaceChildren(el("p","material-note","查询失败："+error.message));button.textContent="收起材料追溯";}}
+      finally{if(valid())button.disabled=false;}
+    };
+    content.append(button,trace);
+  }
+}
 
 async function loadAdmin() {
   const request=++adminRequest,owner=currentUser?.id;
   const current=()=>request===adminRequest&&currentUser?.id===owner&&$("adminPanel").classList.contains("active");
   try {
+    if(isCampusUser()&&!campusStudent()){
+      if(currentUser.role==='org_admin'&&!currentUser.legacy_teaching)await loadOrgSettings();
+      if(current())loadCampusMembers();
+      return;
+    }
     let users=[];
     if (["platform_admin","org_admin"].includes(currentUser.role)) {
       if(currentUser.role==="org_admin") await loadOrgSettings();
@@ -1849,7 +2057,7 @@ async function loadAdmin() {
       for(const inv of invites){
         const state=inv.revoked?"已吊销":inv.redeemed_by?"已注册":(new Date(inv.expires_at).getTime()<nowMs?"已过期":"未使用");
         const item=el("div","data-item"),text=el("div");
-        const detail=["机构总席位："+inv.seats,"签发："+(inv.created_at||"—"),"有效期至："+inv.expires_at];
+        const detail=["机构类别："+inviteOrgTypeLabel(inv.org_type),"机构总席位："+inv.seats,"签发："+(inv.created_at||"—"),"有效期至："+inv.expires_at];
         if(inv.redeemed_email)detail.push("注册人："+inv.redeemed_email+(inv.redeemed_at?" · 注册时间："+inv.redeemed_at:""));
         text.append(el("div",null,inv.org_name),el("p","muted",detail.join(" · ")));
         item.append(text,el("span","role-chip",state));ib.append(item);
@@ -1867,14 +2075,57 @@ async function loadAdmin() {
     for(const r of ruleCatalog){const item=el("div","data-item"),text=el("div");text.append(el("div",null,r.id+" "+r.name+" · v"+r.version),el("p","muted",r.category+(r.customized?" · 已配置参数":" · 基础参数")));const actions=el("div","row"),chip=el("span","role-chip",r.enabled?"已启用":"已停用"),edit=el("button",null,currentUser.role==="platform_admin"?"配置规则":"配置 / 试跑");edit.addEventListener("click",()=>openRuleEditor(r));actions.append(chip,edit);if(currentUser.role==="platform_admin"){const toggle=el("button",null,r.enabled?"停用":"启用");toggle.addEventListener("click",async()=>{await api("/api/rules/"+r.id+"/state",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!r.enabled})});await loadAdmin();});actions.append(toggle);}item.append(text,actions);rb.append(item);}
     // Keep unsaved drafts intact. Selecting a rule explicitly reloads its version.
     if(editingRule)loadRuleVersionHistory(editingRule.id);
-    if(["platform_admin","org_admin","teacher"].includes(currentUser.role)){const logs=await api("/api/audit-log");const lb=$("logList");lb.textContent="";for(const l of logs.slice(0,80))lb.appendChild(el("div","data-item",l.created_at+" · "+l.action+" · "+l.target_type+" "+l.target_id));}
+    if(["platform_admin","org_admin","teacher"].includes(currentUser.role)){const logs=await api("/api/audit-log");if(current())renderAdminLogs(logs,current);}
   } catch(err){if(current())showError(err.message);}
 }
 
 $("btnCreateUser").addEventListener("click",async()=>{const uid=currentUser?.id;$("btnCreateUser").disabled=true;try{await api("/api/users",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:$("newUsername").value,password:$("newPassword").value,display_name:$("newDisplayName").value,role:$("newRole").value})});if(currentUser?.id===uid){$("newPassword").value="";await loadAdmin();}}catch(err){if(currentUser?.id===uid)showError(err.message);}finally{$("btnCreateUser").disabled=false;}});
-$("btnCreateInvite").addEventListener("click",async()=>{try{const org=$("inviteOrgName").value.trim(),seats=Number($("inviteSeats").value);if(!org)throw new Error("请填写企业/高校名称。");const inv=await api("/api/invites",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({org_name:org,seats})});$("inviteOrgName").value="";$("inviteSeats").value="5";$("inviteRevealCode").textContent=inv.code;$("inviteRevealSeats").textContent="机构总席位："+inv.seats+" 席（含管理员）";$("inviteReveal").hidden=false;await loadAdmin();}catch(err){showError(err.message);}});
-$("btnCopyInvite").addEventListener("click",async()=>{try{await navigator.clipboard.writeText($("inviteRevealCode").textContent);showToast("邀请码已复制");}catch(err){showError("复制失败，请手动选中复制。");}});
-$("btnHideInvite").addEventListener("click",()=>{$("inviteReveal").hidden=true;$("inviteRevealCode").textContent="";});
+function inviteOrgTypeLabel(value){return value==="enterprise"?"企业":value==="university"?"高校":"未标注";}
+function setInviteOrgType(value){
+  if(!["enterprise","university"].includes(value))return;
+  $("inviteOrgType").value=value;$("inviteOrgTypeOptions").dataset.value=value;
+  $("inviteTypeEnterprise").setAttribute("aria-pressed",String(value==="enterprise"));
+  $("inviteTypeUniversity").setAttribute("aria-pressed",String(value==="university"));
+  const university=value==="university";
+  $("inviteStudentSeatsField").hidden=!university;
+  $("inviteSeatsLabel").textContent=university?"教职工总席位（含高校管理员）":"机构总席位（含管理员）";
+  $("inviteOrgName").placeholder=university?"例如：某某财经大学":"例如：某某税务师事务所";
+}
+$("inviteTypeEnterprise").addEventListener("click",()=>setInviteOrgType("enterprise"));
+$("inviteTypeUniversity").addEventListener("click",()=>setInviteOrgType("university"));
+$("inviteSeats").addEventListener("change",()=>{
+  const custom=$("inviteSeats").value==="custom";
+  $("inviteCustomSeatsField").hidden=!custom;
+  $("inviteCustomSeats").disabled=!custom;
+  if(custom)$("inviteCustomSeats").focus();
+});
+$("btnCreateInvite").addEventListener("click",async()=>{
+  try{
+    const org=$("inviteOrgName").value.trim(),orgType=$("inviteOrgType").value,seats=Number($("inviteSeats").value==="custom"?$("inviteCustomSeats").value:$("inviteSeats").value);
+    if(!Number.isInteger(seats)||seats<1||seats>200)throw new Error("席位须为 1–200 的整数（含管理员）。");
+    if(!["enterprise","university"].includes(orgType))throw new Error("请选择机构类别：企业或高校。");
+    if(!org)throw new Error("请填写机构名称。");
+    const inv=await api("/api/invites",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({org_name:org,org_type:orgType,seats,student_seats:orgType==="university"?Number($("inviteStudentSeats").value):0})});
+    $("inviteOrgName").value="";
+    $("inviteRevealCode").textContent=inv.code;
+    $("inviteRevealOrg").textContent=inviteOrgTypeLabel(inv.org_type)+" · "+inv.org_name;
+    $("inviteRevealSeats").textContent=(inv.org_type==="university"?"教职工 "+inv.seats+" 席（含管理员） · 学生 "+inv.student_seats+" 席":"机构总席位："+inv.seats+" 席（含管理员）");
+    $("btnCopyInvite").disabled=false;
+    $("inviteReveal").hidden=false;
+    await loadAdmin();
+  }catch(err){showError(err.message);}
+});
+$("btnCopyInvite").addEventListener("click",async()=>{
+  const code=$("inviteRevealCode").textContent.trim();
+  if($("inviteReveal").hidden||!code)return showError("请先签发邀请码。");
+  try{await navigator.clipboard.writeText(code);showToast("邀请码已复制");}
+  catch(err){showError("复制失败，请手动选中复制。");}
+});
+$("btnHideInvite").addEventListener("click",()=>{
+  $("inviteReveal").hidden=true;$("inviteRevealCode").textContent="";
+  $("inviteRevealOrg").textContent="";$("inviteRevealSeats").textContent="";
+  $("btnCopyInvite").disabled=true;
+});
 $("btnCreateClient").addEventListener("click",async()=>{try{const client=await api("/api/clients",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:$("clientName").value,taxpayer_id:$("clientTaxpayerId").value,accountant_id:$("clientAccountant").value||null})});selectedClientId=client.id;$("clientName").value="";$("clientTaxpayerId").value="";await loadAdmin();}catch(err){showError(err.message);}});
 $("btnSaveOrgSettings").addEventListener("click",async()=>{try{const saved=await api("/api/org/settings",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({display_name:$("orgDisplayName").value,report_title:$("orgReportTitle").value,footer_text:$("orgFooterText").value})});showOrgSettings(saved,"报告抬头与页脚已保存。");}catch(err){showError(err.message);}});
 $("btnUploadOrgLogo").addEventListener("click",async()=>{const file=$("orgLogoFile").files[0];if(!file)return showError("请选择 PNG 或 JPEG Logo。");try{const form=new FormData();form.append("file",file);const saved=await api("/api/org/logo",{method:"POST",body:form});$("orgLogoFile").value="";showOrgSettings(saved,"Logo 已上传并同步到报告模板。");}catch(err){showError(err.message);}});

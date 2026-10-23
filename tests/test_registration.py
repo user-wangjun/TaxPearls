@@ -28,7 +28,10 @@ class RegistrationTests(unittest.TestCase):
         self._restore = (app_module.store, app_module.login_guard, app_module.reset_limiter,
                          app_module.register_code_limiter, app_module.send_registration_code_email,
                          app_module.register_complete_limiter)
-        app_module.store = Store(Path(self._directory.name) / "register.db")
+        # 主 Store 开哨兵：WAL 辅助文件常驻，消除 Windows 上连接全关后
+        # 删建 -shm/-wal 与并发重叠的 SQLITE_READONLY 抖动（同 storage.py 哨兵注释）。
+        app_module.store = Store(Path(self._directory.name) / "register.db", keepalive=True)
+        self.addCleanup(app_module.store.close)
         app_module.login_guard = LoginGuard()
         app_module.reset_limiter = RateLimiter({"email": (50, 15 * 60), "ip": (500, 60 * 60)})
         app_module.register_code_limiter = RateLimiter({"email": (50, 15 * 60), "ip": (500, 60 * 60)})
@@ -71,7 +74,7 @@ class RegistrationTests(unittest.TestCase):
     def _create_invite(self, client: TestClient, bound_email: str,
                        org_name: str = "测试税务师事务所", seats: int = 20) -> dict:
         result = client.post("/api/invites", json={
-            "org_name": org_name, "seats": seats, "bound_email": bound_email})
+            "org_name": org_name, "org_type": "enterprise", "seats": seats, "bound_email": bound_email})
         assert result.status_code == 200, result.text
         return result.json()
 
@@ -93,11 +96,69 @@ class RegistrationTests(unittest.TestCase):
         client.post("/api/logout")
         client.post("/api/login", json={"username": "orgboss", "password": "strong-pass-2026"})
         forbidden = client.post("/api/invites", json={
-            "org_name": "越权机构", "seats": 5, "bound_email": "x@example.com"})
+            "org_name": "越权机构", "org_type": "enterprise", "seats": 5, "bound_email": "x@example.com"})
         self.assertEqual(forbidden.status_code, 403)
         anonymous = self._client().post("/api/invites", json={
-            "org_name": "匿名机构", "seats": 5, "bound_email": "y@example.com"})
+            "org_name": "匿名机构", "org_type": "enterprise", "seats": 5, "bound_email": "y@example.com"})
         self.assertIn(anonymous.status_code, (401, 403))
+
+    def test_founder_type_survives_issuance_ledger_and_registration(self):
+        self._setup_platform_admin()
+        admin = self._admin_client()
+        for kind, name in (("enterprise", "测试企业"), ("university", "测试高校")):
+            with self.subTest(org_type=kind):
+                issued = admin.post("/api/invites", json={
+                    "org_name": name, "org_type": kind, "seats": 5})
+                self.assertEqual(issued.status_code, 200, issued.text)
+                invite = issued.json()
+                self.assertEqual(invite["org_type"], kind)
+                ledger = admin.get("/api/invites").json()
+                self.assertEqual(next(row for row in ledger if row["org_name"] == name)["org_type"], kind)
+                email = kind + "@example.com"
+                client = self._client()
+                self.assertEqual(self._start(client, email).status_code, 200)
+                done = client.post("/api/register/complete", json={
+                    "email": email, "code": self._code_from_last_mail(),
+                    "invite_code": invite["code"], "password": "Founder-pass-2026!"})
+                self.assertEqual(done.status_code, 200, done.text)
+                settings = client.get("/api/org/settings")
+                self.assertEqual(settings.status_code, 200, settings.text)
+                self.assertEqual(settings.json()["org_type"], kind)
+                self.assertEqual(settings.json()["display_name"], name)
+                changed = client.put("/api/org/settings", json={
+                    "display_name": name, "report_title": "测试报告", "footer_text": ""})
+                self.assertEqual(changed.status_code, 200, changed.text)
+                self.assertEqual(changed.json()["org_type"], kind)
+
+    def test_invite_type_must_be_explicit_and_supported(self):
+        self._setup_platform_admin()
+        admin = self._admin_client()
+        for extra in ({}, {"org_type": ""}, {"org_type": "school"}, {"org_type": None}):
+            with self.subTest(extra=extra):
+                response = admin.post("/api/invites", json={"org_name": "不能签发", **extra})
+                self.assertEqual(response.status_code, 422, response.text)
+        self.assertEqual(admin.get("/api/invites").json(), [])
+
+    def test_legacy_invite_type_remains_unknown_after_migration_and_redemption(self):
+        self._setup_platform_admin()
+        admin = self._admin_client()
+        issued = admin.post("/api/invites", json={"org_name": "名字含高校的旧机构", "org_type": "enterprise"})
+        self.assertEqual(issued.status_code, 200, issued.text)
+        with app_module.store.connect() as db:
+            db.execute("ALTER TABLE invite_codes DROP COLUMN org_type")
+            db.execute("ALTER TABLE org_settings DROP COLUMN org_type")
+        app_module.store = Store(app_module.store.path)
+        app_module.store = Store(app_module.store.path)  # additive migration is repeatable
+        ledger = admin.get("/api/invites").json()
+        self.assertEqual(len(ledger), 1)
+        self.assertIsNone(ledger[0]["org_type"])
+        client = self._client()
+        self._start(client, "legacy@example.com")
+        done = client.post("/api/register/complete", json={
+            "email": "legacy@example.com", "code": self._code_from_last_mail(),
+            "invite_code": issued.json()["code"], "password": "Founder-pass-2026!"})
+        self.assertEqual(done.status_code, 200, done.text)
+        self.assertIsNone(client.get("/api/org/settings").json()["org_type"])
 
     def test_full_founder_registration_flow(self):
         self._setup_platform_admin()
@@ -226,7 +287,7 @@ class RegistrationTests(unittest.TestCase):
         """
         self._setup_platform_admin()
         admin = self._admin_client()
-        result = admin.post("/api/invites", json={"org_name": "示例培训机构"})
+        result = admin.post("/api/invites", json={"org_name": "示例培训机构", "org_type": "university"})
         self.assertEqual(result.status_code, 200, result.text)
         invite = result.json()
         self.assertEqual(invite["bound_email"], "")  # 不绑邮箱

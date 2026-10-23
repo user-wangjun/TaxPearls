@@ -30,12 +30,17 @@ def migrate(db):
     db.execute("CREATE TABLE IF NOT EXISTS core_input_tasks (id TEXT PRIMARY KEY REFERENCES material_batches(id))")
     from webapp import core_reports
     core_reports.migrate(db)
+    from webapp import core_record_index
+    core_record_index.migrate(db)
 
 
-def latest(view):
+def latest(view, *, writable=False):
     if not view["versions"] or not view["versions"][-1]["payload"].get("core_task"):
         raise AccessDenied("这不是基础资料处理任务。", 404)
-    return view["versions"][-1]["payload"]
+    payload = view["versions"][-1]["payload"]
+    if writable and payload.get("completion"):
+        raise AccessDenied("任务已完成并归档，请先重新打开任务。", 409)
+    return payload
 
 
 def delete_task(store, user, task_id, expected_revision):
@@ -55,6 +60,12 @@ def delete_task(store, user, task_id, expected_revision):
                       "material_revisions", "material_events", "material_originals"):
             db.execute(f"DELETE FROM {table} WHERE batch_id=?", (task_id,))
         db.execute("DELETE FROM core_mapping_observations WHERE org_id=? AND task_id=?", (user["org_id"], task_id))
+        db.execute("DELETE FROM core_business_sources WHERE batch_id=?", (task_id,))
+        db.execute("DELETE FROM core_business_index_tasks WHERE batch_id=?", (task_id,))
+        db.execute("DELETE FROM core_business_versions WHERE NOT EXISTS (SELECT 1 FROM core_business_sources s "
+                   "WHERE s.version_key=core_business_versions.version_key)")
+        db.execute("DELETE FROM core_business_records WHERE NOT EXISTS (SELECT 1 FROM core_business_versions v "
+                   "WHERE v.record_key=core_business_records.record_key)")
         db.execute("DELETE FROM core_input_tasks WHERE id=?", (task_id,))
         db.execute("DELETE FROM material_batches WHERE id=?", (task_id,))
         members.log(db, user, "core_task_delete", "material_batch", task_id, "permanent")
@@ -74,20 +85,22 @@ def project(view):
     return {
         **value,
         "scope_errors": scope_errors(value),
+        "scope_identity_candidates": core_materials.scope_identity_candidates(value.get("documents", [])),
+        "scope_period_candidates": core_materials.scope_period_candidates(value["task"]),
         "id": view["id"],
         "revision": view["revision"],
         "files": view["files"],
-        "events": view["events"],
-        "versions": [
-            {"revision": v["revision"], "kind": v["kind"], "created_at": v["created_at"]} for v in view["versions"]
-        ],
     }
 
 
 def scope_errors(payload):
     errors = core_materials.scope_errors(payload["task"])
+    # Document-level identity conflicts block the check; invoice-level ones are
+    # counterparties and belong to the rule layer as findings to review.
+    errors.update(core_materials.scope_identity_errors(
+        payload["task"], payload.get("documents", []), invoices=False))
     for item in payload.get("processing", {}).get("issues", []):
-        if item["code"] == "company_conflict":
+        if item["code"] == "company_conflict" and "tax_no" not in errors:
             errors["tax_no"] = "文件税号与任务企业冲突，请核对原件或排除不属于本企业的材料。"
     return errors
 
@@ -163,7 +176,47 @@ def register(app, get_store, get_user, allow, static_dir):
         return value
 
     def read(user, task_id):
-        return project(batches.read(get_store(), user, task_id))
+        return project(batches.read_current(get_store(), user, task_id))
+
+    @app.post("/api/enterprise/input-tasks/{task_id}/deduplication/resolve")
+    async def resolve_duplicate(task_id: str, request: Request,
+                                session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, store = actor(session), get_store()
+        value = await body(request)
+        if (set(value) != {"expected_revision", "source_record_id", "expected_versions", "confirm"}
+                or type(value.get("expected_revision")) is not int or value["expected_revision"] < 0
+                or not isinstance(value.get("source_record_id"), str)
+                or not isinstance(value.get("expected_versions"), list)
+                or not 1 <= len(value["expected_versions"]) <= 100
+                or any(not isinstance(v, str) or len(v) != 64 for v in value["expected_versions"])
+                or value.get("confirm") is not True):
+            raise HTTPException(422, "请核对冲突版本后明确确认，并提供当前任务版本。")
+        view = batches.read_current(store, user, task_id)
+        payload = deepcopy(latest(view, writable=True))
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            batch = batches._authorize(db, user, task_id)
+            if batch["revision"] != value["expected_revision"] or view["revision"] != batch["revision"]:
+                raise AccessDenied("任务版本已变化，请重新读取。", 409)
+            from webapp import core_record_index
+            core_record_index.choose(db, batch, user, payload, value["source_record_id"], value["expected_versions"])
+            batches._append(db, batch, user, "edit", payload)
+        return read(user, task_id)
+
+    @app.post("/api/enterprise/input-tasks/record-union")
+    async def record_union(request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, value = actor(session), await body(request)
+        if (set(value) != {"task_ids"} or not isinstance(value.get("task_ids"), list)
+                or not 1 <= len(value["task_ids"]) <= 100
+                or any(not isinstance(v, str) or not 0 < len(v) <= 100 for v in value["task_ids"])):
+            raise HTTPException(422, "请选择1至100个任务。")
+        with get_store().connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            from webapp import core_record_index
+            try:
+                return core_record_index.union(db, user, value["task_ids"])
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
 
     @app.get("/core-inputs.js")
     def script():
@@ -181,8 +234,9 @@ def register(app, get_store, get_user, allow, static_dir):
                         "id": row["id"],
                         "revision": row["revision"],
                         "task": value["task"],
-                        "status": value["processing"]["status"],
+                        "status": "archived" if value.get("completion") else value["processing"]["status"],
                         "created_at": row["created_at"],
+                        **({"completion": value["completion"]} if value.get("completion") else {}),
                     }
                 )
         return result
@@ -264,7 +318,7 @@ def register(app, get_store, get_user, allow, static_dir):
              session: str | None = Cookie(default=None, alias="taxpearls_session")):
         from src import material_export
 
-        view = batches.read(get_store(), actor(session), task_id)
+        view = batches.read_current(get_store(), actor(session), task_id)
         if view["revision"] != expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取后下载。", 409)
         return material_export.build(latest(view))
@@ -279,8 +333,8 @@ def register(app, get_store, get_user, allow, static_dir):
 
     def process_work(user, task_id, revision, *, ai=False):
         store = get_store()
-        view = batches.read(store, user, task_id)
-        payload = deepcopy(latest(view))
+        view = batches.read_current(store, user, task_id)
+        payload = deepcopy(latest(view, writable=True))
         if view["revision"] != revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         documents = []
@@ -460,8 +514,8 @@ def register(app, get_store, get_user, allow, static_dir):
         task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")
     ):
         user = actor(session)
-        view = batches.read(get_store(), user, task_id)
-        payload = deepcopy(latest(view))
+        view = batches.read_current(get_store(), user, task_id)
+        payload = deepcopy(latest(view, writable=True))
         try:
             async with multipart(
                 request,
@@ -525,8 +579,8 @@ def register(app, get_store, get_user, allow, static_dir):
         try:
             if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input"}:
                 raise InputError("请求包含未知字段。")
-            view = batches.read(get_store(), user, task_id)
-            payload = deepcopy(latest(view))
+            view = batches.read_current(get_store(), user, task_id)
+            payload = deepcopy(latest(view, writable=True))
             revision = value.get("expected_revision")
             if type(revision) is not int or revision != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
@@ -617,6 +671,50 @@ def register(app, get_store, get_user, allow, static_dir):
         except (InputError, ValueError, batches.MaterialStorageError) as exc:
             raise HTTPException(422, str(exc)) from None
 
+    @app.post("/api/enterprise/input-tasks/{task_id}/identity-validation")
+    async def validate_identity(task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, store = actor(session), get_store()
+        value = await body(request)
+        try:
+            if set(value) - {*core_materials.SCOPE_FIELDS, "range_kind", "fields", "expected_revision"}:
+                raise InputError("请求包含未知字段。")
+            fields = value.get("fields")
+            if (not isinstance(fields, list) or not fields or len(fields) > 4
+                    or any(not isinstance(key, str) or key not in core_materials.SCOPE_FIELDS for key in fields)
+                    or len(set(fields)) != len(fields)):
+                raise InputError("请选择需要校验的企业信息字段。")
+            period_selected = "start_date" in fields or "end_date" in fields
+            if period_selected and not {"start_date", "end_date"}.issubset(fields):
+                raise InputError("请同时选择检查起始日和终止日。")
+            with store.connect() as db:
+                db.execute("BEGIN")
+                batch = batches._authorize(db, user, task_id)
+                if not db.execute("SELECT 1 FROM core_input_tasks WHERE id=?", (task_id,)).fetchone():
+                    raise AccessDenied("这不是基础资料处理任务。", 404)
+                if type(value.get("expected_revision")) is not int or value["expected_revision"] != batch["revision"]:
+                    raise AccessDenied("任务版本已变化，请重新读取。", 409)
+                row = db.execute("SELECT * FROM material_revisions WHERE batch_id=? AND revision=?",
+                                 (task_id, batch["revision"])).fetchone()
+                if not row:
+                    raise AccessDenied("当前任务版本不存在，请重新读取。", 409)
+                payload = json.loads(batches._open(row["payload_cipher"], batches._context(
+                    batch["org_id"], task_id, "revision:" + row["kind"], row["revision"])))
+            task = scope_values(value)
+            errors = core_materials.scope_identity_errors(task, payload.get("documents", []), invoices=False)
+            errors.update(core_materials.identity_field_errors(task))
+            if period_selected:
+                errors.update({key: message for key, message in core_materials.scope_errors(task).items()
+                               if key in {"start_date", "end_date", "range_kind"}})
+                if not any(p["start_date"] == task["start_date"] and p["end_date"] == task["end_date"]
+                           for p in core_materials.scope_period_candidates(payload["task"])):
+                    errors.setdefault("end_date", "所选区间不是当前材料中的完整期间候选，请重新读取并核对。")
+            errors = {key: message for key, message in errors.items() if key in fields}
+            if period_selected and core_materials.range_error(task):
+                errors["range_kind"] = core_materials.range_error(task)
+            return {"valid": not errors, "errors": errors}
+        except (InputError, ValueError, batches.MaterialStorageError) as exc:
+            raise HTTPException(422, str(exc)) from None
+
     @app.post("/api/enterprise/input-tasks/{task_id}/scope")
     async def update_scope(task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         user, store = actor(session), get_store()
@@ -632,10 +730,10 @@ def register(app, get_store, get_user, allow, static_dir):
                 raise InputError("请求包含未知字段。")
             if "confirm" in value and type(value["confirm"]) is not bool:
                 raise InputError("确认标记须为布尔值。")
-            view = batches.read(store, user, task_id)
+            view = batches.read_current(store, user, task_id)
             if value.get("expected_revision") != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
-            payload = deepcopy(latest(view))
+            payload = deepcopy(latest(view, writable=True))
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
                 batch = batches._authorize(db, user, task_id)

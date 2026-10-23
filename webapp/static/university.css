@@ -1,0 +1,101 @@
+/* University content inherits the main workspace's theme, typography and cards. */
+.university-workspace { --card-line:var(--line); --card-bg:var(--bg); --sub-card-bg:var(--bg); --accent:var(--blue); --danger:var(--red); --muted:var(--ink-3); --text:var(--ink); --text-weak:var(--ink-3); min-width:0; }
+#universityNav { display:contents; }
+#universityNav[hidden] { display:none; }
+body.university-ready #appMain .nav-collapsed .nav button[data-panel="userSettingsPanel"] { display:flex !important; }
+.nav #universityNav button { display:flex; align-items:center; width:100%; flex-shrink:0; text-align:left; min-height:50px; padding:14px 12px; border:0; border-radius:13px; background:transparent; color:var(--ink-2); font:inherit; cursor:pointer; }
+.nav #universityNav button:hover { background:var(--bg); }
+.nav #universityNav button.active { color:var(--blue); background:#edf3ff; font-weight:600; }
+.nav #universityNav button:focus-visible { outline:2px solid var(--blue); outline-offset:-2px; }
+.nav-collapsed #universityNav .nav-label { display:none; }
+.nav-collapsed #universityNav button { justify-content:center; padding-left:0; padding-right:0; }
+.university-workspace [hidden] { display:none !important; }
+.university-workspace .university-view-hidden { display:none !important; }
+.university-workspace [data-act="hide-pass-form"] { display:none; }
+.university-workspace .sheet { min-width:0; overflow-wrap:anywhere; }
+.university-workspace .settings-account-fields { display:grid; margin:20px 0 0; }
+.university-workspace .settings-account-fields > div { display:grid; grid-template-columns:88px minmax(0,1fr); gap:14px; padding:14px 0; border-bottom:1px solid var(--line); }
+.university-workspace .settings-account-fields dt { color:var(--ink-3); }
+.university-workspace .settings-account-fields dd { margin:0; overflow-wrap:anywhere; }
+.university-workspace .row { display:flex; gap:14px; flex-wrap:wrap; align-items:end; }
+.university-workspace .row > div { flex:1; min-width:min(220px,100%); }
+.university-workspace label { display:block; margin:12px 0 6px; color:var(--ink-2); font-size:14px; }
+.university-workspace input:not([type=checkbox]), .university-workspace select, .university-workspace textarea { width:100%; min-width:0; max-width:100%; padding:11px 13px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink); font:inherit; }
+.university-workspace textarea { resize:vertical; min-height:86px; }
+.university-workspace input:focus-visible, .university-workspace select:focus-visible, .university-workspace textarea:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+.university-workspace button:not(.btn) { padding:9px 14px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--ink-2); font:inherit; font-size:14px; cursor:pointer; }
+.university-workspace button:disabled { opacity:.55; cursor:not-allowed; }
+.university-workspace button:focus-visible { outline:2px solid var(--blue); outline-offset:2px; }
+.university-workspace .toolbar, .university-workspace .actions, .university-load-status { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:18px; }
+.university-workspace .toolbar select { width:auto; min-width:min(260px,100%); flex:1; }
+.university-workspace .actions { margin-top:12px; margin-bottom:0; }
+.university-workspace .item, .university-workspace .goal, .university-workspace .cert { border:1px solid var(--line); border-radius:10px; padding:16px 18px; margin:12px 0; background:var(--bg); }
+.university-workspace .item-head, .university-workspace .goal-head, .university-workspace .cert-head { display:flex; gap:12px; flex-wrap:wrap; justify-content:space-between; align-items:center; }
+.university-workspace .badge, .university-workspace .chip { display:inline-block; padding:3px 10px; margin:3px 6px 3px 0; border:1px solid var(--line); border-radius:999px; font-size:12px; color:var(--ink-2); }
+.university-workspace .badge { background:#edf3ff; color:#285fc7; }
+.university-workspace .badge.warn { background:#fff6e5; color:#8b5c00; }
+.university-workspace .badge.bad, .university-workspace .error { color:#b43d3d; }
+.university-workspace .ok { color:#15735a; }
+.university-workspace .inline-form { margin-top:16px; padding-top:14px; border-top:1px dashed var(--line); }
+.university-workspace .detail, .university-workspace .mark { border-left:3px solid var(--line); padding:10px 14px; margin:10px 0; font-size:14px; }
+.university-workspace .detail.ok { border-color:#15735a; }.university-workspace .detail.miss { border-color:#bc861d; }.university-workspace .detail.false { border-color:#b43d3d; }
+.university-workspace .table-scroll { max-width:100%; overflow-x:auto; }
+.university-workspace table { width:100%; min-width:500px; border-collapse:collapse; margin:12px 0; font-size:14px; }
+.university-workspace th, .university-workspace td { padding:12px 14px; border-bottom:1px solid var(--line); text-align:left; overflow-wrap:anywhere; }
+.university-workspace th { background:var(--bg); color:var(--ink-2); font-weight:500; }
+.university-workspace .num { text-align:right; font-variant-numeric:tabular-nums; }
+.university-workspace h2 { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+.university-workspace .kp-children { margin-left:18px; }
+.university-status { overflow-wrap:anywhere; }
+.university-workspace .university-home-actions { display:flex; gap:12px; flex-wrap:wrap; margin-top:22px; }
+.university-workspace .university-task-row { display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+.university-workspace .university-task-row > div { flex:1 1 240px; min-width:0; }
+.university-workspace .university-task-row > button { flex:none; }
+#appMain #universityPanel :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { min-height:44px; border-radius:10px; border:1px solid var(--line); background:var(--bg); color:var(--ink); font-family:inherit; font-size:14px; padding:11px 13px; }
+#appMain #universityContent button { min-height:44px; border-radius:12px; padding:10px 14px; font-size:14px; }
+.university-workspace :is(input,textarea)::placeholder { color:var(--ink-3); opacity:1; }
+.university-workspace input:is([type=checkbox],[type=radio]) { accent-color:var(--blue); width:16px; height:16px; flex:none; vertical-align:middle; }
+.university-workspace .error:empty,.university-workspace .ok:empty { display:none; }
+/* Keep the student's next learning action above secondary course details. */
+#appMain #universityPanel[data-kind=student][data-view=home] { display:flex; flex-direction:column; }
+#universityPanel[data-kind=student][data-view=home] #universityOverview { display:contents; }
+#universityPanel[data-kind=student][data-view=home] #universityOverview > .kpi-grid { order:1; }
+#universityPanel[data-kind=student][data-view=home] .university-home-shortcuts { order:2; }
+#universityPanel[data-kind=student][data-view=home] #universityContent { order:3; }
+#universityPanel[data-kind=student][data-view=home] #universityOverview > .sheet:not(.university-home-shortcuts) { order:4; }
+.university-workspace[data-view=practice] #pr-wrong-section { display:none; }
+.university-workspace[data-view=wrongs] #pr-card > :not(.row):not(#pr-wrong-section),
+.university-workspace[data-view=wrongs] #pr-card > .row > div:not(:first-child) { display:none; }
+.university-workspace #pass-modal > .card { width:min(440px,calc(100vw - 32px)) !important; padding:26px; border-radius:14px; background:var(--bg); color:var(--ink); }
+html[data-theme=dark] .nav #universityNav button.active { background:#233b59; color:#b4d0ff; }
+html[data-theme=dark] .university-workspace .sheet { background:#1b2635; }
+html[data-theme=dark] .university-workspace .badge { background:#253c5b; color:#bdd5ff; }
+html[data-theme=dark] .university-workspace .badge.warn { background:#443b26; color:#f0d18e; }
+html[data-theme=dark] .university-workspace .error, html[data-theme=dark] .university-workspace .badge.bad { color:#ffb0b0; }
+html[data-theme=dark] .university-workspace .ok { color:#8bdbbe; }
+@media(min-width:761px) {
+  #appMain #universityNav button { position:relative; justify-content:flex-start; margin-inline:auto; overflow:hidden; }
+  #appMain #universityNav .nav-icon { position:absolute; left:10.5px; top:50%; transform:translateY(-50%); }
+  #appMain #universityNav .nav-label { display:inline-block; margin-left:35px; white-space:nowrap; }
+  #appMain .nav-collapsed #universityNav button { width:46px; }
+  #appMain .nav-collapsed #universityNav .nav-label { opacity:0; pointer-events:none; }
+}
+@media(max-width:760px) {
+  #appMain #universityNav { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; width:100%; }
+  #appMain #universityNav[hidden] { display:none; }
+  #appMain .nav #universityNav button { min-height:42px; padding:10px; font-size:13px; justify-content:flex-start; }
+  #appMain .nav #universityNav .nav-label { display:inline; margin-left:10px; opacity:1; pointer-events:auto; }
+  #appMain .nav #universityNav .nav-icon { position:static; width:18px; height:18px; }
+  .university-workspace .page-head { align-items:flex-start; }
+  .university-workspace .page-head { flex-wrap:wrap; }
+  .university-workspace .page-head > div { min-width:0; flex:1 1 100%; }
+  .university-workspace .page-head > button { flex:none; white-space:nowrap; }
+  .university-workspace .sheet { padding:18px; }
+  .university-workspace .kpi-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .university-workspace .row > div { min-width:100%; }
+  .university-workspace h2 select { min-width:0 !important; width:100% !important; }
+  .university-workspace .item, .university-workspace .goal, .university-workspace .cert { padding:12px; }
+  .university-workspace .kp-children { margin-left:8px; }
+  #appMain #universityPanel :is(input:not([type=checkbox]):not([type=radio]),select,textarea) { font-size:16px; }
+  .university-workspace .university-task-row > button { width:100%; }
+}

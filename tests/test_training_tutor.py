@@ -11,6 +11,7 @@ import unittest
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from argon2 import PasswordHasher
 from fastapi import FastAPI
@@ -94,6 +95,25 @@ class TrainingTutorTests(unittest.TestCase):
 
     def _stub(self, configured: bool):
         training_tutor.AISettings = SimpleNamespace(from_env=lambda: _stub_settings(configured))
+
+    def test_large_policy_is_not_truncated_or_silently_treated_as_complete(self):
+        reference = {'rule_version': '1', 'sources': [{'clause_id': 'oversized', 'title': '测试政策',
+                     'clause_label': '第一条', 'content': '完整条款' * 10000}]}
+        with self.store.connect() as db, patch('webapp.knowledge_sync.rule_knowledge', return_value=[reference]):
+            nodes, _ = training_tutor._build_context(db, self.student_a, self.cert, self.kp, None, [])
+        self.assertFalse(any(n['kind'] == 'policy_clause' for n in nodes))
+        self.assertTrue(any(n['kind'] == 'context_limit' for n in nodes))
+        self.assertLessEqual(len(json.dumps(nodes, ensure_ascii=False).encode('utf-8')), training_tutor.MAX_CONTEXT_BYTES)
+
+    def test_attempt_tutor_history_uses_the_attempt_knowledge_point(self):
+        self._stub(False)
+        self._login('2026001', 'pass-a')
+        res = self._ask(attempt_id=self.attempt)
+        self.assertEqual(res.status_code, 200, res.text)
+        with self.store.connect() as db:
+            saved = db.execute('SELECT knowledge_point_id FROM training_tutor_messages WHERE id=?',
+                               (res.json()['message']['id'],)).fetchone()
+        self.assertEqual(saved['knowledge_point_id'], self.kp)
 
     def test_normal_answer_with_citation_validation(self):
         self._stub(True)

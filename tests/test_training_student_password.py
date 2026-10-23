@@ -2,7 +2,7 @@
 
 覆盖：改密成功后旧会话与并行会话一并失效、新密码可登录、旧密码被拒；
 旧密码错误 401；新密码过短 422；新旧相同 422；未登录 401。
-学生初始密码为默认口令（Tp#学号2026），本功能消除首登不改密的默认口令风险。
+保留历史短密码的登录兼容性；设置新密码时采用平台统一规则。
 """
 from __future__ import annotations
 
@@ -98,18 +98,33 @@ class StudentPasswordTests(unittest.TestCase):
         self._login(c)
         res = self._change(c, OLD_PASS, "short1!")
         self.assertEqual(res.status_code, 422, res.text)
-        self.assertIn("至少 8 位", res.json()["detail"])
+        self.assertIn("10–128", res.json()["detail"])
 
     def test_change_same_as_old(self):
         c = self._client()
         self._login(c)
-        res = self._change(c, OLD_PASS, OLD_PASS)
+        self.assertEqual(self._change(c, OLD_PASS, NEW_PASS).status_code, 200)
+        self._login(c, NEW_PASS)
+        res = self._change(c, NEW_PASS, NEW_PASS)
         self.assertEqual(res.status_code, 422, res.text)
         self.assertIn("不能与当前密码相同", res.json()["detail"])
 
     def test_change_requires_login(self):
         res = self._change(self._client(), OLD_PASS, NEW_PASS)
         self.assertEqual(res.status_code, 401)
+
+    def test_change_accepts_boundaries_unicode_and_preserves_exact_input(self):
+        c = self._client()
+        self._login(c)
+        old_password = OLD_PASS
+        for password in ("abcd12345_", "aB8!" * 32, "Ａｂｃｄｅｆ１２３！", "Ab9" + "😀" * 7,
+                         " Zebra!Forest92 "):
+            with self.subTest(length=len(password)):
+                response = self._change(c, old_password, password)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(c.get("/api/training/auth/me").status_code, 401)
+                self._login(c, password)
+                old_password = password
 
 
 if __name__ == "__main__":
