@@ -1644,6 +1644,8 @@ from webapp.training_outline import register as register_training_outline
 register_training_outline(app, lambda: store)
 from webapp.training_trial import register as register_training_trial
 register_training_trial(app, lambda: store, "taxpearls_training_session")
+from webapp import exams as exam_routes
+exam_routes.register(app, lambda: store)
 from webapp.teaching_units import register as register_teaching_units
 register_teaching_units(app, lambda: store)
 

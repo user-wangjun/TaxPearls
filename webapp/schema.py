@@ -880,6 +880,10 @@ def initialize(store) -> None:
         university_members.migrate(db)
         from webapp import university_workspace
         university_workspace.migrate(db)
+        # 独立在线考试（FR-U07）：六个表都要排在 users / course / training_classes 之后，
+        # 且 exam_answer 引用 exam_session，故整体放在这里由 exams.migrate 一次性建齐。
+        from webapp import exams
+        exams.migrate(db)
         if 'student_seats' not in {r['name'] for r in db.execute('PRAGMA table_info(invite_codes)')}:
             db.execute('ALTER TABLE invite_codes ADD COLUMN student_seats INTEGER NOT NULL DEFAULT 0')
         if 'code_secret' not in {r['name'] for r in db.execute('PRAGMA table_info(member_invitations)')}:
