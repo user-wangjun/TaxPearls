@@ -178,6 +178,35 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
   $("statisticsWithdrawn").onchange = loadStatistics;
   $("btnRefreshClassStatistics").onclick = loadStatistics;
 
+  // 成绩单导出：与上方学情统计同源同口径（同一班级、同一「含撤回」选择），
+  // 用原始 fetch 而不是 api()，因为响应是附件（CSV）不是 JSON。
+  async function exportGradebook(layout) {
+    const id = $("statisticsClass").value;
+    if (!teacher() || !id) { $("classStatisticsStatus").textContent = "请先选择班级，再导出成绩单。"; return; }
+    const historical = $("statisticsWithdrawn").checked;
+    const url = `/api/classes/${encodeURIComponent(id)}/statistics.csv?layout=${layout}&include_withdrawn=${historical}`;
+    $("classStatisticsStatus").textContent = "正在生成导出文件…";
+    try {
+      const response = await fetch(url, {credentials: "same-origin"});
+      if (!response.ok) throw new Error((await response.text()) || `HTTP ${response.status}`);
+      const disposition = response.headers.get("Content-Disposition") || "";
+      const encoded = disposition.split("filename*=UTF-8''")[1];
+      const name = encoded ? decodeURIComponent(encoded) : `成绩单-${layout}.csv`;
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(await response.blob());
+      link.download = name;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 4000);
+      $("classStatisticsStatus").textContent = `已导出 ${name}：Excel 双击可直接打开，表头注明统计口径与未纳入的任务。`;
+    } catch (error) {
+      $("classStatisticsStatus").textContent = "导出失败：" + error.message;
+    }
+  }
+  $("btnExportGradebook").onclick = () => exportGradebook("matrix");
+  $("btnExportGradebookDetail").onclick = () => exportGradebook("detail");
+
   const comparisonText = {first:"首次记录，暂无对照", same_basis:"同口径相邻时点", changed_basis:"口径/题目组成变化，不连线", gap:"该类记录有间隔，不连线", incomplete:"记录不完整，不比较"};
   const changeText = value => value === null ? "—" : `${value > 0 ? "+" : ""}${value} 个百分点`;
   function clearProfile(message = "请选择班级和学生查看画像。") {

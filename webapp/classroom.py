@@ -5,12 +5,15 @@ tables; publishing changes all paper cases in one transaction, not one by one.
 """
 from datetime import UTC, datetime
 from decimal import Decimal, ROUND_HALF_UP
+import csv
+import io
 import json
 import secrets
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import Cookie, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from webapp import training_profiles, training_stats
@@ -173,6 +176,147 @@ class PaperUpdate(StrictBody):
     deadline_at: AwareDatetime | None
 
 
+def gradebook(db, classroom, include_withdrawn=False):
+    """教师端成绩单（导出 v1）：学生 × 任务矩阵 + 长表明细。
+
+    口径刻意与 `/api/classes/{id}/statistics` 保持一致，避免"页面一套数、导出另一套数"：
+    有效名册与作业指定学生的交集；默认只纳入已发布作业（有提交的撤回作业需显式勾选）；
+    冻结案例缺失或损坏的提交记为"材料异常"，不当 0 分也不当未交；
+    "自动分"保留客观记录，"当前分"= 复核分优先，人工调分不改客观分。
+    """
+    roster = db.execute(
+        """SELECT u.id,u.username,u.display_name FROM training_class_members m
+             JOIN users u ON u.id=m.student_id
+            WHERE m.class_id=? AND u.org_id=? AND u.role='student' AND u.active=1
+            ORDER BY u.username""", (classroom['id'], classroom['org_id'])).fetchall()
+    # a.* 必须保留：加密列 findings_json 的解密要按 audits(id) 校验归属，而这条联表里
+    # 审计 id 来自 assignments.audit_id（codec 认这个别名，见 sensitive_storage.row）。
+    tasks = db.execute(
+        """SELECT a.*,f.org_id AS audit_org,f.findings_json,s.paper_id,s.points,s.position,s.deadline_at
+             FROM assignments a JOIN training_assignment_settings s ON s.assignment_id=a.id
+             LEFT JOIN audits f ON f.id=a.audit_id
+            WHERE s.class_id=? AND a.org_id=? AND a.created_by=?
+            ORDER BY a.created_at,a.id""",
+        (classroom['id'], classroom['org_id'], classroom['owner_id'])).fetchall()
+    submissions = {}
+    for row in db.execute(
+        """SELECT sub.* FROM submissions sub JOIN assignments a ON a.id=sub.assignment_id
+             JOIN training_assignment_settings s ON s.assignment_id=a.id
+            WHERE s.class_id=? AND a.org_id=? AND a.created_by=?""",
+        (classroom['id'], classroom['org_id'], classroom['owner_id'])):
+        submissions[(row['assignment_id'], row['student_id'])] = row
+    kept, skipped = [], []
+    for task in tasks:
+        has_rows = any(key[0] == task['id'] for key in submissions)
+        if not task['published']:
+            if not has_rows:
+                skipped.append({'title': task['title'], 'reason': '未发布且无人提交'})
+                continue
+            if not include_withdrawn:
+                skipped.append({'title': task['title'], 'reason': '已撤回（勾选「含撤回」才计入）'})
+                continue
+        kept.append(task)
+    frozen_cache = {}
+    for task in kept:
+        try:
+            if task['audit_org'] != classroom['org_id']:
+                raise ValueError('snapshot not accessible')
+            frozen_cache[task['id']] = training_stats.frozen_rules(task['findings_json'])
+        except (ValueError, TypeError, KeyError):
+            frozen_cache[task['id']] = None
+    # 同名任务（如重复发布同一份作业）在成绩单里必须能分辨，否则矩阵列会"撞车"。
+    counted, labels, seen = {}, {}, {}
+    for task in kept:
+        counted[task['title']] = counted.get(task['title'], 0) + 1
+    for task in kept:
+        title = task['title']
+        if counted[title] > 1:
+            seen[title] = seen.get(title, 0) + 1
+            title = f"{title}（第{seen[title]}份）"
+        labels[task['id']] = title
+    detail, matrix = [], {person['id']: {} for person in roster}
+    for person in roster:
+        for task in kept:
+            in_scope = task['target_student_id'] in (None, person['id'])
+            cell = {'state': '未交' if in_scope else '不在本题范围',
+                    'auto': None, 'adjusted': None, 'final': None, 'submitted_at': None}
+            row = submissions.get((task['id'], person['id'])) if in_scope else None
+            if row is not None:
+                cell.update(auto=row['score'], adjusted=row['adjusted_score'],
+                            final=row['adjusted_score'] if row['adjusted_score'] is not None else row['score'],
+                            submitted_at=row['submitted_at'])
+                try:
+                    if frozen_cache[task['id']] is None:
+                        raise ValueError('missing snapshot')
+                    training_stats.selected_answers(row, frozen_cache[task['id']])
+                    cell['state'] = '已交'
+                except (ValueError, TypeError, KeyError):
+                    cell['state'] = '材料异常'
+            matrix[person['id']][task['id']] = cell
+            detail.append({'student_no': person['username'], 'name': person['display_name'],
+                           'class_name': classroom['name'], 'task': labels[task['id']],
+                           'kind': '组卷' if task['paper_id'] else '案例作业',
+                           'points': task['points'], 'deadline_at': task['deadline_at'], **cell})
+    students = []
+    for person in roster:
+        cells = [matrix[person['id']][task['id']] for task in kept]
+        scored = [c['final'] for c in cells if c['final'] is not None]
+        expected = [c for c in cells if c['state'] != '不在本题范围']
+        submitted = [c for c in expected if c['state'] in ('已交', '材料异常')]
+        students.append({'id': person['id'], 'student_no': person['username'], 'name': person['display_name'],
+                         'expected': len(expected), 'submitted': len(submitted),
+                         'mean': (Decimal(str(sum(scored))) / Decimal(len(scored))).quantize(
+                             Decimal('0.01'), rounding=ROUND_HALF_UP) if scored else None})
+    return {'class': {k: classroom[k] for k in ('id', 'name', 'revision')},
+            'tasks': [{'id': t['id'], 'title': labels[t['id']],
+                       'kind': '组卷' if t['paper_id'] else '案例作业'} for t in kept],
+            'skipped': skipped, 'students': students, 'matrix': matrix, 'detail': detail,
+            'include_withdrawn': include_withdrawn,
+            'scope': '有效名册与作业指定学生的交集；仅本班明确分配的作业，不含全机构公开作业。'
+                     '当前分取复核分优先（无复核分用自动分），材料异常不计 0 分、也不算未交。'}
+
+
+def gradebook_csv(book, layout='matrix'):
+    """把成绩单渲染成 UTF-8 BOM 的 CSV（Excel 双击即开，中文不乱码）。"""
+    buffer = io.StringIO(newline='')
+    writer = csv.writer(buffer)
+    exported = datetime.now(UTC).astimezone().isoformat(timespec='seconds')
+    writer.writerow([f"# 班级成绩单 · {book['class']['name']} · 名册 v{book['class']['revision']}"])
+    writer.writerow([f"# 导出时间 {exported} · 有效学生 {len(book['students'])} 人 · 任务 {len(book['tasks'])} 个"
+                     f" · 含撤回作业 {'是' if book['include_withdrawn'] else '否'}"])
+    writer.writerow([f"# 口径：{book['scope']}"])
+    if book['skipped']:
+        writer.writerow(['# 未纳入：' + '；'.join(f"{s['title']}（{s['reason']}）" for s in book['skipped'])])
+    if not book['tasks']:
+        # 没有可统计的任务时不铺名册行：一份全是 0/0 的表比空表更容易被误读成"全班零分"。
+        writer.writerow(['# 本班暂无可导出的任务：未发布且无人提交，或已撤回且未勾选「含撤回」。'])
+        return '\ufeff' + buffer.getvalue()
+    if layout == 'detail':
+        writer.writerow(['学号', '姓名', '班级', '任务', '类型', '状态', '自动分', '复核分', '当前分', '提交时间'])
+        for row in book['detail']:
+            writer.writerow([row['student_no'], row['name'], row['class_name'], row['task'], row['kind'],
+                             row['state'], _blank(row['auto']), _blank(row['adjusted']),
+                             _blank(row['final']), row['submitted_at'] or ''])
+    else:
+        header = ['学号', '姓名', '班级']
+        for task in book['tasks']:
+            header += [f"{task['title']}(分)", f"{task['title']}(状态)"]
+        header += ['已交/应交', '均分']
+        writer.writerow(header)
+        for person in book['students']:
+            line = [person['student_no'], person['name'], book['class']['name']]
+            for task in book['tasks']:
+                cell = book['matrix'][person['id']][task['id']]
+                line += [_blank(cell['final']), cell['state']]
+            line += [f"{person['submitted']}/{person['expected']}", _blank(person['mean'])]
+            writer.writerow(line)
+    return '\ufeff' + buffer.getvalue()
+
+
+def _blank(value):
+    return '' if value is None else value
+
+
 def register(app, store_provider, user_for_session, allow, synthetic, cookie_name):
     def user(session, teacher_only=False):
         who = user_for_session(session)
@@ -237,6 +381,29 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
                 item = owned_class(db,class_id,who)
                 return training_stats.collect(db,item,include_withdrawn)
         return checked(get)
+
+    @app.get("/api/classes/{class_id}/statistics.csv")
+    def class_gradebook(class_id: str, layout: str = "matrix", include_withdrawn: bool = False,
+                        session: str | None = Cookie(default=None,alias=cookie_name)):
+        """成绩单导出（CSV，Excel 可直接打开）。与 /statistics 同一数据口径与鉴权。"""
+        who = user(session,True)
+        if layout not in ("matrix","detail"):
+            raise HTTPException(422,"layout 只支持 matrix（成绩单矩阵）或 detail（长表明细）。")
+        def build():
+            with store_provider().connect() as db:
+                db.execute("BEGIN")
+                item = owned_class(db,class_id,who)
+                book = gradebook(db,item,include_withdrawn)
+                stamp = datetime.now(UTC).astimezone().strftime("%Y%m%d")
+                name = f"{item['name']}-{'成绩单' if layout=='matrix' else '成绩明细'}-{stamp}.csv"
+                return gradebook_csv(book,layout), name
+        try:
+            content,name = build()
+        except ClassroomError as exc:
+            raise HTTPException(exc.status,str(exc)) from None
+        return Response(content=content.encode("utf-8"),media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+                                 "Cache-Control":"private, no-store"})
 
     @app.get("/api/training/profile")
     def own_profile(session: str | None = Cookie(default=None,alias=cookie_name)):
