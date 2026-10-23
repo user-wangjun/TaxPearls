@@ -29,8 +29,8 @@ class PublicKnowledgeStartupTests(unittest.TestCase):
         with TestClient(main.app) as client:
             self.assertEqual(main.app.state.public_knowledge['status'], 'installed')
             with self.store.connect() as db:
-                self.assertEqual(db.execute('SELECT count(*) FROM Policy').fetchone()[0], 37)
-                self.assertEqual(db.execute('SELECT count(*) FROM Clause').fetchone()[0], 1333)
+                self.assertEqual(db.execute('SELECT count(*) FROM Policy').fetchone()[0], 143)
+                self.assertEqual(db.execute('SELECT count(*) FROM Clause').fetchone()[0], 2199)
                 self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 0)
                 self.assertEqual(db.execute('SELECT count(*) FROM knowledge_point').fetchone()[0], 28)
                 self.assertEqual(db.execute("SELECT count(*) FROM TaxRule WHERE review_status='approved'").fetchone()[0], 0)
@@ -51,8 +51,8 @@ class PublicKnowledgeStartupTests(unittest.TestCase):
                 graph = response.json()
                 graphs.append(graph)
                 self.assertEqual(graph['public_source'], 'shared_policy_catalog')
-                self.assertEqual(sum(n['schema_type'] == 'Policy' for n in graph['nodes']), 37)
-                self.assertEqual(sum(n['schema_type'] == 'Clause' for n in graph['nodes']), 1333)
+                self.assertEqual(sum(n['schema_type'] == 'Policy' for n in graph['nodes']), 143)
+                self.assertEqual(sum(n['schema_type'] == 'Clause' for n in graph['nodes']), 2199)
                 kp = next(n for n in graph['nodes'] if n['record_id'] == PREFIX + 'R-001')
                 self.assertTrue(any(e['source'] == kp['id'] and e['target'] == 'R-001' for e in graph['edges']))
                 sources = [e['source'] for e in graph['edges'] if e['target'] == 'R-001' and e.get('relation_type') == 'PROVIDES_CONTEXT']

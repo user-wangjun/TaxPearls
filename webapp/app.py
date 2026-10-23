@@ -960,6 +960,8 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
             limits = ai_probes.context_capability(info)
             capacity = limits.get('context_window', 32768)
             output = min(settings.max_tokens, limits.get('max_output_tokens', settings.max_tokens))
+            if rag:
+                settings, output = public_rag.generation_plan(settings, limits)
             budget = min(48000, capacity * 3 // 5, capacity - output - 4096 - max(4096, capacity // 20))
             if budget < 1024:
                 raise HTTPException(413, '模型可用上下文不足，请调整模型或输出额度。')
@@ -1095,6 +1097,10 @@ class PolicySourceReviewBody(BaseModel):
     effective_from: date
     effective_to: date | None = None
     clause_ids: list[str] = Field(min_length=1, max_length=200)
+    end_kind: Literal['unknown', 'fixed', 'unfixed'] = 'unknown'
+    coverage_start: date | None = None
+    coverage_end: date | None = None
+    evidence: dict[str, str] = Field(default_factory=dict, max_length=10)
 
 
 @app.get("/api/knowledge/schema")
@@ -1151,7 +1157,10 @@ def knowledge_verify_source(policy_id: str, body: PolicySourceReviewBody,
             result = policy_graph.verify_source(db, policy_id, issuer=body.issuer, validity_status=body.validity_status,
                                                 effective_from=body.effective_from.isoformat(),
                                                 effective_to=body.effective_to.isoformat() if body.effective_to else None,
-                                                clause_ids=body.clause_ids)
+                                                clause_ids=body.clause_ids, reviewer=user['id'], end_kind=body.end_kind,
+                                                coverage_start=body.coverage_start.isoformat() if body.coverage_start else None,
+                                                coverage_end=body.coverage_end.isoformat() if body.coverage_end else None,
+                                                evidence=body.evidence)
             store._log(db, user, "verify_policy_source", "knowledge", policy_id, json.dumps(result, ensure_ascii=False))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None

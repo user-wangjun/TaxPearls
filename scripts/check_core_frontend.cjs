@@ -103,11 +103,25 @@ function all(root){return [root,...root.children.flatMap(all)];}
   $("coreDateRange").onclick();$("coreCalendarClear").onclick();
   assert.equal($("coreStart").value,"");assert.equal($("coreEnd").value,"");
   for(const [id,value] of [["coreCompanyName","企业"],["coreTaxNo","91310000123456789A"],["coreStart","2026-01-01"],["coreEnd","2026-01-31"]])$(id).value=value;
+  $("coreRegion").value="CN-44";$("coreRegion").listeners.change();
   await $("coreCreateTask").onclick();
+  assert.equal($("coreRegion").value,"CN-44","creating a draft keeps the region explicitly selected for it");
   assert.equal($("coreRangeMonth").value,"2026-01");
   assert.match($("coreDateRangeText").textContent,/2026-01-01.*2026-01-31/);
   const find=text=>all($("coreTaskResult")).find(n=>n.textContent===text);
   const field=label=>all($("coreTaskResult")).find(n=>n["aria-label"]===label);
+  const beforeVATEditor=structuredClone(sample.processing);
+  sample.processing.records=[{id:"vat-declared-row",material_type:"vat_declaration",form_name:"合成申报主表",item_key:"1",item_label:"应税销售额",declared_value:"100.0123",source_position:"主表!C6",column_scope:"本期数",field_sources:{declared_value:{source_label:"本期数"}}}];
+  await controller.openTask("task");
+  const vatMapping=field("申报销售额原表记录");assert.ok(vatMapping,"the current upload page exposes explicit VAT source mapping");
+  assert.equal(vatMapping.value,"","a lone declaration row is not silently adopted");
+  vatMapping.value="vat-declared-row";vatMapping.listeners.change();
+  field("申报表版本（已核实）").value="DEMO-2026-A";field("纳税人类型（已核实）").value="合成一般纳税人";
+  field("口径核对依据").value="合成同期不含税口径，调整事项已核对。";field("两侧统计口径已核对可比").checked=true;
+  await find("保存核对并重新整理资料").onclick();
+  const vatSaved=JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).vat_review;
+  assert.equal(vatSaved.mapping_record_id,"vat-declared-row");assert.equal(vatSaved.comparable,true);assert.equal(vatSaved.form_revision,"DEMO-2026-A");
+  sample.processing=beforeVATEditor;await controller.openTask("task");
   const beforeDedup=structuredClone(sample.processing),beforeDedupRevision=sample.revision;
   sample.processing.records=[{id:"dedup-row",material_type:"invoice_detail",source_file_id:"review-pdf",amount_excluding_tax:"120",tax_amount:"13",unit:"元"}];
   sample.processing.deduplication={counts:{total:1,new:0,historical_duplicate:0,task_duplicate:0,conflict:1,unverified:0},records:[{

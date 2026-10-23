@@ -1,13 +1,10 @@
 """Lossless, category-aware evidence batches with explicit cross-batch dependencies."""
 from copy import deepcopy
-import hashlib
 import json
+from .passages import fragment
 
 MAX_BUDGET = 16 * 1024 * 1024
-POLICY_FIELDS = {'clause_id', 'policy_id', 'clause_version', 'policy_version', 'document_no', 'title', 'issuer',
-                 'text', 'source_url', 'source_location', 'file_sha256', 'region_code', 'effective_from', 'effective_to',
-                 'applicability', 'reasons', 'segments', 'required', 'review_status', 'partial_clause',
-                 'source_char_start', 'source_char_end', 'original_text_sha256', 'fragment_index', 'fragment_count'}
+POLICY_FIELDS = {'issuer', 'clause_version', 'original_char_count', 'policy_version', 'applicability', 'evidence_spans', 'effective_from', 'text', 'fragment_count', 'source_char_start', 'source_char_end', 'partial_clause', 'file_sha256', 'source_url', 'source_metadata', 'date_evidence', 'policy_id', 'scope', 'document_no', 'original_text_sha256', 'required', 'reasons', 'omitted_char_count', 'segments', 'region_code', 'source_location', 'context_complete', 'clause_id', 'title', 'review_status', 'selection_kind', 'tax_types', 'effective_to', 'coverage_review', 'fragment_index'}
 LABELS = {'complete_check': '本项完整核对', 'facts': '企业事实与计算', 'rule_context': '规则条件与例外',
           'policy_basis': '政策依据', 'policy_exception': '例外与排除依据', 'policy_change': '政策变更依据',
           'policy_lead': '待核实政策线索', 'policy_relations': '政策关联', 'review_gaps': '待核实事项'}
@@ -29,6 +26,11 @@ def split(bundle, token_budget):
             base[key] = {k: deepcopy(v) for k, v in bundle[key].items() if k != 'mapping_review'}
     policies = {kind: [{k: deepcopy(v) for k, v in item.items() if k in POLICY_FIELDS} for item in bundle[kind]]
                 for kind in ('policy_evidence', 'policy_leads')}
+    for records in policies.values():
+        for record in records:
+            if 'coverage_review' in record:
+                record['coverage_review'] = {k: v for k, v in record['coverage_review'].items() if k in
+                    {'review_id', 'end_kind', 'coverage_start', 'coverage_end', 'evidence_json'}}
     full = {**base, **policies, 'gaps': deepcopy(bundle['gaps'])}
     group_names = {p.get('policy_id'): ' · '.join(str(p[k]) for k in ('title', 'document_no') if p.get(k))
                    for rows in policies.values() for p in rows if p.get('title')}
@@ -125,32 +127,25 @@ def split(bundle, token_budget):
             if not isinstance(text, str) or not text:
                 return finish([(full, 'complete_check', '')])
             start, fragments = 0, []
-            original_hash = item.get('original_text_sha256') or hashlib.sha256(text.encode()).hexdigest()
-            offset = item.get('source_char_start', 0)
             while start < len(text):
                 low, high, best = 1, len(text) - start, 0
                 while low <= high:
                     size = (low + high) // 2
-                    fragment = {**item, 'text': text[start:start + size], 'partial_clause': True,
-                                'source_char_start': offset + start, 'source_char_end': offset + start + size,
-                                'original_text_sha256': original_hash, 'fragment_index': 999999, 'fragment_count': 999999}
+                    piece = {**fragment(item, start, start + size), 'fragment_index': 999999, 'fragment_count': 999999}
                     proposal = deepcopy(shared)
-                    proposal[field].append(fragment)
+                    proposal[field].append(piece)
                     if fits(proposal, category, group):
                         best, low = size, size + 1
                     else:
                         high = size - 1
                 if not best:
                     return finish([(full, 'complete_check', '')])
-                fragment = {**item, 'text': text[start:start + best], 'partial_clause': True,
-                            'source_char_start': offset + start, 'source_char_end': offset + start + best,
-                            'original_text_sha256': original_hash}
-                fragments.append(fragment)
+                fragments.append(fragment(item, start, start + best))
                 start += best
-            for index, fragment in enumerate(fragments, 1):
-                fragment.update(fragment_index=index, fragment_count=len(fragments))
+            for index, piece in enumerate(fragments, 1):
+                piece.update(fragment_index=index, fragment_count=len(fragments))
                 proposal = deepcopy(shared)
-                proposal[field].append(fragment)
+                proposal[field].append(piece)
                 records.append((proposal, category, group))
         if has_items:
             records.append((current, category, group))

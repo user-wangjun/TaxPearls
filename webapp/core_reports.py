@@ -464,9 +464,9 @@ def archive(store, actor, task_id, expected_revision, *, complete_report_version
             if slot.get("stale") or bundle.content_hash(fresh) != bundle.content_hash(old):
                 raise AccessDenied("资料或政策依据已变化，请重新核查后生成报告。", 409)
             if (slot.get("ai") or {}).get("validated"):
-                from webapp.knowledge_evidence import validate_answer
+                from webapp.knowledge_evidence import validate_saved_analysis
                 try:
-                    validate_answer({"assessments": slot["ai"]["assessments"]}, old)
+                    validate_saved_analysis(slot["ai"], old)
                 except (ValueError, KeyError, TypeError):
                     slot["ai"] = {"status": "needs_review", "validated": False, "assessments": [],
                                   "reason": "历史 AI 说明未通过当前校验，请重新分析。"}
