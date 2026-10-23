@@ -5,8 +5,9 @@ import json
 
 MAX_BUDGET = 16 * 1024 * 1024
 POLICY_FIELDS = {'clause_id', 'policy_id', 'clause_version', 'policy_version', 'document_no', 'title', 'issuer',
-                 'text', 'source_url', 'file_sha256', 'region_code', 'effective_from', 'effective_to',
-                 'applicability', 'reasons', 'segments', 'required', 'review_status'}
+                 'text', 'source_url', 'source_location', 'file_sha256', 'region_code', 'effective_from', 'effective_to',
+                 'applicability', 'reasons', 'segments', 'required', 'review_status', 'partial_clause',
+                 'source_char_start', 'source_char_end', 'original_text_sha256', 'fragment_index', 'fragment_count'}
 LABELS = {'complete_check': '本项完整核对', 'facts': '企业事实与计算', 'rule_context': '规则条件与例外',
           'policy_basis': '政策依据', 'policy_exception': '例外与排除依据', 'policy_change': '政策变更依据',
           'policy_lead': '待核实政策线索', 'policy_relations': '政策关联', 'review_gaps': '待核实事项'}
@@ -33,13 +34,16 @@ def split(bundle, token_budget):
                    for rows in policies.values() for p in rows if p.get('title')}
 
     def stamp(data, category, group):
-        return {**data, 'batch_category': category, 'batch_category_name': LABELS[category], 'batch_group': group,
+        return {**data, 'bundle_status': bundle.get('bundle_status', 'needs_review'),
+                'analysis_mode': 'review_only' if bundle.get('bundle_status') != 'ready' else 'evidence_assessment',
+                'batch_category': category, 'batch_category_name': LABELS[category], 'batch_group': group,
                 'batch_group_name': group_names.get(group, group),
                 'part_number': 999999, 'part_count': 999999, 'requires_joint_review': True,
                 'bundle_id': bundle['bundle_id'], 'token_upper_bound': MAX_BUDGET, 'over_budget': False}
 
     def fits(data, category, group):
-        return encoded_size(stamp(data, category, group)) <= token_budget
+        # Analysis adds response constraints after outbound minimization.
+        return encoded_size(stamp(data, category, group)) + 384 <= token_budget
 
     def finish(records):
         parts = []
@@ -121,13 +125,14 @@ def split(bundle, token_budget):
             if not isinstance(text, str) or not text:
                 return finish([(full, 'complete_check', '')])
             start, fragments = 0, []
-            original_hash = hashlib.sha256(text.encode()).hexdigest()
+            original_hash = item.get('original_text_sha256') or hashlib.sha256(text.encode()).hexdigest()
+            offset = item.get('source_char_start', 0)
             while start < len(text):
                 low, high, best = 1, len(text) - start, 0
                 while low <= high:
                     size = (low + high) // 2
                     fragment = {**item, 'text': text[start:start + size], 'partial_clause': True,
-                                'source_char_start': start, 'source_char_end': start + size,
+                                'source_char_start': offset + start, 'source_char_end': offset + start + size,
                                 'original_text_sha256': original_hash, 'fragment_index': 999999, 'fragment_count': 999999}
                     proposal = deepcopy(shared)
                     proposal[field].append(fragment)
@@ -138,7 +143,7 @@ def split(bundle, token_budget):
                 if not best:
                     return finish([(full, 'complete_check', '')])
                 fragment = {**item, 'text': text[start:start + best], 'partial_clause': True,
-                            'source_char_start': start, 'source_char_end': start + best,
+                            'source_char_start': offset + start, 'source_char_end': offset + start + best,
                             'original_text_sha256': original_hash}
                 fragments.append(fragment)
                 start += best

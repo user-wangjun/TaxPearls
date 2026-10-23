@@ -45,6 +45,169 @@ class RetrievalTests(unittest.TestCase):
         self.assertFalse(metadata["legal_review"])
         self.assertTrue(all(r[0].startswith("local-fixture://") for r in self.db.execute("SELECT source_url FROM Policy")))
 
+    def context_package(self):
+        package = self.package()
+        package['policy_evidence'] = [deepcopy(package['policy_evidence'][0])]
+        package['policy_evidence'][0]['text'] = '完整合成条款，不得遗漏。' * 900
+        package['policy_leads'] = []
+        package['gaps'] = []
+        package['risk_assessment']['missing_evidence'] = []
+        package['batching'] = bundle.split_bundle(package, 128000)
+        return package
+
+    @staticmethod
+    def context_answer(_system, part, _failure):
+        return {'assessments': [{'type': part['response_constraints']['required_type'],
+            'text': '本批证据须联合核查。', 'rule_id': part['check']['rule_id'],
+            'clause_ids': [p['clause_id'] for p in part['policy_evidence']],
+            'source_ids': [], 'amounts': [], 'dates': [], 'required_materials': []}]}, 'synthetic-provider'
+
+    def test_final_outbound_does_not_restore_full_missing_evidence_into_each_batch(self):
+        from src.kg_retrieval import batching, outbound
+        package = self.package()
+        package['gaps'] = [{'code': 'pending', 'message': '待核实事项' + str(i)} for i in range(300)]
+        package['risk_assessment']['missing_evidence'] = [g['message'] for g in package['gaps']]
+        package['batching'] = bundle.split_bundle(package, 6000)
+        self.assertFalse(package['batching']['unsplittable'])
+        delivery = outbound.prepare(package, authorized=True, destination='https://provider.example')
+        self.assertGreater(len(delivery['parts']), 1)
+        self.assertTrue(all(batching.encoded_size(p) <= 6000 for p in delivery['parts']))
+        gaps = [g for p in delivery['parts'] for g in p['gaps']]
+        self.assertEqual(gaps, package['gaps'])
+        self.assertTrue(all('missing_evidence' not in p['risk_assessment'] for p in delivery['parts']))
+        self.assertEqual(len(package['risk_assessment']['missing_evidence']), 300)
+
+    def test_explicit_capacity_rejection_refines_losslessly_and_resumes_completed_children(self):
+        from src.kg_retrieval import batching
+        from webapp.knowledge import ContextLengthExceeded
+        package = self.context_package()
+        seen, successful = [], []
+        failures = [True]
+
+        def provider(system, part, failure):
+            seen.append(deepcopy(part))
+            if batching.encoded_size(part) > 14000:
+                raise ContextLengthExceeded()
+            if len(successful) == 1 and failures[0]:
+                failures[0] = False
+                raise service.HTTPException(502, '模拟网络中断')
+            successful.append(deepcopy(part))
+            return self.context_answer(system, part, failure)
+
+        gate = {'passed': True, 'model_fingerprints': [None]}
+        with patch.object(service, 'acceptance_gate', return_value=gate), \
+                patch('webapp.knowledge._chat_json', side_effect=provider):
+            partial = service.analyze(package)
+        self.assertFalse(partial['validated'])
+        self.assertEqual(len(partial['batch_results']), 1)
+        self.assertTrue(partial['context_splits'])
+        rejected = {json.dumps(p, sort_keys=True) for p in seen if batching.encoded_size(p) > 14000}
+        seen.clear()
+        with patch.object(service, 'acceptance_gate', return_value=gate), \
+                patch('webapp.knowledge._chat_json', side_effect=provider):
+            result = service.analyze(package, prior=partial)
+        self.assertTrue(result['validated'])
+        self.assertEqual(result['reused_batches'], 1)
+        self.assertFalse(rejected & {json.dumps(p, sort_keys=True) for p in seen})
+        pieces = [p for payload in successful for p in payload['policy_evidence']]
+        pieces.sort(key=lambda p: p['source_char_start'])
+        self.assertEqual(''.join(p['text'] for p in pieces), package['policy_evidence'][0]['text'])
+        self.assertEqual(pieces[0]['source_char_start'], 0)
+        self.assertTrue(all(a['source_char_end'] == b['source_char_start'] for a, b in zip(pieces, pieces[1:])))
+        expected_hash = hashlib.sha256(package['policy_evidence'][0]['text'].encode()).hexdigest()
+        self.assertTrue(all(p['original_text_sha256'] == expected_hash for p in pieces))
+        self.assertEqual(result['status'], 'needs_review')
+        self.assertTrue(all(p['response_constraints']['required_type'] == 'insufficient_evidence' for p in successful))
+
+    def test_preflight_uses_full_wire_payload_and_recovers_before_sending(self):
+        from src.ai_transport import chat_payload
+        from src.settings import AISettings
+        from webapp.knowledge import SELECTED_SETTINGS
+        package = self.context_package()
+        settings = AISettings(model='synthetic-model', enabled=True, api_key='synthetic-key')
+        package['batching']['model_context'] = {'model': settings.effective_model,
+            'planning_context_window': 18000, 'output_reserve': 1024, 'safety_reserve': 1000}
+        observed = []
+
+        def provider(system, payload, failure):
+            wire = chat_payload(SELECTED_SETTINGS.get(), [
+                {'role': 'system', 'content': system},
+                {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
+            ], temperature=0.2)
+            self.assertLessEqual(len(wire) + 1024 + 1000, 18000)
+            observed.append(payload)
+            return self.context_answer(system, payload, failure)
+
+        with patch.object(service, 'acceptance_gate', return_value={'passed': True, 'model_fingerprints': [None]}), \
+                patch('webapp.ai_keys.apply', return_value=settings), \
+                patch('webapp.knowledge._chat_json', side_effect=provider):
+            result = service.analyze(package)
+        self.assertTrue(result['validated'])
+        self.assertGreater(len(observed), 1)
+        self.assertTrue(result['context_splits'])
+
+    def test_capacity_recovery_is_bounded_and_reauthorizes_each_child(self):
+        from webapp.knowledge import ContextLengthExceeded
+        package = self.context_package()
+        gate = {'passed': True, 'model_fingerprints': [None]}
+        with patch.object(service, 'acceptance_gate', return_value=gate), \
+                patch('webapp.knowledge._chat_json', side_effect=ContextLengthExceeded()) as provider:
+            result = service.analyze(package)
+        self.assertFalse(result['validated'])
+        self.assertLessEqual(provider.call_count, 5)
+        self.assertTrue(any(b['status'] == 'failed' for b in result['batches']))
+        self.assertEqual(result['assessments'], [])
+        authorizations = []
+
+        def authorize():
+            authorizations.append(True)
+            if len(authorizations) > 1:
+                raise service.HTTPException(409, '资料已变化')
+
+        token = service._AUTHORIZE_BATCH.set(authorize)
+        try:
+            with patch.object(service, 'acceptance_gate', return_value=gate), \
+                    patch('webapp.knowledge._chat_json', side_effect=ContextLengthExceeded()) as provider:
+                with self.assertRaises(service.HTTPException) as caught:
+                    service.analyze(package)
+                self.assertEqual(caught.exception.status_code, 409)
+                self.assertEqual(provider.call_count, 1)
+        finally:
+            service._AUTHORIZE_BATCH.reset(token)
+
+    def test_execution_deadline_stops_before_another_provider_request(self):
+        package = self.context_package()
+        with patch.object(service, 'acceptance_gate', return_value={'passed': True, 'model_fingerprints': [None]}), \
+                patch.object(service, 'monotonic', side_effect=[0, 10000]), \
+                patch('webapp.knowledge._chat_json') as provider:
+            result = service.analyze(package)
+        self.assertFalse(result['validated'])
+        self.assertIn('执行时限', result['reason'])
+        provider.assert_not_called()
+
+    def test_saved_split_plans_do_not_exhaust_new_recovery_allowance(self):
+        from src.kg_retrieval import batching
+        from webapp.knowledge import ContextLengthExceeded
+        package = self.context_package()
+        original = package['batching']['parts'][0]
+        package['batching'].update(part_count=9, parts=[
+            {**deepcopy(original), 'part_number': index, 'part_count': 9} for index in range(1, 10)])
+
+        def provider(system, part, failure):
+            if batching.encoded_size(part) > 14000:
+                raise ContextLengthExceeded()
+            return self.context_answer(system, part, failure)
+
+        prior = None
+        with patch.object(service, 'acceptance_gate', return_value={'passed': True, 'model_fingerprints': [None]}), \
+                patch('webapp.knowledge._chat_json', side_effect=provider):
+            for _ in range(9):
+                prior = service.analyze(package, prior=prior)
+                if prior['validated']:
+                    break
+        self.assertTrue(prior['validated'])
+        self.assertGreater(prior['reused_batches'], 0)
+
     def test_acceptance_fingerprint_ignores_checkout_newlines_but_detects_source_changes(self):
         original = Path.read_bytes
         expected = implementation_fingerprint()
@@ -494,6 +657,40 @@ class RetrievalHTTPTests(unittest.TestCase):
             self.assertEqual(ai.call_count,2)
         saved = self.client.get("/api/enterprise/input-tasks/" + task["id"]).json()
         self.assertTrue(saved["tax_checks"]["R01"]["ai"]["validated"])
+
+    def test_http_capacity_recovery_is_saved_and_complete_result_is_reused(self):
+        from src.kg_retrieval import batching
+        from webapp.knowledge import ContextLengthExceeded
+        task = self.task()
+        body = {'rule_id': 'R01', 'task_id': task['id'], 'expected_revision': task['revision'], 'region_code': 'CN-33'}
+        retrieved = self.client.post('/api/knowledge/retrieve', json=body)
+        self.assertEqual(retrieved.status_code, 200, retrieved.text)
+        package = retrieved.json()['bundle']
+        package['policy_evidence'][0]['text'] = '完整合成条款，不得遗漏。' * 900
+        package['batching'] = bundle.split_bundle(package, 128000)
+        package['content_hash'] = bundle.content_hash(package)
+        model_fingerprint = package['retrieval_trace']['routes']['semantic'].get('model_fingerprint')
+
+        def provider(system, part, failure):
+            if batching.encoded_size(part) > 14000:
+                raise ContextLengthExceeded()
+            return RetrievalTests.context_answer(system, part, failure)
+
+        with patch.object(metrics, 'build_task_bundle', side_effect=lambda *args, **kwargs: deepcopy(package)), \
+                patch.object(service, 'acceptance_gate', return_value={'passed': True, 'model_fingerprints': [model_fingerprint]}), \
+                patch('webapp.knowledge._chat_json', side_effect=provider) as ai:
+            body.update(use_ai=True, expected_revision=retrieved.json()['revision'])
+            first = self.client.post('/api/knowledge/retrieve', json=body)
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertTrue(first.json()['ai']['validated'])
+            self.assertTrue(first.json()['ai']['context_splits'])
+            calls = ai.call_count
+            second = self.client.post('/api/knowledge/retrieve', json={**body, 'expected_revision': first.json()['revision']})
+            self.assertEqual(second.status_code, 200, second.text)
+            self.assertTrue(second.json()['cached'])
+            self.assertEqual(ai.call_count, calls)
+        saved = self.client.get('/api/enterprise/input-tasks/' + task['id']).json()
+        self.assertEqual(saved['tax_checks']['R01']['ai']['context_splits'], first.json()['ai']['context_splits'])
 
     def test_invalid_model_output_is_downgraded_and_not_saved_as_finding(self):
         task = self.task()

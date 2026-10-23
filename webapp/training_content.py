@@ -181,6 +181,7 @@ def teaching_rules(db, version, fallback):
 
 def update_status(db, version, rules):
     from webapp.knowledge_sync import rule_references
+    from src.policy_paths import evidence_identity
     covered = set(json.loads(version['rule_ids_json'] or '[]'))
     linked = set(linked_rule_ids(db, version['certificate_id']))
     saved = {r.id: r for r in teaching_rules(db, version, [])}
@@ -191,7 +192,7 @@ def update_status(db, version, rules):
     frozen_knowledge = json.loads(version['knowledge_snapshot_json'] or '[]')
     frozen_knowledge = [r for r in frozen_knowledge if r['rule_code'] in covered & linked]
     evidence_changed = (not version['knowledge_snapshot_json'] or
-                        frozen_knowledge != knowledge)
+                        evidence_identity(frozen_knowledge) != evidence_identity(knowledge))
     pending = bool(changed or covered != linked or evidence_changed)
     return {'pending': pending, 'changed_rule_ids': changed,
             'added_rule_ids': sorted(linked - covered), 'removed_rule_ids': sorted(covered - linked),

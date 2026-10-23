@@ -300,8 +300,13 @@ def _append(db, batch, actor, kind, payload, *, job_id=None, lifecycle=None):
     _require_active_core(db, batch, reopening=lifecycle == 'reopen')
     if lifecycle in {'complete', 'reopen'}:
         # Lifecycle revisions preserve the exact checked evidence and frozen report.
-        return _save_revision(db, batch, actor, kind, payload, job_id=job_id, event_action="core_" + lifecycle)
+        revision = _save_revision(db, batch, actor, kind, payload, job_id=job_id, event_action="core_" + lifecycle)
+        from webapp import core_record_index
+        core_record_index.index_payload(db, batch, payload, revision)
+        return revision
     if payload.get('core_task'):
+        from webapp import core_record_index
+        core_record_index.compare(db, batch, actor, payload, revision=batch['revision'] + 1)
         from src.rule_bindings import restore
         restore(payload)
     if payload.get('core_task') and payload.get('tax_checks'):
@@ -361,6 +366,9 @@ def read(store, actor, batch_id):
                                       _context(batch['org_id'], batch_id, 'revision:' + row['kind'], row['revision'])))
             result['versions'].append({'revision': row['revision'], 'kind': row['kind'], 'payload': payload,
                                        'created_by': row['created_by'], 'created_at': row['created_at']})
+        if result['versions'] and result['versions'][-1]['payload'].get('core_task'):
+            from webapp import core_record_index
+            core_record_index.observe(db, batch, actor, result['versions'][-1]['payload'])
         for row in db.execute('SELECT * FROM material_events WHERE batch_id=? ORDER BY seq', (batch_id,)):
             detail = json.loads(_open(row['detail_cipher'],
                                      _context(batch['org_id'], batch_id, 'event:' + row['action'], row['id'])))
@@ -422,6 +430,7 @@ def delete_original(store, actor, batch_id, file_id, expected_revision):
             return False
         db.execute('UPDATE material_originals SET bytes_cipher=NULL,deleted_at=?,deleted_by=? WHERE id=?',
                    (members.now(), actor['id'], file_id))
+        db.execute('UPDATE core_business_sources SET active=0 WHERE batch_id=? AND file_id=?', (batch_id, file_id))
         revision = batch['revision'] + 1
         payload = _seal(_json({'deleted_file_id': file_id, 'requires_confirmation': True}),
                         _context(batch['org_id'], batch_id, 'revision:material_change', revision))

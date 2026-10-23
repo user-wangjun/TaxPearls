@@ -21,8 +21,8 @@ def prepare(package, *, authorized, destination):
                 part[key] = deepcopy(original[key])
         # Keep source/form selection and reviewer identity locally. The model
         # receives only the independently calculated fact and trace.
-        part["fact_assessment"] = {k: deepcopy(v) for k, v in package.get("fact_assessment", {}).items() if k != "mapping_review"}
-        part["risk_assessment"] = deepcopy(package.get("risk_assessment", {}))
+        part["fact_assessment"] = {k: deepcopy(v) for k, v in original.get("fact_assessment", package.get("fact_assessment", {})).items() if k != "mapping_review"}
+        part["risk_assessment"] = deepcopy(original.get("risk_assessment", package.get("risk_assessment", {})))
         part["bundle_status"] = package["bundle_status"]
         part["analysis_mode"] = "review_only" if package["bundle_status"] != "ready" else "evidence_assessment"
         serialized = canonical(part)

@@ -921,7 +921,7 @@ html[data-theme=dark] body.workspace-ready {
   --glass-fallback: linear-gradient(145deg, #31353c, #252a30 48%, #2c3036);
   background: radial-gradient(ellipse at 70% 0%, #ffffff08, transparent 55%), var(--bg);
 }
-html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav) {
+html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav, .quota-confirm-dialog) {
   background: var(--glass-face);
   border-color: transparent;
   box-shadow: var(--glass-shadow);
@@ -931,7 +931,7 @@ html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .g
 html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review) { position: relative; }
 html[data-theme=light] #appMain :is(.sheet, .card, .material-review) :is(.sheet, .card, .material-review) { --glass-face: linear-gradient(145deg, #ffffff8c 0%, #c8d5e066 35%, #ffffff99 58%, #b8c8d64d 100%) padding-box; }
 html[data-theme=dark] #appMain :is(.sheet, .card, .material-review) :is(.sheet, .card, .material-review) { --glass-face: linear-gradient(145deg, #3a404866 0%, #171b226b 40%, #434b565e 65%, #12171d80 100%) padding-box; }
-html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav)::before {
+html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav, .quota-confirm-dialog)::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -947,10 +947,10 @@ html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .g
 html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review):focus-within { z-index: 30; }
 html[data-theme] #appMain :is(.dropzone:hover, .dropzone.drag) { background: var(--glass-face); }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav) { background: var(--glass-fallback); }
+  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav, .quota-confirm-dialog) { background: var(--glass-fallback); }
 }
 @supports not ((mask-composite: exclude) or (-webkit-mask-composite: xor)) {
-  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav)::before { display: none; }
+  html[data-theme] #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector, .material-review, .nav, .quota-confirm-dialog)::before { display: none; }
 }
 
 /* Small hover/focus lift and press feedback without moving the surrounding layout. */
@@ -1244,6 +1244,11 @@ html[data-theme=dark] .probe-delete { color:#ff9b9b!important; }
 #coreInputs .core-delete-body h2 { margin:0 0 18px; font-size:22px; }
 #coreInputs .core-delete-body p { margin:0 0 12px; font-size:14px; line-height:1.8; overflow-wrap:anywhere; }
 .core-delete-actions { display:flex; justify-content:flex-end; flex-wrap:wrap; gap:12px; padding:18px 26px 24px; }
+#appMain #userAdmin .quota-editor input:disabled { opacity:1; color:#6b7280; background:#e9edf1; border-color:var(--line); box-shadow:none; cursor:not-allowed; }
+html[data-theme=dark] #appMain #userAdmin .quota-editor input:disabled { color:#969ba3; background:#272a2e; }
+.quota-confirm-dialog h2 { margin:0 0 18px; font-size:22px; }
+.quota-confirm-dialog p { margin:0 0 12px; font-size:14px; line-height:1.8; overflow-wrap:anywhere; }
+.quota-confirm-dialog #quotaConfirmChanges { margin:16px 0; font-variant-numeric:tabular-nums; }
 #appMain #coreDeleteDialog .core-delete-confirm { background:#b73535; color:#fff; border:1px solid #b73535; }
 #appMain #coreDeleteDialog .core-delete-confirm:hover { background:#9b2929; border-color:#9b2929; }
 #aiKeyAddForm { display:flex; flex-direction:column; max-height:calc(100dvh - 42px); }
@@ -1559,3 +1564,52 @@ html[data-theme] #appMain #inviteAdmin #inviteOrgTypeOptions button:focus-visibl
 @media(max-width:1100px){#appMain #inviteAdmin .invite-issue-form,#appMain #inviteAdmin .invite-issue-form:has(#inviteStudentSeatsField:not([hidden])){grid-template-columns:1fr 1fr}}
 @media(max-width:600px){#appMain #inviteAdmin .invite-issue-form,#appMain #inviteAdmin .invite-issue-form:has(#inviteStudentSeatsField:not([hidden])){grid-template-columns:minmax(0,1fr)}}
 @media(prefers-reduced-motion:reduce){#appMain #inviteOrgTypeOptions::before{transition:none}}
+
+#graphStop{width:100%;margin-top:8px}.ai-reference-scope,.ai-reason-summary{margin:10px 0;border:1px solid #e0e7f0;border-radius:9px;padding:10px;font-size:12px;max-height:200px;overflow:auto}.ai-reference-scope summary,.ai-reason-summary summary{cursor:pointer;color:#526884}.ai-answer[data-incomplete="true"]>.muted{color:#975b20}#graphMessages{overflow-wrap:anywhere}
+
+/* Give node conversations a full-height workspace with a pinned composer. */
+#knowledgePanel .graph-workspace{grid-template-columns:minmax(0,1.05fr) minmax(420px,1fr);align-items:stretch}
+#knowledgePanel .graph-inspector{display:flex;flex-direction:column;min-height:0;height:auto;max-height:none}
+#knowledgePanel .inspector-tabs{flex:none;padding:12px 16px;gap:8px}
+#knowledgePanel .inspector-tabs button{font-size:14px;padding:10px 12px}
+#knowledgePanel #graphAssistant:not([hidden]){display:flex;flex:1;min-height:0;max-height:none;overflow:hidden;flex-direction:column;padding:0}
+#knowledgePanel #knowledgeDetail{flex:1;min-height:0;max-height:none;overflow:auto;padding:20px}
+#knowledgePanel #graphAIContext{flex:none;margin:0;padding:12px 20px;border:0;border-bottom:1px solid var(--line);border-radius:0;background:transparent;font-size:13px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-2)}
+#knowledgePanel #graphAIStatus:not([hidden]){flex:none;margin:12px 20px 0;padding:8px 10px}
+#knowledgePanel .ai-prompts{flex:none;padding:12px 20px 0;gap:8px}
+#knowledgePanel .ai-prompts button{font-size:12px;padding:7px 10px}
+#knowledgePanel #graphMessages{flex:1;min-height:240px;overflow:auto;padding:8px 20px 20px;scrollbar-width:thin}
+#knowledgePanel .ai-answer{margin-top:12px;padding-top:14px}
+#knowledgePanel .ai-answer:first-child{border-top:0;margin-top:0}
+#knowledgePanel .ai-question{font-size:14px;line-height:1.7}
+#knowledgePanel .ai-text{font-size:14px;line-height:1.9}
+#knowledgePanel #graphQuestionForm{flex:none;margin:0;padding:14px 20px 16px;border-top:1px solid var(--line)}
+#knowledgePanel #graphQuestion{display:block;box-sizing:border-box;min-height:78px;height:78px;max-height:150px;width:100%;margin:0;resize:vertical;font-size:14px;padding:12px}
+#knowledgePanel .graph-compose-actions{display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-top:10px}
+#knowledgePanel #graphSend,#knowledgePanel #graphStop{width:auto;min-width:90px;margin:0;padding:9px 18px;font-size:13px}
+#knowledgePanel .ai-reference-scope,#knowledgePanel .ai-reason-summary{border-color:var(--line)}
+#knowledgePanel .ai-reference-scope summary,#knowledgePanel .ai-reason-summary summary{color:var(--ink-2)}
+
+@media(max-width:1150px) and (min-width:951px){#knowledgePanel .graph-workspace{grid-template-columns:minmax(0,1fr) minmax(380px,1fr)}}
+@media(max-width:950px){#knowledgePanel .graph-workspace{grid-template-columns:1fr}#knowledgePanel .graph-inspector{height:640px;max-height:none}#knowledgePanel #graphMessages{min-height:180px}}
+@media(max-width:520px){#knowledgePanel .graph-inspector{height:620px}#knowledgePanel .inspector-tabs{padding:10px 12px}#knowledgePanel #graphAIContext{padding:12px 16px}#knowledgePanel .ai-prompts{padding:10px 16px 0}#knowledgePanel #graphMessages{padding:8px 16px 16px}#knowledgePanel #graphQuestionForm{padding:12px 16px 14px}#knowledgePanel #graphQuestion{font-size:16px}}
+
+@media(min-width:951px){
+  #knowledgePanel .graph-workspace{height:clamp(680px,78vh,860px);grid-template-rows:minmax(0,1fr)}
+  #knowledgePanel .graph-stage{display:flex;flex-direction:column;min-height:0}
+  #knowledgePanel .graph-stage-heading,#knowledgePanel .graph-toolbar,#knowledgePanel .graph-legend,#knowledgePanel .graph-hint{flex:none}
+  #knowledgePanel .graph-toolbar{align-self:flex-start}
+  #knowledgePanel #graphCanvas{flex:1;min-height:0;height:0!important}
+  #knowledgePanel .graph-inspector{height:100%;box-sizing:border-box;overflow:hidden}
+}
+
+/* Public RAG shares the enlarged node conversation surface. */
+#knowledgePanel .graph-question-modes{display:flex;gap:6px;padding:10px 16px;border-bottom:1px solid var(--line);flex:none}
+#knowledgePanel .graph-question-modes[hidden]{display:none}
+#knowledgePanel .graph-question-modes button{flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink-2);padding:8px;font-size:12px;cursor:pointer}
+#knowledgePanel .graph-question-modes button[aria-pressed=true]{background:var(--control-field-face,#eef4fd);color:var(--ink);font-weight:600}
+#knowledgePanel .ai-rag-source{margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:10px;font-size:12px;overflow-wrap:anywhere}
+#knowledgePanel .ai-rag-source summary{cursor:pointer;line-height:1.7;color:var(--ink-2)}
+#knowledgePanel .ai-rag-source a{color:var(--ink-2)}
+#knowledgePanel #graphMessages{min-height:120px}
+@media(max-width:520px){#knowledgePanel .graph-question-modes{padding:10px 12px}}

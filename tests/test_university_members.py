@@ -192,6 +192,75 @@ class UniversityMembershipTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422, response.text)
 
+    def test_capacity_audit_retains_actor_ip_versions_and_atomic_failure(self):
+        self.root_cookie()
+        client = TestClient(application.app, client=('2001:db8::21', 12345))
+        client.cookies.update(self.client.cookies)
+        path = f'/api/universities/{self.college}/capacity'
+        response = client.put(path, json={'teacher_quota': 6, 'student_quota': 20, 'revision': 1},
+                              headers={'X-Forwarded-For': '203.0.113.99'})
+        self.assertEqual(response.status_code, 200, response.text)
+        record = next(r for r in self.store.list_logs(self.root) if r['action'] == 'set_university_capacity')
+        detail = json.loads(record['detail'])
+        self.assertEqual((detail['before'], detail['after']),
+                         ({'teacher_quota': 4, 'student_quota': 10}, {'teacher_quota': 6, 'student_quota': 20}))
+        self.assertEqual((detail['source_ip'], detail['old_revision'], detail['new_revision']), ('2001:db8::21', 1, 2))
+        self.assertEqual((detail['actor']['id'], detail['organization_id'], detail['college']),
+                         (self.root['id'], self.owner['org_id'], self.college))
+        with self.store.connect() as db:
+            before = service.school_state(db, self.college)
+            count = db.execute('SELECT COUNT(*) FROM university_capacity_events').fetchone()[0]
+        logs = self.store.list_logs(self.root)
+        with patch.object(members, 'log', side_effect=RuntimeError('audit unavailable')):
+            with self.assertRaises(RuntimeError):
+                client.put(path, json={'teacher_quota': 7, 'student_quota': 30, 'revision': 2})
+        with self.store.connect() as db:
+            self.assertEqual(service.school_state(db, self.college), before)
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM university_capacity_events').fetchone()[0], count)
+        self.assertEqual(self.store.list_logs(self.root), logs)
+        response = client.put(path, json={'teacher_quota': 8, 'student_quota': 30, 'revision': 1})
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(self.store.list_logs(self.root), logs)
+
+    def test_member_overview_uses_school_capacity_after_save_and_activation_changes(self):
+        self.allocate(2)
+        student, _ = self.join(self.link())
+        self.root_cookie()
+        path = f"/api/members/{self.owner['org_id']}"
+        result = self.client.get(path).json()
+        self.assertEqual(result['org_type'], 'university')
+        school = result['university_quota']
+        self.assertEqual((school['teachers_used'], school['teacher_quota'],
+                          school['students_used'], school['student_quota'], school['allocated']), (1, 4, 1, 10, 2))
+        response = self.client.put(f"/api/universities/{self.college}/capacity", json={
+            'teacher_quota': 6, 'student_quota': 20, 'revision': school['revision']})
+        self.assertEqual(response.status_code, 200, response.text)
+        school = self.client.get(path).json()['university_quota']
+        self.assertEqual((school['teacher_quota'], school['student_quota'], school['unallocated']), (6, 20, 18))
+        for active, expected in ((False, 0), (True, 1)):
+            response = self.client.put(f"{path}/{student['id']}/active", json={
+                'active': active, 'expected_active': not active})
+            self.assertEqual(response.status_code, 200, response.text)
+            school = self.client.get(path).json()['university_quota']
+            self.assertEqual((school['students_used'], school['student_remaining']), (expected, 20 - expected))
+            self.assertEqual((school['teachers_used'], school['teacher_quota']), (1, 6))
+
+    def test_university_rejects_legacy_quota_edits_and_missing_link_has_no_fallback(self):
+        self.root_cookie()
+        path = f"/api/members/{self.owner['org_id']}"
+        before = self.client.get(path).json()
+        response = self.client.put(path + '/quota', json={'seats': 9, 'revision': before['quota']['revision']})
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(self.client.get(path).json(), before)
+        with self.store.connect() as db:
+            db.execute('DELETE FROM university_organizations WHERE org_id=?', (self.owner['org_id'],))
+        self.assertIsNone(self.client.get(path).json()['university_quota'])
+
+    def test_member_school_capacity_keeps_organization_access_boundary(self):
+        outsider = self.store.create_user('outsider', self.password, '其他机构', 'org_admin', org_id='other')
+        self.client.cookies.set('taxpearls_session', self.store.authenticate(outsider['username'], self.password)[1])
+        self.assertEqual(self.client.get(f"/api/members/{self.owner['org_id']}").status_code, 404)
+
     def test_link_copy_secret_is_encrypted_and_refresh_disable_are_revision_bound(self):
         link = self.link()
         code = link["path"].split("/")[-1]

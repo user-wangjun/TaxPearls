@@ -43,13 +43,35 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def chat_content(settings, messages, timeout, *, temperature=0, max_tokens=None):
+def _context_rejection(exc):
+    """Classify only explicit capacity rejections; never retain provider bodies."""
+    if exc.code not in {400, 413, 422}:
+        return False
+    try:
+        body = json.loads(exc.read(16384))
+        error = body.get('error', {}) if isinstance(body, dict) else {}
+        if not isinstance(error, dict):
+            return False
+        code = str(error.get('code', '')).lower()
+        message = str(error.get('message', '')).lower()
+        return code in {'context_length_exceeded', 'context_window_exceeded', 'max_context_length_exceeded'} or any(
+            marker in message for marker in ('maximum context length', 'context length exceeded',
+                                             'context window exceeded', '上下文长度超出', '上下文过长'))
+    except (ValueError, OSError):
+        return False
+
+
+def chat_payload(settings, messages, *, temperature=0, max_tokens=None):
     payload = {"model": settings.effective_model, "messages": messages, "stream": False,
                "max_tokens": max_tokens or settings.max_tokens, "temperature": temperature}
     if settings.json_mode:
         payload["response_format"] = {"type": "json_object"}
     payload.update(reasoning_parameters(settings))
-    data = json.dumps(payload, ensure_ascii=False).encode()
+    return json.dumps(payload, ensure_ascii=False).encode()
+
+
+def chat_content(settings, messages, timeout, *, temperature=0, max_tokens=None):
+    data = chat_payload(settings, messages, temperature=temperature, max_tokens=max_tokens)
     deadline = time.monotonic() + timeout
     opener = build_opener(NoRedirect())
     attempts, last_status = 0, None
@@ -118,8 +140,11 @@ def _content(opener, request, timeout):
         return content.strip()
     except HTTPError as exc:
         status = exc.code
-        exc.close()
-        raise TransportError("http", status) from None
+        try:
+            kind = 'context_length' if _context_rejection(exc) else 'http'
+        finally:
+            exc.close()
+        raise TransportError(kind, status) from None
     except TimeoutError:
         raise TransportError("timeout") from None
     except URLError:
