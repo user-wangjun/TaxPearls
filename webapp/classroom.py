@@ -73,6 +73,11 @@ def migrate(db):
     """)
     if 'revision' not in {r['name'] for r in db.execute('PRAGMA table_info(training_assignment_settings)')}:
         db.execute('ALTER TABLE training_assignment_settings ADD COLUMN revision INTEGER NOT NULL DEFAULT 1')
+    # 教学班与组织架构班级实体的显式绑定（FR-U05 院系/专业维度聚合的前置）。
+    # 只增列不猜名字：历史上「会计2601 演示班」与实体「会计2601」靠字符串对不上，
+    # 自动模糊匹配会把成绩算到错的院系，所以绑定必须由管理员确认（可为空=未归属）。
+    if 'college_class_id' not in {r['name'] for r in db.execute('PRAGMA table_info(training_classes)')}:
+        db.execute('ALTER TABLE training_classes ADD COLUMN college_class_id TEXT')
 
 
 def decorate(db, item):
@@ -365,7 +370,8 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
                 db.execute("BEGIN IMMEDIATE")
                 current_actor(db, who, {'teacher'})
                 validate_students(db,body.student_ids,who['org_id'])
-                db.execute("INSERT INTO training_classes VALUES (?,?,?,?,1,?)",(sid,who['org_id'],who['id'],clean_title(body.name),now().isoformat()))
+                db.execute("INSERT INTO training_classes (id,org_id,owner_id,name,revision,created_at)"
+                           " VALUES (?,?,?,?,1,?)",(sid,who['org_id'],who['id'],clean_title(body.name),now().isoformat()))
                 db.executemany("INSERT INTO training_class_members VALUES (?,?)",[(sid,s) for s in body.student_ids])
                 store_provider()._log(db,who,'create_class','class',sid,f"members={len(body.student_ids)}")
             return {'id':sid,'revision':1}

@@ -38,6 +38,8 @@ from webapp.storage import _hash_token, _now, _validate_password, session_max_ag
 from webapp.training_content import (applicability, ensure_active_version,
                                      resolve_active_version, version_brief, teaching_rules, update_status)
 from webapp.training_graph import relations_payload
+from webapp import training_reports
+from webapp import classroom as classroom_module
 from webapp.training_content import attempt_rules
 
 STATIC_DIR_KEYS = ("training-portal.html", "training-portal.js")
@@ -3561,6 +3563,14 @@ class ClassMigrateBody(BaseModel):
     to_class: str = Field(min_length=1)
 
 
+class ClassBindingBody(BaseModel):
+    """教学班 → 组织架构班级实体的归属登记（FR-U05 聚合前置，college_class_id=None 即解绑）。"""
+    model_config = ConfigDict(extra="forbid")
+    college: str = Field(min_length=1)
+    teaching_class_id: str = Field(min_length=1)
+    college_class_id: str | None = None
+
+
 class StudentPasswordReset(BaseModel):
     model_config = ConfigDict(extra="forbid")
     new_password: str = Field(min_length=1)
@@ -4314,6 +4324,38 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
         staff(session, college)
         return response({"history": list_class_history(store_provider(), college, limit=limit)})
+
+    # ---- 高校管理报表（FR-U05：院系/专业/班级/课程维度聚合） ----
+
+    @app.get("/api/training/staff/reports/learning")
+    @guarded
+    def staff_learning_report(college: str, term_id: str | None = None,
+                              department_id: str | None = None,
+                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session, college)
+        if who.get("role") not in ("admin", "school_admin"):
+            raise HTTPException(status_code=403,
+                                detail="管理报表仅限实训管理员或校级管理员查看；任课教师请用「学情统计」看本班。")
+        with store_provider().connect() as db:
+            db.execute("BEGIN")
+            return response(training_reports.build_report(
+                db, college, term_id=term_id, department_id=department_id))
+
+    @app.post("/api/training/staff/class-bindings")
+    @guarded
+    def staff_bind_teaching_class(body: ClassBindingBody,
+                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        who = staff(session, body.college)
+        if who.get("role") not in ("admin", "school_admin"):
+            raise HTTPException(status_code=403, detail="班级归属绑定仅限管理员操作。")
+        with store_provider().connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                bound = training_reports.bind_teaching_class(
+                    db, body.college, body.teaching_class_id, body.college_class_id)
+            except classroom_module.ClassroomError as exc:
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+        return response({"binding": bound})
 
     # ---- 高校组织架构（FR-U01 第一期：写仅限管理员，教师只读） ----
 

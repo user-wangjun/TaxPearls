@@ -833,6 +833,9 @@ def teaching_case_ui_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "teaching-case-ui.js", media_type="text/javascript")
 
 
+@app.get("/training-reports.js")
+def training_reports_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-reports.js", media_type="text/javascript")
 
 
 @app.get("/console.js")

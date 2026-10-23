@@ -948,6 +948,17 @@
         <p class="muted" id="classStatisticsStatus" role="status">请选择班级查看学情。</p>
         <div id="classStatisticsResult"></div>
       </div>
+      <div class="sheet" id="collegeLearningReport" data-classroom-view="statistics">
+        <h2>高校管理报表</h2>
+        <p class="muted">按院系、专业、班级、课程汇总教学成效；口径与上方「班级学情统计」及「成绩单导出」同源。仅管理员可看。</p>
+        <div class="training-actions">
+          <div class="field"><label for="clrTerm">学期</label><select id="clrTerm"><option value="">全部学期</option></select></div>
+          <div class="field"><label for="clrDepartment">院系</label><select id="clrDepartment"><option value="">全部院系</option></select></div>
+          <button type="button" id="clrRefresh">刷新报表</button>
+        </div>
+        <p class="muted" id="clrStatus" role="status">正在准备报表…</p>
+        <div id="clrBody"></div>
+      </div>
       <div class="sheet"><h2>组卷作业</h2><button type="button" id="btnRefreshTraining">刷新作业与进度</button><div id="paperList"></div></div>
 
       <div class="sheet" id="studentProfile" hidden>
@@ -1030,6 +1041,7 @@
 <script src="/training-tasks.js?v=20261021-task-board-1"></script>
 <script src="/training-submission-ui.js?v=20261022-submission-ui-1"></script>
 <script src="/teaching-case-ui.js?v=20261022-case-task-1"></script>
+<script src="/training-reports.js?v=20261023-u05-report-1"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>
 </body>
