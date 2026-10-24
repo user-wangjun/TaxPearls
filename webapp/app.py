@@ -67,21 +67,12 @@ async def lifespan(application):
     application.state.public_knowledge = await run_in_threadpool(bootstrap, store, RULES_DIR)
     worker = NotificationWorker(lambda: store)
     worker.start()
-    judge_worker = None
-    from webapp import code_judge_queue
-    if code_judge_queue.queue_enabled():
-        # FR-J05 判题队列 worker：默认关（同步判题契约不变）；
-        # TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1 时随应用启动后台判题线程。
-        judge_worker = code_judge_queue.JudgeWorker(lambda: store)
-        judge_worker.start()
     try:
         application.state.material_worker.start()
         yield
     finally:
         application.state.material_worker.stop()
         worker.stop()
-        if judge_worker:
-            judge_worker.stop()
 
 
 app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
@@ -833,6 +824,26 @@ def training_dark_theme() -> FileResponse:
 @app.get("/classroom.js")
 def classroom_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "classroom.js", media_type="text/javascript")
+
+
+@app.get("/training-ai-coach.js")
+def ai_coach_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-ai-coach.js", media_type="text/javascript")
+
+
+@app.get("/training-tasks.js")
+def training_tasks_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-tasks.js", media_type="text/javascript")
+
+
+@app.get("/training-submission-ui.js")
+def training_submission_ui_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-submission-ui.js", media_type="text/javascript")
+
+
+@app.get("/teaching-case-ui.js")
+def teaching_case_ui_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "teaching-case-ui.js", media_type="text/javascript")
 
 
 
@@ -1781,6 +1792,16 @@ from webapp.exercises import register as register_exercises
 register_exercises(app, lambda: store, _teaching_user, _allow, _audit_or_404, lambda data, enabled: _audit_rules(data,enabled),
                    _save_audit, _trial_payload, COOKIE_NAME)
 classroom.register(app,lambda: store,_teaching_user,_allow,_is_synthetic_dataset,COOKIE_NAME)
+from webapp import ai_coach as ai_coach_routes
+ai_coach_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import training_tasks as training_task_routes
+training_task_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import training_submissions as training_submission_routes
+training_submission_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import teaching_case_tasks as case_task_routes
+case_task_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import teaching_rubric as rubric_routes
+rubric_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
@@ -1799,6 +1820,14 @@ from webapp.training_graph import register as register_training_graph
 register_training_graph(app, lambda: store)
 from webapp.training_tutor import register as register_training_tutor
 register_training_tutor(app, lambda: store, "taxpearls_training_session")
+from webapp.training_source_auth import register as register_training_source_auth
+register_training_source_auth(app, lambda: store)
+from webapp.training_outline import register as register_training_outline
+register_training_outline(app, lambda: store)
+from webapp.training_trial import register as register_training_trial
+register_training_trial(app, lambda: store, "taxpearls_training_session")
+from webapp.teaching_units import register as register_teaching_units
+register_teaching_units(app, lambda: store)
 
 
 @app.get("/api/audits")
@@ -2145,7 +2174,9 @@ def assignment_detail(assignment_id: str,
         # Answer options must not inherit the audit's hit-first ordering.
         "rules": [{"id": f.rule.id, "name": f.rule.name, "category": f.rule.category}
                   for f in sorted(entry["findings"], key=lambda finding: finding.rule.id)],
-        "submission": store.get_submission(assignment_id, user["id"]) if user["role"] == "student" else None,
+        # 学生端结果按任务策略下发：未开放时只回执已提交，不给分数与逐项解析
+        "submission": (training_submission_routes.result_for_student(store, assignment_id, user["id"])
+                       if user["role"] == "student" else None),
     }
 
 
@@ -2173,7 +2204,13 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
         store.save_submission(assignment_id, user["id"], body.selected_rule_ids, result["score"], result,user=user)
     except classroom.ClassroomError as exc:
         raise HTTPException(exc.status,str(exc)) from None
-    return result
+    # 答案与解析按任务策略下发：after_due / manual 未到时点，回执里只确认已提交
+    visible, note = training_submission_routes.result_gate(store, assignment_id, user["id"])
+    if visible:
+        return {**result, "result_released": True, "result_note": ""}
+    return {"result_released": False, "result_note": note, "score": None,
+            "correct": [], "missed": [], "false_positives": [],
+            "false_positive_deduction": result.get("false_positive_deduction")}
 
 
 @app.post("/api/assignments/{assignment_id}/feedback")

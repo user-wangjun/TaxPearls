@@ -129,6 +129,39 @@ th { background: rgba(255,255,255,.09); font-weight: 500; color: #dfe9f2; }
 .detail.false { border-color: var(--danger); }
 .mark { font-size: 13px; border-left: 3px solid #5dcaa5; padding-left: 8px; margin: 6px 0; }
 .kp-children { margin-left: 22px; }
+
+/* ---------- 找证书：搜索框、结果、详情（倒计时 / 重点知识点 / 实操） ---------- */
+.cert-search { display: flex; gap: 8px; align-items: center; margin: 6px 0 10px; flex-wrap: wrap; }
+.cert-search input { flex: 1; min-width: 200px; }
+.cert-search button { flex: 0 0 auto; }
+.cert-suggest { margin-bottom: 10px; line-height: 2; }
+.chip-btn { background: transparent; font-family: inherit; cursor: pointer; }
+.chip-btn:hover { border-color: var(--accent); color: #b7f3ea; }
+.cert-empty { border: 1px dashed var(--card-line); border-radius: 10px; padding: 14px 16px;
+              background: var(--sub-card-bg); }
+.cert-empty p { margin: 0 0 6px; }
+.guide-head { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 12px; }
+.countdown-hero { display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+                  border: 1px solid rgba(79,209,197,.28); border-radius: 12px; padding: 14px 18px;
+                  background: linear-gradient(135deg, rgba(79,209,197,.14), rgba(79,209,197,.03));
+                  margin-bottom: 12px; }
+.countdown-num { font-size: 44px; font-weight: 600; line-height: 1; color: #b7f3ea;
+                 font-variant-numeric: tabular-nums; }
+.countdown-side { flex: 1; min-width: 190px; }
+.countdown-unit { font-size: 14px; color: #dfe9f2; margin-bottom: 2px; }
+.focus-item { display: flex; gap: 10px; border: 1px solid var(--card-line); border-radius: 10px;
+              padding: 10px 14px; margin-bottom: 8px; background: var(--sub-card-bg); }
+.focus-rank { flex: 0 0 26px; height: 26px; border-radius: 50%; text-align: center; line-height: 26px;
+              font-size: 12px; color: #0a1628; background: var(--accent); font-weight: 600; }
+.focus-body { flex: 1; min-width: 0; }
+.practical-steps { margin: 6px 0; padding-left: 20px; font-size: 13px; }
+.practical-steps li { margin: 2px 0; }
+.subject-block { border: 1px solid var(--card-line); border-radius: 10px; padding: 8px 12px;
+                 margin-bottom: 8px; background: var(--sub-card-bg); }
+.subject-block summary { cursor: pointer; }
+.kp-list { margin: 6px 0 0; padding-left: 18px; font-size: 13px; }
+.kp-list li { margin: 2px 0; }
+h4 { font-size: 13px; font-weight: 500; margin: 12px 0 6px; color: var(--muted); }
 [hidden] { display: none !important; }
 @media (max-width: 560px) {
   header { padding: 12px 14px; }

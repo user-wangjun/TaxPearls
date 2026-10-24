@@ -228,10 +228,7 @@ def create_version(store, staff: dict, cert_id: str, *, label: str, source_type:
         raise _portal_error("版本标签不能为空。")
     if source_type not in SOURCE_TYPES:
         raise _portal_error("题源类型必须是 simulated / real / recall / mock。")
-    if source_type != "simulated":
-        raise _portal_error(
-            f"{SOURCE_LABELS[source_type]}接入暂缓：须先获得授权并建立审核流程，"
-            "当前仅开放规则仿真题，生成题不冒充真题。")
+    from webapp.training_source_auth import require_authorization
     if year is None:
         year = _today_cst().year
     try:
@@ -245,6 +242,12 @@ def create_version(store, staff: dict, cert_id: str, *, label: str, source_type:
         db.execute("BEGIN IMMEDIATE")
         if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
             raise _portal_error("证书不存在。", 404)
+        # 真题/回忆/模拟题版本发布须有生效授权（决策三：授权先行），授权文号写入依据留痕。
+        if source_type != "simulated":
+            auth = require_authorization(db, cert_id, source_type)
+            auth_mark = f"授权文号 {auth['auth_no']}"
+            if auth_mark not in source_ref:
+                source_ref = f"{source_ref}（{auth_mark}）"
         if db.execute("SELECT 1 FROM training_content_version WHERE certificate_id=? AND label=?",
                       (cert_id, label)).fetchone():
             raise _portal_error(f"版本标签 {label} 在该证书下已存在。", 409)

@@ -340,7 +340,6 @@ class TrainingCollegeIsolationTests(unittest.TestCase):
             ("org/terms", "term", {"name": "外校学期"}),
             ("org/classes", "class", {"name": "外校班级"}),
             ("courses", "course", {"name": "外校课程", "class_names": ["会计2601"]}),
-            ("code-problems", "problem", {"title": "外校题目", "cases": []}),
         ):
             result = self.client.post("/api/training/staff/" + kind,
                                       json={"college": self.foreign_college, **body})
@@ -408,16 +407,15 @@ class TrainingCollegeIsolationTests(unittest.TestCase):
                      "org/classes", "org/quota"):
             result = self.client.get("/api/training/staff/" + path, params={"college": self.foreign_college})
             self.assertEqual(result.status_code, 403, result.text)
-        for path, key in (("teachers", "teachers"), ("courses", "courses"), ("code-problems", "problems")):
+        for path, key in (("teachers", "teachers"), ("courses", "courses")):
             rows = self.client.get("/api/training/staff/" + path).json()[key]
             self.assertTrue(all(r["college"] == COLLEGE for r in rows), rows)
         for kind, rid in self.foreign_ids.items():
             result = self.client.patch("/api/training/staff/" + kind + "/" + rid,
-                                       json={"active": False} if kind in ("courses", "code-problems") else {"name": "不应修改"})
+                                       json={"active": False} if kind in ("courses",) else {"name": "不应修改"})
             self.assertEqual(result.status_code, 404, result.text)
         for path in (
             "courses/" + self.foreign_ids["courses"] + "/roster",
-            "code-problems/" + self.foreign_ids["code-problems"] + "/submissions?include_code=true",
             "org/terms/" + self.foreign_ids["org/terms"] + "/roster-snapshot",
         ):
             result = self.client.get("/api/training/staff/" + path)
@@ -426,12 +424,6 @@ class TrainingCollegeIsolationTests(unittest.TestCase):
         self.assertEqual(self.client.post("/api/training/auth/login", json={
             "college": COLLEGE, "student_no": "2026001", "password": "StudentPass1!"
         }).status_code, 200)
-        self.assertEqual(self.client.get("/api/training/my/code/problems").json()["problems"], [])
-        with patch("webapp.training_portal.judge_submission") as judge:
-            result = self.client.post("/api/training/my/code/" + self.foreign_ids["code-problems"] + "/submit",
-                                      json={"code_text": "print(1)"})
-            self.assertEqual(result.status_code, 404, result.text)
-            judge.assert_not_called()
 
     def test_course_teacher_reference_cannot_cross_colleges(self):
         self.login("admin1")

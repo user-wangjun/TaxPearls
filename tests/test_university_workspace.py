@@ -147,6 +147,24 @@ class UniversityWorkspaceTests(unittest.TestCase):
         self.assertEqual(self.client.get('/api/teaching/cases').status_code,403)
         self.assertEqual(self.client.get('/api/teaching/courses').status_code,403)
 
+    def test_unified_login_reaches_partner_feedback_and_teacher_processing(self):
+        self.login(self.student)
+        response = self.client.post('/api/training/my/feedback',
+                                    json={'category':'bug','content':'合成联调：来源位置展示核验'})
+        self.assertEqual(response.status_code,200,response.text)
+        feedback_id = response.json()['feedback']['id']
+        self.login(self.admin)
+        response = self.client.get('/api/training/staff/trial-feedback')
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertIn(feedback_id,{r['id'] for r in response.json()['feedback']})
+        self.assertEqual(self.client.get('/api/training/staff/trial-stats').status_code,200)
+        response = self.client.patch('/api/training/staff/trial-feedback/'+feedback_id,
+                                     json={'status':'processing','staff_note':'教师联调复核'})
+        self.assertEqual(response.status_code,200,response.text)
+        self.login(self.student)
+        rows = self.client.get('/api/training/my/feedback').json()['feedback']
+        self.assertEqual(rows[0]['status'],'processing')
+
     def test_teaching_capability_is_revalidated_after_profile_disabled(self):
         from webapp.access import teaching_actor
         with self.store.connect() as db:

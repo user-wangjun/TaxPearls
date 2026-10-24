@@ -5,7 +5,11 @@ let disposed=false;const requests=new AbortController();
 /* 考证内容管理教师端：证书上架、官方日期录入、考纲知识点与三类标注。 */
 "use strict";
 
-const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [], quota: null };
+const state = { staff: null, certificates: [], currentId: null, kps: [], versions: [], importPlan: null, markStats: null, rules: [], students: [], classes: [], classHistory: [], courses: [], teachers: [], departments: [], terms: [], orgClasses: [], quota: null, auths: [], bank: [], outline: null, trialFeedback: [], trialStats: null };
+
+const SOURCE_ZH = { simulated: "仿真题", real: "真题", recall: "回忆题", mock: "模拟题" };
+const BANK_STATUS_ZH = { draft: "草稿", pending: "待审", approved: "已上线", rejected: "已驳回" };
+const REVIEW_ZH = { pending: "待核对", confirmed: "沿用", updated: "已按新纲修改", removed: "新版删除", added: "新版新增" };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -173,10 +177,23 @@ function renderKps() {
       state.kps.filter((p) => p.id !== k.id && p.active).map((p) =>
         `<option value="${esc(p.id)}" ${p.id === k.parent_id ? "selected" : ""}>${esc(p.code)} ${esc(p.name)}</option>`)
     ).join("");
+    const reviewStatus = k.review_status || "";
+    const reviewBox = (reviewStatus || (state.outline && state.outline.current))
+      ? `<div class="inline-form">
+          <div class="row">
+            <div><label>考纲升版核对</label>
+              <select data-role="kp-review">${Object.entries(REVIEW_ZH).map(([v, t]) =>
+                `<option value="${v}"${reviewStatus === v ? " selected" : ""}>${t}</option>`).join("")}</select></div>
+            <div class="actions" style="align-self:flex-end;">
+              <button class="small primary" data-act="set-review" data-id="${esc(k.id)}">保存核对</button></div>
+          </div>
+          <p class="muted" style="margin:4px 0 0;">核对口径：沿用=与新版一致；已按新纲修改=内容按要求改过；新版删除=激活后停用；新增项由系统自动标记，无需手工选。</p>
+        </div>` : "";
     return `<div class="item" ${indent} id="kp-${esc(k.id)}">
       <div class="item-head">
         <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
           ${k.active ? "" : `<span class="badge gray">已停用</span>`}
+          ${reviewStatus ? `<span class="badge warn">${REVIEW_ZH[reviewStatus] || esc(reviewStatus)}</span>` : ""}
           ${k.subject ? `<span class="chip">${esc(k.subject)}</span>` : ""}
           ${k.source_ref ? `<span class="muted">依据：${esc(k.source_ref)}${k.outline_version ? "（" + esc(k.outline_version) + "）" : ""}</span>` : ""}
         </div>
@@ -184,6 +201,7 @@ function renderKps() {
           <button class="small" data-act="edit-kp" data-id="${esc(k.id)}">编辑</button>
         </div>
       </div>
+      ${reviewBox}
       ${marks}
       ${renderRelations(k)}
       ${renderRuleLinks(k)}
@@ -388,6 +406,256 @@ function renderAll() {
   renderVersions();
   renderKps();
   renderParentOptions();
+  renderAuths();
+  renderBank();
+  renderOutline();
+  renderTrial();
+}
+
+/* ---------- 题源授权 / 题库 / 考纲升版 / 试用反馈 ---------- */
+
+async function loadSourceAuths() {
+  if (!state.currentId) { state.auths = []; renderAuths(); return; }
+  state.auths = (await api(
+    `/api/training/staff/certificates/${state.currentId}/source-authorizations`)).authorizations;
+  renderAuths();
+}
+
+function renderAuths() {
+  const box = document.getElementById("authorizations");
+  const rows = state.auths || [];
+  if (!rows.length) {
+    box.innerHTML = `<p class="muted">该证书还没有登记任何授权：真题/回忆题/模拟题当前不可发布与导入，题库只能保持规则仿真题。</p>`;
+    return;
+  }
+  box.innerHTML = `<div class="table-scroll"><table style="width:100%;border-collapse:collapse;">
+    <tr><th style="text-align:left;">授权方</th><th style="text-align:left;">文号</th>
+      <th style="text-align:left;">覆盖题源</th><th style="text-align:left;">有效期</th>
+      <th style="text-align:left;">状态</th><th style="text-align:left;"></th></tr>
+    ${rows.map((a) => `<tr>
+      <td>${esc(a.licensor)}</td>
+      <td>${esc(a.auth_no)}</td>
+      <td>${(a.question_type_list || []).map((t) => SOURCE_ZH[t] || t).join("、")}</td>
+      <td>${esc(a.valid_from || "")} ~ ${esc(a.valid_until || "长期")}</td>
+      <td><span class="badge ${a.status === "active" ? (a.covering_today ? "" : "warn") : "gray"}">${
+        a.status === "active" ? (a.covering_today ? "生效中" : "未生效/已过期") : "已撤销"}</span></td>
+      <td>${a.status === "active" ? `<button class="small danger" data-act="revoke-auth" data-id="${esc(a.id)}">撤销</button>` : ""}</td>
+    </tr>`).join("")}
+  </table></div>
+  ${rows.some((a) => a.status === "active" && !a.covering_today)
+    ? `<p class="muted">「未生效/已过期」的授权不能用于发布或导入；如需继续使用请重新登记有效期内的授权。</p>` : ""}`;
+}
+
+async function loadBank() {
+  if (!state.currentId) { state.bank = []; renderBank(); return; }
+  const filter = document.getElementById("bank-status-filter");
+  const status = filter && filter.value ? `?status=${encodeURIComponent(filter.value)}` : "";
+  state.bank = (await api(
+    `/api/training/staff/certificates/${state.currentId}/bank-questions${status}`)).questions;
+  renderBank();
+}
+
+function renderBank() {
+  const box = document.getElementById("bank-questions");
+  const rows = state.bank || [];
+  if (!rows.length) {
+    box.innerHTML = `<p class="muted">题库暂无题目：先在上方登记授权，再粘贴人工核对过的 JSON 导入。</p>`;
+    return;
+  }
+  box.innerHTML = rows.map((q) => {
+    const options = (q.options || []).map((o) => `${esc(o.key)}. ${esc(o.text)}`).join("　");
+    const actions = q.status === "draft" || q.status === "rejected"
+      ? `<button class="small primary" data-act="bank-submit" data-id="${esc(q.id)}">提交审核</button>`
+      : q.status === "pending"
+        ? `<button class="small primary" data-act="bank-approve" data-id="${esc(q.id)}">通过</button>
+           <button class="small danger" data-act="bank-reject" data-id="${esc(q.id)}">驳回</button>`
+        : `<button class="small" data-act="bank-offline" data-id="${esc(q.id)}">下架</button>`;
+    return `<div class="item">
+      <div class="item-head">
+        <div><span class="chip">${SOURCE_ZH[q.source_type] || esc(q.source_type)} · ${esc(q.year)} 年度</span>
+          <span class="badge ${q.status === "approved" ? "" : "gray"}">${BANK_STATUS_ZH[q.status] || esc(q.status)}</span>
+          ${q.question_no ? `<span class="muted">${esc(q.question_no)}</span>` : ""}</div>
+        <div class="actions">${actions}</div>
+      </div>
+      <div style="margin-top:4px;">${esc(q.stem)}</div>
+      <div class="muted">${options}</div>
+      <div class="muted">标准答案：${esc((q.answer_keys || []).join("、"))}</div>
+      <details><summary>解析与依据</summary>
+        <div class="detail">${esc(q.explanation || "（缺解析）")}</div>
+        <div class="muted">依据：${esc(q.source_ref || "")}</div>
+        ${q.review_note ? `<div class="muted">审核意见：${esc(q.review_note)}</div>` : ""}
+      </details>
+    </div>`;
+  }).join("");
+}
+
+function renderBankImport(data) {
+  const rows = (data.results || []).map((r) => r.ok
+    ? `<div class="detail ok">第 ${r.line} 行：已入库草稿</div>`
+    : `<div class="detail miss">第 ${r.line} 行：${esc(r.error)}</div>`).join("");
+  document.getElementById("bank-import-result").innerHTML =
+    `<p class="${data.failed ? "warn" : "ok"}">导入完成：成功 ${data.imported} 题，失败 ${data.failed} 题（非法行不中断整批）。</p>${rows}`;
+}
+
+async function loadOutline() {
+  if (!state.currentId) { state.outline = null; renderOutline(); return; }
+  state.outline = await api(`/api/training/staff/certificates/${state.currentId}/outline-upgrade`);
+  renderOutline();
+}
+
+function renderOutline() {
+  const box = document.getElementById("outline-body");
+  const data = state.outline;
+  if (!data) { box.innerHTML = ""; return; }
+  const cur = data.current;
+  const counts = data.review_counts || {};
+  const progress = `<span class="chip">待核对 ${counts.pending || 0}</span>
+    <span class="chip">沿用 ${counts.confirmed || 0}</span>
+    <span class="chip">已修改 ${counts.updated || 0}</span>
+    <span class="chip">新增 ${counts.added || 0}</span>
+    <span class="chip">删除 ${counts.removed || 0}</span>`;
+  const current = cur
+    ? `<div class="item">
+        <div class="item-head"><div><strong>核对中：${esc(cur.from_version)} → ${esc(cur.to_version)}</strong>
+          <span class="badge warn">核对中</span></div>
+          <span class="muted">发起于 ${esc((cur.started_at || "").slice(0, 16).replace("T", " "))}</span></div>
+        <div style="margin-top:4px;">${progress}</div>
+        <div class="muted">在「考纲知识点」卡片逐条把核对状态改为沿用/已修改/删除；核对期新增的知识点自动记为新增、暂不对学生显示。待核对清零后可点上方「激活切换」。</div>
+        ${cur.note ? `<div class="muted">备注：${esc(cur.note)}</div>` : ""}
+      </div>`
+    : `<p class="muted">当前没有进行中的升版核对；现行主导版本：${esc(data.dominant_version || "未登记")}。新版大纲发布后填目标版本再发起。</p>`;
+  const history = (data.history || []).map((h) => `<div class="item">
+    <div class="item-head"><div>${esc(h.from_version)} → <strong>${esc(h.to_version)}</strong>
+      <span class="badge gray">已激活</span></div>
+      <span class="muted">${esc((h.activated_at || "").slice(0, 16).replace("T", " "))}</span></div>
+    ${h.note ? `<div class="muted">备注：${esc(h.note)}</div>` : ""}
+  </div>`).join("");
+  box.innerHTML = current + (history ? `<h3 style="margin-top:14px;">升版历史</h3>${history}` : "");
+}
+
+/* ---- B2：教学单元与实操案例的加载与渲染 ---- */
+
+async function loadTeachingUnits() {
+  if (!state.currentId) { state.units = []; renderTeachingUnits(); return; }
+  const data = await api(`/api/training/teaching/units?certificate_id=${encodeURIComponent(state.currentId)}`);
+  state.units = data.units;
+  renderTeachingUnits();
+}
+
+function renderTeachingUnits() {
+  const box = document.getElementById("teaching-units");
+  if (!box) return;
+  const rows = state.units || [];
+  if (!rows.length) {
+    box.innerHTML = '<p class="muted">还没有教学单元。可新建单元，把知识点与规则拼成一次课的能力单元。</p>';
+    return;
+  }
+  box.innerHTML = rows.map((u) => `<div class="data-item">
+    <div><b>${esc(u.name)}</b>
+      <div class="muted">${esc(u.stage_label)} · 规则 ${u.rule_codes.length} 条 · 知识点 ${u.knowledge_point_ids.length} 个</div>
+      ${u.standard ? `<div>${esc(u.standard)}</div>` : ""}
+      ${u.deliverables ? `<div class="muted">要交的证据：${esc(u.deliverables)}</div>` : ""}
+    </div>
+    <span class="chip">${esc(u.status === "published" ? "已发布" : u.status === "archived" ? "已归档" : "草稿")}</span>
+  </div>`).join("");
+}
+
+async function loadTeachingCases() {
+  if (!state.currentId) { state.cases = []; renderTeachingCases(); return; }
+  const data = await api(`/api/training/teaching/cases?certificate_id=${encodeURIComponent(state.currentId)}`);
+  state.cases = data.cases;
+  renderTeachingCases();
+}
+
+function renderTeachingCases() {
+  const box = document.getElementById("teaching-cases");
+  if (!box) return;
+  const rows = state.cases || [];
+  if (!rows.length) {
+    box.innerHTML = '<p class="muted">还没有实操案例。案例为脱敏仿真材料包，绑定规则与标准结论。</p>';
+    return;
+  }
+  box.innerHTML = rows.map((c) => `<div class="data-item">
+    <div><b>${esc(c.name)}</b>
+      <div class="muted">规则 ${c.rule_codes.length} 条 · 材料 ${c.materials.length} 份${c.unit_id ? " · 已挂单元" : ""}</div>
+      ${c.scenario ? `<div>${esc(c.scenario)}</div>` : ""}
+      ${c.desensitization_note ? `<div class="muted">${esc(c.desensitization_note)}</div>` : ""}
+    </div>
+    <span class="chip">${esc(c.status === "published" ? "已发布" : c.status === "archived" ? "已归档" : "草稿")}</span>
+  </div>`).join("");
+}
+
+function fillUnitSelects() {
+  const rules = document.getElementById("uf-rules");
+  if (rules && (state.rules || []).length) {
+    rules.innerHTML = state.rules.map((r) =>
+      `<option value="${esc(r.id || r.rule_code || r.code)}">${esc(r.id || r.rule_code || r.code)} ${esc(r.name || "")}</option>`).join("");
+  }
+  const kps = document.getElementById("uf-kps");
+  if (kps) {
+    kps.innerHTML = (state.kps || []).map((k) =>
+      `<option value="${esc(k.id)}">${esc(k.code)} ${esc(k.name)}</option>`).join("");
+  }
+}
+
+function fillCaseSelects() {
+  const rules = document.getElementById("cf-case-rules");
+  if (rules && (state.rules || []).length) {
+    rules.innerHTML = state.rules.map((r) =>
+      `<option value="${esc(r.id || r.rule_code || r.code)}">${esc(r.id || r.rule_code || r.code)} ${esc(r.name || "")}</option>`).join("");
+  }
+  const unit = document.getElementById("cf-case-unit");
+  if (unit) {
+    unit.innerHTML = '<option value="">（不挂单元）</option>' +
+      (state.units || []).map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join("");
+  }
+}
+
+async function loadTrial() {
+  const [fb, stats] = await Promise.all([
+    api("/api/training/staff/trial-feedback"),
+    api("/api/training/staff/trial-stats"),
+  ]);
+  state.trialFeedback = fb.feedback;
+  state.trialStats = stats.stats;
+  renderTrial();
+}
+
+function renderTrial() {
+  const box = document.getElementById("trial-stats");
+  const list = document.getElementById("trial-feedback");
+  const s = state.trialStats;
+  box.innerHTML = s ? `<div class="row" style="gap:10px;flex-wrap:wrap;">
+    <div class="chip">建档学生 ${s.students_total}</div>
+    <div class="chip">登录过 ${s.students_logged_in}</div>
+    <div class="chip">近 7 日活跃 ${s.students_active_7d}</div>
+    <div class="chip">作答 ${s.attempts_total} 次（满分 ${s.attempts_perfect}）</div>
+    <div class="chip">题库题作答 ${s.attempts_bank} 次</div>
+    <div class="chip">覆盖知识点 ${s.kps_covered}</div>
+    <div class="chip">反馈 ${s.feedback.total}（新 ${s.feedback.new} / 处理中 ${s.feedback.processing} / 已处理 ${s.feedback.resolved}）</div>
+  </div>` : `<p class="muted">暂无盘面数据。</p>`;
+  const rows = state.trialFeedback || [];
+  const STATUS = { new: "新反馈", processing: "处理中", resolved: "已处理" };
+  const CATEGORY = { bug: "缺陷", suggestion: "建议", content: "内容纠错", other: "其他" };
+  list.innerHTML = rows.length ? rows.map((f) => `<div class="item">
+    <div class="item-head">
+      <div><span class="badge ${f.status === "resolved" ? "" : "warn"}">${STATUS[f.status] || esc(f.status)}</span>
+        <span class="chip">${CATEGORY[f.category] || esc(f.category)}</span>
+        <span class="muted">${esc(f.student ? `${f.student.student_no} ${f.student.name}` : "")}</span>
+        <span class="muted">${esc((f.created_at || "").slice(0, 16).replace("T", " "))}</span></div>
+    </div>
+    <div style="margin-top:4px;">${esc(f.content)}</div>
+    <div class="row" style="margin-top:6px;">
+      <div><label>处理状态</label>
+        <select id="fb-status-${esc(f.id)}">
+          ${Object.entries(STATUS).map(([k, v]) => `<option value="${k}"${f.status === k ? " selected" : ""}>${v}</option>`).join("")}
+        </select></div>
+      <div><label>处理备注</label><input id="fb-note-${esc(f.id)}" value="${esc(f.staff_note || "")}" placeholder="如 已定位，下个版本修复"></div>
+      <div class="actions" style="align-self:flex-end;">
+        <button class="small primary" data-act="feedback-save" data-id="${esc(f.id)}">保存处理</button></div>
+    </div>
+    ${f.handled_at ? `<div class="muted">最近处理：${esc((f.handled_at || "").slice(0, 16).replace("T", " "))}</div>` : ""}
+  </div>`).join("") : `<p class="muted">暂无学生反馈。</p>`;
 }
 
 /* ---------- 数据 ---------- */
@@ -402,11 +670,19 @@ async function load() {
   }
   state.kps = [];
   state.versions = [];
+  state.auths = [];
+  state.bank = [];
+  state.outline = null;
   if (state.currentId) {
     const kp = await api(`/api/training/staff/certificates/${state.currentId}/knowledge-points`);
     state.kps = kp.knowledge_points;
     const vs = await api(`/api/training/staff/certificates/${state.currentId}/content-versions`);
     state.versions = vs.versions;
+    await loadSourceAuths().catch(() => { state.auths = []; renderAuths(); });
+    await loadBank().catch(() => { state.bank = []; renderBank(); });
+    await loadOutline().catch(() => { state.outline = null; renderOutline(); });
+    await loadTeachingUnits().catch(() => { state.units = []; renderTeachingUnits(); });
+    await loadTeachingCases().catch(() => { state.cases = []; renderTeachingCases(); });
   }
   state.rules = (await api("/api/training/staff/rules")).rules;
   await loadStudents();
@@ -416,9 +692,10 @@ async function load() {
     await loadOverview();
   }
   renderAll();
-  await loadMarkStats();
-  await loadRoster();
-  await loadOrg();
+  await loadMarkStats().catch(() => {});
+  await loadRoster().catch(() => { state.classes = []; state.classHistory = []; renderRoster(); });
+  await loadOrg().catch(() => { state.departments = []; state.terms = []; state.orgClasses = []; renderOrg(); });
+  await loadTrial().catch(() => { state.trialFeedback = []; state.trialStats = null; renderTrial(); });
   renderStaffWorkbench();
 }
 
@@ -472,6 +749,7 @@ async function loadOrg() {
   if (!college) { renderOrg(); return; }
   const q = encodeURIComponent(college);
   state.departments = (await api(`/api/training/staff/org/departments?college=${q}`)).departments;
+  state.majors = (await api(`/api/training/staff/org/majors?college=${q}`)).majors;
   state.terms = (await api(`/api/training/staff/org/terms?college=${q}`)).terms;
   state.orgClasses = (await api(`/api/training/staff/org/classes?college=${q}`)).classes;
   state.quota = (await api(`/api/training/staff/org/quota?college=${q}`)).quota;
@@ -484,10 +762,12 @@ function orgBadge(archived) {
 
 function renderOrg() {
   const deps = state.departments || [];
+  const majors = state.majors || [];
   const terms = state.terms || [];
   const classes = state.orgClasses || [];
   const isAdmin = state.staff && state.staff.role === "admin";
   document.getElementById("org-dep-form").hidden = !isAdmin;
+  document.getElementById("org-major-form").hidden = !isAdmin;
   document.getElementById("org-term-form").hidden = !isAdmin;
   document.getElementById("org-class-form").hidden = !isAdmin;
   document.getElementById("org-departments").innerHTML = deps.length
@@ -498,6 +778,15 @@ function renderOrg() {
         <button class="small" data-act="org-dep-delete" data-id="${esc(d.id)}">删除</button>` : ""}</td></tr>`).join("")}
     </table>`
     : `<p class="muted">暂无院系${isAdmin ? "，可在上方创建" : ""}。</p>`;
+  document.getElementById("org-majors").innerHTML = majors.length
+    ? `<table style="width:100%;border-collapse:collapse;">
+      <tr><th style="text-align:left;">专业</th><th style="text-align:left;">所属院系</th><th style="text-align:left;">班级数</th><th style="text-align:left;"></th></tr>
+      ${majors.map((m) => `<tr><td>${esc(m.name)}${orgBadge(m.archived)}</td>
+        <td>${esc(m.department_name || "—")}</td><td>${m.classes}</td>
+        <td>${isAdmin ? `<button class="small" data-act="org-major-toggle" data-id="${esc(m.id)}" data-v="${m.archived ? 0 : 1}">${m.archived ? "恢复" : "归档"}</button>
+        <button class="small" data-act="org-major-delete" data-id="${esc(m.id)}">删除</button>` : ""}</td></tr>`).join("")}
+    </table>`
+    : `<p class="muted">暂无专业${isAdmin ? "，可在上方创建（专业可选挂院系，班级可再挂专业）" : ""}。</p>`;
   document.getElementById("org-terms").innerHTML = terms.length
     ? `<table style="width:100%;border-collapse:collapse;">
       <tr><th style="text-align:left;">学期</th><th style="text-align:left;">起止</th><th style="text-align:left;">班级数</th><th style="text-align:left;"></th></tr>
@@ -512,9 +801,9 @@ function renderOrg() {
     : `<p class="muted">暂无学期${isAdmin ? "，可在上方创建" : ""}。</p>`;
   document.getElementById("org-classes").innerHTML = classes.length
     ? `<table style="width:100%;border-collapse:collapse;">
-      <tr><th style="text-align:left;">班级</th><th style="text-align:left;">院系</th><th style="text-align:left;">学期</th><th style="text-align:left;">在读</th><th style="text-align:left;"></th></tr>
+      <tr><th style="text-align:left;">班级</th><th style="text-align:left;">院系</th><th style="text-align:left;">专业</th><th style="text-align:left;">学期</th><th style="text-align:left;">在读</th><th style="text-align:left;"></th></tr>
       ${classes.map((c) => `<tr><td>${esc(c.name)}${orgBadge(c.archived)}</td>
-        <td>${esc(c.department_name || "—")}</td><td>${esc(c.term_name || "—")}</td><td>${c.active_students}</td>
+        <td>${esc(c.department_name || "—")}</td><td>${esc(c.major_name || "—")}</td><td>${esc(c.term_name || "—")}</td><td>${c.active_students}</td>
         <td>${isAdmin ? `<button class="small" data-act="org-class-clone" data-id="${esc(c.id)}">按学期重建</button>
         <button class="small" data-act="org-class-toggle" data-id="${esc(c.id)}" data-v="${c.archived ? 0 : 1}">${c.archived ? "恢复" : "归档"}</button>
         <button class="small" data-act="org-class-delete" data-id="${esc(c.id)}">删除</button>` : ""}</td></tr>`).join("")}
@@ -522,6 +811,10 @@ function renderOrg() {
     : `<p class="muted">暂无班级实体。学生名册「班级」字段照常聚合展示于上方「班级与教师名册」，不受影响。</p>`;
   document.getElementById("oc-department").innerHTML = `<option value="">（未绑定院系）</option>` +
     deps.filter((d) => !d.archived).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
+  document.getElementById("om-department").innerHTML = `<option value="">（未挂院系）</option>` +
+    deps.filter((d) => !d.archived).map((d) => `<option value="${esc(d.id)}">${esc(d.name)}</option>`).join("");
+  document.getElementById("oc-major").innerHTML = `<option value="">（未绑定专业）</option>` +
+    majors.filter((m) => !m.archived).map((m) => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join("");
   document.getElementById("oc-term").innerHTML = `<option value="">（未绑定学期）</option>` +
     terms.filter((t) => !t.archived).map((t) => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("");
   const quota = state.quota;
@@ -722,6 +1015,16 @@ async function withCert(mutator) {
   }
 }
 
+/* 四个内容治理面板的轻量刷新：只重取授权/题库/升版/试用，不重跑整页 load。 */
+async function refreshPanels() {
+  await Promise.all([
+    loadSourceAuths().catch(() => {}),
+    loadBank().catch(() => {}),
+    loadOutline().catch(() => {}),
+    loadTrial().catch(() => {}),
+  ]);
+}
+
 document.getElementById("app-view").addEventListener("click", (event) => {
   const btn = event.target.closest("button[data-act]");
   if (!btn) return;
@@ -731,6 +1034,127 @@ document.getElementById("app-view").addEventListener("click", (event) => {
   const q = (sel, root) => (root || document).querySelector(sel);
 
   const handlers = {
+    /* ---- 题源授权登记 ---- */
+    "refresh-auth": () => refreshPanels(),
+    "refresh-bank": () => refreshPanels(),
+    "refresh-outline": () => refreshPanels(),
+    "refresh-trial": () => loadTrial().catch((err) => flash(err.message, true)),
+    "create-auth": () => {
+      const types = [...document.querySelectorAll(".au-type:checked")].map((c) => c.value);
+      if (!q("#au-licensor").value.trim() || !q("#au-no").value.trim()) {
+        flash("授权方与授权文号必填。", true); return;
+      }
+      if (!types.length) { flash("请至少勾选一个覆盖题源。", true); return; }
+      if (!q("#au-from").value) { flash("请填生效日。", true); return; }
+      withCert(async () => {
+        await api(`/api/training/staff/certificates/${cert.id}/source-authorizations`, {
+          method: "POST",
+          body: {
+            licensor: q("#au-licensor").value.trim(),
+            auth_no: q("#au-no").value.trim(),
+            question_types: types,
+            valid_from: q("#au-from").value,
+            valid_until: q("#au-until").value || null,
+            scope_note: q("#au-scope").value.trim(),
+          },
+        });
+        q("#au-no").value = "";
+        q("#au-scope").value = "";
+        document.querySelectorAll(".au-type:checked").forEach((c) => { c.checked = false; });
+        flash("授权已登记：发布对应题源版本或导入题库时会自动写入该文号留痕。");
+      });
+    },
+    "revoke-auth": () => {
+      if (!window.confirm("撤销后该授权不能再用于发布或导入（记录保留可审计）。确认撤销？")) return;
+      withCert(async () => {
+        await api(`/api/training/staff/source-authorizations/${id}/revoke`, { method: "POST" });
+        flash("授权已撤销；已发布版本与存量作答不受影响。");
+      });
+    },
+    /* ---- 题库导入与审核 ---- */
+    "import-bank": () => {
+      const text = q("#bank-json").value.trim();
+      if (!text) { flash("请先粘贴导入 JSON。", true); return; }
+      let questions;
+      try { questions = JSON.parse(text); } catch (err) {
+        flash(`JSON 解析失败：${err.message}`, true); return;
+      }
+      if (!Array.isArray(questions)) { flash("导入内容必须是 JSON 数组。", true); return; }
+      withCert(async () => {
+        const data = await api(`/api/training/staff/certificates/${cert.id}/bank-questions`, {
+          method: "POST", body: { questions } });
+        renderBankImport(data);
+        flash(`导入完成：成功 ${data.imported} 题，失败 ${data.failed} 题。`, data.failed > 0);
+      });
+    },
+    "filter-bank": () => { loadBank().catch((err) => flash(err.message, true)); },
+    "bank-submit": () => withCert(async () => {
+      await api(`/api/training/staff/bank-questions/${id}/submit`, { method: "POST" });
+      flash("已提交审核；待审通过后学生才能抽到。");
+    }),
+    "bank-approve": () => withCert(async () => {
+      await api(`/api/training/staff/bank-questions/${id}/review`, {
+        method: "POST", body: { decision: "approve" } });
+      flash("已审核上线。");
+    }),
+    "bank-reject": () => {
+      const note = window.prompt("驳回原因（会显示在审核意见里）：", "");
+      if (note === null) return;
+      withCert(async () => {
+        await api(`/api/training/staff/bank-questions/${id}/review`, {
+          method: "POST", body: { decision: "reject", note } });
+        flash("已驳回；该题可修改后重新提交审核。");
+      });
+    },
+    "bank-offline": () => {
+      if (!window.confirm("下架后学生不再抽到本题；已产生的历史作答仍按当时题目与解析回看。继续？")) return;
+      withCert(async () => {
+        await api(`/api/training/staff/bank-questions/${id}/offline`, { method: "POST" });
+        flash("已下架回草稿。");
+      });
+    },
+    /* ---- 考纲升版 ---- */
+    "set-review": () => withCert(async () => {
+      const value = q("[data-role=kp-review]", q(`#kp-${id}`)).value;
+      await api(`/api/training/staff/knowledge-points/${id}`, {
+        method: "PATCH", body: { review_status: value } });
+      flash(`核对状态已保存：${REVIEW_ZH[value] || value}。`);
+    }),
+    "outline-start": () => {
+      const to = q("#ou-to").value.trim();
+      if (!to) { flash("请填目标考纲版本（如 2027）。", true); return; }
+      if (!window.confirm(`发起后现行知识点全部标记「待核对」，核对完成前不能再次发起。确认发起 ${to} 升版核对？`)) return;
+      withCert(async () => {
+        await api(`/api/training/staff/certificates/${cert.id}/outline-upgrade/start`, {
+          method: "POST", body: { to_version: to, note: q("#ou-note").value.trim() } });
+        flash(`已发起 ${to} 升版核对：请逐条核对知识点，待核对清零后再激活。`);
+      });
+    },
+    "outline-activate": () => {
+      const cur = state.outline && state.outline.current;
+      if (!cur) { flash("当前没有进行中的升版核对。", true); return; }
+      const pending = (state.outline.review_counts || {}).pending || 0;
+      if (pending) { flash(`还有 ${pending} 条知识点待核对，不能激活切换。`, true); return; }
+      if (!window.confirm(`确认激活 ${cur.to_version}：知识点版本号统一切换、删除项停用留痕、新增项上线。`)) return;
+      withCert(async () => {
+        const data = await api(
+          `/api/training/staff/certificates/${cert.id}/outline-upgrade/activate`, { method: "POST" });
+        flash(`已切换到 ${data.upgrade.to_version}：上线 ${data.upgrade.activated} 条，停用 ${data.upgrade.removed} 条。`);
+      });
+    },
+    /* ---- 试用反馈处理 ---- */
+    "feedback-save": async () => {
+      try {
+        await api(`/api/training/staff/trial-feedback/${id}`, {
+          method: "PATCH",
+          body: { status: q(`#fb-status-${id}`).value, staff_note: q(`#fb-note-${id}`).value },
+        });
+        flash("反馈处理已保存。");
+        await loadTrial();
+      } catch (err) {
+        flash(err.message, true);
+      }
+    },
     "new-cert-btn": () => { document.getElementById("new-cert-form").hidden = false; },
     "cancel-new-cert": () => { document.getElementById("new-cert-form").hidden = true; },
     "create-cert": () => withCert(async () => {
@@ -921,6 +1345,32 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       } catch (err) { flash(err.message, true); }
       await loadOrg();
     },
+    "org-major-create": async () => {
+      const name = q("#om-name").value.trim();
+      if (!name) { flash("专业名称必填。", true); return; }
+      try {
+        await api("/api/training/staff/org/majors", {
+          method: "POST", body: { college: state.staff.college, name,
+                                  department_id: q("#om-department").value || null } });
+        q("#om-name").value = "";
+        flash("专业已创建。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-major-toggle": async () => {
+      try {
+        await api(`/api/training/staff/org/majors/${id}`, {
+          method: "PATCH", body: { archived: q(`button[data-act="org-major-toggle"][data-id="${id}"]`).dataset.v === "1" } });
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
+    "org-major-delete": async () => {
+      try {
+        await api(`/api/training/staff/org/majors/${id}`, { method: "DELETE" });
+        flash("专业已删除。");
+      } catch (err) { flash(err.message, true); }
+      await loadOrg();
+    },
     "org-term-create": async () => {
       const name = q("#ot-name").value.trim();
       if (!name) { flash("学期名称必填（如 2026-2027-1）。", true); return; }
@@ -973,13 +1423,16 @@ document.getElementById("app-view").addEventListener("click", (event) => {
     "org-class-create": async () => {
       const name = q("#oc-name").value.trim();
       if (!name) { flash("班级名称必填。", true); return; }
-      await api("/api/training/staff/org/classes", {
-        method: "POST",
-        body: { college: state.staff.college, name,
-                department_id: q("#oc-department").value || null,
-                term_id: q("#oc-term").value || null } });
-      q("#oc-name").value = "";
-      flash("班级实体已创建（在读人数按学生名册「班级」字段对齐）。");
+      try {
+        await api("/api/training/staff/org/classes", {
+          method: "POST",
+          body: { college: state.staff.college, name,
+                  department_id: q("#oc-department").value || null,
+                  major_id: q("#oc-major").value || null,
+                  term_id: q("#oc-term").value || null } });
+        q("#oc-name").value = "";
+        flash("班级实体已创建（在读人数按学生名册「班级」字段对齐）。");
+      } catch (err) { flash(err.message, true); }
       await loadOrg();
     },
     "org-class-toggle": async () => {
@@ -1236,6 +1689,54 @@ document.getElementById("app-view").addEventListener("click", (event) => {
       if (!window.confirm("确认删除该规则关联？")) return;
       withCert(async () => { await api(`/api/training/staff/links/${id}`, { method: "DELETE" }); flash("规则关联已删除。"); });
     },
+
+    /* ---- 教学单元与实操案例（B2，接口 /api/training/teaching/*） ---- */
+    "refresh-teaching-units": () => loadTeachingUnits().catch((err) => flash(err.message, true)),
+    "refresh-teaching-cases": () => loadTeachingCases().catch((err) => flash(err.message, true)),
+    "show-unit-form": () => {
+      const form = q("#unit-form");
+      if (form) { form.hidden = !form.hidden; if (!form.hidden) { fillUnitSelects(); form.scrollIntoView({ behavior: "smooth" }); } }
+    },
+    "cancel-unit": () => { const form = q("#unit-form"); if (form) form.hidden = true; },
+    "create-unit": () => withCert(async () => {
+      const name = q("#uf-name").value.trim();
+      if (!name) { flash("请填单元名称。", true); return; }
+      const rules = [...q("#uf-rules").selectedOptions].map((o) => o.value);
+      const kps = [...q("#uf-kps").selectedOptions].map((o) => o.value);
+      if (!rules.length) { flash("请至少关联一条规则编号。", true); return; }
+      const created = await api("/api/training/teaching/units", { method: "POST", body: {
+        certificate_id: cert.id, name, stage: q("#uf-stage").value,
+        standard: q("#uf-standard").value, knowledge_point_ids: kps, rule_codes: rules,
+        deliverables: q("#uf-deliverables").value } });
+      await api(`/api/training/teaching/units/${created.unit.id}`, {
+        method: "PUT", body: { status: "published" } });
+      ["#uf-name", "#uf-standard", "#uf-deliverables"].forEach((sel) => { q(sel).value = ""; });
+      q("#unit-form").hidden = true;
+      flash("教学单元已创建并发布。");
+    }),
+    "show-case-form": () => {
+      const form = q("#case-form");
+      if (form) { form.hidden = !form.hidden; if (!form.hidden) { fillCaseSelects(); form.scrollIntoView({ behavior: "smooth" }); } }
+    },
+    "cancel-case": () => { const form = q("#case-form"); if (form) form.hidden = true; },
+    "create-case": () => withCert(async () => {
+      const name = q("#cf-case-name").value.trim();
+      if (!name) { flash("请填案例名称。", true); return; }
+      const rules = [...q("#cf-case-rules").selectedOptions].map((o) => o.value);
+      if (!rules.length) { flash("请至少关联一条规则编号。", true); return; }
+      const materials = q("#cf-case-materials").value.split("\n").map((l) => l.trim()).filter(Boolean)
+        .map((line) => { const [mname, ...rest] = line.split("|"); return { name: mname.trim(), note: rest.join("|").trim() }; });
+      const created = await api("/api/training/teaching/cases", { method: "POST", body: {
+        certificate_id: cert.id, name, unit_id: q("#cf-case-unit").value || null,
+        scenario: q("#cf-case-scenario").value, rule_codes: rules, materials,
+        desensitization_note: q("#cf-case-note").value } });
+      await api(`/api/training/teaching/cases/${created.case.id}`, {
+        method: "PUT", body: { status: "published" } });
+      ["#cf-case-name", "#cf-case-scenario", "#cf-case-materials", "#cf-case-note"]
+        .forEach((sel) => { q(sel).value = ""; });
+      q("#case-form").hidden = true;
+      flash("实操案例已创建并发布。");
+    }),
   };
 
   if (handlers[act]) handlers[act](btn);
@@ -1262,180 +1763,6 @@ async function boot() {
 }
 
 const ready=boot();
-
-/* ---------- 判题管理（FR-J05~J08 教师端） ---------- */
-
-const judgeState = { problems: [], submissions: [] };
-
-const JUDGE_STATUS_LABEL = {
-  accepted: "通过", partial: "部分通过", wrong_answer: "答案错误",
-  runtime_error: "运行错误", timeout: "超时", judgement_failed: "判题失败",
-};
-
-function judgeStatusBadge(status) {
-  if (!status) return `<span class="badge gray">未判题</span>`;
-  const cls = status === "accepted" ? "" : (status === "partial" ? "warn" : "bad");
-  return `<span class="badge ${cls}">${esc(JUDGE_STATUS_LABEL[status] || status)}</span>`;
-}
-
-async function loadJudgeProblems() {
-  const data = await api("/api/training/staff/code-problems?include_inactive=false");
-  judgeState.problems = data.problems || [];
-  const select = document.getElementById("judge-problem");
-  select.innerHTML = judgeState.problems.map((p) =>
-    `<option value="${esc(p.id)}">${esc(p.title)}</option>`).join("") ||
-    `<option value="">（暂无编程题）</option>`;
-}
-
-async function loadJudgeSubmissions() {
-  const box = document.getElementById("judge-submissions");
-  const pid = document.getElementById("judge-problem").value;
-  if (!pid) { box.textContent = "暂无编程题，请先建题。"; return; }
-  const data = await api(`/api/training/staff/code-problems/${pid}/submissions`);
-  judgeState.submissions = data.submissions || [];
-  if (!judgeState.submissions.length) {
-    box.innerHTML = `<p class="muted">该题还没有提交。</p>`;
-    return;
-  }
-  box.innerHTML = `<div style="overflow-x:auto;"><table style="border-collapse:collapse;width:100%;font-size:13px;">
-    <tr style="text-align:left;border-bottom:1px solid var(--line);">
-      <th style="padding:6px;">学号</th><th style="padding:6px;">状态</th>
-      <th style="padding:6px;">客观分</th><th style="padding:6px;">生效分</th>
-      <th style="padding:6px;">通过/用例</th><th style="padding:6px;">操作</th></tr>
-    ${judgeState.submissions.map((s) => `<tr style="border-bottom:1px solid var(--line);">
-      <td style="padding:6px;">${esc(s.student_id.slice(0, 8))}…</td>
-      <td style="padding:6px;">${judgeStatusBadge(s.judge && s.judge.status)}</td>
-      <td style="padding:6px;">${s.judge ? esc(s.judge.total_score) : "—"}</td>
-      <td style="padding:6px;">${s.effective_score != null ? `<b>${esc(s.effective_score)}</b>` : "—"}</td>
-      <td style="padding:6px;">${s.judge ? `${esc(s.judge.passed_count)}/${esc(s.judge.case_count)}` : "—"}</td>
-      <td style="padding:6px;">${s.judge ? `
-        <button class="small" data-judge-act="detail" data-sid="${esc(s.id)}">明细</button>
-        <button class="small" data-judge-act="quality" data-sid="${esc(s.id)}">质量分</button>
-        <button class="small primary" data-judge-act="adjust" data-sid="${esc(s.id)}">调分</button>` : ""}</td>
-    </tr>`).join("")}</table></div><div id="judge-detail" style="margin-top:8px;"></div>`;
-}
-
-async function judgeAdjust(sid) {
-  const sub = judgeState.submissions.find((s) => s.id === sid);
-  const currentScore = sub && sub.effective_score != null ? sub.effective_score : "";
-  const input = window.prompt("调分（0~100；将留痕并要求填写理由）：", String(currentScore));
-  if (input === null) return;
-  const score = Number(input);
-  if (!Number.isFinite(score) || score < 0 || score > 100) { flash("调分须为 0~100 的数字。", true); return; }
-  const reason = window.prompt("调分理由（必填，留痕）：");
-  if (!reason || !reason.trim()) { flash("调分必须填写理由。", true); return; }
-  const data = await api(`/api/training/staff/code-submissions/${sid}/score`, {
-    method: "PUT", body: { score, reason: reason.trim() } });
-  flash(`已调分至 ${data.score.effective_score}；留痕 ${data.score.adjust_log.length} 条。`);
-  await loadJudgeSubmissions();
-}
-
-async function judgeDetail(sid) {
-  const box = document.getElementById("judge-detail");
-  const data = await api(`/api/training/staff/code-submissions/${sid}/score`);
-  const s = data.score;
-  const rows = (s.adjust_log || []).map((a) =>
-    `<div class="mark">${esc(a.at)} 由 ${esc(a.operator_id.slice(0, 8))}…：${esc(a.from)} → ${esc(a.to)}（${esc(a.reason)}）</div>`).join("")
-    || `<p class="muted">无调分记录。</p>`;
-  box.innerHTML = `<div class="item">
-    <p style="margin:4px 0;">判题：${judgeStatusBadge(s.judge_status)} 客观分 ${esc(s.auto_score)} · 生效分 <b>${esc(s.effective_score)}</b>
-      ${s.adjusted_score != null ? `（已调分，理由：${esc(s.adjust_reason)}）` : "（未调分）"}</p>
-    ${rows}</div>`;
-}
-
-async function judgeQuality(sid) {
-  const box = document.getElementById("judge-detail");
-  const data = await api(`/api/training/staff/code-submissions/${sid}/quality`);
-  const qy = data.quality;
-  if (!qy) { box.innerHTML = `<p class="muted">该提交暂无质量分（非 python 或判题前）。</p>`; return; }
-  const checks = (qy.checks || []).map((c) =>
-    `<div class="mark">−${esc(c.penalty)} 分 · ${esc(c.message)} ${esc(c.detail)}</div>`).join("")
-    || `<p class="ok">无扣分项。</p>`;
-  box.innerHTML = `<div class="item"><p style="margin:4px 0;">质量分：<b>${esc(qy.score)}</b> / 100（${esc(qy.checked_at)}）</p>${checks}</div>`;
-}
-
-async function judgePlagScan() {
-  const pid = document.getElementById("judge-problem").value;
-  if (!pid) { flash("暂无编程题。", true); return; }
-  const threshold = Number(document.getElementById("judge-plag-threshold").value) || 0.85;
-  const data = await api(`/api/training/staff/code-problems/${pid}/plagiarism-scan`, {
-    method: "POST", body: { threshold } });
-  flash(`扫描完成：比对 ${data.scan.pairs_checked} 对，落标记 ${data.scan.flagged} 条。`);
-  await judgePlagList();
-}
-
-async function judgePlagList() {
-  const pid = document.getElementById("judge-problem").value;
-  const box = document.getElementById("judge-plag-flags");
-  const data = await api(`/api/training/staff/code-problems/${pid}/plagiarism`);
-  if (!(data.flags || []).length) { box.innerHTML = `<p class="ok">无查重标记。</p>`; return; }
-  box.innerHTML = `<table style="border-collapse:collapse;width:100%;font-size:13px;">
-    <tr style="text-align:left;border-bottom:1px solid var(--line);">
-      <th style="padding:6px;">相似度</th><th style="padding:6px;">学生 A</th>
-      <th style="padding:6px;">学生 B</th><th style="padding:6px;">范围</th></tr>
-    ${data.flags.map((f) => `<tr style="border-bottom:1px solid var(--line);">
-      <td style="padding:6px;"><b>${esc(Math.round(f.similarity * 100))}%</b></td>
-      <td style="padding:6px;">${esc(f.student_no_a)} ${esc(f.name_a)}</td>
-      <td style="padding:6px;">${esc(f.student_no_b)} ${esc(f.name_b)}</td>
-      <td style="padding:6px;">${f.same_class ? `<span class="badge warn">班内</span>` : `<span class="badge gray">跨班</span>`}</td>
-    </tr>`).join("")}</table>`;
-}
-
-async function judgeTasksRefresh() {
-  const state = document.getElementById("judge-task-state").value;
-  const box = document.getElementById("judge-tasks");
-  const qs = state ? `?state=${encodeURIComponent(state)}` : "";
-  const data = await api(`/api/training/staff/code-judge/tasks${qs}`);
-  const tasks = data.tasks || [];
-  if (!tasks.length) { box.innerHTML = `<p class="ok">队列为空。</p>`; return; }
-  box.innerHTML = `<table style="border-collapse:collapse;width:100%;font-size:13px;">
-    <tr style="text-align:left;border-bottom:1px solid var(--line);">
-      <th style="padding:6px;">状态</th><th style="padding:6px;">尝试</th>
-      <th style="padding:6px;">判题结果</th><th style="padding:6px;">最近错误</th><th style="padding:6px;">操作</th></tr>
-    ${tasks.map((t) => `<tr style="border-bottom:1px solid var(--line);">
-      <td style="padding:6px;">${t.state === "done" ? `<span class="badge">done</span>`
-        : t.state === "failed" ? `<span class="badge bad">failed</span>`
-        : t.state === "running" ? `<span class="badge warn">running</span>`
-        : `<span class="badge gray">queued</span>`}</td>
-      <td style="padding:6px;">${esc(t.attempts)}/${esc(t.max_attempts)}</td>
-      <td style="padding:6px;">${t.judge_status ? `${judgeStatusBadge(t.judge_status)} ${esc(t.total_score ?? "")}` : "—"}</td>
-      <td style="padding:6px;">${esc(t.last_error || "—")}</td>
-      <td style="padding:6px;">${t.state !== "done" ? `<button class="small" data-judge-act="retry" data-tid="${esc(t.id)}">重试</button>` : ""}</td>
-    </tr>`).join("")}</table>`;
-}
-
-document.getElementById("app-view").addEventListener("click", async (event) => {
-  const btn = event.target.closest("button[data-judge-act]");
-  if (!btn) return;
-  try {
-    const acts = {
-      detail: () => judgeDetail(btn.dataset.sid),
-      quality: () => judgeQuality(btn.dataset.sid),
-      adjust: () => judgeAdjust(btn.dataset.sid),
-      retry: async () => {
-        await api(`/api/training/staff/code-judge/tasks/${btn.dataset.tid}/retry`, { method: "POST" });
-        flash("任务已置回队列。");
-        await judgeTasksRefresh();
-      },
-    };
-    if (acts[btn.dataset.judgeAct]) await acts[btn.dataset.judgeAct]();
-  } catch (err) { flash(err.message, true); }
-});
-
-document.getElementById("judge-load-subs").addEventListener("click", () =>
-  loadJudgeSubmissions().catch((err) => flash(err.message, true)));
-document.getElementById("judge-plag-scan").addEventListener("click", () =>
-  judgePlagScan().catch((err) => flash(err.message, true)));
-document.getElementById("judge-tasks-refresh").addEventListener("click", () =>
-  judgeTasksRefresh().catch((err) => flash(err.message, true)));
-document.getElementById("judge-task-state").addEventListener("change", () =>
-  judgeTasksRefresh().catch((err) => flash(err.message, true)));
-
-(async () => {
-  // boot() 已在文件前部启动：等登录态判定完成后填充编程题下拉（失败不阻塞主流程）
-  for (let i = 0; i < 50 && !state.staff && !disposed; i++) await new Promise((r) => setTimeout(r, 100));
-  if (state.staff&&!disposed) { try { await loadJudgeProblems(); } catch { /* 忽略 */ } }
-})();
 
 function renderStaffWorkbench() {
   const box = document.getElementById("staff-workbench-body");

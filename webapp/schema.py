@@ -233,6 +233,12 @@ def initialize(store) -> None:
         db.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_single_platform_admin "
                    "ON users(role) WHERE role='platform_admin'")
         classroom.migrate(db)
+        from webapp import ai_coach
+        ai_coach.migrate(db)
+        from webapp import training_tasks
+        training_tasks.migrate(db)
+        from webapp import training_submissions
+        training_submissions.migrate(db)
         mistake_book.migrate(db)
         members.migrate(db)
         from webapp import material_batches
@@ -552,6 +558,172 @@ def initialize(store) -> None:
         if "skipped_at" not in attempt_columns:
             db.execute(
                 "ALTER TABLE training_self_practice_attempts ADD COLUMN skipped_at TEXT")
+        # 真题/回忆/模拟题库作答（第四条就绪：真题授权先行、审核启用）。
+        # 题库题作答与规则仿真共用 attempts 行：bank_question_id 非空即题库题，
+        # rule_id 置空串、seed 置 0；判分按选项集合比对，解析判分后开放。
+        if "bank_question_id" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts"
+                " ADD COLUMN bank_question_id TEXT REFERENCES training_bank_question(id)")
+        # 题源与出题时规则版本：建表语句里有、但旧库（CREATE IF NOT EXISTS 不会补列）
+        # 缺这两列，_scored_view 取 row["source_type"] 会 IndexError -> 提交接口 500。
+        if "source_type" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts"
+                " ADD COLUMN source_type TEXT NOT NULL DEFAULT 'simulated'")
+        if "rule_version" not in attempt_columns:
+            db.execute(
+                "ALTER TABLE training_self_practice_attempts"
+                " ADD COLUMN rule_version TEXT NOT NULL DEFAULT ''")
+        # 真题授权与题库、考纲升版、试用反馈（第四条就绪三件套）。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS training_source_authorization (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 授权适用证书（外键）
+                licensor TEXT NOT NULL,                   -- 授权方（命题管理方或其授权出版方）
+                auth_no TEXT NOT NULL,                    -- 授权文号（书面授权凭证编号，证书内唯一）
+                question_types TEXT NOT NULL,             -- 覆盖题源（逗号分隔：real/recall/mock，服务层校验）
+                valid_from TEXT NOT NULL,                 -- 生效日（ISO 日期）
+                valid_until TEXT,                         -- 失效日（可空=长期；到期后不可再发布/导入）
+                scope_note TEXT NOT NULL DEFAULT '',      -- 使用范围与限制说明
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','revoked')),  -- 生效 / 已撤销（撤销不留痕删除，可审计）
+                created_by TEXT REFERENCES college_user(id),  -- 登记人（外键）
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(certificate_id, auth_no)
+            );
+            CREATE TABLE IF NOT EXISTS training_bank_question (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 所属证书（外键）
+                source_type TEXT NOT NULL
+                    CHECK (source_type IN ('real','recall','mock')),
+                                                          -- 题源：真题/回忆题/模拟题（仿真题为规则生成，不入库）
+                year INTEGER NOT NULL,                    -- 考试年度（如 2026 年真题）
+                question_no TEXT NOT NULL DEFAULT '',     -- 卷内题号（如 一、单选第3题）
+                knowledge_point_id TEXT REFERENCES knowledge_point(id),  -- 关联知识点（外键，可空）
+                stem TEXT NOT NULL,                       -- 题干
+                options_json TEXT NOT NULL,               -- 选项（[{"key":"A","text":"…"},…]）
+                answer_keys_json TEXT NOT NULL,           -- 标准答案（["A"] 或多选 ["A","C"]）
+                explanation TEXT NOT NULL DEFAULT '',     -- 解析（判分后才对学生开放）
+                source_ref TEXT NOT NULL,                 -- 出处说明（年份卷次+授权文号，导入时自动附带）
+                auth_id TEXT NOT NULL REFERENCES training_source_authorization(id),  -- 授权记录（外键，必填）
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','pending','approved','rejected')),
+                                                          -- 草稿/待审/已审核上线/驳回
+                review_note TEXT NOT NULL DEFAULT '',     -- 审核意见
+                reviewed_by TEXT REFERENCES college_user(id),  -- 审核人（外键）
+                reviewed_at TEXT,                         -- 审核时间
+                created_by TEXT REFERENCES college_user(id),  -- 导入人（外键）
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_bank_question_cert
+                ON training_bank_question(certificate_id, source_type, status);
+            CREATE TABLE IF NOT EXISTS training_outline_upgrade (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 证书（外键）
+                from_version TEXT NOT NULL,               -- 现行考纲版本（如 2026）
+                to_version TEXT NOT NULL,                 -- 目标考纲版本（如 2027）
+                status TEXT NOT NULL DEFAULT 'working'
+                    CHECK (status IN ('working','activated')),  -- 核对中 / 已激活切换
+                started_by TEXT REFERENCES college_user(id),  -- 发起人（外键）
+                started_at TEXT NOT NULL,
+                activated_by TEXT REFERENCES college_user(id),  -- 激活人（外键）
+                activated_at TEXT,                        -- 激活时间
+                note TEXT NOT NULL DEFAULT ''             -- 备注（如大纲发布文号）
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_outline_upgrade_cert
+                ON training_outline_upgrade(certificate_id, status);
+            CREATE TABLE IF NOT EXISTS training_trial_feedback (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                student_id TEXT NOT NULL REFERENCES student_info(id),  -- 反馈学生（外键）
+                certificate_id TEXT REFERENCES certificate(id),  -- 关联证书（外键，可空）
+                ref_type TEXT NOT NULL DEFAULT 'none'
+                    CHECK (ref_type IN ('none','kp','attempt','question')),
+                                                          -- 关联对象：无/知识点/作答/题库题
+                ref_id TEXT NOT NULL DEFAULT '',          -- 关联对象 id（ref_type=none 时为空）
+                category TEXT NOT NULL
+                    CHECK (category IN ('bug','suggestion','content','other')),
+                                                          -- 类别：缺陷/建议/内容纠错/其他
+                content TEXT NOT NULL,                    -- 反馈内容（1~1000 字，服务层校验）
+                status TEXT NOT NULL DEFAULT 'new'
+                    CHECK (status IN ('new','processing','resolved')),  -- 新反馈/处理中/已处理
+                staff_note TEXT NOT NULL DEFAULT '',      -- 教师处理备注
+                handled_by TEXT REFERENCES college_user(id),  -- 处理人（外键）
+                handled_at TEXT,                          -- 处理时间
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_training_trial_feedback_student
+                ON training_trial_feedback(student_id, created_at DESC);
+        """)
+        # 教学单元与实操案例（重设计方案 B1，全部 additive）。
+        # 单元/案例只存 rule_code（R-001…R-024），不存 YAML 文件路径——执行源仍是
+        # rules/*.yaml，图谱 TaxRule 存版本快照；将来 YAML 退役教学侧不用改。
+        # 依据链（TaxRule→USES_METRIC→Metric、→Clause→Policy）实时查图谱；
+        # 本库 Clause/Policy 为 0，凡引用条款一律展示「依据待专业复核」。
+        db.executescript("""
+            CREATE TABLE IF NOT EXISTS teaching_unit (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 所属证书（外键）
+                name TEXT NOT NULL,                       -- 单元名称（证书内唯一）
+                stage TEXT NOT NULL DEFAULT 'voucher'
+                    CHECK (stage IN ('voucher','data','conclusion')),
+                                                          -- 三段标准：凭证层/数据层/结论层
+                standard TEXT NOT NULL DEFAULT '',        -- 一句话标准（学生要能回答的问题）
+                knowledge_point_ids_json TEXT NOT NULL DEFAULT '[]',  -- 关联知识点 id（JSON 数组）
+                rule_codes_json TEXT NOT NULL DEFAULT '[]',  -- 关联规则（rule_code，JSON 数组）
+                deliverables TEXT NOT NULL DEFAULT '',    -- 学生要交的证据说明
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','published','archived')),  -- 草稿/已发布/已归档
+                sort_order INTEGER NOT NULL DEFAULT 0,    -- 排序
+                created_by TEXT REFERENCES college_user(id),  -- 创建人（外键）
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(certificate_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_teaching_unit_cert
+                ON teaching_unit(certificate_id, status, sort_order);
+            CREATE TABLE IF NOT EXISTS teaching_case (
+                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),  -- 所属证书（外键）
+                unit_id TEXT REFERENCES teaching_unit(id),  -- 所属教学单元（外键，可空=独立案例）
+                name TEXT NOT NULL,                       -- 案例名称（证书内唯一）
+                scenario TEXT NOT NULL DEFAULT '',        -- 背景说明（脱敏仿真情境）
+                rule_codes_json TEXT NOT NULL DEFAULT '[]',  -- 绑定规则（rule_code，JSON 数组）
+                materials_json TEXT NOT NULL DEFAULT '[]',   -- 材料包清单（[{"name":…,"note":…}]）
+                standard_conclusion_json TEXT NOT NULL DEFAULT '[]',  -- 标准结论（提交后才对学生开放）
+                desensitization_note TEXT NOT NULL DEFAULT '',  -- 脱敏说明
+                status TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','published','archived')),
+                created_by TEXT REFERENCES college_user(id),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(certificate_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_teaching_case_cert
+                ON teaching_case(certificate_id, status);
+            CREATE INDEX IF NOT EXISTS idx_teaching_case_unit
+                ON teaching_case(unit_id);
+        """)
+        # 实操案例→学生任务链路（B4 前半）：外键指向 teaching_case 与 assignments，
+        # 必须放在上面这两张表建好之后，否则首次建库会漏掉这两张旁挂表。
+        from webapp import teaching_case_tasks
+        teaching_case_tasks.migrate(db)
+        # 四维量规（B4 后半）：外键指向 teaching_case_task，必须排在它建表之后
+        from webapp import teaching_rubric
+        teaching_rubric.migrate(db)
+        # 考纲升版核对状态（第四条就绪：逐条核对升版在现行树上进行）。
+        # ''=非核对树；pending=待核对 confirmed=沿用 updated=已按新纲修改
+        # added=新版新增（激活时才对学生可见） removed=新版删除（激活时停用）。
+        kp_columns = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_point)")}
+        if "review_status" not in kp_columns:
+            db.execute("ALTER TABLE knowledge_point ADD COLUMN review_status TEXT NOT NULL DEFAULT ''")
+        # 知识点-题目关联的停用标记（治理题源：停用不删行）。早期库建表时没有这一列，
+        # 缺列时学生端知识点清单的 active=1 过滤会直接报 no such column，故在此补齐。
+        link_columns = {row["name"] for row in db.execute("PRAGMA table_info(knowledge_point_link)")}
+        if "active" not in link_columns:
+            db.execute("ALTER TABLE knowledge_point_link ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
         # 班级归属追溯（FR-U03：账号与班级归属可追溯）。整建制/单点改班各记一行，不改写历史。
         db.executescript("""
             CREATE TABLE IF NOT EXISTS roster_class_history (
@@ -627,85 +799,25 @@ def initialize(store) -> None:
             CREATE INDEX IF NOT EXISTS idx_college_class_lookup
                 ON college_class(college, name);
         """)
-        # 编程题库（FR-J01 v1，仅数据模型与管理）：题目 + 测试用例。
-        # 边界如实标注：判题沙箱（J03）、判题引擎（J04）、提交与版本存储（J02，
-        # 代码正文按 05 号文档加密留存）待判题专项接入；本版不含提交数据，
-        # 用例改动对历史判题记录复现的影响待 J02 落地时以版本机制实现。
+        # 专业层级（FR-U01 待补）：院系 → 专业 → 班级。专业挂院系（可空），
+        # 班级可选挂专业；同院校专业名唯一；既有库 additive 加列补挂 major_id。
         db.executescript("""
-            CREATE TABLE IF NOT EXISTS code_problem (
-                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
-                college TEXT NOT NULL,                    -- 所属院校（实训数据隔离键）
-                title TEXT NOT NULL,                      -- 题目标题
-                statement TEXT NOT NULL DEFAULT '',       -- 题面描述（纯文本）
-                language TEXT NOT NULL DEFAULT 'python',  -- 判题语言（v1 仅 python）
-                time_limit_ms INTEGER NOT NULL DEFAULT 5000,
-                memory_limit_kb INTEGER NOT NULL DEFAULT 65536,
-                knowledge_point_id TEXT REFERENCES knowledge_point(id),  -- 关联知识点（可空）
-                active INTEGER NOT NULL DEFAULT 1,
-                created_by TEXT REFERENCES college_user(id),
-                created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS code_test_case (
+            CREATE TABLE IF NOT EXISTS college_major (
                 id TEXT PRIMARY KEY,
-                problem_id TEXT NOT NULL REFERENCES code_problem(id),
-                seq INTEGER NOT NULL,                     -- 用例序号（题内从 1 递增）
-                input_text TEXT NOT NULL DEFAULT '',      -- 标准输入
-                expected_output TEXT NOT NULL DEFAULT '', -- 期望输出（按 match_mode 比对）
-                weight REAL NOT NULL DEFAULT 1.0,         -- 计分权重
-                sample INTEGER NOT NULL DEFAULT 0,        -- 1=公开样例（学生可见）
-                match_mode TEXT NOT NULL DEFAULT 'exact'
-                    CHECK (match_mode IN ('exact','float','any_of')),  -- 比对模式（v3.1）
-                float_tolerance REAL,                     -- float 模式容差（NULL=1e-6）
-                alternatives_json TEXT,                   -- any_of 多解候选（JSON 数组，可空）
+                college TEXT NOT NULL,
+                name TEXT NOT NULL,
+                department_id TEXT REFERENCES college_department(id),
+                archived INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
-                UNIQUE(problem_id, seq)
+                UNIQUE(college, name)
             );
-            CREATE INDEX IF NOT EXISTS idx_code_problem_college
-                ON code_problem(college, active);
-            -- 编程提交与判题（FR-J02 v1 + J04 教学级引擎）：代码正文按敏感存储
-            -- 保护（REGISTRY: code_submission.code_text）；一次提交一次判题，
-            -- 重判=重新提交新行（历史不被覆盖）。判题器为教学演示级受限子进程
-            -- （超时/独立目录/输出截断），非容器级安全边界，生产判题须专项。
-            CREATE TABLE IF NOT EXISTS code_submission (
-                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
-                problem_id TEXT NOT NULL REFERENCES code_problem(id),
-                student_id TEXT NOT NULL REFERENCES student_info(id),
-                language TEXT NOT NULL DEFAULT 'python',  -- 与题目 language 一致（v1 仅 python）
-                code_text TEXT NOT NULL,                  -- 代码正文（敏感存储保护列）
-                status TEXT NOT NULL DEFAULT 'pending'
-                    CHECK (status IN ('pending','judged','judgement_failed')),
-                submitted_at TEXT NOT NULL,
-                content_version_id TEXT,                  -- 预留：题库版本追溯（J02 边界）
-                UNIQUE(problem_id, student_id, submitted_at)
-            );
-            CREATE INDEX IF NOT EXISTS idx_code_submission_problem
-                ON code_submission(problem_id, submitted_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_code_submission_student
-                ON code_submission(student_id, submitted_at DESC);
-            CREATE TABLE IF NOT EXISTS code_judge_result (
-                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
-                submission_id TEXT NOT NULL UNIQUE REFERENCES code_submission(id),  -- 1:1
-                status TEXT NOT NULL
-                    CHECK (status IN ('accepted','partial','wrong_answer',
-                                      'runtime_error','timeout','judgement_failed')),
-                total_score REAL NOT NULL DEFAULT 0,      -- 加权得分（0~100）
-                passed_count INTEGER NOT NULL DEFAULT 0,
-                case_count INTEGER NOT NULL DEFAULT 0,
-                detail_json TEXT NOT NULL,                -- 逐用例：seq/passed/score/runtime_ms/输出摘要（截断）
-                judged_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_code_judge_submission
-                ON code_judge_result(submission_id);
+            CREATE INDEX IF NOT EXISTS idx_college_major_lookup
+                ON college_major(college, name);
         """)
-        # 判题比对模式（v3.1，浮点容差/多解判定）：既有库幂等补列。
-        _code_case_columns = {row["name"] for row in db.execute("PRAGMA table_info(code_test_case)")}
-        if _code_case_columns:
-            if "match_mode" not in _code_case_columns:
-                db.execute("ALTER TABLE code_test_case ADD COLUMN match_mode TEXT NOT NULL DEFAULT 'exact'")
-            if "float_tolerance" not in _code_case_columns:
-                db.execute("ALTER TABLE code_test_case ADD COLUMN float_tolerance REAL")
-            if "alternatives_json" not in _code_case_columns:
-                db.execute("ALTER TABLE code_test_case ADD COLUMN alternatives_json TEXT")
+        class_columns = {row["name"] for row in db.execute("PRAGMA table_info(college_class)")}
+        if "major_id" not in class_columns:
+            db.execute(
+                "ALTER TABLE college_class ADD COLUMN major_id TEXT REFERENCES college_major(id)")
         # 院校席位与配额（FR-U06）：教师/学生分席，院校按师生配额核销。
         # 无记录院校按默认档放行（不阻塞既有部署）；调整走 revision 乐观锁
         # 并逐次留痕（与 platform org_quota/members.set_quota 同模式）。
@@ -747,71 +859,6 @@ def initialize(store) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_college_roster_snapshot_term
                 ON college_roster_snapshot(term_id, class_name);
-        """)
-        # 判题链路增强（FR-J05/J06/J07/J08 v1）：任务队列、查重标记、
-        # 质量评分、判题分与评分体系桥接。均无敏感列（不进 REGISTRY）；
-        # 追加式建表，历史数据不受影响。
-        db.executescript("""
-            -- J05 判题任务队列：提交入队 → worker 认领（running）→ done/failed。
-            -- 状态机 queued→running→done|failed；failed 且 attempts<max_attempts
-            -- 可重试（retry 置回 queued）。同一提交只有一个未完结任务
-            -- （submission_id 唯一，重判=新提交新行，沿用既有惯例）。
-            CREATE TABLE IF NOT EXISTS code_judge_task (
-                id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
-                submission_id TEXT NOT NULL UNIQUE REFERENCES code_submission(id),
-                state TEXT NOT NULL DEFAULT 'queued'
-                    CHECK (state IN ('queued','running','done','failed')),
-                attempts INTEGER NOT NULL DEFAULT 0,
-                max_attempts INTEGER NOT NULL DEFAULT 3,
-                last_error TEXT NOT NULL DEFAULT '',      -- 最近一次失败原因（截断留存）
-                picked_at TEXT,                           -- worker 认领时间
-                finished_at TEXT,                         -- done/failed 时间
-                next_run_at TEXT NOT NULL,                -- 最早可执行时间（失败退避用）
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_code_judge_task_state
-                ON code_judge_task(state, next_run_at);
-            -- J06 查重标记：同题跨学生两两比对（归一化 token shingle Jaccard），
-            -- 超阈值落标记。无向对去重：submission_a 字典序 < submission_b。
-            CREATE TABLE IF NOT EXISTS code_plagiarism_flag (
-                id TEXT PRIMARY KEY,
-                problem_id TEXT NOT NULL REFERENCES code_problem(id),
-                submission_a TEXT NOT NULL REFERENCES code_submission(id),
-                submission_b TEXT NOT NULL REFERENCES code_submission(id),
-                similarity REAL NOT NULL,                 -- 0~1 Jaccard 相似度
-                same_class INTEGER NOT NULL DEFAULT 0,    -- 1=同班级（班内比对命中）
-                detail_json TEXT NOT NULL DEFAULT '{}',   -- 归一化摘要/共享 shingle 数等
-                flagged_at TEXT NOT NULL,
-                UNIQUE(submission_a, submission_b)
-            );
-            CREATE INDEX IF NOT EXISTS idx_code_plagiarism_problem
-                ON code_plagiarism_flag(problem_id, similarity DESC);
-            -- J07 代码质量分：判题通过后对同一提交做 AST 静态检查，
-            -- 与正确性得分分开留存（辅助维度，不计入判题通过判定）。
-            CREATE TABLE IF NOT EXISTS code_quality_result (
-                id TEXT PRIMARY KEY,
-                submission_id TEXT NOT NULL UNIQUE REFERENCES code_submission(id),
-                score REAL NOT NULL,                      -- 0~100 质量分（确定性问题清单扣分）
-                detail_json TEXT NOT NULL,                -- 逐检查项：名称/扣分/说明
-                checked_at TEXT NOT NULL
-            );
-            -- J08 判题接入评分体系：判题产出（code_judge_result）作为客观事实
-            -- 来源落评分记录；教师可调分（adjusted_score），调整留痕入 adjust_log。
-            -- 生效分 = adjusted_score（未调分时 = auto_score）。
-            CREATE TABLE IF NOT EXISTS code_score_record (
-                id TEXT PRIMARY KEY,
-                submission_id TEXT NOT NULL UNIQUE REFERENCES code_submission(id),
-                judge_result_id TEXT NOT NULL REFERENCES code_judge_result(id),
-                auto_score REAL NOT NULL,                 -- 判题引擎客观分（0~100）
-                adjusted_score REAL,                      -- 教师调分（NULL=未调）
-                adjust_reason TEXT NOT NULL DEFAULT '',   -- 最近一次调分理由
-                adjust_log_json TEXT NOT NULL DEFAULT '[]',  -- 全部调分留痕（时间/操作人/前后值/理由）
-                adjusted_by TEXT REFERENCES college_user(id),
-                updated_at TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_code_score_record_submission
-                ON code_score_record(submission_id);
         """)
         from webapp import ai_keys
         ai_keys.migrate(db)

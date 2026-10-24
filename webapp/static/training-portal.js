@@ -6,7 +6,7 @@ let disposed=false;const requests=new AbortController();
 "use strict";
 
 const state = { student: null, certificates: [], goals: [], kps: [], attempt: null,
-                profile: null, pfCert: null };
+                profile: null, pfCert: null, certQuery: "", certSearch: null, guideCert: null };
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -42,7 +42,8 @@ const SOURCE_LABEL = { official: "官方考试日", expected: "预计考试日",
 function renderGoals() {
   const box = document.getElementById("goals");
   if (!state.goals.length) {
-    box.innerHTML = `<p class="muted">还没有考证目标，从下方证书目录中选择一个开始。</p>`;
+    box.innerHTML = `<p class="muted">还没有考证目标：到「找证书」里搜一个证书，设为目标并选定考试日后，这里会出现倒计时和每天该学什么。</p>
+      <button class="small" data-act="workspace-catalog">去找证书</button>`;
     return;
   }
   box.innerHTML = state.goals.map((g) => {
@@ -95,45 +96,264 @@ function officialOptions(certificateId) {
     .join("");
 }
 
-function renderCerts() {
-  const box = document.getElementById("certs");
-  if (!state.certificates.length) {
-    box.innerHTML = `<p class="muted">证书目录暂未开放，请等待管理员上架。</p>`;
+/* ---------- 找证书：搜索 → 详情（倒计时 / 重点知识点 / 实操工作） ---------- */
+
+const PRACTICE_ACHIEVE_HINT = "仿真案例由规则生成（非真题），提交后自动判分并开放解析。";
+
+function certSearchWhy(match) {
+  return (match || []).map((m) =>
+    `<span class="chip" title="搜索命中位置">${esc(m.label)}：${esc(m.text)}</span>`).join("");
+}
+
+function renderCertSearch(data) {
+  const box = document.getElementById("cert-results");
+  const suggest = document.getElementById("cert-suggest");
+  state.certSearch = data;
+  const words = data.suggestions || [];
+  suggest.innerHTML = words.length
+    ? `<span class="muted">试试：</span>${words.map((word) =>
+        `<button type="button" class="chip chip-btn" data-act="cert-try" data-q="${esc(word)}">${esc(word)}</button>`).join("")}`
+    : "";
+  if (!data.results.length) {
+    box.innerHTML = `<div class="cert-empty">
+      <p><strong>没有搜到「${esc(data.query)}」。</strong></p>
+      <p class="muted">当前可考的证书都在上面这些词里；换个说法，或者点建议词。
+        搜不到不代表不能考，也可能是还没上架，可以点上面的建议词或在「试用反馈」里告诉老师。</p>
+    </div>`;
     return;
   }
-  box.innerHTML = state.certificates.map((c) => {
-    const dates = c.exam_dates.length
-      ? c.exam_dates.map((d) => {
-          const label = `${esc(d.exam_date)}${d.round_label ? " · " + esc(d.round_label) : ""}`;
-          return `<li>${label} ${countdownBadge(d.countdown)}</li>`;
-        }).join("")
-      : `<li class="muted">暂未公布考试日期</li>`;
-    const hasActiveGoal = state.goals.some((g) => g.certificate && g.certificate.id === c.id && g.status === "active");
-    return `<div class="cert">
-      <div class="cert-head">
-        <div><strong>${esc(c.name)}</strong> <span class="muted">${esc(c.code)}</span></div>
-        <button class="small primary" data-act="pick" data-id="${esc(c.id)}" ${hasActiveGoal ? "disabled" : ""}>
-          ${hasActiveGoal ? "已是我的目标" : "设为我的目标"}
-        </button>
-      </div>
-      <div>${(c.subjects || []).map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>
-      ${c.description ? `<div class="muted" style="margin-top:6px;">${esc(c.description)}</div>` : ""}
-      <ul class="muted" style="margin:8px 0 0; padding-left:18px;">${dates}</ul>
-      <div class="inline-form" id="pick-${esc(c.id)}" hidden>
-        <label>选择官方/预计考试日</label>
-        <select data-role="pick-official" data-id="${esc(c.id)}">
-          <option value="">（不指定）</option>
-          ${officialOptions(c.id)}
-        </select>
-        <label>或填写个人计划日</label>
-        <input type="date" data-role="pick-planned" data-id="${esc(c.id)}" min="${todayISO()}">
+  box.innerHTML = `<p class="muted" style="margin:0 0 8px;">${data.query
+    ? `搜到 ${data.total} 个证书` : "当前可考的证书"}，点进去看倒计时、重点知识点和实操安排。</p>` +
+    data.results.map((c) => {
+      const next = c.next_exam;
+      const dateLine = next
+        ? `最近一场 ${esc(next.exam_date)}${next.round_label ? " · " + esc(next.round_label) : ""}
+           （${next.date_type === "official" ? "官方" : "预计"}）${countdownBadge(next.countdown)}`
+        : `<span class="badge gray">暂未公布考试日期</span>`;
+      return `<div class="cert">
+        <div class="cert-head">
+          <div><strong>${esc(c.name)}</strong> <span class="muted">${esc(c.code)}</span></div>
+          <button class="small primary" type="button" data-act="open-cert" data-id="${esc(c.id)}">进入备考 →</button>
+        </div>
+        <div>${(c.subjects || []).map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>
+        <div class="muted" style="margin-top:6px;">${dateLine}</div>
+        <div class="muted">知识点 ${c.counts.knowledge_points} 个 · 大纲标注常考 ${c.counts.high_freq} 个 ·
+          已有仿真题的知识点 ${c.counts.practice_kps} 个</div>
+        ${c.my_goal ? `<div class="muted">我的目标日期：${esc(c.my_goal.official_date || c.my_goal.planned_date || "未设")}
+          ${countdownBadge(c.my_goal.countdown)}</div>` : ""}
+        ${c.match && c.match.length ? `<div style="margin-top:6px;">${certSearchWhy(c.match)}</div>` : ""}
+        ${c.description ? `<div class="muted" style="margin-top:6px;">${esc(c.description)}</div>` : ""}
+      </div>`;
+    }).join("");
+}
+
+async function runCertSearch(query) {
+  state.certQuery = query || "";
+  closeGuide();
+  const box = document.getElementById("cert-results");
+  box.innerHTML = `<p class="muted">正在搜索…</p>`;
+  const data = await api(`/api/training/certificates/search?q=${encodeURIComponent(state.certQuery)}`);
+  renderCertSearch(data);
+}
+
+function closeGuide() {
+  state.guideCert = null;
+  const guide = document.getElementById("cert-guide");
+  guide.hidden = true;
+  guide.innerHTML = "";
+  document.getElementById("cert-results").hidden = false;
+  document.getElementById("cert-suggest").hidden = false;
+}
+
+async function openGuide(certId) {
+  const box = document.getElementById("cert-guide");
+  document.getElementById("cert-results").hidden = true;
+  document.getElementById("cert-suggest").hidden = true;
+  box.hidden = false;
+  box.innerHTML = `<p class="muted">正在读取备考指引…</p>`;
+  try {
+    const data = await api(`/api/training/my/certificate-guide?certificate_id=${encodeURIComponent(certId)}`);
+    state.guideCert = certId;
+    renderGuide(data);
+  } catch (err) {
+    state.guideCert = null;
+    box.innerHTML = `<p class="error">${esc(err.message)}</p>
+      <button class="small" type="button" data-act="cert-back">← 返回搜索结果</button>`;
+  }
+}
+
+function chapterNameOf(guide, code) {
+  for (const subject of guide.subjects || []) {
+    const hit = subject.chapters.find((chapter) => chapter.code === code);
+    if (hit) return hit.name;
+  }
+  return code;
+}
+
+function renderGuide(g) {
+  const box = document.getElementById("cert-guide");
+  const cert = g.certificate, exam = g.exam, cd = exam.countdown;
+  const sourceLabel = SOURCE_LABEL[exam.countdown_source] || "未设日期";
+  const scopeLabel = exam.countdown_scope === "goal" ? "按我的目标日期"
+    : (exam.countdown_scope === "certificate" ? "按证书最近一场考试" : "未设日期");
+  const hero = (cd && !cd.expired)
+    ? `<div class="countdown-hero">
+         <div class="countdown-num">${cd.days_left}</div>
+         <div class="countdown-side">
+           <div class="countdown-unit">天后考试</div>
+           <div class="muted">${esc(cd.target_date)} · ${esc(sourceLabel)} · ${esc(scopeLabel)}</div>
+           <div class="muted">${esc(g.pacing.note || "")}</div>
+         </div>
+       </div>`
+    : `<div class="countdown-hero">
+         <div class="countdown-num">—</div>
+         <div class="countdown-side">
+           <div class="countdown-unit">还没有可用的考试日期</div>
+           <div class="muted">${esc(g.pacing.note || "")}</div>
+         </div>
+       </div>`;
+
+  const goal = exam.goal;
+  const goalBlock = goal
+    ? `<div class="inline-form">
+         <div class="item-head">
+           <div>我的目标日期：<strong>${esc((goal.official_date || {}).exam_date || goal.planned_date || "未设")}</strong>
+             ${countdownBadge(goal.countdown)}</div>
+           <button class="small" type="button" data-act="g-edit-goal" data-id="${esc(goal.id)}">改日期</button>
+         </div>
+         <div class="inline-form" id="g-edit-${esc(goal.id)}" hidden>
+           <label>改为官方/预计考试日</label>
+           <select data-role="official">
+             <option value="">（不指定）</option>
+             ${officialOptions(cert.id)}
+           </select>
+           <label>或自定义个人计划日</label>
+           <input type="date" data-role="planned" min="${todayISO()}" value="${esc(goal.planned_date || "")}">
+           <div class="actions">
+             <button class="small primary" type="button" data-act="g-save-goal" data-id="${esc(goal.id)}">保存</button>
+             <button class="small" type="button" data-act="g-cancel-goal" data-id="${esc(goal.id)}">取消</button>
+           </div>
+         </div>
+       </div>`
+    : `<div class="inline-form">
+         <div class="muted">还没给这个证书设目标日期。选定后倒计时和"每天学几个"都按你的目标算；
+           不设也能看到按最近一场考试的倒计时。</div>
+         <label>选择官方/预计考试日</label>
+         <select id="g-pick-official"><option value="">（不指定）</option>${officialOptions(cert.id)}</select>
+         <label>或填写个人计划日</label>
+         <input type="date" id="g-pick-planned" min="${todayISO()}">
+         <div class="actions">
+           <button class="small primary" type="button" data-act="g-create-goal" data-id="${esc(cert.id)}">设为目标</button>
+         </div>
+       </div>`;
+
+  const dateRows = (exam.dates || []).map((d) => `<li>${esc(d.exam_date)}
+      ${d.round_label ? " · " + esc(d.round_label) : ""}
+      （${d.date_type === "official" ? "官方" : "预计"}）${countdownBadge(d.countdown)}</li>`).join("");
+
+  const focusRows = g.focus.items.map((f, index) => `
+    <div class="focus-item">
+      <div class="focus-rank">${index + 1}</div>
+      <div class="focus-body">
+        <div class="item-head">
+          <div><strong>${esc(f.name)}</strong>
+            <span class="muted">${esc(f.code)} · ${esc(f.chapter_name)}</span></div>
+          <div>
+            ${f.high_freq.length ? `<span class="badge warn">常考</span>` : ""}
+            ${f.required.master ? `<span class="badge">掌握 ${f.required.master}</span>` : ""}
+            ${f.required.familiar ? `<span class="badge gray">熟悉 ${f.required.familiar}</span>` : ""}
+            ${f.rule_links ? `<span class="badge gray">仿真题 ${f.rule_links}</span>`
+                           : `<span class="badge gray">暂无题目</span>`}
+          </div>
+        </div>
+        <div class="muted">${esc(f.reason)}</div>
         <div class="actions">
-          <button class="small primary" data-act="confirm-pick" data-id="${esc(c.id)}">确认目标</button>
-          <button class="small" data-act="cancel-pick" data-id="${esc(c.id)}">取消</button>
+          ${f.rule_links ? `<button class="small primary" type="button" data-act="g-practice"
+             data-cert="${esc(cert.id)}" data-kp="${esc(f.id)}">练这个知识点</button>` : ""}
+          <span class="muted">我已练 ${f.attempts} 次 · 满分 ${f.perfect} 次</span>
         </div>
       </div>
-    </div>`;
-  }).join("");
+    </div>`).join("");
+
+  const practicalRows = g.practical.items.map((item) => `
+    <div class="item">
+      <div class="item-head">
+        <div><strong>${esc(item.title)}</strong>
+          <span class="muted">${esc(item.chapter_code)} ${esc(chapterNameOf(g, item.chapter_code))}</span></div>
+        <span class="chip">${esc(item.id)}</span>
+      </div>
+      <ol class="practical-steps">${item.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>
+      <div class="muted">交付物：${esc(item.deliverable)}</div>
+      ${item.focus.length ? `<div class="muted">对应知识点：${item.focus.map((f) =>
+        `${esc(f.code)} ${esc(f.name)}`).join("、")}</div>` : ""}
+    </div>`).join("");
+
+  const labRows = g.practical.rule_labs.map((lab) => `
+    <div class="item">
+      <div class="item-head">
+        <div><strong>${esc(lab.rule_code)} · ${esc(lab.title)}</strong>
+          <span class="muted">${esc(lab.chapter_name)} / ${esc(lab.knowledge_point_name)}</span></div>
+        <button class="small primary" type="button" data-act="g-rule" data-cert="${esc(cert.id)}"
+          data-kp="${esc(lab.knowledge_point_id)}" data-rule="${esc(lab.rule_id)}">生成仿真案例</button>
+      </div>
+      <div class="muted">${lab.tax_type ? "税种：" + esc(lab.tax_type) + " · " : ""}${esc(lab.threshold_basis || "")}</div>
+      ${Object.keys(lab.inputs || {}).length ? `<details><summary>取数口径（照着做要取哪些数）</summary>
+        <ul>${Object.entries(lab.inputs).map(([name, meaning]) =>
+          `<li>${esc(name)}：${esc(meaning)}</li>`).join("")}</ul></details>` : ""}
+    </div>`).join("");
+
+  const subjectRows = g.subjects.map((subject) => `
+    <details class="subject-block">
+      <summary><strong>${esc(subject.subject)}</strong>
+        <span class="muted">${subject.chapters.length} 章 · ${subject.kp_count} 个知识点</span></summary>
+      ${subject.chapters.map((chapter) => `
+        <div class="detail">
+          <div class="item-head">
+            <div><strong>${esc(chapter.code)} ${esc(chapter.name)}</strong></div>
+            <span class="muted">掌握 ${chapter.requirement.master} · 熟悉 ${chapter.requirement.familiar}
+              · 了解 ${chapter.requirement.know}</span>
+          </div>
+          <div class="muted">${chapter.kp_count} 个知识点 · 常考 ${chapter.high_freq_count}
+            · 有仿真题 ${chapter.practice_kp_count}${chapter.focus_count
+              ? ` · 进重点清单 ${chapter.focus_count} 个` : ""}</div>
+          <ul class="kp-list">${chapter.kps.map((kp) => `<li>
+            ${kp.high_freq ? `<span class="badge warn">常考</span> ` : ""}${esc(kp.code)} ${esc(kp.name)}
+            <span class="muted">${kp.rule_links ? `仿真题 ${kp.rule_links}` : "暂无题目"} · 已练 ${kp.attempts}</span>
+          </li>`).join("")}</ul>
+        </div>`).join("")}
+    </details>`).join("");
+
+  box.innerHTML = `
+    <div class="guide-head">
+      <button class="small" type="button" data-act="cert-back">← 返回搜索结果</button>
+      <div>
+        <h2 style="margin:0 0 4px;">${esc(cert.name)} <span class="muted">${esc(cert.code)}</span></h2>
+        <div>${(cert.subjects || []).map((s) => `<span class="chip">${esc(s)}</span>`).join("")}
+          ${g.content_version ? `<span class="chip">教学版本：${esc(g.content_version.label)}</span>` : ""}</div>
+        ${cert.description ? `<div class="muted">${esc(cert.description)}</div>` : ""}
+      </div>
+    </div>
+    ${hero}
+    ${goalBlock}
+    <h3>接下来的考试日期</h3>
+    <ul class="muted" style="margin:4px 0 0; padding-left:18px;">
+      ${dateRows || `<li>教师还没有录入官方/预计考试日期。</li>`}
+    </ul>
+    <h3>重点要学的知识点（按优先级，共 ${g.focus.items.length} 个）</h3>
+    <p class="muted" style="margin:0 0 8px;">${esc(g.focus.rule)}</p>
+    ${focusRows || `<p class="muted">该证书还没有配置知识点，等教师上架后这里会给出重点清单。</p>`}
+    <h3>要动手做的实操工作</h3>
+    <p class="muted" style="margin:0 0 8px;">${esc(g.practical.source_note)}
+      （已覆盖 ${g.practical.chapters_with_items}/${g.practical.chapters_total} 章 · 版本 ${esc(g.practical.version)}）</p>
+    <h4>① 章节实操清单：照着做，留下成果</h4>
+    ${practicalRows || `<p class="muted">该证书的章节还没有对应实操建议。</p>`}
+    <h4>② 合规核对实操：生成仿真案例，做完可判分</h4>
+    ${labRows || `<p class="muted">该证书还没有关联规则仿真案例，等教师在「知识点-题目关联」里配置。</p>`}
+    ${labRows ? `<p class="muted">${PRACTICE_ACHIEVE_HINT}</p>` : ""}
+    <h3>按章节看全部知识点</h3>
+    ${subjectRows || `<p class="muted">暂无知识点。</p>`}
+    <div class="muted" style="margin-top:10px;">我的练习：覆盖 ${g.progress.covered}/${g.progress.kp_total} 个知识点
+      · 共 ${g.progress.attempts} 次作答 · 满分 ${g.progress.perfect} 次。</div>`;
 }
 
 function todayISO() {
@@ -161,10 +381,48 @@ async function refresh() {
   state.certificates = certs.certificates;
   state.goals = goals.goals;
   renderGoals();
-  renderCerts();
-  await refreshPractice();
-  await refreshProfile({strict: true});
+  if (!state.guideCert) await runCertSearch(state.certQuery).catch((err) => flash(err.message, true));
+  await refreshPractice().catch((err) => flash(err.message, true));
+  await refreshProfile({ strict: true }).catch(() => {});
+  await loadMyFeedback().catch(() => {});
 }
+
+/* ---------- 试用反馈（本人隔离） ---------- */
+
+const FB_STATUS_ZH = { new: "已提交", processing: "处理中", resolved: "已处理" };
+const FB_CATEGORY_ZH = { bug: "缺陷", suggestion: "建议", content: "内容纠错", other: "其他" };
+
+async function loadMyFeedback() {
+  const box = document.getElementById("fb-mine");
+  const rows = (await api("/api/training/my/feedback")).feedback;
+  box.innerHTML = rows.length ? `<p class="muted">我提交的反馈（仅本人可见）：</p>` + rows.map((f) => `
+    <div class="item">
+      <div class="item-head">
+        <div><span class="badge ${f.status === "resolved" ? "" : "warn"}">${FB_STATUS_ZH[f.status] || esc(f.status)}</span>
+          <span class="chip">${FB_CATEGORY_ZH[f.category] || esc(f.category)}</span></div>
+        <span class="muted">${esc((f.created_at || "").slice(0, 16).replace("T", " "))}</span>
+      </div>
+      <div>${esc(f.content)}</div>
+      ${f.staff_note ? `<div class="muted">教师回复：${esc(f.staff_note)}</div>` : ""}
+    </div>`).join("") : `<p class="muted">还没有提交过反馈。</p>`;
+}
+
+document.getElementById("fb-submit").addEventListener("click", async () => {
+  const content = document.getElementById("fb-content").value.trim();
+  if (!content) { flash("请先写清楚遇到的问题或建议。", true); return; }
+  try {
+    await api("/api/training/my/feedback", {
+      method: "POST",
+      body: { category: document.getElementById("fb-category").value, content,
+              certificate_id: state.prCert || null },
+    });
+    document.getElementById("fb-content").value = "";
+    flash("反馈已提交；教师处理后可在本卡片看到回复。");
+    await loadMyFeedback();
+  } catch (err) {
+    flash(err.message, true);
+  }
+});
 
 /* ---------- 自主练习（FR-K05/K06） ---------- */
 
@@ -208,8 +466,9 @@ async function refreshPractice() {
   kpSel.innerHTML = `<option value="">（整证随机）</option>` + state.kps.map((k) =>
     `<option value="${esc(k.id)}">${esc(k.code)} ${esc(k.name)}${k.rule_links ? "" : "（暂无题目）"}</option>`).join("");
   document.getElementById("pr-hint").textContent = state.kps.length
-    ? "题目来自教师关联的规则仿真题（纯仿真，非真题）；提交后自动判分并开放解析。"
+    ? "题目来自教师关联的规则仿真题（仿真，非真题）；提交后自动判分并开放解析。"
     : "该证书下教师尚未配置知识点与题目，等待教师上架后即可练习。";
+  renderPracticeHint();
   renderKpRows();
   renderWrong();
   renderOpen();
@@ -259,15 +518,20 @@ function renderKpRows() {
 
 function renderWrong() {
   const box = document.getElementById("pr-wrong");
-  box.innerHTML = state.wrong.length ? state.wrong.map((a) => `
-    <div class="item"><div class="item-head">
-      <div><span class="badge bad">${a.score} 分</span>
+  box.innerHTML = state.wrong.length ? state.wrong.map((a) => {
+    const bank = !!a.bank_question_id;
+    const label = bank ? `<span class="chip">${esc(SOURCE_ZH[a.source_type] || a.source_type || "题库题")}</span>` : "";
+    const actions = bank
+      ? `<button class="small" data-act="bank-new" data-source="${esc(a.source_type || "real")}" data-kp="${esc(a.knowledge_point_id || "")}">再练一道</button>
+         <button class="small" data-act="bank-redo" data-q="${esc(a.bank_question_id)}" data-source="${esc(a.source_type || "real")}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>`
+      : `<button class="small" data-act="redo-new" data-rule="${esc(a.rule_id)}" data-kp="${esc(a.knowledge_point_id || "")}">再练新题</button>
+         <button class="small" data-act="redo-same" data-rule="${esc(a.rule_id)}" data-seed="${esc(a.seed)}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>`;
+    return `<div class="item"><div class="item-head">
+      <div><span class="badge bad">${a.score} 分</span>${label}
         <span class="muted">${esc(a.scored_at || "")}</span></div>
-      <div class="actions">
-        <button class="small" data-act="redo-new" data-rule="${esc(a.rule_id)}" data-kp="${esc(a.knowledge_point_id || "")}">再练新题</button>
-        <button class="small" data-act="redo-same" data-rule="${esc(a.rule_id)}" data-seed="${esc(a.seed)}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>
-      </div>
-    </div></div>`).join("") : `<p class="muted">暂无错题，保持！</p>`;
+      <div class="actions">${actions}</div>
+    </div></div>`;
+  }).join("") : `<p class="muted">暂无错题，保持！</p>`;
 }
 
 function renderOpen() {
@@ -334,11 +598,71 @@ function renderWorkbench() {
   }).join("");
 }
 
+const SOURCE_ZH = { simulated: "仿真题", real: "真题", recall: "回忆题", mock: "模拟题" };
+
+function bankBadge(a) {
+  const label = a.source_type_label || SOURCE_ZH[a.source_type] || a.source_type || "题库题";
+  return `<span class="chip">${esc(label)}${a.year ? " · " + esc(a.year) + " 年度" : ""}</span>`;
+}
+
+function renderBankAttempt(box, a) {
+  if (a.status === "open") {
+    const options = (a.options || []).map((o) => `<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0;">
+      <input type="checkbox" class="bank-pick" value="${esc(o.key)}" style="width:auto;margin-top:4px;">
+      <span>${esc(o.key)}. ${esc(o.text)}</span></label>`).join("");
+    box.innerHTML = `<div class="item">
+      <div class="item-head">
+        <div>${bankBadge(a)}${a.question_no ? `<span class="muted">${esc(a.question_no)}</span>` : ""}</div>
+        <span class="muted">答案与解析在提交判分后开放</span>
+      </div>
+      <div style="margin:8px 0;white-space:pre-wrap;">${esc(a.stem || "")}</div>
+      ${options || `<p class="muted">本题没有选项数据，请联系教师核对。</p>`}
+      <div class="muted" style="margin-top:6px;">多选题须完全选对才得分：漏选、错选均不得分（与初级会计客观题评分口径一致）。</div>
+      <div class="actions">
+        <button class="primary" data-act="submit-bank">提交判分</button>
+        <button data-act="abandon">跳过本题（留痕，不计入统计）</button>
+      </div>
+      <div class="error" id="pr-error"></div>
+    </div>`;
+    return;
+  }
+  const r = a.result || {};
+  const missed = (r.missed || []).join("、");
+  const extra = (r.false_positives || []).join("、");
+  box.innerHTML = `<div class="item">
+    <div class="item-head">
+      <div>${bankBadge(a)}</div>
+      <span class="badge ${a.perfect ? "" : "warn"}">${a.score} 分${a.perfect ? " · 满分" : ""}</span>
+    </div>
+    <div style="margin:6px 0;white-space:pre-wrap;">${esc(a.stem || "")}</div>
+    <div class="muted">你的选择：${esc((a.answers || []).join("、") || "（未选）")}</div>
+    <div class="muted">标准答案（判分后开放）：${esc((r.answer_keys || []).join("、"))}</div>
+    ${missed ? `<div class="detail miss">漏选：${esc(missed)}</div>` : ""}
+    ${extra ? `<div class="detail false">错选：${esc(extra)}</div>` : ""}
+    <details open><summary>解析</summary><div class="detail">${esc(r.explanation || "（无解析）")}</div></details>
+    <div class="actions">
+      <button class="small" data-act="bank-new" data-source="${esc(a.source_type || "real")}" data-kp="${esc(a.knowledge_point_id || "")}">再练一道</button>
+      <button class="small" data-act="bank-redo" data-q="${esc(a.bank_question_id || "")}" data-source="${esc(a.source_type || "real")}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>
+    </div>
+    <div class="item" style="margin-top:10px;">
+      <strong>AI 答疑（基于本题解析与知识点依据）</strong>
+      <div class="muted">回答仅作解读参考；标准答案与判分以系统为准，答疑记录仅本人可见。</div>
+      <div class="row" style="margin-top:6px;">
+        <input id="tutor-q" placeholder="如：为什么我选的这项不对？依据是什么？">
+        <button class="small primary" data-act="tutor-ask" style="flex:0 0 auto;">问 AI</button>
+      </div>
+      <div id="tutor-out"></div>
+    </div>
+  </div>`;
+}
+
 function renderAttempt() {
   const box = document.getElementById("pr-attempt");
   const a = state.attempt;
   if (!a) { box.innerHTML = ""; return; }
-  if (a.status === "open") {
+  if (a.bank) {
+    renderBankAttempt(box, a);
+  } else if (a.status === "open") {
     const m = a.materials;
     const accounts = (m.accounts || []).map((acc) => `<tr><td>${esc(acc.code)}</td><td>${esc(acc.name)}</td>
       <td class="num">${fmtNum(acc.opening)}</td><td class="num">${fmtNum(acc.debit)}</td>
@@ -518,6 +842,112 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
   }
 });
 
+/* ---------- 找证书：交互 ---------- */
+
+let certSearchTimer = null;
+
+function triggerCertSearch() {
+  const input = document.getElementById("cert-q");
+  runCertSearch(input.value.trim()).catch((err) => flash(err.message, true));
+}
+
+document.getElementById("cert-q").addEventListener("input", () => {
+  if (certSearchTimer) clearTimeout(certSearchTimer);
+  certSearchTimer = setTimeout(triggerCertSearch, 350);
+});
+
+document.getElementById("cert-q").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  if (certSearchTimer) clearTimeout(certSearchTimer);
+  triggerCertSearch();
+});
+
+document.getElementById("cert-search-btn").addEventListener("click", () => {
+  if (certSearchTimer) clearTimeout(certSearchTimer);
+  triggerCertSearch();
+});
+
+document.getElementById("cert-suggest").addEventListener("click", (event) => {
+  const btn = event.target.closest("button[data-act=cert-try]");
+  if (!btn) return;
+  document.getElementById("cert-q").value = btn.dataset.q || "";
+  triggerCertSearch();
+});
+
+document.getElementById("cert-results").addEventListener("click", (event) => {
+  const btn = event.target.closest("button[data-act=open-cert]");
+  if (!btn) return;
+  openGuide(btn.dataset.id).catch((err) => flash(err.message, true));
+});
+
+async function runGuidePractice(btn) {
+  const certId = btn.dataset.cert;
+  state.prCert = certId;
+  state.attempt = null;
+  const select = document.getElementById("pr-cert");
+  if (select) select.value = certId;
+  await refreshPractice().catch(() => {});
+  await startPractice({
+    certificate_id: certId,
+    knowledge_point_id: btn.dataset.kp || null,
+    rule_id: btn.dataset.rule || null,
+  });
+  if (embedded && window.universityWorkspace?.choose) {
+    window.universityWorkspace.choose("practice");
+    return;
+  }
+  document.getElementById("pr-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+document.getElementById("cert-guide").addEventListener("click", async (event) => {
+  const btn = event.target.closest("button[data-act]");
+  if (!btn) return;
+  const act = btn.dataset.act;
+  try {
+    if (act === "cert-back") {
+      closeGuide();
+      return;
+    }
+    if (act === "g-edit-goal") {
+      document.getElementById(`g-edit-${btn.dataset.id}`).hidden = false;
+    } else if (act === "g-cancel-goal") {
+      document.getElementById(`g-edit-${btn.dataset.id}`).hidden = true;
+    } else if (act === "g-save-goal") {
+      const certId = state.guideCert;
+      const scope = document.getElementById(`g-edit-${btn.dataset.id}`);
+      await api(`/api/training/my/goals/${btn.dataset.id}`, {
+        method: "PATCH",
+        body: {
+          official_date_id: scope.querySelector("[data-role=official]").value || null,
+          planned_date: scope.querySelector("[data-role=planned]").value || null,
+        },
+      });
+      flash("目标日期已更新，倒计时按新日期重算。");
+      await refresh();
+      await openGuide(certId);
+    } else if (act === "g-create-goal") {
+      const certId = btn.dataset.id;
+      await api("/api/training/my/goals", {
+        method: "POST",
+        body: {
+          certificate_id: certId,
+          official_date_id: document.getElementById("g-pick-official").value || null,
+          planned_date: document.getElementById("g-pick-planned").value || null,
+        },
+      });
+      flash("目标已建立，倒计时与每日节奏按你的目标日期算。");
+      await refresh();
+      await openGuide(certId);
+    } else if (act === "g-practice" || act === "g-rule") {
+      await runGuidePractice(btn);
+    }
+  } catch (err) {
+    flash(err.message, true);
+    setTimeout(() => flash("", true), 5000);
+  }
+});
+
 document.getElementById("pr-cert").addEventListener("change", async (event) => {
   state.prCert = event.target.value || null;
   state.attempt = null;
@@ -530,14 +960,48 @@ document.getElementById("start-practice").addEventListener("click", () => {
   startPractice({
     certificate_id: state.prCert,
     knowledge_point_id: document.getElementById("pr-kp").value || null,
+    source_type: document.getElementById("pr-source").value || "simulated",
   }).catch((err) => flash(err.message, true));
 });
+
+document.getElementById("pr-source").addEventListener("change", renderPracticeHint);
+
+function renderPracticeHint() {
+  const source = document.getElementById("pr-source").value;
+  const box = document.getElementById("pr-hint");
+  if (source === "simulated") {
+    box.textContent = state.kps.length
+      ? "题目来自教师关联的规则仿真题（纯仿真，非真题）；提交后自动判分并开放解析。"
+      : "该证书下教师尚未配置知识点与题目，等待教师上架后即可练习。";
+  } else {
+    const label = { real: "真题", recall: "回忆题", mock: "模拟题" }[source] || "题库题";
+    box.textContent = `${label}来自教师取得书面授权后导入并通过审核的题库，题目标签会写明题源；`
+      + "选项作答、完全选对才得分，解析判分后开放。若提示暂无已审核上线的题目，说明教师还没导入或尚未审核通过。";
+  }
+}
 
 document.getElementById("pr-card").addEventListener("click", async (event) => {
   const btn = event.target.closest("button[data-act]");
   if (!btn) return;
   const act = btn.dataset.act;
-  if (act === "submit") {
+  if (act === "submit-bank") {
+    const picked = [...document.querySelectorAll("#pr-attempt .bank-pick:checked")].map((c) => c.value);
+    if (!picked.length) {
+      document.getElementById("pr-error").textContent = "请先勾选答案（多选题可选多项）。";
+      return;
+    }
+    try {
+      const data = await api(`/api/training/my/practice/${state.attempt.id}/submit`, {
+        method: "POST", body: { selected_keys: picked } });
+      state.attempt = data.attempt;
+      renderAttempt();
+      flash("已判分，解析已开放。");
+      await refreshPractice();
+      await refreshProfile().catch(() => {});
+    } catch (err) {
+      document.getElementById("pr-error").textContent = err.message;
+    }
+  } else if (act === "submit") {
     const picked = [...document.querySelectorAll("#pr-attempt .risk-pick:checked")].map((c) => c.value);
     const attemptId = state.attempt.id;
     try {
@@ -580,6 +1044,15 @@ document.getElementById("pr-card").addEventListener("click", async (event) => {
     startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
                     rule_id: btn.dataset.rule, seed: parseInt(btn.dataset.seed, 10),
                     mode: "redo_same" }).catch((err) => flash(err.message, true));
+  } else if (act === "bank-new") {
+    startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
+                    source_type: btn.dataset.source || "real", mode: "new" })
+      .catch((err) => flash(err.message, true));
+  } else if (act === "bank-redo") {
+    startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
+                    source_type: btn.dataset.source || "real", mode: "redo_same",
+                    bank_question_id: btn.dataset.q })
+      .catch((err) => flash(err.message, true));
   } else if (act === "practice-resume") {
     try {
       const data = await api(`/api/training/my/practice/${btn.dataset.id}`);
