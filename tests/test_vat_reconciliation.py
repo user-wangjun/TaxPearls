@@ -73,6 +73,30 @@ class VATReconciliationTests(unittest.TestCase):
         self.login("kg-other")
         self.assertEqual(self.client.get(url+"/1?format=html").status_code,404)
 
+    def test_current_upload_review_saves_vat_mapping_with_materials_atomically(self):
+        task = self.upload(self.task(), invoices([('UI-VAT', '1', '200.0123', '蓝字', '正常')]))
+        url = '/api/enterprise/input-tasks/' + task['id']
+        row = next(r for r in task['processing']['records'] if r['material_type'] == 'vat_declaration' and r['item_key'] == '1')
+        values = {'mapping_record_id': row['id'], 'form_revision': 'DEMO-2026-A',
+                  'taxpayer_category': '合成一般纳税人', 'comparable': True, 'basis': '合成同期不含税口径已核对。'}
+        failed = self.client.post(url + '/prepare', json={'expected_revision': task['revision'],
+                    'applicable_forms': ['不得部分保存'], 'vat_review': {**values, 'mapping_record_id': 'foreign'}})
+        self.assertEqual(failed.status_code, 422, failed.text)
+        unchanged = self.client.get(url).json()
+        self.assertEqual(unchanged['revision'], task['revision'])
+        self.assertEqual(unchanged['task']['applicable_forms'], task['task']['applicable_forms'])
+        response = self.client.post(url + '/prepare', json={'expected_revision': task['revision'],
+                    'applicable_forms': [], 'vat_review': values})
+        self.assertEqual(response.status_code, 200, response.text)
+        reviewed = response.json()
+        self.assertTrue(reviewed['vat_review_current'])
+        result = self.run_check(reviewed)
+        self.assertEqual(result['bundle']['fact_assessment']['status'], 'FACT_CONFIRMED')
+        self.assertEqual(result['bundle']['fact_assessment']['amount'], '100.0000')
+        self.assertEqual(result['bundle']['risk_assessment']['status'], 'NEEDS_REVIEW')
+        conflict = self.client.post(url + '/prepare', json={'expected_revision': task['revision'], 'vat_review': values})
+        self.assertEqual(conflict.status_code, 409)
+
     def test_multiline_red_void_duplicate_and_unknown_status(self):
         workbook=load_workbook(BytesIO(book("vat_declaration")))
         workbook.active['C6']='1300';content=BytesIO();workbook.save(content);workbook.close()

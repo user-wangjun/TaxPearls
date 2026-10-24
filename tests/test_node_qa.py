@@ -170,6 +170,22 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reasoning_sse_overhead_does_not_discard_valid_final_answer(self):
+        # Many small events carry provider metadata for every token. Wire bytes
+        # can exceed 1 MiB while the requested output remains within 8192 tokens.
+        event = 'data: '+json.dumps({'id':'synthetic-completion', 'model':'test', 'created':1790000000, 'choices':[{'index':0,'delta':{'reasoning_content':'private'}}]})+'\n\n'
+        data = event.encode()*8000 + b'data: {"choices":[{"delta":{"content":"final"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+        self.assertGreater(len(data), 1024*1024)
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r:httpx.Response(200,headers={'content-type':'text/event-stream'},content=data)))
+        with patch('src.ai_stream.httpx.AsyncClient', return_value=client):
+            result=[x async for x in chat_stream(AISettings(api_key='synthetic'),[],max_tokens=8192)]
+        self.assertEqual(result,['final'])
+
+    async def test_unterminated_oversized_sse_line_is_still_rejected(self):
+        client=httpx.AsyncClient(transport=httpx.MockTransport(lambda r:httpx.Response(200,headers={'content-type':'text/event-stream'},content=b'data: '+b'x'*(300*1024))))
+        with patch('src.ai_stream.httpx.AsyncClient',return_value=client),self.assertRaises(TransportError):
+            _=[x async for x in chat_stream(AISettings(api_key='synthetic'),[],max_tokens=8192)]
+
     async def test_real_sse_parser_handles_split_bytes_and_ignores_reasoning(self):
         lines = [json.dumps({'choices': [{'index': 0, 'delta': {'reasoning_content': 'PRIVATE THOUGHT'}}]}),
                  json.dumps({'choices': [{'index': 0, 'delta': {'content': '中文回答'}}]}, ensure_ascii=False),

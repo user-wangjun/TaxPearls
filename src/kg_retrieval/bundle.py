@@ -5,6 +5,7 @@ from time import perf_counter
 
 from src import tax_conditions
 from src.policy_paths import database_directory
+from src.public_policy_package import citation_view
 from . import applicability, keyword_search, relation_search, semantic_search, passages
 from .common import canonical, checked_task, clause_record, digest, period_basis, unit
 
@@ -178,10 +179,13 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
             gaps.append({"code": "entity_pending", "entity_id": edge["to_id"], "message": "适用主体尚未核实。"})
     evidence, leads, decisions, source_cache = [], [], {}, {}
     matches = {item["clause_id"]: item["matches"] for item in selected}
+    has_reviews = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='PolicyReview'").fetchone()
+    source_reviews = ([dict(r) for r in db.execute('SELECT * FROM PolicyReview WHERE coverage_start<=? AND coverage_end>=?',
+                                                  (task['period_start'], task['period_end']))] if has_reviews else [])
     for cid in closure["clause_ids"]:
         clause, policy = clause_record(db, cid)
         decision = applicability.check(clause, policy, task, closure["relationships"], source_cache=source_cache,
-                                       source_root=database_directory(db))
+                                       source_root=database_directory(db), source_reviews=source_reviews)
         paths = context["required"].get(cid, [])
         if paths and all(path.get("review_status", "approved") != "approved" for path in paths):
             decision["status"] = "needs_review"
@@ -189,15 +193,20 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
         decisions[cid] = decision
         record = {"clause_id": cid, "policy_id": policy["policy_id"], "clause_version": clause.get("version"),
                   "policy_version": policy.get("version"), "document_no": policy.get("document_no"),
-                  "title": policy["title"], "issuer": policy["issuer"], "text": clause["content"],
+                  "title": policy["title"], "issuer": policy["issuer"], **citation_view(clause, policy),
                   "source_location": clause.get("source_location"), "source_url": policy["source_url"],
                   "file_sha256": policy.get("file_sha256"), "region_code": policy["region_code"],
                   "effective_from": decision["effective_from"], "effective_to": decision["effective_to"],
                   "applicability": decision["status"], "reasons": decision["reasons"], "segments": decision["segments"],
                   "required": cid in required, "retrieval_matches": matches.get(cid, []),
                   "review_status": clause["extraction_status"]}
-        selection = passages.select(clause['content'], matches.get(cid, []),
-                                    required=cid in required, dependency=cid in dependency_ids)
+        if decision.get('coverage_review'):
+            record['coverage_review'] = decision['coverage_review']
+        for field in ('tax_types_json', 'scope_json', 'date_evidence_json', 'source_metadata_json'):
+            if policy.get(field):
+                record[field.removesuffix('_json')] = json.loads(policy[field])
+        selection = passages.select(record['text'], matches.get(cid, []),
+                                    required=cid in required or bool(record.get('citation_corrections')), dependency=cid in dependency_ids)
         record.update(selection)
         if decision["status"] == "excluded":
             excluded.append({"clause_id": cid, "stage": "applicability", "reasons": decision["reasons"]})

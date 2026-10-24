@@ -35,7 +35,8 @@ RELATIONS = {
     "INTERPRETS": {("Policy", "Policy"), ("Clause", "Clause")},
     "SUPPLEMENTS": {("Policy", "Policy"), ("Clause", "Clause")},
 }
-JSON_FIELDS = {"condition_logic_json", "trigger_logic_json", "source_filter_json", "execution_json"}
+JSON_FIELDS = {"condition_logic_json", "trigger_logic_json", "source_filter_json", "execution_json",
+               "tax_types_json", "scope_json", "date_evidence_json", "source_metadata_json"}
 RELATION_LABELS = {"HAS_CLAUSE": "包含条款", "HAS_SUBCLAUSE": "下级条款", "SAME_SOURCE_URL": "同来源的独立快照", "DERIVES_RULE": "规定依据", "PROVIDES_CONTEXT": "政策背景",
                    "APPLIES_TO": "适用主体", "USES_METRIC": "使用指标", "HAS_CONDITION": "判断条件",
                    "HAS_EXCEPTION": "例外情形", "SOURCE_CLAUSE": "原文来源", "AMENDS": "修订",
@@ -54,7 +55,9 @@ def migrate(db):
     """Additive/idempotent, also upgrades a database created with the supplied v1 SQL."""
     db.executescript(Path(__file__).with_name("policy_schema.sql").read_text(encoding="utf-8-sig"))
     additions = {
-        "Policy": {"version": "TEXT NOT NULL DEFAULT '1'", "supersedes_id": "TEXT REFERENCES Policy(policy_id)"},
+        "Policy": {"version": "TEXT NOT NULL DEFAULT '1'", "supersedes_id": "TEXT REFERENCES Policy(policy_id)",
+                   **{name: f'TEXT CHECK({name} IS NULL OR json_valid({name}))' for name in
+                      ('tax_types_json', 'scope_json', 'date_evidence_json', 'source_metadata_json')}},
         "Clause": {"version": "TEXT NOT NULL DEFAULT '1'", "supersedes_id": "TEXT REFERENCES Clause(clause_id)"},
         "TaxRule": {"rule_code": "TEXT", "version": "TEXT NOT NULL DEFAULT '1'", "fingerprint": "TEXT",
                     "execution_json": "TEXT CHECK(execution_json IS NULL OR json_valid(execution_json))",
@@ -196,6 +199,8 @@ def _verified_source(db, clause_id):
         raise ValueError("政策原件不可读取。") from None
     if hashlib.sha256(raw).hexdigest() != policy["file_sha256"]:
         raise ValueError("政策原件哈希发生变化，请新增版本复核。")
+    from src.policy_paths import check_clause_source
+    check_clause_source(clause, database_directory(db))
 
 
 def import_bundle(db, bundle, *, _defer_rule_validation=False):
@@ -225,6 +230,9 @@ def import_bundle(db, bundle, *, _defer_rule_validation=False):
                         raise ValueError("导入只能创建候选，不能携带审核结果。")
                 if table == "TaxRule" and row.get("execution_json"):
                     raise ValueError("执行器快照只能由现有规则适配器产生。")
+                if table == 'Policy':
+                    from src.policy_metadata import validate
+                    validate(row)
                 if table == 'TaxRule' and row.get('conversion_json'):
                     raise ValueError('规则转换凭据只能由已验证的转换器产生。')
                 if table == "Condition" and row.get("right_kind") == "literal" and not isinstance(row.get("right_literal"), str):
@@ -285,7 +293,8 @@ def approve_rule(db, rule_id, reviewer):
     return get(db, "TaxRule", rule_id)
 
 
-def verify_source(db, policy_id, *, issuer, validity_status, effective_from, effective_to, clause_ids):
+def verify_source(db, policy_id, *, issuer, validity_status, effective_from, effective_to, clause_ids,
+                  reviewer=None, end_kind='unknown', coverage_start=None, coverage_end=None, evidence=None):
     """Explicit human source review, separate from AI extraction and rule approval."""
     if not db.in_transaction:
         db.execute("BEGIN IMMEDIATE")
@@ -306,6 +315,23 @@ def verify_source(db, policy_id, *, issuer, validity_status, effective_from, eff
         raise ValueError("原件不可读取。") from None
     if actual_hash != policy.get("file_sha256"):
         raise ValueError("原件哈希不一致，须新增版本。")
+    from src.policy_paths import check_clause_source
+    for clause in clauses:
+        check_clause_source(clause, database_directory(db))
+    coverage = coverage_start is not None or coverage_end is not None or end_kind != 'unknown'
+    if end_kind not in {'unknown', 'fixed', 'unfixed'}:
+        raise ValueError('终止日期类型无效。')
+    if coverage:
+        if (not isinstance(reviewer, str) or not reviewer.strip() or not coverage_start or not coverage_end
+                or not isinstance(evidence, dict) or not all(isinstance(evidence.get(k), str) and evidence[k].strip()
+                                                           for k in ('source_url', 'quote'))):
+            raise ValueError('期间复核须有审核人、完整覆盖区间及来源和原文依据。')
+        _dates({'effective_from': coverage_start, 'effective_to': coverage_end})
+        if (coverage_start < effective_from or coverage_end > date.today().isoformat()
+                or effective_to and coverage_end > effective_to
+                or end_kind == 'unfixed' and (effective_to or validity_status != 'in_force')
+                or end_kind == 'fixed' and not effective_to):
+            raise ValueError('复核期间或终止日期类型与政策状态不一致，不能预先证明未来期间。')
     changes = dict(issuer=issuer.strip(), validity_status=validity_status,
                    effective_from=effective_from, effective_to=effective_to)
     if policy["validity_status"] != "unverified" and any(policy[k] != v for k, v in changes.items()):
@@ -314,7 +340,18 @@ def verify_source(db, policy_id, *, issuer, validity_status, effective_from, eff
                (*changes.values(), datetime.now(timezone.utc).isoformat(), policy_id))
     for cid in clause_ids:
         db.execute("UPDATE Clause SET extraction_status='verified' WHERE clause_id=?", (cid,))
-    return {"policy_id": policy_id, "verified_clauses": clause_ids, "validity_status": validity_status}
+    review_id = None
+    if reviewer:
+        from src.policy_metadata import clause_identity
+        stamp = datetime.now(timezone.utc).isoformat()
+        record = {'policy_id': policy_id, 'file_sha256': policy['file_sha256'],
+                  'clause_snapshots_json': canonical({c['clause_id']: clause_identity(c) for c in clauses}),
+                  'end_kind': end_kind, 'coverage_start': coverage_start, 'coverage_end': coverage_end,
+                  'evidence_json': canonical(evidence or {}), 'reviewed_by': reviewer, 'reviewed_at': stamp}
+        review_id = fingerprint(record)
+        db.execute('INSERT INTO PolicyReview VALUES (?,?,?,?,?,?,?,?,?,?)', (review_id, *record.values()))
+    return {"policy_id": policy_id, "verified_clauses": clause_ids, "validity_status": validity_status,
+            'review_id': review_id}
 
 
 def import_corpus(db, manifest_path, document_ids, originals_dir):
@@ -453,7 +490,12 @@ def graph(db, selected=None):
                 node["source"] = row["source_url"]
                 node["review_status"] = "unverified" if row["validity_status"] == "unverified" else "source_recorded"
             if table == "Clause":
-                node["requirement"] = row["content"]
+                from src.public_policy_package import citation_view
+                citation = citation_view(row, get(db, 'Policy', row['policy_id']))
+                node['content'] = citation['text']
+                node["requirement"] = citation['text']
+                if citation.get('citation_corrections'):
+                    node['citation_corrected'] = True
                 node["source"] = row.get("source_location") or "待核实"
             if table == "Metric":
                 node["requirement"] = row.get("definition") or "指标映射待配置"

@@ -4,11 +4,7 @@ import json
 from .passages import fragment
 
 MAX_BUDGET = 16 * 1024 * 1024
-POLICY_FIELDS = {'clause_id', 'policy_id', 'clause_version', 'policy_version', 'document_no', 'title', 'issuer',
-                 'text', 'source_url', 'source_location', 'file_sha256', 'region_code', 'effective_from', 'effective_to',
-                 'applicability', 'reasons', 'segments', 'required', 'review_status', 'partial_clause',
-                 'source_char_start', 'source_char_end', 'original_text_sha256', 'fragment_index', 'fragment_count',
-                 'evidence_spans', 'selection_kind', 'context_complete', 'original_char_count', 'omitted_char_count'}
+POLICY_FIELDS = {'issuer', 'clause_version', 'original_char_count', 'policy_version', 'applicability', 'evidence_spans', 'effective_from', 'text', 'fragment_count', 'source_char_start', 'source_char_end', 'partial_clause', 'file_sha256', 'source_url', 'source_metadata', 'date_evidence', 'policy_id', 'scope', 'document_no', 'original_text_sha256', 'required', 'reasons', 'omitted_char_count', 'segments', 'region_code', 'source_location', 'context_complete', 'clause_id', 'title', 'review_status', 'selection_kind', 'tax_types', 'effective_to', 'coverage_review', 'fragment_index'}
 LABELS = {'complete_check': '本项完整核对', 'facts': '企业事实与计算', 'rule_context': '规则条件与例外',
           'policy_basis': '政策依据', 'policy_exception': '例外与排除依据', 'policy_change': '政策变更依据',
           'policy_lead': '待核实政策线索', 'policy_relations': '政策关联', 'review_gaps': '待核实事项'}
@@ -30,6 +26,11 @@ def split(bundle, token_budget):
             base[key] = {k: deepcopy(v) for k, v in bundle[key].items() if k != 'mapping_review'}
     policies = {kind: [{k: deepcopy(v) for k, v in item.items() if k in POLICY_FIELDS} for item in bundle[kind]]
                 for kind in ('policy_evidence', 'policy_leads')}
+    for records in policies.values():
+        for record in records:
+            if 'coverage_review' in record:
+                record['coverage_review'] = {k: v for k, v in record['coverage_review'].items() if k in
+                    {'review_id', 'end_kind', 'coverage_start', 'coverage_end', 'evidence_json'}}
     full = {**base, **policies, 'gaps': deepcopy(bundle['gaps'])}
     group_names = {p.get('policy_id'): ' · '.join(str(p[k]) for k in ('title', 'document_no') if p.get(k))
                    for rows in policies.values() for p in rows if p.get('title')}

@@ -18,14 +18,16 @@ def implementation_fingerprint():
     files = [*Path(__file__).parent.glob("*.py"), root / "src/tax_conditions.py", root / "src/vat_reconciliation.py",
              root / "webapp/policy_graph.py", root / "webapp/knowledge_evidence.py",
              *[root/'src'/name for name in ['rule_conversion.py','rule_bindings.py','policy_corpus.py','engine.py','config.py',
-                                           'periods.py','reference_scope.py','models.py','snapshots.py']]]
+                                           'periods.py','reference_scope.py','models.py','snapshots.py',
+                                           'policy_paths.py','policy_metadata.py','public_policy_package.py']]]
     # Git may check the same source out with LF or CRLF on Windows.
     return digest({str(path.relative_to(root)): hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
                    for path in sorted(files)})
 
 
 def tax_type(value):
-    return {"增值税":"VAT","个人所得税":"PIT","企业所得税":"EIT","综合":"ACCOUNTING",'IIT':'PIT','CIT':'EIT'}.get(value,value)
+    from src.policy_metadata import tax_code
+    return tax_code(value)
 
 
 def unit(value):

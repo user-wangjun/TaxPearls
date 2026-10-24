@@ -84,7 +84,9 @@ def evaluate(db, cases, *, model_dir=None, offline=True, token_budget=6000):
             source_total += 1
             try:
                 original = by_id(db, "Clause", "clause_id", item["clause_id"])
-                exact = exact_source(item, original['content'])
+                from src.public_policy_package import citation_view
+                policy = by_id(db, 'Policy', 'policy_id', original['policy_id'])
+                exact = exact_source(item, citation_view(original, policy)['text'])
                 require(exact, "条款原文或片段坐标、哈希不一致")
                 if item.get('partial_clause'):
                     require(any(g['code'] == 'retrieval_context_partial' and g.get('clause_id') == item['clause_id']

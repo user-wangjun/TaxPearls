@@ -286,5 +286,10 @@ async def answer_events(settings, payload, manifest, *, max_tokens, prompt=PROMP
         # Only safe projected node data is returned; no raw database rows/paths.
         yield {'type': 'done', **final, 'citations': [allowed[c] for c in dict.fromkeys(final['citations'])],
                'model': settings.effective_model, 'context_hash': manifest['content_hash']}
-    except (TransportError, ValueError, TypeError, KeyError):
-        yield {'type': 'error', 'message': '回答未完成或引用校验失败，已停止生成；请重试。', 'complete': False}
+    except TransportError as error:
+        kind = error.kind if error.kind in {'http','timeout','network','schema','incomplete','oversized','keys_unavailable'} else 'unknown'
+        yield {'type': 'error', 'message': '回答未完成，已停止生成；请重试。',
+               'error_code': 'upstream_'+kind, 'complete': False}
+    except (ValueError, TypeError, KeyError):
+        yield {'type': 'error', 'message': '回答未完成或引用校验失败，已停止生成；请重试。',
+               'error_code': 'output_validation', 'complete': False}

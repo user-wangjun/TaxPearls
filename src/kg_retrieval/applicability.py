@@ -2,12 +2,14 @@
 from datetime import date, timedelta
 import hashlib
 import re
-from src.policy_paths import resolve_path
+from src.policy_paths import resolve_path, check_clause_source
+from src.policy_metadata import metadata, validate, coverage_review, canonical_region
 
 from .common import tax_type
 
 
 def region_matches(policy_region, enterprise_region):
+    policy_region, enterprise_region = canonical_region(policy_region), canonical_region(enterprise_region)
     if not enterprise_region:
         return None
     if policy_region == "CN":
@@ -38,25 +40,54 @@ def source_check(policy, clause, task, cache, *, source_root=None):
             cache[pid] = False
     if not cache[pid]:
         reasons.append("政策原件缺失或哈希不一致。")
+    try:
+        check_clause_source(clause, source_root, files=cache)
+    except (ValueError, UnicodeError) as exc:
+        reasons.append('条款来源校验失败：' + str(exc))
     return reasons
 
 
-def check(clause, policy, task, changes, *, source_cache=None, source_root=None):
+def check(clause, policy, task, changes, *, source_cache=None, source_root=None, source_reviews=()):
     source_cache = {} if source_cache is None else source_cache
     result = {"clause_id": clause["clause_id"], "status": "applicable", "reasons": [], "segments": [],
               "effective_from": clause.get("effective_from") or policy.get("effective_from"),
               "effective_to": clause.get("effective_to") or policy.get("effective_to")}
+    try:
+        validate(policy)
+        policy_types = metadata(policy, 'tax_types_json', []) or [tax_type(policy['tax_type'])]
+        scope = metadata(policy, 'scope_json', {})
+        source_metadata = metadata(policy, 'source_metadata_json', {})
+    except (ValueError, TypeError):
+        result.update(status='needs_review', reasons=['政策税种、地域或来源证据结构无效。'])
+        return result
     policy_type=tax_type(policy['tax_type'])
     supporting=policy_type in {'TAX_ADMIN','ACCOUNTING','SOCIAL_INSURANCE'} and policy_type!=task['tax_type']
-    if policy_type != task["tax_type"] and not supporting:
+    if task["tax_type"] not in policy_types and not supporting:
         result.update(status="excluded", reasons=["税种不属于本次检查范围。"])
         return result
     match = region_matches(policy.get("region_code"), task.get("region_code"))
+    selected_region = canonical_region(task.get('region_code'))
+    included = [canonical_region(r) for r in scope.get('included_regions', [])]
+    if included:
+        matches = [region_matches(r, selected_region) for r in included]
+        # A task known only to the parent jurisdiction cannot rule out a child.
+        uncertain = not selected_region or any(r.startswith(selected_region + '-') for r in included)
+        match = True if True in matches else None if uncertain or None in matches else False
+    for excluded in map(canonical_region, scope.get('excluded_regions', [])):
+        if region_matches(excluded, selected_region) is True:
+            match = False
+            break
+        if selected_region and excluded.startswith(selected_region + '-') and match is not False:
+            match = None
     if match is False:
         result.update(status="excluded", reasons=["政策地区与企业适用地区不符。"])
         return result
     if match is None:
         result["reasons"].append("企业地区或政策地区尚未明确。")
+    if scope.get('conditions'):
+        result['reasons'].append('政策另有主体或业务适用条件，尚须逐项核实。')
+    if source_metadata.get('content_gaps'):
+        result['reasons'].append('政策正文或附件仍有待补齐/复核的来源缺口。')
     result["reasons"].extend(source_check(policy, clause, task, source_cache, source_root=source_root))
     start, end = task["period_start"], task["period_end"]
     a, b = result["effective_from"], result["effective_to"]
@@ -99,7 +130,11 @@ def check(clause, policy, task, changes, *, source_cache=None, source_root=None)
         result.update(status="excluded", reasons=[*result["reasons"], "条款有效区间与被检查期间不重叠。"])
         return result
     if not b:
-        result["reasons"].append("终止日期为空，尚未证明覆盖本次完整期间；不视为永久有效。")
+        review = coverage_review(policy, clause, task, source_reviews)
+        if review:
+            result['coverage_review'] = review
+        else:
+            result["reasons"].append("终止日期为空，尚未证明覆盖本次完整期间；不视为永久有效。")
     if a and a > start or b and b < end:
         boundaries = {start, (date.fromisoformat(end) + timedelta(days=1)).isoformat()}
         if a and start < a <= end:

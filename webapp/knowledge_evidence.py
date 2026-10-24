@@ -134,6 +134,27 @@ def validate_answer(answer, package):
     return answer
 
 
+def validate_saved_analysis(analysis, package):
+    """Recheck saved responses against the same evidence each batch received."""
+    parts = package['batching']['parts']
+    if len(parts) <= 1:
+        return validate_answer({'assessments': analysis['assessments']}, package)
+    results = analysis.get('batch_results')
+    if not isinstance(results, list) or len(results) != len(parts):
+        raise ValueError('分批分析记录不完整。')
+    claims = {}
+    for part, result in zip(parts, results):
+        if result.get('status') != 'completed':
+            raise ValueError('分批分析尚未完成。')
+        transmitted = {**package, 'facts': part['facts'], 'policy_evidence': part['policy_evidence'],
+                       'policy_leads': part['policy_leads'], 'bundle_status': 'needs_review'}
+        validate_answer({'assessments': result['assessments']}, transmitted)
+        claims.update((digest(claim), claim) for claim in result['assessments'])
+    if analysis['assessments'] != list(claims.values()):
+        raise ValueError('汇总分析与已校验的分批记录不一致。')
+    return {'assessments': analysis['assessments']}
+
+
 def analyze(package, prior=None):
     gate = acceptance_gate()
     model_fingerprint = package["retrieval_trace"]["routes"]["semantic"].get("model_fingerprint")

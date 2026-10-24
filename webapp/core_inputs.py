@@ -323,18 +323,19 @@ def register(app, get_store, get_user, allow, static_dir):
             raise AccessDenied("任务版本已变化，请重新读取后下载。", 409)
         return material_export.build(latest(view))
 
-    def process(user, task_id, revision, *, ai=False):
+    def process(user, task_id, revision, *, ai=False, working_payload=None, vat_review=None):
         if not PROCESS_SLOTS.acquire(blocking=False):
             raise AccessDenied("资料整理繁忙，原件已保存，请稍后重新整理。", 429)
         try:
-            return process_work(user, task_id, revision, ai=ai)
+            return process_work(user, task_id, revision, ai=ai, working_payload=working_payload, vat_review=vat_review)
         finally:
             PROCESS_SLOTS.release()
 
-    def process_work(user, task_id, revision, *, ai=False):
+    def process_work(user, task_id, revision, *, ai=False, working_payload=None, vat_review=None):
         store = get_store()
         view = batches.read_current(store, user, task_id)
-        payload = deepcopy(latest(view, writable=True))
+        existing = latest(view, writable=True)
+        payload = deepcopy(existing if working_payload is None else working_payload)
         if view["revision"] != revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         documents = []
@@ -503,6 +504,14 @@ def register(app, get_store, get_user, allow, static_dir):
                     record["automatic_direction"] = core_materials.invoice_direction(extracted, payload["task"].get("tax_no"))
         payload["documents"] = documents
         payload["processing"] = core_materials.prepare(payload["task"], documents)
+        if vat_review is not None:
+            from src import vat_reconciliation as vat
+            checked = vat.make_review(payload, vat_review, user['id'], members.now())
+            payload.setdefault('check_reviews', {})[vat.RULE] = checked
+            if vat.RULE in payload.get('tax_checks', {}):
+                payload['tax_checks'][vat.RULE]['stale'] = True
+            from webapp.core_reports import summary
+            payload['tax_check_summary'] = summary(payload.get('tax_checks', {}))
         if payload.get('policy_input'):
             from webapp import core_policies
             core_policies.update(payload)
@@ -577,7 +586,7 @@ def register(app, get_store, get_user, allow, static_dir):
         user = actor(session)
         value = await body(request)
         try:
-            if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input"}:
+            if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input", "vat_review"}:
                 raise InputError("请求包含未知字段。")
             view = batches.read_current(get_store(), user, task_id)
             payload = deepcopy(latest(view, writable=True))
@@ -666,6 +675,18 @@ def register(app, get_store, get_user, allow, static_dir):
             mode = value.get("mapping_mode", "local")
             if not isinstance(mode, str) or mode not in {"local", "ai"}:
                 raise InputError("映射方式无效。")
+            if 'vat_review' in value:
+                from webapp.knowledge_evidence import VATReviewBody
+                from src import vat_reconciliation as vat
+                if not isinstance(value['vat_review'], dict):
+                    raise InputError('增值税取数核对须为结构化字段。')
+                checked = VATReviewBody.model_validate({**value['vat_review'], 'expected_revision': revision})
+                review_values = checked.model_dump(exclude={'expected_revision'})
+                vat.make_review(payload, review_values, user['id'], members.now())
+                # Reparse, bind the reviewed row to the final sources, and save
+                # once. Invalid/foreign mappings cannot partly persist options.
+                return await run_in_threadpool(process, user, task_id, revision, ai=mode == 'ai',
+                                               working_payload=payload, vat_review=review_values)
             revision = batches.append_revision(get_store(), user, task_id, revision, "edit", payload)
             return await run_in_threadpool(process, user, task_id, revision, ai=mode == "ai")
         except (InputError, ValueError, batches.MaterialStorageError) as exc:

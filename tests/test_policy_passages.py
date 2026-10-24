@@ -108,6 +108,22 @@ class PassageBundleTests(unittest.TestCase):
         return bundle.build(self.db, task, rule, facts, topic='客户退回货物红字发票', source_catalog=catalog,
                             model_dir=Path(self.tmp.name) / 'missing', token_budget=128000, **kwargs)
 
+    def test_reviewed_citation_text_survives_passage_selection(self):
+        corrected = self.text.replace('客户退回货物', '客户退回货物（已核对引用）')
+        def view(clause, policy):
+            if clause['clause_id'] == 'CL13':
+                return {'text': corrected, 'original_text': self.text,
+                        'citation_corrections': [{'original_quote': '客户退回货物',
+                                                  'corrected_quote': '客户退回货物（已核对引用）'}]}
+            return {'text': clause['content']}
+        with patch.object(bundle, 'citation_view', side_effect=view):
+            package = self.package()
+        row = next(r for r in package['policy_evidence'] if r['clause_id'] == 'CL13')
+        self.assertEqual(row['text'], corrected)
+        self.assertEqual(row['original_text'], self.text)
+        self.assertFalse(row.get('partial_clause', False))
+        self.assertTrue(row['citation_corrections'])
+
     def test_actual_bundle_and_outbound_keep_partial_scope_and_required_source(self):
         package = self.package()
         records = {p['clause_id']: p for p in package['policy_evidence']}
