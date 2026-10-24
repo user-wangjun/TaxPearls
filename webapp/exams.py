@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import random
 import sqlite3
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from functools import wraps
 from typing import Any
 
@@ -638,6 +639,440 @@ def close(store, actor: dict[str, Any], paper_id: str, college: str) -> dict[str
         return _payload(db, _paper_row(db, paper_id))
 
 
+# --------------------------------------------------------------------------- 学生机考（E2）
+
+def _student_user_id(db, who: dict[str, Any]) -> str:
+    """名单存的是平台账号 users.id，学生会话给的是 student_info.id，靠身份桥接。"""
+    row = db.execute("SELECT user_id FROM university_identity_links WHERE student_id=?",
+                     (who["id"],)).fetchone()
+    if not row or not row["user_id"]:
+        raise ExamError("该学籍还没有关联平台账号，无法进入考试；请联系管理员。", 403)
+    return row["user_id"]
+
+
+def _seconds_left(session: sqlite3.Row, *, moment: str | None = None) -> int:
+    stamp = datetime.fromisoformat(moment or now())
+    end = datetime.fromisoformat(session["ends_at"])
+    return max(0, int((end - stamp).total_seconds()))
+
+
+def _close_due_sessions(db, paper_id: str, *, moment: str | None = None) -> int:
+    """惰性收卷：把到点仍未交、或教师已提前结束的会话按已答内容收掉。
+
+    没有定时任务，所以每次访问都查一遍；"到点"两个口径——考生时间用完（ends_at 到了），
+    或整场考试已经不是 published（教师提前结束/归档），否则监考台会一直显示"作答中"。
+    """
+    stamp = moment or now()
+    paper = _paper_row(db, paper_id)
+    over = 1 if paper["status"] != "published" else 0
+    rows = db.execute(
+        """SELECT * FROM online_exam_session
+            WHERE paper_id=? AND status='in_progress' AND (? OR ends_at<=?)""",
+        (paper_id, over, stamp)).fetchall()
+    for session in rows:
+        db.execute("UPDATE online_exam_session SET status='forced', submitted_at=? WHERE id=?",
+                   (stamp, session["id"]))
+        _grade(db, session["id"])
+    # 写接口（保存/心跳/事件/交卷）随后要 409 拒绝写入，同一个事务里的改动会被回滚，
+    # 所以调用方必须在**独立的读连接**里先跑一次收卷，让结果先提交落库。
+    return len(rows)
+
+
+def _grade(db, session_id: str) -> float:
+    """客观题判分：选择集合与标准答案完全一致才得分（与初级会计客观题口径一致）。"""
+    rows = db.execute(
+        """SELECT a.question_id, a.picked_json, q.answer_keys_json, q.points
+             FROM online_exam_answer a
+             JOIN online_exam_question q ON q.id=a.question_id
+            WHERE a.session_id=?""", (session_id,)).fetchall()
+    total = 0.0
+    for row in rows:
+        try:
+            picked = sorted(json.loads(row["picked_json"] or "[]"))
+        except json.JSONDecodeError:
+            picked = []
+        keys = sorted(json.loads(row["answer_keys_json"]))
+        correct = int(bool(picked) and picked == keys)
+        points = float(row["points"]) if correct else 0.0
+        total += points
+        db.execute("UPDATE online_exam_answer SET correct=?, points_gained=? WHERE session_id=? AND question_id=?",
+                   (correct, points, session_id, row["question_id"]))
+    db.execute("UPDATE online_exam_session SET score=? WHERE id=?", (total, session_id))
+    return total
+
+
+def _ensure_open(db, paper: sqlite3.Row, session: sqlite3.Row, *, moment: str | None = None) -> sqlite3.Row:
+    """所有写操作前都过一道：卷关了、到点了就拒绝写入。
+
+    已经交卷/被收卷的会话直接放过，由调用方给出更准确的说法（"已交卷" 还是 "自动收卷"），
+    避免这里统一报成"时间到"。
+    """
+    stamp = moment or now()
+    if paper["status"] != "published" or (paper["close_at"] and stamp >= paper["close_at"]):
+        raise ExamError("考试已结束，不能再作答。", 409)
+    if session["status"] != "in_progress":
+        return session
+    if _seconds_left(session, moment=stamp) <= 0:
+        db.execute("UPDATE online_exam_session SET status='forced', submitted_at=? WHERE id=?",
+                   (stamp, session["id"]))
+        _grade(db, session["id"])
+        raise ExamError("考试时间已到，系统已自动收卷。", 409)
+    return session
+
+
+def _live_session(db, paper: sqlite3.Row, session: sqlite3.Row | None,
+                  *, moment: str | None = None) -> sqlite3.Row:
+    """写操作统一的会话闸门：先判卷面开关，再判会话是不是还在进行中。"""
+    if session is None:
+        raise ExamError("当前没有进行中的考试。", 409)
+    _ensure_open(db, paper, session, moment=moment)
+    if session["status"] != "in_progress":
+        raise ExamError("考试时间已到，系统已自动收卷。" if session["status"] == "forced"
+                        else "当前没有进行中的考试。", 409)
+    return session
+
+
+def _my_session(db, paper_id: str, student_user_id: str) -> sqlite3.Row | None:
+    return db.execute("SELECT * FROM online_exam_session WHERE paper_id=? AND student_id=?",
+                      (paper_id, student_user_id)).fetchone()
+
+
+def _ordered_questions(db, paper: sqlite3.Row, session_id: str) -> list[sqlite3.Row]:
+    """题目乱序：用会话 id 做种子，保证同一场考试里刷新/重连取卷顺序不变。"""
+    rows = db.execute(
+        "SELECT * FROM online_exam_question WHERE paper_id=? ORDER BY position", (paper["id"],)).fetchall()
+    if paper["shuffle_questions"]:
+        rng = random.Random(hashlib.sha256(f"{session_id}:questions".encode("utf-8")).hexdigest())
+        rows = list(rows)
+        rng.shuffle(rows)
+    return rows
+
+
+def _view_options(row: sqlite3.Row, session_id: str, *, shuffle: bool) -> list[dict[str, Any]]:
+    """选项乱序：同样以会话 id 为种子，避免每次取卷选项乱跳。"""
+    options = list(json.loads(row["options_json"]))
+    if shuffle:
+        rng = random.Random(hashlib.sha256(f"{session_id}:options:{row['id']}".encode("utf-8")).hexdigest())
+        rng.shuffle(options)
+    return options
+
+
+def list_my_exams(store, student_user_id: str, college: str) -> list[dict[str, Any]]:
+    with store.connect() as db:
+        rows = db.execute(
+            """SELECT p.* FROM online_exam_paper p
+                 JOIN online_exam_roster r ON r.paper_id=p.id
+                WHERE r.student_id=? ORDER BY p.created_at DESC""", (student_user_id,)).fetchall()
+        out = []
+        for row in rows:
+            _close_due_sessions(db, row["id"])
+            session = _my_session(db, row["id"], student_user_id)
+            item = {"id": row["id"], "title": row["title"], "description": row["description"],
+                    "duration_minutes": row["duration_minutes"], "open_at": row["open_at"],
+                    "close_at": row["close_at"], "status": row["status"], "phase": _phase(row),
+                    "session_status": session["status"] if session else None,
+                    "remaining_seconds": _seconds_left(session) if session and session["status"] == "in_progress" else None,
+                    "submitted_at": session["submitted_at"] if session else None,
+                    "score_visible": _score_visible(row, session)}
+            out.append(item)
+        return out
+
+
+def _score_visible(paper: sqlite3.Row, session: sqlite3.Row | None) -> bool:
+    if not session or session["status"] not in ("submitted", "forced"):
+        return False
+    policy = paper["answer_release"]
+    if policy == "after_submit":
+        return True
+    if policy == "after_close":
+        return paper["status"] == "closed"
+    return bool(paper["released_at"])
+
+
+def start_exam(store, student: dict[str, Any], paper_id: str) -> dict[str, Any]:
+    stamp = now()
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        student_id = _student_user_id(db, student)
+        paper = _paper_row(db, paper_id)
+        if not db.execute("SELECT 1 FROM online_exam_roster WHERE paper_id=? AND student_id=?",
+                          (paper_id, student_id)).fetchone():
+            raise ExamError("考试不存在。", 404)
+        if paper["status"] != "published":
+            raise ExamError("考试尚未开始或已结束。", 409)
+        if paper["open_at"] and stamp < paper["open_at"]:
+            raise ExamError(f"考试尚未开始（{paper['open_at']} 开始）。", 409)
+        if paper["open_at"] and paper["late_entry_minutes"] is not None:
+            grace = datetime.fromisoformat(paper["open_at"]) + timedelta(minutes=int(paper["late_entry_minutes"]))
+            if datetime.fromisoformat(stamp) > grace:
+                raise ExamError("已超过迟到宽限时间，不能进入考试。", 409)
+        if paper["close_at"] and stamp >= paper["close_at"]:
+            raise ExamError("考试已结束。", 409)
+        existing = _my_session(db, paper_id, student_id)
+        if existing:
+            raise ExamError("你已在作答中，请勿重复进入；刷新页面即可继续答题。", 409)
+        started = datetime.fromisoformat(stamp)
+        ends = started + timedelta(minutes=int(paper["duration_minutes"]))
+        if paper["close_at"]:
+            ends = min(ends, datetime.fromisoformat(paper["close_at"]))
+        sid = str(uuid.uuid4())
+        db.execute(
+            """INSERT INTO online_exam_session (id, paper_id, student_id, started_at, ends_at,
+                   status, violations, last_heartbeat_at)
+               VALUES (?,?,?,?,?,'in_progress',0,?)""",
+            (sid, paper_id, student_id, stamp, ends.isoformat(timespec="seconds"), stamp))
+        session = _my_session(db, paper_id, student_id)
+        return {"session": _session_payload(db, paper, session)}
+
+
+def _session_payload(db, paper: sqlite3.Row, session: sqlite3.Row) -> dict[str, Any]:
+    answered = db.execute("SELECT count(*) n FROM online_exam_answer WHERE session_id=?",
+                          (session["id"],)).fetchone()["n"]
+    return {"id": session["id"], "paper_id": session["paper_id"], "status": session["status"],
+            "started_at": session["started_at"], "ends_at": session["ends_at"],
+            "remaining_seconds": _seconds_left(session), "answered": int(answered or 0),
+            "violations": int(session["violations"] or 0), "submitted_at": session["submitted_at"]}
+
+
+def take_paper(store, student: dict[str, Any], paper_id: str) -> dict[str, Any]:
+    """取卷：题目不含标准答案与解析（按发布策略闸门，默认发布后才给）。"""
+    stamp = now()
+    with store.connect() as db:
+        student_id = _student_user_id(db, student)
+        paper = _paper_row(db, paper_id)
+        if not db.execute("SELECT 1 FROM online_exam_roster WHERE paper_id=? AND student_id=?",
+                          (paper_id, student_id)).fetchone():
+            raise ExamError("考试不存在。", 404)
+        _close_due_sessions(db, paper_id, moment=stamp)
+        session = _my_session(db, paper_id, student_id)
+        if not session:
+            raise ExamError("请先开始考试。", 409)
+        saved = {}
+        if session["status"] == "in_progress":
+            _ensure_open(db, paper, session, moment=stamp)
+        for row in db.execute(
+                "SELECT question_id, picked_json FROM online_exam_answer WHERE session_id=?",
+                (session["id"],)).fetchall():
+            try:
+                saved[row["question_id"]] = json.loads(row["picked_json"] or "[]")
+            except json.JSONDecodeError:
+                saved[row["question_id"]] = []
+        questions = []
+        for row in _ordered_questions(db, paper, session["id"]):
+            questions.append({
+                "id": row["id"], "kind": row["kind"], "stem": row["stem"],
+                "options": _view_options(row, session["id"], shuffle=bool(paper["shuffle_options"])),
+                "points": row["points"], "picked": saved.get(row["id"], [])})
+        return {"paper": {"id": paper["id"], "title": paper["title"], "description": paper["description"],
+                          "duration_minutes": paper["duration_minutes"],
+                          "question_count": len(questions),
+                          "total_points": paper["total_points"]},
+                "session": _session_payload(db, paper, session), "questions": questions}
+
+
+def save_answers(store, student: dict[str, Any], paper_id: str,
+                 answers: list[dict[str, Any]]) -> dict[str, Any]:
+    stamp = now()
+    with store.connect() as db:
+        student_id = _student_user_id(db, student)
+        if not db.execute("SELECT 1 FROM online_exam_roster WHERE paper_id=? AND student_id=?",
+                          (paper_id, student_id)).fetchone():
+            raise ExamError("考试不存在。", 404)
+        _close_due_sessions(db, paper_id, moment=stamp)  # 先落库：写事务可能被 409 回滚
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        paper = _paper_row(db, paper_id)
+        session = _live_session(db, paper, _my_session(db, paper_id, student_id), moment=stamp)
+        valid = {r["id"] for r in db.execute(
+            "SELECT id FROM online_exam_question WHERE paper_id=?", (paper_id,)).fetchall()}
+        saved = 0
+        for item in answers:
+            qid = str(item.get("question_id") or "").strip()
+            if qid not in valid:
+                continue
+            picked = [str(k).strip() for k in (item.get("picked") or []) if str(k).strip()]
+            db.execute(
+                """INSERT INTO online_exam_answer (session_id, question_id, picked_json, saved_at)
+                   VALUES (?,?,?,?)
+                   ON CONFLICT(session_id, question_id)
+                   DO UPDATE SET picked_json=excluded.picked_json, saved_at=excluded.saved_at""",
+                (session["id"], qid, json.dumps(picked, ensure_ascii=False), stamp))
+            saved += 1
+        return {"saved": saved, "session": _session_payload(db, paper, _my_session(db, paper_id, student_id))}
+
+
+def submit_exam(store, student: dict[str, Any], paper_id: str) -> dict[str, Any]:
+    stamp = now()
+    with store.connect() as db:
+        student_id = _student_user_id(db, student)
+        _close_due_sessions(db, paper_id, moment=stamp)  # 先落库：写事务可能被 409 回滚
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        paper = _paper_row(db, paper_id)
+        session = _my_session(db, paper_id, student_id)
+        if not session:
+            raise ExamError("还没有开始这场考试。", 409)
+        if session["status"] != "in_progress":
+            raise ExamError("考试时间已到，系统已自动收卷。" if session["status"] == "forced"
+                            else "这场考试已经交卷了。", 409)
+        db.execute("UPDATE online_exam_session SET status='submitted', submitted_at=? WHERE id=?",
+                   (stamp, session["id"]))
+        score = _grade(db, session["id"])
+        session = _my_session(db, paper_id, student_id)
+        return {"score_visible": _score_visible(paper, session), "score": score if _score_visible(paper, session) else None,
+                "session": _session_payload(db, paper, session)}
+
+
+def heartbeat(store, student: dict[str, Any], paper_id: str) -> dict[str, Any]:
+    stamp = now()
+    with store.connect() as db:
+        student_id = _student_user_id(db, student)
+        if not db.execute("SELECT 1 FROM online_exam_roster WHERE paper_id=? AND student_id=?",
+                          (paper_id, student_id)).fetchone():
+            raise ExamError("考试不存在。", 404)
+        _close_due_sessions(db, paper_id, moment=stamp)  # 先落库：写事务可能被 409 回滚
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        paper = _paper_row(db, paper_id)
+        session = _live_session(db, paper, _my_session(db, paper_id, student_id), moment=stamp)
+        db.execute("UPDATE online_exam_session SET last_heartbeat_at=? WHERE id=?", (stamp, session["id"]))
+        return {"remaining_seconds": _seconds_left(session), "at": stamp}
+
+
+NOISE_EVENTS = {"heartbeat", "resume"}
+
+
+def record_events(store, student: dict[str, Any], paper_id: str,
+                  events: list[dict[str, Any]]) -> dict[str, Any]:
+    """防作弊事件：只记录，不自动判定。切页/复制之类的计入 violations 供教师参考。"""
+    stamp = now()
+    with store.connect() as db:
+        student_id = _student_user_id(db, student)
+        if not db.execute("SELECT 1 FROM online_exam_roster WHERE paper_id=? AND student_id=?",
+                          (paper_id, student_id)).fetchone():
+            raise ExamError("考试不存在。", 404)
+        _close_due_sessions(db, paper_id, moment=stamp)  # 先落库：写事务可能被 409 回滚
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        paper = _paper_row(db, paper_id)
+        session = _live_session(db, paper, _my_session(db, paper_id, student_id), moment=stamp)
+        added = 0
+        for item in events:
+            kind = str(item.get("kind") or "").strip()[:40]
+            if not kind:
+                continue
+            at = str(item.get("at") or "").strip() or stamp
+            db.execute(
+                "INSERT INTO online_exam_event (id, session_id, kind, at, detail_json) VALUES (?,?,?,?,?)",
+                (str(uuid.uuid4()), session["id"], kind, at,
+                 json.dumps(item.get("detail") or {}, ensure_ascii=False)[:2000]))
+            added += 1
+            if kind not in NOISE_EVENTS:
+                db.execute("UPDATE online_exam_session SET violations=violations+1 WHERE id=?",
+                           (session["id"],))
+        session = _my_session(db, paper_id, student_id)
+        return {"recorded": added, "violations": int(session["violations"] or 0)}
+
+
+def result_for_student(store, student: dict[str, Any], paper_id: str) -> dict[str, Any]:
+    stamp = now()
+    with store.connect() as db:
+        student_id = _student_user_id(db, student)
+        paper = _paper_row(db, paper_id)
+        if not db.execute("SELECT 1 FROM online_exam_roster WHERE paper_id=? AND student_id=?",
+                          (paper_id, student_id)).fetchone():
+            raise ExamError("考试不存在。", 404)
+        _close_due_sessions(db, paper_id, moment=stamp)
+        session = _my_session(db, paper_id, student_id)
+        if not session:
+            raise ExamError("还没有参加这场考试。", 404)
+        visible = _score_visible(paper, session)
+        payload = {"released": visible, "status": session["status"],
+                   "submitted_at": session["submitted_at"],
+                   "score": float(session["score"]) if visible and session["score"] is not None else None,
+                   "pass_score": paper["pass_score"],
+                   "passed": None if not visible or paper["pass_score"] is None or session["score"] is None
+                             else float(session["score"]) >= float(paper["pass_score"]),
+                   "session": _session_payload(db, paper, session), "questions": []}
+        if not visible:
+            payload["reason"] = ("成绩尚未发布，教师发布后可见。" if paper["answer_release"] == "manual"
+                                 else "考试结束后才能查看成绩与解析。")
+            return payload
+        for row in _ordered_questions(db, paper, session["id"]):
+            answer = db.execute(
+                "SELECT picked_json, correct, points_gained FROM online_exam_answer"
+                " WHERE session_id=? AND question_id=?", (session["id"], row["id"])).fetchone()
+            try:
+                picked = json.loads(answer["picked_json"]) if answer else []
+            except json.JSONDecodeError:
+                picked = []
+            payload["questions"].append({
+                "id": row["id"], "kind": row["kind"], "stem": row["stem"],
+                "options": json.loads(row["options_json"]), "points": row["points"],
+                "picked": picked, "answer_keys": json.loads(row["answer_keys_json"]),
+                "explanation": row["explanation"],
+                "correct": bool(answer["correct"]) if answer and answer["correct"] is not None else None,
+                "points_gained": answer["points_gained"] if answer else None})
+        return payload
+
+
+# --------------------------------------------------------------------------- 监考台（E2）
+
+def proctor_sessions(store, paper_id: str, college: str) -> dict[str, Any]:
+    stamp = now()
+    with store.connect() as db:
+        paper = _require(db, paper_id, college)
+        _close_due_sessions(db, paper_id, moment=stamp)
+        rows = db.execute(
+            """SELECT r.student_id, r.student_no, r.name, s.id AS session_id, s.status,
+                      s.started_at, s.ends_at, s.submitted_at, s.violations, s.last_heartbeat_at,
+                      s.score, s.adjusted_score
+                 FROM online_exam_roster r
+                 LEFT JOIN online_exam_session s ON s.paper_id=r.paper_id AND s.student_id=r.student_id
+                WHERE r.paper_id=? ORDER BY r.student_no, r.name""", (paper_id,)).fetchall()
+        people = []
+        for row in rows:
+            answered = 0
+            if row["session_id"]:
+                answered = db.execute("SELECT count(*) n FROM online_exam_answer WHERE session_id=?",
+                                      (row["session_id"],)).fetchone()["n"] or 0
+            people.append({
+                "student_id": row["student_id"], "student_no": row["student_no"], "name": row["name"],
+                "session_id": row["session_id"], "status": row["status"] or "not_started",
+                "started_at": row["started_at"], "submitted_at": row["submitted_at"],
+                "answered": int(answered), "question_count": db.execute(
+                    "SELECT count(*) n FROM online_exam_question WHERE paper_id=?", (paper_id,)).fetchone()["n"],
+                "violations": int(row["violations"] or 0), "last_heartbeat_at": row["last_heartbeat_at"],
+                "remaining_seconds": (int((datetime.fromisoformat(row["ends_at"]) - datetime.fromisoformat(stamp))
+                                          .total_seconds()) if row["ends_at"] and row["status"] == "in_progress" else None),
+                "score": row["adjusted_score"] if row["adjusted_score"] is not None else row["score"]})
+        return {"paper": {"id": paper["id"], "title": paper["title"], "status": paper["status"],
+                          "phase": _phase(paper), "duration_minutes": paper["duration_minutes"]},
+                "people": people,
+                "summary": {"roster": len(people),
+                            "in_progress": sum(1 for p in people if p["status"] == "in_progress"),
+                            "submitted": sum(1 for p in people if p["status"] in ("submitted", "forced")),
+                            "not_started": sum(1 for p in people if p["status"] == "not_started"),
+                            "violations": sum(p["violations"] for p in people)}}
+
+
+def force_submit(store, actor: dict[str, Any], paper_id: str, college: str,
+                 student_id: str) -> dict[str, Any]:
+    stamp = now()
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        _require(db, paper_id, college)
+        session = _my_session(db, paper_id, student_id)
+        if not session:
+            raise ExamError("该考生还没有进入考试。", 404)
+        if session["status"] != "in_progress":
+            raise ExamError("该考生已交卷。", 409)
+        db.execute("UPDATE online_exam_session SET status='forced', submitted_at=? WHERE id=?",
+                   (stamp, session["id"]))
+        score = _grade(db, session["id"])
+        return {"student_id": student_id, "status": "forced", "score": score, "submitted_at": stamp}
+
+
 # --------------------------------------------------------------------------- 路由
 
 class PaperCreate(BaseModel):
@@ -684,7 +1119,18 @@ class RosterPut(BaseModel):
     student_nos: list[str] = Field(default_factory=list)
 
 
-def register(app, store_provider, staff_cookie: str = "taxpearls_staff_session") -> None:
+class AnswersPut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    answers: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class EventsPut(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+def register(app, store_provider, staff_cookie: str = "taxpearls_staff_session",
+             student_cookie: str = "taxpearls_training_session") -> None:
     def response(value: Any) -> JSONResponse:
         return JSONResponse(value, headers={"Cache-Control": "private, no-store"})
 
@@ -706,6 +1152,13 @@ def register(app, store_provider, staff_cookie: str = "taxpearls_staff_session")
             raise HTTPException(status_code=401, detail="请先使用教师或管理员账号登录。")
         if college is not None and college != who["college"]:
             raise HTTPException(status_code=403, detail="只能管理本院校的考试。")
+        return who
+
+    def learner(session: str | None) -> dict[str, Any]:
+        from webapp.training_portal import student_for_token
+        who = student_for_token(store_provider(), session)
+        if not who:
+            raise HTTPException(status_code=401, detail="请先使用学号登录。")
         return who
 
     @app.get("/api/training/exams/papers")
@@ -787,3 +1240,78 @@ def register(app, store_provider, staff_cookie: str = "taxpearls_staff_session")
                    session: str | None = Cookie(default=None, alias=staff_cookie)) -> JSONResponse:
         who = actor(session, college)
         return response({"paper": close(store_provider(), who, paper_id, college)})
+
+    # ---- 监考台（教师） ----
+
+    @app.get("/api/training/exams/papers/{paper_id}/sessions")
+    @guarded
+    def exam_proctor(paper_id: str, college: str,
+                     session: str | None = Cookie(default=None, alias=staff_cookie)) -> JSONResponse:
+        actor(session, college)
+        return response(proctor_sessions(store_provider(), paper_id, college))
+
+    @app.post("/api/training/exams/papers/{paper_id}/sessions/{student_id}/force-submit")
+    @guarded
+    def exam_force_submit(paper_id: str, student_id: str, college: str,
+                          session: str | None = Cookie(default=None, alias=staff_cookie)) -> JSONResponse:
+        who = actor(session, college)
+        return response(force_submit(store_provider(), who, paper_id, college, student_id))
+
+    # ---- 学生机考 ----
+
+    @app.get("/api/training/exams/my")
+    @guarded
+    def exam_my(session: str | None = Cookie(default=None, alias=student_cookie)) -> JSONResponse:
+        who = learner(session)
+        with store_provider().connect() as db:
+            student_id = _student_user_id(db, who)
+        return response({"exams": list_my_exams(store_provider(), student_id, who.get("college") or "")})
+
+    @app.post("/api/training/exams/{paper_id}/start")
+    @guarded
+    def exam_start(paper_id: str,
+                   session: str | None = Cookie(default=None, alias=student_cookie)) -> JSONResponse:
+        who = learner(session)
+        return response(start_exam(store_provider(), who, paper_id))
+
+    @app.get("/api/training/exams/{paper_id}/paper")
+    @guarded
+    def exam_take(paper_id: str,
+                  session: str | None = Cookie(default=None, alias=student_cookie)) -> JSONResponse:
+        who = learner(session)
+        return response(take_paper(store_provider(), who, paper_id))
+
+    @app.post("/api/training/exams/{paper_id}/answers")
+    @guarded
+    def exam_answers(paper_id: str, body: AnswersPut,
+                     session: str | None = Cookie(default=None, alias=student_cookie)) -> JSONResponse:
+        who = learner(session)
+        return response(save_answers(store_provider(), who, paper_id, body.answers))
+
+    @app.post("/api/training/exams/{paper_id}/submit")
+    @guarded
+    def exam_submit(paper_id: str,
+                    session: str | None = Cookie(default=None, alias=student_cookie)) -> JSONResponse:
+        who = learner(session)
+        return response(submit_exam(store_provider(), who, paper_id))
+
+    @app.post("/api/training/exams/{paper_id}/heartbeat")
+    @guarded
+    def exam_heartbeat(paper_id: str,
+                       session: str | None = Cookie(default=None, alias=student_cookie)) -> JSONResponse:
+        who = learner(session)
+        return response(heartbeat(store_provider(), who, paper_id))
+
+    @app.post("/api/training/exams/{paper_id}/events")
+    @guarded
+    def exam_events(paper_id: str, body: EventsPut,
+                    session: str | None = Cookie(default=None, alias=student_cookie)) -> JSONResponse:
+        who = learner(session)
+        return response(record_events(store_provider(), who, paper_id, body.events))
+
+    @app.get("/api/training/exams/{paper_id}/result")
+    @guarded
+    def exam_result(paper_id: str,
+                    session: str | None = Cookie(default=None, alias=student_cookie)) -> JSONResponse:
+        who = learner(session)
+        return response(result_for_student(store_provider(), who, paper_id))

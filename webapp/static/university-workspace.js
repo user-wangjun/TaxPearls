@@ -4,8 +4,8 @@
 window.universityWorkspace = (() => {
   const $ = id => document.getElementById(id);
   let identity = null, controller = null, selected = "home", loading = null;
-  const studentViews = [["home", "学习总览"], ["tasks", "课程任务"], ["practice", "练习与考证"], ["wrongs", "错题复习"], ["goals", "考证目标"], ["catalog", "找证书"], ["knowledge", "政策与学习图谱"], ["profile", "学习档案"], ["settings", "账号设置"]];
-  const staffViews = [["home", "教学总览"], ["students", "师生与班级"], ["courses", "课程管理"], ["tasks", "课程与作业"], ["statistics", "学情统计"], ["knowledge", "政策与学习图谱"], ["content", "教学资源"], ["archives", "教学档案"], ["settings", "账号设置"]];
+  const studentViews = [["home", "学习总览"], ["tasks", "课程任务"], ["exams", "在线考试"], ["practice", "练习与考证"], ["wrongs", "错题复习"], ["goals", "考证目标"], ["catalog", "找证书"], ["knowledge", "政策与学习图谱"], ["profile", "学习档案"], ["settings", "账号设置"]];
+  const staffViews = [["home", "教学总览"], ["students", "师生与班级"], ["courses", "课程管理"], ["tasks", "课程与作业"], ["exams", "在线考试"], ["statistics", "学情统计"], ["knowledge", "政策与学习图谱"], ["content", "教学资源"], ["archives", "教学档案"], ["settings", "账号设置"]];
   const labels = {student:"学生", teacher:"教师", admin:"高校管理员 / 教师", school_admin:"校级管理员", unlinked:"待关联教学身份"};
   const viewsFor = (kind, role) => role === "unlinked" ? [["home", "教学工作台"]] : kind === "student" ? studentViews : staffViews.filter(([key]) => role !== "school_admin" || ["home", "students", "courses", "knowledge", "settings"].includes(key));
   let overview = null, viewRevision = 0;
@@ -17,7 +17,7 @@ window.universityWorkspace = (() => {
   }
   const element = (tag, cls, text) => { const node = document.createElement(tag); if(cls)node.className=cls; if(text !== undefined)node.textContent=String(text); return node; };
   const classroomViews = new Set(["students", "tasks", "statistics", "wrongs", "profile"]);
-  const nativeViews = new Set(["students", "courses", "content", "settings", "goals", "practice", "wrongs", "catalog", "profile"]);
+  const nativeViews = new Set(["students", "courses", "content", "settings", "goals", "practice", "wrongs", "catalog", "profile", "exams"]);
   function usesNative(view=selected) { return nativeViews.has(view)||(view==="home"&&identity.universityKind==="student"); }
   function classroomCapable() { return !identity.legacy_teaching && ["admin", "teacher", "student"].includes(identity.role); }
   function setupPanels() {
