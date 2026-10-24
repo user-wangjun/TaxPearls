@@ -16,6 +16,8 @@ def prepare(package, *, authorized, destination):
     parts = []
     for original in package["batching"]["parts"]:
         part = {k: deepcopy(original[k]) for k in ("task", "check", "facts", "conditions", "exceptions", "policy_evidence", "policy_leads", "gaps", "relationships", "part_number", "part_count")}
+        if original.get("supporting_materials"):
+            part["supporting_materials"] = deepcopy(original["supporting_materials"])
         for key in ('batch_category', 'batch_category_name', 'batch_group', 'batch_group_name', 'required_clause_ids'):
             if key in original:
                 part[key] = deepcopy(original[key])

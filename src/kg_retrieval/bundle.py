@@ -16,6 +16,8 @@ def content_hash(package):
             "policy_evidence", "policy_leads", "relationships", "gaps", "fact_assessment", "risk_assessment")}
     core["gaps"] = sorted(core["gaps"], key=canonical)
     core["relationships"] = sorted(core["relationships"], key=canonical)
+    if package.get("supporting_materials"):
+        core["supporting_materials"] = package["supporting_materials"]
     return digest({**core, "token_budget": package["batching"]["soft_token_budget"]})
 
 
@@ -121,7 +123,8 @@ def split_bundle(bundle, token_budget=6000):
 
 
 def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_catalog=(), model_dir=None,
-          candidate_limit=20, review_limit=30, token_budget=6000, offline=True, metric_definitions=None, fact_assessment=None):
+          candidate_limit=20, review_limit=30, token_budget=6000, offline=True, metric_definitions=None, fact_assessment=None,
+          supporting_materials=()):
     started = perf_counter()
     task = checked_task(task)
     if not db.in_transaction:
@@ -164,6 +167,10 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
         if clause.get('parent_clause_id'):
             dependency_ids.add(clause['parent_clause_id'])
     facts, gaps = _facts(context, supplied_facts, task, source_catalog)
+    if supporting_materials:
+        gaps.append({"code": "supporting_validity_review", "message": "额外材料仅作本次任务的佐证线索，其关联期间、适用性与证明力须人工核实，不替代核心资料或程序指标。"})
+        if any(not row.get("source_reviewed") or row.get("extraction_status") == "incomplete" for row in supporting_materials):
+            gaps.append({"code": "supporting_source_review", "message": "额外材料存在未核对内容或未提取部分，请对照原件核实；不得视为已确认事实。"})
     conditions, exceptions, truth_values, condition_gaps = _conditions(context, facts, task)
     gaps += [*condition_gaps, *closure["gaps"]]
     if rule["review_status"] != "approved" or not rule.get("reviewed_by") or not rule.get("reviewed_at"):
@@ -281,6 +288,9 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
     bundle["analysis_readiness"] = bundle["bundle_status"]
     bundle["analysis_mode"] = "evidence_assessment" if bundle["bundle_status"] == "ready" else "review_only"
     core = {key: bundle[key] for key in ("task", "check", "facts", "metric_definitions", "conditions", "exceptions", "policy_evidence", "policy_leads", "relationships", "gaps", "fact_assessment", "risk_assessment")}
+    if supporting_materials:
+        bundle["supporting_materials"] = deepcopy(list(supporting_materials))
+        core["supporting_materials"] = bundle["supporting_materials"]
     bundle["bundle_id"] = digest(core)
     bundle["batching"] = split_bundle(bundle, token_budget)
     if bundle["batching"]["unsplittable"]:

@@ -479,6 +479,14 @@ def archive(store, actor, task_id, expected_revision, *, complete_report_version
                    for row in payload["processing"].get("records", []) if row["id"] in
                    {sid for slot in checks.values() for fact in slot["bundle"]["facts"] for sid in fact["source_ids"]}]
         template = (ROOT / "templates/core_check_report.html").read_text(encoding="utf-8")
+        source_ids = {source["record_id"] for source in sources}
+        for slot in checks.values():
+            for row in slot["bundle"].get("supporting_materials", []):
+                if row["source_id"] not in source_ids:
+                    source_ids.add(row["source_id"])
+                    sources.append({"record_id": row["source_id"], "file_id": row["file_id"],
+                                    "file_name": file_names.get(row["file_id"]), "source_position": row["source_position"],
+                                    "field_sources": {}, "source_reviewed": row["source_reviewed"]})
         snapshot = {"schema": 1, "task": deepcopy(payload["task"]), "checks": checks,
                     'policy_assessment': policy_assessment,
                     "processing": {key: deepcopy(payload["processing"].get(key)) for key in ("status", "issues", "notices")},

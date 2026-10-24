@@ -40,6 +40,7 @@ ANALYSIS_PROMPT = (
     "每项type必须严格使用response_constraints.required_type，不得因事实差额为零或已知而改成其他类型。"
     "所有引用必须来自本包，缺少企业事实时source_ids和amounts可为空。政策条款存在时必须引用；没有政策不得编造引用。列出需补材料。"
     "优先合并同类缺口，最多返回三项简洁分析，不重复长段原文。严格逐字使用response_constraints中的允许ID，不补造来源。"
+    "supporting_materials是额外佐证文字，引用其中source_id并保留其待核实状态；不能替代核心材料、程序指标或认定材料有效。"
 )
 
 def legal_claim(text):
@@ -82,6 +83,7 @@ def validate_answer(answer, package):
     allowed_clauses = {p["clause_id"] for p in evidence}
     facts = {f["metric_id"]: f for f in package["facts"]}
     allowed_sources = {sid for fact in facts.values() for sid in fact["source_ids"]}
+    allowed_sources |= {row["source_id"] for row in package.get("supporting_materials", [])}
     dates = {str(package["task"].get(k)) for k in ("period_start", "period_end")}
     dates |= {str(p.get(k)) for p in evidence for k in ("effective_from", "effective_to") if p.get(k)}
     if set(answer) != {"assessments"} or not isinstance(answer["assessments"], list) or not 1 <= len(answer["assessments"]) <= 8:
@@ -228,7 +230,8 @@ def analyze(package, prior=None):
             "fact_assessment_is_readonly": True, "policy_readiness_is_independent_of_numeric_difference": True,
             "allowed_rule_id": payload['check']['rule_id'],
             "allowed_clause_ids": sorted({p['clause_id'] for p in payload['policy_evidence'] + payload['policy_leads']}),
-            "allowed_source_ids": sorted({s for f in payload['facts'] for s in f.get('source_ids', [])})}
+            "allowed_source_ids": sorted({s for f in payload['facts'] for s in f.get('source_ids', [])} |
+                                         {r['source_id'] for r in payload.get('supporting_materials', [])})}
         if partial:
             payload['bundle_status'] = 'needs_review'
             payload['analysis_mode'] = 'review_only'
@@ -313,6 +316,7 @@ def analyze(package, prior=None):
                 return refine()
         # Validate against the actual transmitted part, not untransmitted evidence.
         transmitted = {**package, "facts": part['facts'], "policy_evidence": part["policy_evidence"], "policy_leads": part["policy_leads"]}
+        transmitted["supporting_materials"] = part.get("supporting_materials", [])
         if partial:
             transmitted["bundle_status"] = "needs_review"
         try:

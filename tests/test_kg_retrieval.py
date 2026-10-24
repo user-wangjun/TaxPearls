@@ -214,6 +214,71 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(result['check']['evaluation'], 'TRUE')
         self.assertTrue(result['policy_evidence'])
 
+    def test_supporting_citations_are_allowed_only_in_transmitted_part(self):
+        row={'source_id':'supporting:contract:1','file_id':'contract','file_sha256':'synthetic-sha','source_position':'PDF第1页','source_reviewed':False,'origin':'source_text','text':'明确模拟的合同原文，仅作工程测试。'}
+        package=self.package(supporting_materials=[row])
+        seen=[]
+        def provider(system,part,failure):
+            sources={sid for fact in part['facts'] for sid in fact.get('source_ids',[])}
+            extra={item['source_id'] for item in part.get('supporting_materials',[])}
+            self.assertEqual(set(part['response_constraints']['allowed_source_ids']),sources|extra)
+            seen.extend(extra)
+            answer,model=self.context_answer(system,part,failure)
+            answer['assessments'][0]['source_ids']=sorted(extra)
+            return answer,model
+        with patch.object(service,'acceptance_gate',return_value={'passed':True,'model_fingerprints':[None]}),patch('webapp.knowledge._chat_json',side_effect=provider):
+            result=service.analyze(package)
+        self.assertTrue(result['validated'])
+        self.assertIn(row['source_id'],seen)
+        self.assertTrue(any(row['source_id'] in a['source_ids'] for a in result['assessments']))
+
+    def test_supporting_sources_are_losslessly_batched_citable_and_change_content_hash(self):
+        from src.kg_retrieval import batching, outbound
+        row = {"source_id": "supporting:contract:1", "file_id": "contract", "file_sha256": "synthetic-sha",
+               "source_position": "PDF第1页", "source_reviewed": False, "origin": "source_text",
+               "scope_status": "user_linked_supporting_material", "validity": "requires_human_review", "text": "source wording " * 1800}
+        package = self.package(supporting_materials=[row])
+        self.assertNotEqual(package["bundle_status"], "ready")
+        self.assertTrue(any(g["code"] == "supporting_source_review" for g in package["gaps"]))
+        self.assertFalse(package["batching"]["unsplittable"])
+        fragments = [source for part in package["batching"]["parts"] for source in part.get("supporting_materials", [])]
+        self.assertEqual("".join(source["text"] for source in fragments), row["text"])
+        self.assertTrue(all(source["source_id"] == row["source_id"] for source in fragments))
+        delivery = outbound.prepare(package, authorized=True, destination="https://example.com/v1")
+        self.assertEqual(delivery["outbound_gate"], "allowed")
+        self.assertEqual(sum(len(part.get("supporting_materials", [])) for part in delivery["parts"]), len(fragments))
+        changed = deepcopy(package)
+        changed["supporting_materials"][0]["text"] += "changed"
+        self.assertNotEqual(bundle.content_hash(changed), bundle.content_hash(package))
+        self.assertLessEqual(max(part['token_upper_bound'] for part in package['batching']['parts']), batching.MAX_BUDGET)
+        answer = {"assessments": [{"type": "insufficient_evidence", "text": "合同内容及期间仍需核实。", "rule_id": package["check"]["rule_id"],
+                                  "clause_ids": [p["clause_id"] for p in package["policy_evidence"][:1]], "source_ids": [row["source_id"]],
+                                  "amounts": [], "dates": [], "required_materials": []}]}
+        service.validate_answer(answer, package)
+        with self.assertRaises(ValueError):
+            service.validate_answer(answer, {**package, "supporting_materials": []})
+
+    def test_extra_upload_review_and_exclusion_invalidate_old_check(self):
+        from src.supporting_materials import evidence
+        doc = {"id": "extra", "name": "合同.pdf", "sha256": "sha", "material_type": "supporting_material",
+               "source_reviewed": False, "excerpts": [{"source_id": "supporting:extra:1", "source_position": "PDF第1页", "text": "source"}], "issues": []}
+        package = self.package()
+        payload = {"task": {"start_date": package["task"]["period_start"], "end_date": package["task"]["period_end"]}, "documents": [doc],
+                   "processing": {"records": []}, "tax_checks": {"rule": {"bundle": package}}}
+        with patch.object(metrics, "collect", return_value={f["metric_id"]: f for f in package["facts"]}):
+            metrics.mark_stale(payload)
+            self.assertTrue(payload["tax_checks"]["rule"]["stale"])
+            package["supporting_materials"] = evidence(payload)
+            metrics.mark_stale(payload)
+            self.assertFalse(payload["tax_checks"]["rule"]["stale"])
+            doc["source_reviewed"] = True
+            metrics.mark_stale(payload)
+            self.assertTrue(payload["tax_checks"]["rule"]["stale"])
+            package["supporting_materials"] = evidence(payload)
+            payload["documents"] = []
+            metrics.mark_stale(payload)
+            self.assertTrue(payload["tax_checks"]["rule"]["stale"])
+
     def test_acceptance_fingerprint_ignores_checkout_newlines_but_detects_source_changes(self):
         original = Path.read_bytes
         expected = implementation_fingerprint()
@@ -839,6 +904,47 @@ class CoreReportTests(unittest.TestCase):
         self.assertTrue(saved['validated'])
         self.assertEqual(saved['assessments'], checked.json()['ai']['assessments'])
         self.assertEqual(saved['status'], 'needs_review')
+
+    def test_extra_upload_requires_recheck_and_report_keeps_trace_and_previous_version(self):
+        tid, checked = self.checked()
+        base = "/api/enterprise/input-tasks/" + tid
+        self.assertEqual(self.client.post(base + "/reports", json={"expected_revision": checked["revision"]}).status_code, 200)
+        extra = self.client.post(base + "/files", data={"expected_revision": checked["revision"], "material_type": "supporting_material"},
+                                 files={"files": ("合同说明.csv", b"note,value\ncontract,source wording\n")})
+        self.assertEqual(extra.status_code, 200, extra.text)
+        self.assertTrue(extra.json()["tax_checks"]["R01"]["stale"])
+        self.assertEqual(self.client.post(base + "/reports", json={"expected_revision": extra.json()["revision"]}).status_code, 409)
+        rechecked = self.client.post("/api/knowledge/retrieve", json={"rule_id": "R01", "task_id": tid,
+                                     "expected_revision": extra.json()["revision"], "region_code": "CN-33"})
+        self.assertEqual(rechecked.status_code, 200, rechecked.text)
+        result = rechecked.json()
+        self.assertTrue(result["bundle"]["supporting_materials"])
+        report = self.client.post(base + "/reports", json={"expected_revision": result["revision"]})
+        self.assertEqual(report.status_code, 200, report.text)
+        current = self.client.get(base + "/reports/2?format=json").json()
+        self.assertTrue(any(row["file_name"] == "合同说明.csv" and row["source_position"] == "第2行" for row in current["sources"]))
+        previous = self.client.get(base + "/reports/1?format=json").json()
+        self.assertFalse(previous["checks"]["R01"]["bundle"].get("supporting_materials"))
+
+    def test_file_delete_is_blocked_after_archive_and_preserves_frozen_report(self):
+        tid, checked = self.checked()
+        base = "/api/enterprise/input-tasks/" + tid
+        task = self.client.get(base).json()
+        file_id = task["documents"][0]["id"]
+        self.assertEqual(self.client.post(base + "/reports", json={"expected_revision": checked["revision"]}).status_code, 200)
+        before = self.client.get(base + "/reports/1?format=json").content
+        complete = self.client.post(base + "/complete", json={"expected_revision": checked["revision"], "report_version": 1})
+        self.assertEqual(complete.status_code, 200, complete.text)
+        self.assertEqual(self.client.request("DELETE", base + "/files/" + file_id,
+                         json={"expected_revision": complete.json()["revision"], "confirm": True}).status_code, 409)
+        reopened = self.client.post(base + "/reopen", json={"expected_revision": complete.json()["revision"]})
+        self.assertEqual(reopened.status_code, 200, reopened.text)
+        deleted = self.client.request("DELETE", base + "/files/" + file_id,
+                                      json={"expected_revision": reopened.json()["revision"], "confirm": True})
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertTrue(deleted.json()["tax_checks"]["R01"]["stale"])
+        self.assertEqual(self.client.get(base + "/originals/" + file_id).status_code, 410)
+        self.assertEqual(self.client.get(base + "/reports/1?format=json").content, before)
 
     def test_report_uses_readable_policy_citations_and_retains_frozen_ids(self):
         from jinja2 import Environment, FileSystemLoader, select_autoescape
