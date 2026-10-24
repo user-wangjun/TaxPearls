@@ -71,6 +71,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
       }
       return {type:"complete",revision:sample.revision};
     }
+    if(options?.method==="DELETE"&&url.includes("/files/")){if(failDelete)throw new Error("测试删除失败");const id=decodeURIComponent(url.split("/").at(-1));sample.files=sample.files.map(file=>file.id===id?{...file,deleted_at:"2026-10-20"}:file);sample.documents=sample.documents.filter(doc=>doc.id!==id);delete sample.source_options[id];sample.revision++;return structuredClone(sample);}
     if(options?.method==="DELETE"){if(failDelete)throw new Error("测试删除失败");return {id:"task",deleted:true};}
     if(failScope&&url.endsWith("/scope"))throw new Error("测试范围保存失败");
     if(fail&&url.endsWith("/prepare"))throw new Error("测试保存失败");return url==="/api/clients"?[{id:"existing",name:"历史企业",taxpayer_id:"91310000123456789A"}]:url==="/api/enterprise/input-tasks"&&!options?(sample.completion?[{id:sample.id,task:sample.task,status:"archived",completion:sample.completion}]:[]):structuredClone(sample);};
@@ -167,13 +168,47 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.equal(find("版本与操作记录"),undefined,"upload workflow does not display administrative history");
   assert.ok(!all($("coreTaskResult")).some(n=>/版本 \d|analysis|2026-10-17T10:50/.test(n.textContent||"")),"internal versions and raw operations are absent even for an old response");
   assert.equal(find("采用此期间"),undefined);assert.ok(all($("corePeriodCandidates")).find(n=>n.textContent==="查看期间候选"));assert.equal($("coreStart").value,"2026-01-01");assert.equal($("coreEnd").value,"2026-01-31");
-  for(const [kind,label] of [["account_balance","科目余额表"],["vat_declaration","增值税申报表"],["invoice_detail","发票明细"]]){
+  for(const [kind,label] of [["account_balance","科目余额表"],["vat_declaration","增值税申报表"],["invoice_detail","发票明细"],["supporting_material","额外材料"]]){
     const pick=field(label+"上传");pick.files=[new Blob(["synthetic material"])];await pick.onchange();
     const upload=calls.findLast(c=>c.url.endsWith("/files")).options.body;
     assert.equal(upload.get("material_type"),kind);assert.equal(upload.get("mapping_mode"),"ai");
     assert.ok(pick.accept.split(",").includes(".pdf"));assert.equal(upload.get("ocr"),"1");
     assert.equal(field(label+"文件传输进度").value,100);
   }
+  const supporting={id:"extra",name:"合同.pdf",material_type:"supporting_material",sha256:"synthetic-extra",records:[],parts:[],issues:[],
+    excerpts:[{source_id:"supporting:extra:1",source_position:"PDF第1页",text:"<script>document instructions remain source text</script>",origin:"source_text"}]};
+  sample.documents.push(supporting);sample.source_options.extra={original_name:"合同.pdf",source_reviewed:false};await controller.openTask("task");
+  assert.ok(find("额外材料（选传）"));assert.ok(find(supporting.excerpts[0].text),"extra text is rendered through textContent");
+  const extraReview=field("合同.pdf 已对照原件核实额外材料内容与本次任务的关联");extraReview.checked=true;extraReview.listeners.change();
+  all($("coreTaskResult")).find(n=>n.tag==="fieldset").listeners.change();
+  await find("保存核对并重新整理资料").onclick();
+  const extraOptions=JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).source_options.extra;
+  assert.equal(extraOptions.source_reviewed,true);assert.equal(extraOptions.confirmed_metadata,undefined,"extra documents do not receive financial metadata");
+  sample.documents.pop();delete sample.source_options.extra;await controller.openTask("task");
+  sample.documents.push({id:"balance-sides",name:"借贷余额.pdf",material_type:"account_balance",sha256:"synthetic-sides",parts:[],issues:[],records:[
+    {id:"balance-row",account_name:"现金",source_position:"PDF第1页",opening_balance:{debit:"12345.0123",credit:"0"},current_debit:"100",current_credit:"20",closing_balance:{debit:null,credit:"80.0123"},field_sources:{}}
+  ]});sample.source_options["balance-sides"]={};await controller.openTask("task");
+  assert.ok(find("借方 12,345.0123 / 贷方 0"),"debit and credit balances retain exact decimal strings and zero");
+  assert.ok(find("借方 待识别 / 贷方 80.0123"),"unknown side is not displayed as zero");
+  assert.ok(!all($("coreTaskResult")).some(n=>n.textContent==="[object Object]"));
+  sample.documents.pop();delete sample.source_options["balance-sides"];await controller.openTask("task");
+  sample.upload_review={pending_files:["扫描.pdf"]};
+  const pendingPick=field("发票明细上传");pendingPick.files=[new Blob(["unreadable scan"])];await pendingPick.onchange();
+  assert.ok(find("原件已保存；扫描.pdf 尚待识别或类别、来源核对，不能视为该类资料已确认。"));
+  assert.equal(field("发票明细文件传输进度").hidden,true,"review state must not animate as if parsing is still running");
+  assert.equal(pendingPick.disabled,false);delete sample.upload_review;
+  const savedUploadView=structuredClone({files:sample.files,documents:sample.documents,source_options:sample.source_options,revision:sample.revision});
+  sample.files.push({id:"review-pdf",size:4096,deleted_at:null});await controller.openTask("task");
+  assert.ok(all($("coreTaskResult")).some(n=>n.className==="core-uploaded-name"&&n.textContent==="进项.pdf"),"the upload slot shows its file names");
+  field("查看解析：进项.pdf").onclick();
+  assert.equal(all($("coreTaskResult")).find(n=>n.className==="core-document"&&all(n.children[0]).some(child=>child.textContent==="进项.pdf")).open,true);
+  const beforeFileCancel=calls.length,fileCancel=field("删除材料：进项.pdf").onclick();assert.equal($("coreDeleteTitle").textContent,"删除上传材料");assert.match($("coreDeleteDescription").textContent,/原件.*删除/);
+  $("coreDeleteCancel").onclick();await fileCancel;assert.equal(calls.length,beforeFileCancel,"file deletion cancellation sends no request");
+  failDelete=true;const failedFile=field("删除材料：进项.pdf").onclick();$("coreDeleteConfirm").onclick();await failedFile;
+  assert.ok(field("删除材料：进项.pdf"),"a failed delete leaves the file visible");failDelete=false;
+  const successfulFile=field("删除材料：进项.pdf").onclick();$("coreDeleteConfirm").onclick();await successfulFile;
+  const fileDeleteCall=calls.findLast(call=>call.options?.method==="DELETE");assert.match(fileDeleteCall.url,/\/files\/review-pdf$/);assert.deepEqual(JSON.parse(fileDeleteCall.options.body),{expected_revision:savedUploadView.revision,confirm:true});
+  assert.equal(field("删除材料：进项.pdf"),undefined);Object.assign(sample,savedUploadView);await controller.openTask("task");
   // Real transfer events drive the percentage; parsing never pretends to have a percentage.
   holdUploads=true;
   const uploadPick=field("科目余额表上传");uploadPick.files=[new Blob(["progress fixture"])];
@@ -182,14 +217,15 @@ function all(root){return [root,...root.children.flatMap(all)];}
   request.upload.onload();assert.equal(Object.hasOwn(progress,"value"),false);assert.ok(find("文件已传输，正在保存和解析，请稍候……"));
   assert.equal(uploadPick.disabled,false,"file selection stays available during parsing");
   assert.equal(field("增值税申报表上传").disabled,false);assert.equal($("coreTaskForm").disabled,true);
-  const requestCount=uploadRequests.length,queuedPick=field("增值税申报表上传");queuedPick.files=[new Blob(["next batch"])];
+  assert.equal(field("额外材料上传").disabled,false);
+  const requestCount=uploadRequests.length,queuedPick=field("额外材料上传");queuedPick.files=[new Blob(["next batch"])];
   const queued=queuedPick.onchange();uploadPick.files=[new Blob(["another balance"])];const sameKind=uploadPick.onchange();
   assert.equal(uploadRequests.length,requestCount,"new selections wait without concurrent revision writes");
   assert.ok(find("等待上传 1 份（尚未发送）"));
   const unloadEvent={preventDefault(){this.prevented=true;}};pageEvents.beforeunload(unloadEvent);assert.equal(unloadEvent.prevented,true);
   request.succeed(2);await uploading;
   const secondRequest=uploadRequests.at(-1);assert.notEqual(secondRequest,request);
-  assert.equal(calls.at(-1).options.body.get("expected_revision"),"2");assert.equal(calls.at(-1).options.body.get("material_type"),"vat_declaration");
+  assert.equal(calls.at(-1).options.body.get("expected_revision"),"2");assert.equal(calls.at(-1).options.body.get("material_type"),"supporting_material");
   secondRequest.succeed(3);await queued;
   assert.equal(calls.at(-1).options.body.get("expected_revision"),"3");assert.equal(calls.at(-1).options.body.get("material_type"),"account_balance");
   uploadRequests.at(-1).succeed(4);await sameKind;
