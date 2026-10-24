@@ -24,6 +24,29 @@ def timestamp(value):
     return value.astimezone(UTC)
 
 
+def _versions_by_assignment(db, student_id: str, assignment_ids: list[str]) -> dict[str, list[dict]]:
+    """按作业取历次提交版本：订正前的分数与评语按当时保留，不覆盖。
+
+    只读一次，不按作业逐个查；身份列（assignment_id/student_id/version）必须
+    一起 SELECT，否则加密列解不开。
+    """
+    if not assignment_ids:
+        return {}
+    marks = ','.join('?' for _ in assignment_ids)
+    rows = db.execute(
+        f"""SELECT assignment_id,student_id,version,kind,score,adjusted_score,feedback,submitted_at
+            FROM training_submission_version
+            WHERE student_id=? AND assignment_id IN ({marks}) ORDER BY assignment_id,version""",
+        [student_id, *assignment_ids]).fetchall()
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(row['assignment_id'], []).append(
+            {'version': row['version'], 'kind': row['kind'], 'score': row['score'],
+             'adjusted_score': row['adjusted_score'], 'feedback': row['feedback'],
+             'submitted_at': row['submitted_at']})
+    return grouped
+
+
 def rate_change(current, previous, numerator, denominator):
     if not current[denominator] or not previous[denominator]:
         return None
@@ -54,6 +77,7 @@ def collect(db, student, classroom=None, include_withdrawn=False):
             LEFT JOIN audits f ON f.id=a.audit_id
             LEFT JOIN submissions sub ON sub.assignment_id=a.id AND sub.student_id=?
             WHERE {where} ORDER BY a.id""", [student['id'], *args]).fetchall()
+    versions = _versions_by_assignment(db, student['id'], [row['id'] for row in rows])
     totals = {'assignments': len(rows), 'submitted': 0, 'valid': 0, 'invalid': 0,
               'unsubmitted': 0, 'adjusted': 0, 'undated': 0}
     records, phases, rules, categories = [], {}, {}, {}
@@ -65,7 +89,8 @@ def collect(db, student, classroom=None, include_withdrawn=False):
         totals['submitted'] += 1
         record = {k: row[k] for k in ('id', 'title', 'paper_id')}
         record.update(published=bool(row['published']), submitted_at=None, valid=False, warning=None,
-                      score=None, automatic_score=None, adjusted=False)
+                      score=None, automatic_score=None, adjusted=False,
+                      versions=versions.get(row['id'], []))
         phase = None
         try:
             date = timestamp(row['submitted_at'])

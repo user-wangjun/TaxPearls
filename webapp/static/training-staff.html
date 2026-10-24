@@ -89,7 +89,7 @@
 
     <div data-university-view="content" class="card">
       <h2>内容版本（题源治理） <button class="small" data-act="show-version-form">＋ 发布新版本</button></h2>
-      <p class="muted" style="margin-top:-6px;">当前题源为规则仿真题；真题/回忆题/模拟题类型已预留，须获授权后才能启用，生成题不冒充真题。同一证书仅一个启用版本，发布新版本会自动退役旧版本，旧作答仍按当时版本回溯。</p>
+      <p class="muted" style="margin-top:-6px;">题源分两类：规则仿真题（系统生成，明确标注非真题）与真题/回忆题/模拟题（外部题源，须先在下方「题源授权登记」取得书面授权）。同一证书仅一个启用版本，发布新版本会自动退役旧版本，旧作答仍按当时版本回溯；外部题源的授权文号会写入依据留痕。</p>
       <div id="version-form" class="inline-form" hidden>
         <div class="row">
           <div><label>版本标签（证书内唯一）</label><input id="vf-label" placeholder="如 2026 考纲仿真题 v1"></div>
@@ -98,16 +98,89 @@
         <div class="row">
           <div><label>题源类型</label>
             <select id="vf-type">
-              <option value="simulated">仿真题（当前唯一开放）</option>
-              <option value="real">真题（暂缓，须授权）</option>
-              <option value="recall">回忆题（暂缓，须授权）</option>
-              <option value="mock">模拟题（暂缓，须授权）</option>
+              <option value="simulated">仿真题（规则生成，无需授权）</option>
+              <option value="real">真题（须先登记有效授权）</option>
+              <option value="recall">回忆题（须先登记有效授权）</option>
+              <option value="mock">模拟题（须先登记有效授权）</option>
             </select></div>
           <div><label>依据/授权说明（必填）</label><input id="vf-source" placeholder="如：依据 2026 版考纲整理的规则仿真题"></div>
         </div>
         <div class="actions"><button class="primary small" data-act="create-version">发布并启用</button></div>
       </div>
       <div id="versions"></div>
+    </div>
+
+    <div class="card" id="auth-card" data-university-view="content">
+      <h2>题源授权登记 <button class="small" data-act="refresh-auth">刷新</button></h2>
+      <p class="muted" style="margin-top:-6px;">决策三：授权先行、不自行采集。真题/回忆题/模拟题须先登记书面授权（授权方、文号、覆盖题源、有效期）才能发布版本或导入题库；授权文号会自动写入内容版本与题目的依据留痕。撤销只改状态、保留记录，可审计。</p>
+      <div id="auth-form" class="inline-form">
+        <div class="row">
+          <div><label>授权方</label><input id="au-licensor" placeholder="如 全国会计考办授权出版方"></div>
+          <div><label>授权文号</label><input id="au-no" placeholder="如 AUTH-2026-001"></div>
+        </div>
+        <div class="row">
+          <div><label>生效日</label><input id="au-from" type="date"></div>
+          <div><label>失效日（留空=长期）</label><input id="au-until" type="date"></div>
+          <div><label>覆盖题源</label>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;padding-top:8px;">
+              <label style="display:flex;gap:4px;align-items:center;"><input type="checkbox" class="au-type" value="real" style="width:auto;"> 真题</label>
+              <label style="display:flex;gap:4px;align-items:center;"><input type="checkbox" class="au-type" value="recall" style="width:auto;"> 回忆题</label>
+              <label style="display:flex;gap:4px;align-items:center;"><input type="checkbox" class="au-type" value="mock" style="width:auto;"> 模拟题</label>
+            </div></div>
+        </div>
+        <label>使用范围说明（选填）</label>
+        <input id="au-scope" placeholder="如 仅限校内教学使用">
+        <div class="actions"><button class="primary small" data-act="create-auth">登记授权</button></div>
+      </div>
+      <div id="authorizations" class="muted">加载中…</div>
+    </div>
+
+    <div class="card" id="bank-card" data-university-view="content">
+      <h2>题库导入与审核 <button class="small" data-act="refresh-bank">刷新</button></h2>
+      <p class="muted" style="margin-top:-6px;">只接受人工核对过的结构化 JSON，不解析 PDF/Word。逐行校验：合法行入草稿、非法行带原因返回，不中断整批。题目须「提交审核 → 审核通过」后学生才抽得到；答案与解析判分后才开放。导入时自动附带该题源的授权文号留痕。</p>
+      <label>批量导入 JSON（数组；每题 source_type / year / stem / options[{key,text}] / answer_keys / explanation，可选 knowledge_point_id、question_no）</label>
+      <textarea id="bank-json" style="min-height:150px;font-family:ui-monospace,monospace;" placeholder='[{"source_type":"real","year":2026,"question_no":"一、单选第1题","stem":"下列各项中，属于流动资产的是（　）。","options":[{"key":"A","text":"库存现金"},{"key":"B","text":"应付账款"}],"answer_keys":["A"],"explanation":"库存现金属于流动资产。"}]'></textarea>
+      <div class="actions">
+        <button class="primary small" data-act="import-bank">导入</button>
+        <span class="muted" style="align-self:center;">仿真题由规则生成，不入题库；只能导入真题/回忆题/模拟题。</span>
+      </div>
+      <div id="bank-import-result"></div>
+      <div class="row" style="margin-top:10px;">
+        <div><label>按状态筛选</label>
+          <select id="bank-status-filter">
+            <option value="">全部</option>
+            <option value="draft">草稿</option>
+            <option value="pending">待审</option>
+            <option value="approved">已上线</option>
+            <option value="rejected">已驳回</option>
+          </select></div>
+        <div class="actions" style="align-self:flex-end;"><button class="small" data-act="filter-bank">应用筛选</button></div>
+      </div>
+      <div id="bank-questions" class="muted">加载中…</div>
+    </div>
+
+    <div class="card" id="outline-card" data-university-view="content">
+      <h2>考纲年度升版 <button class="small" data-act="refresh-outline">刷新</button></h2>
+      <p class="muted" style="margin-top:-6px;">新版大纲发布后逐条人工核对，不由系统改写内容：发起后现行知识点全部标记「待核对」，逐条在下方知识点卡片确认/修改/删除；核对期新增知识点记为「新增」且对学生隐藏。全部核对完成后激活，版本号统一切换、删除项停用留痕，知识点 id 不变（作答与覆盖统计连续）。</p>
+      <div class="inline-form">
+        <div class="row">
+          <div><label>目标考纲版本</label><input id="ou-to" placeholder="如 2027"></div>
+          <div><label>备注（如大纲发布文号）</label><input id="ou-note"></div>
+        </div>
+        <div class="actions">
+          <button class="primary small" data-act="outline-start">发起升版核对</button>
+          <button class="small" data-act="outline-activate">激活切换</button>
+        </div>
+      </div>
+      <div id="outline-body" class="muted">加载中…</div>
+    </div>
+
+    <div class="card" id="trial-card" data-university-view="content">
+      <h2>试用反馈与观察盘面 <button class="small" data-act="refresh-trial">刷新</button></h2>
+      <p class="muted" style="margin-top:-6px;">试用学生可在学生页提交缺陷/建议/内容纠错，本人只见自己的记录；教师按院校查看与处理（new → processing → resolved，留痕处理人与时间）。盘面只做聚合，不暴露单个学生的作答内容。</p>
+      <div id="trial-stats"></div>
+      <h3 style="margin-top:14px;">反馈处理</h3>
+      <div id="trial-feedback" class="muted">加载中…</div>
     </div>
 
     <div data-university-view="content" class="card">
@@ -147,6 +220,57 @@
         <div class="actions"><button class="primary small" data-act="create-kp">创建</button></div>
       </div>
       <div id="kps"></div>
+      <div id="tu-block" class="inline-form">
+        <h3 style="font-size:14px;font-weight:500;margin:16px 0 4px;">教学单元
+          <button class="small" data-act="refresh-teaching-units">刷新</button>
+          <button class="small" data-act="show-unit-form">＋ 新建单元</button>
+        </h3>
+        <p class="muted" style="margin-top:0;">把知识点与规则编成「一次课能讲清的能力单元」。单元只绑定规则编号（如 R-002），不绑定规则文件；本库图谱缺少条款原文时，依据一律标注「依据待专业复核」，不作为已审法定标准。</p>
+        <div id="unit-form" hidden>
+          <div class="row">
+            <div><label>名称</label><input id="uf-name" placeholder="如 数据层·账申勾稽"></div>
+            <div><label>所属段</label>
+              <select id="uf-stage">
+                <option value="voucher">凭证层（票合法吗）</option>
+                <option value="data">数据层（数对得上吗）</option>
+                <option value="conclusion">结论层（判断可回溯吗）</option>
+              </select></div>
+          </div>
+          <div><label>一句话标准（学生要能回答的问题）</label>
+            <input id="uf-standard" placeholder="如 账、表、票、申报四方口径一致，差异有调节过程"></div>
+          <div><label>关联规则（多选，按规则编号）</label><select id="uf-rules" multiple size="6"></select></div>
+          <div><label>关联知识点（多选）</label><select id="uf-kps" multiple size="6"></select></div>
+          <div><label>学生要交的证据</label><input id="uf-deliverables" placeholder="如 勾稽底稿 + 差异调节表"></div>
+          <div class="actions">
+            <button class="primary small" data-act="create-unit">创建并发布</button>
+            <button class="small" data-act="cancel-unit">收起</button>
+          </div>
+        </div>
+        <div id="teaching-units"></div>
+      </div>
+      <div id="tc-block" class="inline-form">
+        <h3 style="font-size:14px;font-weight:500;margin:16px 0 4px;">实操案例
+          <button class="small" data-act="refresh-teaching-cases">刷新</button>
+          <button class="small" data-act="show-case-form">＋ 新建案例</button>
+        </h3>
+        <p class="muted" style="margin-top:0;">案例是脱敏仿真材料包，绑定规则编号与标准结论，可挂到上面的单元。案例发布后，再到教学面板的「实操案例任务」里发布成班级作业；学生的提交与解析等沿用任务主链的答案开放策略。</p>
+        <div id="case-form" hidden>
+          <div class="row">
+            <div><label>名称</label><input id="cf-case-name" placeholder="如 样板·账申勾稽"></div>
+            <div><label>所属教学单元（选填）</label><select id="cf-case-unit"></select></div>
+          </div>
+          <div><label>背景说明</label><input id="cf-case-scenario" placeholder="如 某商贸公司 2026 年 9 月属期仿真账表"></div>
+          <div><label>绑定规则（多选）</label><select id="cf-case-rules" multiple size="6"></select></div>
+          <div><label>材料清单（每行一条：材料名 | 说明）</label>
+            <textarea id="cf-case-materials" placeholder="科目余额表 | 仿真生成"></textarea></div>
+          <div><label>脱敏说明</label><input id="cf-case-note" placeholder="如 全部数据由合成样例派生"></div>
+          <div class="actions">
+            <button class="primary small" data-act="create-case">创建并发布</button>
+            <button class="small" data-act="cancel-case">收起</button>
+          </div>
+        </div>
+        <div id="teaching-cases"></div>
+      </div>
     </div>
 
     <div data-university-view="content" class="card">
@@ -264,6 +388,13 @@
         <div class="actions"><button class="primary small" data-act="org-dep-create">创建院系</button></div>
       </div>
       <div id="org-departments" class="muted">加载中…</div>
+      <h3 style="margin-top:16px;">专业</h3>
+      <div id="org-major-form" class="row" hidden>
+        <div><label>专业名称</label><input id="om-name" placeholder="如 大数据与会计"></div>
+        <div><label>所属院系</label><select id="om-department"></select></div>
+        <div class="actions"><button class="primary small" data-act="org-major-create">创建专业</button></div>
+      </div>
+      <div id="org-majors" class="muted">加载中…</div>
       <h3 style="margin-top:16px;">学年学期</h3>
       <div id="org-term-form" class="row" hidden>
         <div><label>学期名称</label><input id="ot-name" placeholder="如 2026-2027-1"></div>
@@ -278,6 +409,7 @@
       <div id="org-class-form" class="row" hidden>
         <div><label>班级名称</label><input id="oc-name" placeholder="如 会计2601"></div>
         <div><label>院系</label><select id="oc-department"></select></div>
+        <div><label>专业</label><select id="oc-major"></select></div>
         <div><label>学期</label><select id="oc-term"></select></div>
         <div class="actions"><button class="primary small" data-act="org-class-create">创建班级</button></div>
       </div>
@@ -288,39 +420,11 @@
 
       <div id="org-quota-history" class="muted" style="margin-top:10px;"></div>
     </div>
-    <div data-university-view="judge" class="card">
-      <h2>判题管理 <span class="muted" style="font-weight:400;">（编程题）</span></h2>
-      <div class="row">
-        <div><label>编程题</label><select id="judge-problem"></select></div>
-        <div style="flex:0 0 auto;"><button class="primary small" id="judge-load-subs">加载提交</button></div>
-      </div>
-      <div id="judge-submissions" class="muted" style="margin-top:10px;">选择题目后加载提交列表。</div>
-
-      <h3 style="margin-top:16px;">代码查重</h3>
-      <div class="row">
-        <div><label>相似度阈值（0~1，默认 0.85）</label><input id="judge-plag-threshold" type="number" min="0" max="1" step="0.05" value="0.85"></div>
-        <div style="flex:0 0 auto;"><button class="small" id="judge-plag-scan" style="margin-bottom:2px;">扫描查重</button></div>
-      </div>
-      <div id="judge-plag-flags" class="muted" style="margin-top:8px;">未扫描。</div>
-
-      <h3 style="margin-top:16px;">判题队列</h3>
-      <div class="row">
-        <div><label>状态过滤</label>
-          <select id="judge-task-state">
-            <option value="">全部</option><option value="queued">排队中</option>
-            <option value="running">运行中</option><option value="done">已完成</option>
-            <option value="failed">失败</option>
-          </select></div>
-        <div style="flex:0 0 auto;"><button class="small" id="judge-tasks-refresh" style="margin-bottom:2px;">刷新队列</button></div>
-      </div>
-      <div id="judge-tasks" class="muted" style="margin-top:8px;">未加载。</div>
-      <p class="muted" style="margin-top:8px;">质量分与判题明细可在提交列表展开；查重结果仅作教师复核的参考提示，不自动定性抄袭。判题进度与失败原因以提交记录为准。</p>
-    </div>
     <div class="error" id="app-error"></div>
   </section>
 </main>
 <script src="/policy-source.js?v=public-policy-1"></script>
 <script src="/member-links.js?v=20261020-members-3"></script>
-<script src="/training-staff.js?v=20261020-platform-teaching-1"></script>
+<script src="/training-staff.js?v=20261023-8d1e3b3c25ba"></script>
 </body>
 </html>

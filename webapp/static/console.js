@@ -1562,7 +1562,7 @@ function updateExerciseDeadline(a) {
   clearTimeout(exerciseDeadlineTimer);
   const expired=a.deadline_passed || (a.deadline_at && Date.now()>=Date.parse(a.deadline_at));
   $("exerciseDeadlineStatus").textContent=(expired?"已截止，仅可查看材料与已有成绩":"截止："+classroomUI.dueText(a.deadline_at))+"；提交以服务器校验为准。";
-  $("btnSubmitExercise").disabled=!a.can_submit || !!expired;
+  $("btnSubmitExercise").disabled=!a.can_submit || !!expired || !!window.tpSubmissionUI?.blocksSubmit?.(a.id);
   if(a.deadline_at && !expired)exerciseDeadlineTimer=setTimeout(()=>{if(openAssignmentId===a.id)updateExerciseDeadline(a);},Math.min(60000,Math.max(100,Date.parse(a.deadline_at)-Date.now())));
 }
 async function loadAssignments({throwOnError=false}={}) {
@@ -1598,7 +1598,8 @@ async function loadAssignments({throwOnError=false}={}) {
       const select = $("assignmentAudit"), previous=select.value; select.textContent = "";
       for (const row of audits) { const o = el("option",null,row.company_name + " · " + row.period); o.value=row.id; select.appendChild(o); }
       if(audits.some(a=>a.id===previous))select.value=previous;
-      for(const s of submissions){const item=el("div","data-item");const shown=s.adjusted_score===null?s.score:s.adjusted_score;item.appendChild(el("span",null,s.display_name+" · "+s.title+" · "+shown+" 分"));const b=el("button",null,"复核调整");b.addEventListener("click",async()=>{try{const value=window.prompt("调整后分数（0-100）",String(shown));if(value===null)return;const feedback=window.prompt("教师评语",s.feedback||"")||"";await api("/api/submissions/"+s.id+"/review",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({adjusted_score:Number(value),feedback})});await loadAssignments();}catch(error){showError(error.message);}});item.appendChild(b);sb.appendChild(item);}if(!submissions.length)sb.appendChild(el("div","data-item","暂无学生提交。"));
+      for(const s of submissions){const item=el("div","data-item");const shown=s.adjusted_score===null?s.score:s.adjusted_score;item.appendChild(el("span",null,s.display_name+" · "+s.title+" · "+shown+" 分"));const extra=window.tpSubmissionUI?.reviewActions?.(s);if(extra)item.appendChild(extra);
+        const b=el("button",null,"复核调整");b.addEventListener("click",async()=>{try{const value=window.prompt("调整后分数（0-100）",String(shown));if(value===null)return;const feedback=window.prompt("教师评语",s.feedback||"")||"";await api("/api/submissions/"+s.id+"/review",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({adjusted_score:Number(value),feedback})});await loadAssignments();}catch(error){showError(error.message);}});item.appendChild(b);sb.appendChild(item);}if(!submissions.length)sb.appendChild(el("div","data-item","暂无学生提交。"));
       if(exerciseRulesYear===null)await refreshExerciseRules();
     }
   } catch (err) { if(request===trainingLoadRequest&&uid===currentUser?.id){showError(err.message);if(throwOnError)throw err;} }
@@ -1668,7 +1669,7 @@ async function openExercise(id) {
   try {
     const a = await api("/api/assignments/" + id);
     if(request!==exerciseOpenRequest||loadVersion!==trainingLoadRequest)return;
-    openAssignmentId=id;sandboxRuleId=null;sandboxEvidence=new Map();$("exerciseBox").style.display="block";
+    openAssignmentId=id;sandboxRuleId=null;sandboxEvidence=new Map();$("exerciseBox").style.display="block";$("exerciseBox").dataset.assignment=id;
     $("exerciseTitle").textContent=a.title; $("exerciseCompany").textContent=a.company.name + " · " + a.company.period;
     const data=$("exerciseData"); data.textContent="";
     if(a.generated_material_available)data.append(exerciseDownloadButton("/api/assignments/"+encodeURIComponent(id)+"/materials"));
@@ -1686,18 +1687,30 @@ async function openExercise(id) {
     $("btnSubmitExercise").style.display=currentUser.role === "student" ? "inline-block" : "none";
     updateExerciseDeadline(a);
     $("scoreResult").textContent="";
-    if (a.submission) showScore(a.submission.details);
-    if(a.submission?.adjusted_score!==null&&a.submission?.adjusted_score!==undefined)$("scoreResult").append(el("p","muted","教师复核："+a.submission.adjusted_score+" 分 · "+(a.submission.feedback||"")));
+    if(a.submission){
+      if(a.submission.result_released===false) showResultNote(a.submission.result_note);
+      else{
+        showScore(a.submission.details);
+        if(a.submission.adjusted_score!==null&&a.submission.adjusted_score!==undefined)$("scoreResult").append(el("p","muted","教师复核："+a.submission.adjusted_score+" 分 · "+(a.submission.feedback||"")));
+      }
+    }
     $("exerciseBox").scrollIntoView({block:"start"});
+    window.dispatchEvent(new CustomEvent("tp:exercise-open",{detail:{assignment:id}}));
   } catch (err) { if(request===exerciseOpenRequest&&loadVersion===trainingLoadRequest)showError(err.message); }
 }
 
 $("btnSubmitExercise").addEventListener("click", async () => {
   const assignment=openAssignmentId,button=$("btnSubmitExercise");if(!assignment||button.disabled)return;button.disabled=true;
   const ids=Array.from($("exerciseRules").querySelectorAll("input:checked")).map((n)=>n.value);
-  try { const result=await api("/api/assignments/"+assignment+"/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({selected_rule_ids:ids})});if(openAssignmentId===assignment)showScore(result);await loadAssignments(); }
+  try { const result=await api("/api/assignments/"+assignment+"/submit",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({selected_rule_ids:ids})});if(openAssignmentId===assignment){if(result.result_released===false)showResultNote(result.result_note);else showScore(result);}await loadAssignments(); }
   catch(err){if(openAssignmentId===assignment){showError(err.message);if(err.status===404||err.status===409)await loadAssignments();else button.disabled=false;}}
 });
+
+function showResultNote(note){
+  const box=$("scoreResult"); box.textContent="";
+  box.appendChild(el("div","score","已提交"));
+  box.appendChild(el("p","muted",note||"成绩与解析暂未开放。"));
+}
 
 function showScore(result) {
   const box=$("scoreResult"); box.textContent=""; box.appendChild(el("div","score",result.score+" 分"));
