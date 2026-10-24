@@ -19,6 +19,39 @@ from webapp.storage import Store
 
 
 class StorageConcurrencyTest(unittest.TestCase):
+    def test_reader_sees_committed_snapshot_while_writer_holds_transaction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'reader.db', keepalive=True)
+            self.addCleanup(store.close)
+            with store.connect() as db:
+                db.execute('CREATE TABLE snapshot(value TEXT)')
+                db.execute("INSERT INTO snapshot VALUES ('committed')")
+            result = []
+            failures = []
+            done = threading.Event()
+
+            def read():
+                try:
+                    with store.connect() as db:
+                        result.append(db.execute('SELECT value FROM snapshot').fetchone()[0])
+                except Exception as exc:
+                    failures.append(exc)
+                finally:
+                    done.set()
+
+            with store.connect() as writer:
+                writer.execute('BEGIN IMMEDIATE')
+                writer.execute("UPDATE snapshot SET value='pending'")
+                worker = threading.Thread(target=read, daemon=True)
+                worker.start()
+                completed = done.wait(1)
+                writer.rollback()
+            worker.join(3)
+            store.close()
+            self.assertTrue(completed, 'reader blocked behind an unrelated write transaction')
+            self.assertEqual(failures, [])
+            self.assertEqual(result, ['committed'])
+
     def test_implicit_writers_and_explicit_writers_share_transaction_lock(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp)/'mixed.db', keepalive=True)

@@ -190,6 +190,7 @@ class Store:
     # 模块级共享锁：同进程所有 Store 实例（含指向同一库文件的多个实例）串行化库访问。
     # 实例级锁无法保护跨实例并发；跨进程部署无此场景（单进程单实例服务）。
     _LOCK = RLock()
+    _CONNECTION_LOCK = RLock()
 
     def __init__(self, path: str | Path | None = None, *, notification_adapters=None,
                  keepalive: bool = False) -> None:
@@ -252,17 +253,10 @@ class Store:
 
     @contextmanager
     def connect(self):
-        # 锁分两层：
-        # - 开/关连接串行——关闭会触发 WAL -shm/-wal 删除重建，与另一连接的映射
-        #   重叠时在 Windows 上以 SQLITE_READONLY 的面目打断写事务
-        #   （test_training_profiles/stats、test_vat_* 稳定复现）。
-        # - 业务执行期不持锁，否则主线程持连接等后台线程、后台线程等锁会死锁
-        #   （test_engineering 的后台查询探针 5s 超时即此症状）。
-        # - 写事务（显式或隐式）由 _WriteGuard 持锁到提交/回滚：Store 方法外层虽有
-        #   self._lock，但 material_jobs 等模块级函数直接 connect 写，不持锁就会
-        #   与并发写撞出 database is locked（test_auth_hardening 稳定复现）。
-        # RLock 可重入，同线程重复获取不会自锁。
-        with self._lock:
+        # Connection lifecycle serialization protects Windows WAL open/close.
+        # It must be independent from the transaction lock: a reader can open,
+        # commit and close while another thread retains a write transaction.
+        with self._CONNECTION_LOCK:
             db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
             try:
                 sensitive_storage.attach(db, self._field_codec)
@@ -281,10 +275,10 @@ class Store:
             # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
             # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
             # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
-            with self._lock:
+            with self._CONNECTION_LOCK:
                 db.commit()
         except Exception:
-            with self._lock:
+            with self._CONNECTION_LOCK:
                 try:
                     db.rollback()
                 except Exception:
@@ -292,7 +286,7 @@ class Store:
             raise
         finally:
             guard.release()
-            with self._lock:
+            with self._CONNECTION_LOCK:
                 db.close()
 
     def _init_schema(self) -> None:
