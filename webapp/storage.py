@@ -168,6 +168,14 @@ class _WriteGuard:
         self._acquire_write()
         return self._db.executescript(sql)
 
+    def backup(self, target, *args, **kwargs):
+        # sqlite3 checks the concrete destination type in C, so __getattr__
+        # forwarding cannot accept another guarded Store connection.
+        if isinstance(target, _WriteGuard):
+            target._acquire_write()
+            target = target._db
+        return self._db.backup(target, *args, **kwargs)
+
     def __enter__(self):
         self._db.__enter__()
         return self

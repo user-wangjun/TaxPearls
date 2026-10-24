@@ -19,6 +19,27 @@ from webapp.storage import Store
 
 
 class StorageConcurrencyTest(unittest.TestCase):
+    def test_backup_roundtrip_accepts_guarded_and_raw_destinations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Store(Path(tmp) / 'source.db')
+            target = Store(Path(tmp) / 'target.db')
+            with source.connect() as db:
+                db.execute('CREATE TABLE backup_probe(value TEXT)')
+                db.execute("INSERT INTO backup_probe VALUES ('preserved')")
+            progress = []
+            with source.connect() as db, target.connect() as destination:
+                db.backup(destination, pages=1, progress=lambda *args: progress.append(args))
+            with target.connect() as db:
+                self.assertEqual(db.execute('SELECT value FROM backup_probe').fetchone()[0], 'preserved')
+            self.assertTrue(progress)
+            raw = sqlite3.connect(Path(tmp) / 'raw.db')
+            try:
+                with source.connect() as db:
+                    db.backup(raw)
+                self.assertEqual(raw.execute('SELECT value FROM backup_probe').fetchone()[0], 'preserved')
+            finally:
+                raw.close()
+
     def test_reader_sees_committed_snapshot_while_writer_holds_transaction(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp) / 'reader.db', keepalive=True)
