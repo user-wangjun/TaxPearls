@@ -1,4 +1,5 @@
 """A downloaded checkout serves the full campus graph without an import command."""
+import os
 import tempfile
 import unittest
 from dataclasses import replace
@@ -21,6 +22,9 @@ class PublicKnowledgeStartupTests(unittest.TestCase):
         self.store = Store(Path(self.temp.name) / 'campus.sqlite')
         self.addCleanup(self.store.close)
         self.addCleanup(patch.stopall)
+        # 本模块断言的就是"启动即安装"这条链路，不能被本地提速开关
+        # TAXPEARLS_PUBLIC_PACKAGE_INSTALL=0 影响。
+        patch.dict(os.environ, {'TAXPEARLS_PUBLIC_PACKAGE_INSTALL': '1'}).start()
         patch.object(main, 'store', self.store).start()
         patch.object(main, 'login_guard', LoginGuard()).start()
 

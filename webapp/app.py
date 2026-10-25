@@ -64,7 +64,14 @@ async def lifespan(application):
     if store is None:
         store = Store(keepalive=True)
     from src.public_policy_package import bootstrap
-    application.state.public_knowledge = await run_in_threadpool(bootstrap, store, RULES_DIR)
+    # 公共图谱导入只在"新库第一次启动"时发生（装好即打标记短路）。本地 Windows 全量单测
+    # 每个用例都是新库，每次要完整导入 2.4 万个节点（实测约 12s），因此留一个只给本地用的开关。
+    # 生产与 CI 都不许关：关掉后启动不保证公共政策图谱已安装，知识问答/引用校验会缺数据。
+    if _environment_settings.flag('TAXPEARLS_PUBLIC_PACKAGE_INSTALL', True):
+        application.state.public_knowledge = await run_in_threadpool(bootstrap, store, RULES_DIR)
+    else:
+        application.state.public_knowledge = {'status': 'skipped',
+                                              'reason': 'TAXPEARLS_PUBLIC_PACKAGE_INSTALL=0'}
     worker = NotificationWorker(lambda: store)
     worker.start()
     try:
