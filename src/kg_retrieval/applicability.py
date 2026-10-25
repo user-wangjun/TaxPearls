@@ -1,8 +1,8 @@
 """Clause-level period/region/source checks and explicit modification boundaries."""
 from datetime import date, timedelta
 import hashlib
-from pathlib import Path
 import re
+from src.policy_paths import resolve_path
 
 from .common import tax_type
 
@@ -19,7 +19,7 @@ def region_matches(policy_region, enterprise_region):
     return enterprise_region == policy_region or enterprise_region.startswith(policy_region + "-")
 
 
-def source_check(policy, clause, task, cache):
+def source_check(policy, clause, task, cache, *, source_root=None):
     reasons = []
     if policy["validity_status"] == "unverified":
         reasons.append("政策效力尚未复核。")
@@ -33,15 +33,15 @@ def source_check(policy, clause, task, cache):
     if pid not in cache:
         try:
             expected = policy.get("file_sha256")
-            cache[pid] = bool(expected and hashlib.sha256(Path(policy["raw_file_path"]).read_bytes()).hexdigest() == expected)
-        except (OSError, KeyError, TypeError):
+            cache[pid] = bool(expected and hashlib.sha256(resolve_path(policy["raw_file_path"], source_root).read_bytes()).hexdigest() == expected)
+        except (OSError, KeyError, TypeError, ValueError):
             cache[pid] = False
     if not cache[pid]:
         reasons.append("政策原件缺失或哈希不一致。")
     return reasons
 
 
-def check(clause, policy, task, changes, *, source_cache=None):
+def check(clause, policy, task, changes, *, source_cache=None, source_root=None):
     source_cache = {} if source_cache is None else source_cache
     result = {"clause_id": clause["clause_id"], "status": "applicable", "reasons": [], "segments": [],
               "effective_from": clause.get("effective_from") or policy.get("effective_from"),
@@ -57,7 +57,7 @@ def check(clause, policy, task, changes, *, source_cache=None):
         return result
     if match is None:
         result["reasons"].append("企业地区或政策地区尚未明确。")
-    result["reasons"].extend(source_check(policy, clause, task, source_cache))
+    result["reasons"].extend(source_check(policy, clause, task, source_cache, source_root=source_root))
     start, end = task["period_start"], task["period_end"]
     a, b = result["effective_from"], result["effective_to"]
     try:

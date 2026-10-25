@@ -444,7 +444,7 @@
 
 </style>
 <link rel="stylesheet" href="/university.css?v=university-personal-12">
-<link rel="stylesheet" href="/workspace.css?v=native-20261020-4-20261019-312820fc14e8">
+<link rel="stylesheet" href="/workspace.css?v=public-rag-simple-20261022">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -650,7 +650,7 @@
       </details>
       <div class="graph-workspace">
         <div class="graph-stage"><div class="graph-stage-heading"><div><span class="graph-live-dot"></span><strong>证据关系网络</strong><p id="graphCount"></p></div><span class="graph-mode" id="graphMode">关联视图</span></div><div class="graph-toolbar"><button id="graphOverview">全景</button><button id="graphFocus">聚焦关联</button><button id="graphExpand">展开一层</button><button id="graphZoomIn" aria-label="放大图谱">＋</button><button id="graphZoomOut" aria-label="缩小图谱">−</button><button id="graphCenter" title="恢复当前视图的布局与缩放">居中</button><button id="graphReset" title="清空筛选，恢复当前图谱的初始视图">复位</button></div><svg id="graphCanvas" viewBox="0 0 960 680" aria-label="交互式知识图谱"></svg><div id="graphLegend" class="graph-legend"></div><p class="graph-hint">滚轮缩放 · 拖动画布或节点 · 点击节点查看证据</p></div>
-        <aside class="graph-inspector"><div class="inspector-heading"><span>◈</span><div><strong>洞察面板</strong><p>关联证据 · 智能解读</p></div></div><div class="inspector-tabs"><button id="nodeTab" class="active">节点详情</button><button id="aiTab">✦ AI 助手</button></div><div id="knowledgeDetail" aria-live="polite"></div><div id="graphAssistant" hidden><div class="ai-welcome"><span>✦</span><h3>沿着证据，深入一步</h3><p>选中图谱节点，让 AI 帮你理解关联、梳理疑点。</p></div><p id="graphAIStatus" class="muted"></p><div id="graphAIContext" class="ai-context"></div><div class="ai-prompts"><button data-question="解释当前节点及关联证据；如果是风险，说明为什么命中。">解释关联</button><button data-question="当前检查还缺哪些材料？请说明补充和核对顺序。">补充材料</button><button data-question="请根据证据给出排查顺序，并将可能原因标注为待核实。">排查建议</button></div><div id="graphMessages" aria-live="polite"></div><form id="graphQuestionForm"><textarea id="graphQuestion" aria-label="向图谱 AI 提问" placeholder="围绕当前节点提问…" maxlength="2000" required></textarea><button id="graphSend" class="btn pdf">发送问题 ↗</button></form></div></aside>
+        <aside class="graph-inspector"><div class="inspector-tabs"><button id="nodeTab" class="active">节点详情</button><button id="aiTab">✦ AI 助手</button></div><div id="knowledgeDetail" aria-live="polite"></div><div id="graphAssistant" hidden><div id="graphQuestionModes" class="graph-question-modes" role="group" aria-label="问答范围"><button id="graphAskPublic" type="button" aria-pressed="true">问公共知识库</button><button id="graphAskNode" type="button" aria-pressed="false">问当前节点</button></div><p id="graphAIStatus" class="muted" hidden></p><div id="graphAIContext" class="ai-context"></div><div class="ai-prompts"><button data-question="请用通俗语言解释当前节点，并说明依据和待核实之处。">解释节点</button><button data-question="当前节点有哪些判断条件和例外？没有依据的部分请说明。">条件与例外</button><button data-question="当前节点的原文依据在哪里？相关关系是否已经审核？">查看依据</button></div><div id="graphMessages" aria-live="polite"></div><form id="graphQuestionForm"><textarea id="graphQuestion" aria-label="向图谱 AI 提问" placeholder="围绕当前节点提问…" maxlength="2000" required></textarea><div class="graph-compose-actions"><button id="graphStop" class="btn" type="button" hidden>停止生成</button><button id="graphSend" class="btn pdf">发送 ↗</button></div></form></div></aside>
       </div>
     </section>
     <section class="panel" id="uploadPanel">
@@ -889,6 +889,7 @@
             <div><dt>账号角色</dt><dd id="settingsRole">—</dd></div>
             <div><dt>注册时间</dt><dd id="settingsCreatedAt">—</dd></div>
           </dl><p class="muted settings-note">账号信息由当前登录账号提供；如需变更，请联系管理员。</p>
+          <p><a href="/connect/feishu">绑定或管理飞书账户 →</a></p>
         </div>
         <div class="sheet settings-notifications"><h2>通知偏好</h2><p class="muted">选择接收的事件和邮件渠道，保存后生效。</p>
           <fieldset id="settingsPreferences" disabled><legend class="visually-hidden">个人通知偏好</legend>
@@ -991,11 +992,19 @@
     <section class="panel" id="adminPanel">
       <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button class="btn re" id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
       <div class="sheet" id="inviteAdmin" style="display:none"><h2>签发机构创始码</h2><p class="muted">为企业和高校的管理员签发一次性注册码：码与机构名称、类别捆绑，一码一位、私聊交付，不绑定邮箱；注册时仍须通过邮箱验证码核验。明文只在签发时显示一次，系统中仅存哈希。</p><div class="invite-type-row"><div class="field invite-type-field"><span id="inviteOrgTypeLabel" class="field-label">机构类别</span><input id="inviteOrgType" type="hidden" value="enterprise"><div id="inviteOrgTypeOptions" class="workspace-segmented" role="group" aria-labelledby="inviteOrgTypeLabel" data-value="enterprise"><button id="inviteTypeEnterprise" type="button" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5h10v16M14 10h6v11M2 21h20M7 9h4M7 13h4M7 17h4"/></svg><span>企业</span></button><button id="inviteTypeUniversity" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m2 8 10-5 10 5-10 5ZM6 11v7c4 3 8 3 12 0v-7M22 8v9"/></svg><span>高校</span></button></div></div></div><div class="row invite-issue-form"><div class="field"><label for="inviteOrgName">机构名称</label><input id="inviteOrgName" maxlength="120" placeholder="例如：东莞市某某税务师事务所"></div><div class="field"><label for="inviteSeats" id="inviteSeatsLabel">机构总席位（含管理员）</label><div style="display:flex;gap:10px;align-items:center"><select id="inviteSeats" style="flex:1;min-width:0"><option value="5" selected>小型 · 5 席</option><option value="20">中型 · 20 席</option><option value="50">大型 · 50 席</option><option value="custom">自定义</option></select><div id="inviteCustomSeatsField" hidden style="flex:1;min-width:0"><input id="inviteCustomSeats" aria-label="自定义席位数（含管理员，1–200）" type="number" inputmode="numeric" min="1" max="200" step="1" placeholder="1–200 席" disabled></div></div></div><div class="field" id="inviteStudentSeatsField" hidden><label for="inviteStudentSeats">学生总额度</label><input id="inviteStudentSeats" type="number" min="0" max="100000" value="500"></div><button class="btn pdf" id="btnCreateInvite" type="button">签发邀请码</button></div><div class="data-item" id="inviteReveal" hidden><div><div id="inviteRevealCode" class="invite-code"></div><p class="muted" id="inviteRevealOrg"></p><p class="muted" id="inviteRevealSeats"></p><p class="muted">仅显示这一次，关闭后无法找回，请立即复制并私聊交付给机构负责人。</p></div><div class="row"><button id="btnCopyInvite" type="button" disabled>复制</button><button id="btnHideInvite" type="button">我已保存</button></div></div><h3>邀请码台账</h3><div class="data-list" id="inviteList"></div></div>
-      <section class="sheet tp-members" id="universityCapacityPanel" hidden><h2>高校总席位配置</h2><p class="tm-muted">仅平台顶级管理员调整教职工和学生总额度；高校管理员在额度内分配。</p><div id="universityCapacityList"></div><p id="universityCapacityStatus" class="tm-message" role="status" aria-live="polite"></p></section>
       <div class="sheet" id="userAdmin"><h2>账号与成员管理</h2><p class="muted" id="userAdminHint">机构管理员可创建本机构会计；平台只能签发创始码，不手动开户。席位按当前在岗成员计算（含机构管理员，不含平台管理员）；停用释放席位并撤销会话，恢复后须重新登录，不删除历史业务。</p>
         <div class="row"><div class="field"><label for="memberOrg">管理机构</label><select id="memberOrg"></select></div><button class="btn" id="btnRefreshMembers">刷新成员</button></div>
         <p class="muted" id="memberQuotaStatus" role="status">尚未加载成员信息。</p>
-        <div class="row" id="memberQuotaEditor" hidden><div class="field"><label for="memberSeats">席位配额（1–200）</label><input id="memberSeats" type="number" min="1" max="200" step="1"></div><button class="btn" id="btnSaveMemberQuota">保存配额</button></div>
+        <section id="universityCapacityPanel" hidden aria-labelledby="universityCapacityTitle">
+          <h3 id="universityCapacityTitle">高校席位额度</h3>
+          <div class="row quota-editor"><div class="field"><label for="universityTeacherQuota">教职工总额度（含高校管理员）</label><input id="universityTeacherQuota" type="number" min="1" max="100000" step="1" required disabled></div><div class="field"><label for="universityStudentQuota">学生总额度</label><input id="universityStudentQuota" type="number" min="0" max="100000" step="1" required disabled></div><button class="btn" id="btnEditUniversityCapacity" type="button">修改席位</button><button class="btn pdf" id="btnSaveUniversityCapacity" type="button" hidden disabled>保存修改</button><button class="btn re" id="btnCancelUniversityCapacity" type="button" hidden>取消修改</button></div>
+          <p id="universityCapacityStatus" class="muted" role="status" aria-live="polite"></p>
+        </section>
+        <div id="memberQuotaEditor" hidden><div class="row quota-editor"><div class="field"><label for="memberSeats">席位配额（1–200）</label><input id="memberSeats" type="number" min="1" max="200" step="1" required disabled></div><button class="btn" id="btnEditMemberQuota" type="button">修改席位</button><button class="btn pdf" id="btnSaveMemberQuota" type="button" hidden disabled>保存修改</button><button class="btn re" id="btnCancelMemberQuota" type="button" hidden>取消修改</button></div><p id="memberQuotaSaveStatus" class="muted" role="status" aria-live="polite"></p></div>
+        <dialog id="quotaConfirmDialog" class="core-delete-dialog quota-confirm-dialog" aria-labelledby="quotaConfirmTitle" aria-describedby="quotaConfirmDescription">
+          <div class="core-delete-body"><h2 id="quotaConfirmTitle">确认修改席位</h2><p id="quotaConfirmOrganization"></p><p id="quotaConfirmDescription"></p><div id="quotaConfirmChanges"></div><p class="muted">保存成功后记录操作人、时间、修改前后额度及来源 IP。</p></div>
+          <div class="core-delete-actions"><button id="quotaConfirmCancel" class="btn re" type="button" autofocus>取消</button><button id="quotaConfirmAccept" class="btn pdf" type="button">确认修改</button></div>
+        </dialog>
         <div class="row" id="createUserRow" style="display:none"><div class="field"><label for="newUsername">用户名</label><input id="newUsername"></div><div class="field"><label for="newDisplayName">显示姓名</label><input id="newDisplayName"></div><div class="field"><label for="newPassword">初始密码</label><input id="newPassword" type="password" autocomplete="new-password"></div><div class="field"><label for="newRole">角色</label><select id="newRole"><option value="accountant">会计</option></select></div><button class="btn pdf" id="btnCreateUser">创建账号</button></div><div class="data-list" id="userList"></div>
         <section id="memberInvitationPanel" hidden>
           <h3>机构成员邀请链接</h3><p class="muted">企业员工使用同一条邀请链接。加入时核验邮箱和剩余席位，角色由邀请凭证确定。刷新立即作废旧链接，停用不影响已有成员。高校教师和学生邀请在高校工作台管理。</p>
@@ -1023,18 +1032,19 @@
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
 <script src="/classroom.js?v=university-personal-12"></script>
-<script src="/core-inputs.js?v=20261019-2e461e9cdcc1"></script>
+<script src="/core-inputs.js?v=20261022-context-recovery-v1"></script>
 <script src="/enterprise.js?v=20261017-62c89aee0e75"></script>
 <script src="/ai-keys.js?v=20261020-custom-endpoint-1"></script>
+<script src="/policy-source.js?v=public-policy-1"></script>
 <script src="/member-links.js?v=20261020-native-1"></script>
 <script src="/training-workspace.js?v=20261020-native-1"></script>
 <script src="/training-staff.js?v=20261020-platform-teaching-1"></script>
-<script src="/training-portal.js?v=20261021-cert-search-1"></script>
+<script src="/training-portal.js?v=20261024-merge-1"></script>
 <script src="/university-workspace.js?v=university-personal-12"></script>
-<script src="/console.js?v=university-personal-12"></script>
+<script src="/console.js?v=quota-confirm-20261021"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261020-native-1"></script>
-<script src="/graph.js?v=university-personal-12"></script>
+<script src="/graph.js?v=public-rag-simple-20261022"></script>
 <script src="/rule-bindings.js?v=20261016"></script>
 <script src="/knowledge-retrieval.js?v=20261018-32580db4e0ef"></script>
 <script src="/training-ai-coach.js?v=20261021-ai-coach-2"></script>

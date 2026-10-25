@@ -4,6 +4,7 @@ import json
 from time import perf_counter
 
 from src import tax_conditions
+from src.policy_paths import database_directory
 from . import applicability, keyword_search, relation_search, semantic_search
 from .common import canonical, checked_task, clause_record, digest, period_basis, unit
 
@@ -170,7 +171,8 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
     matches = {item["clause_id"]: item["matches"] for item in selected}
     for cid in closure["clause_ids"]:
         clause, policy = clause_record(db, cid)
-        decision = applicability.check(clause, policy, task, closure["relationships"], source_cache=source_cache)
+        decision = applicability.check(clause, policy, task, closure["relationships"], source_cache=source_cache,
+                                       source_root=database_directory(db))
         paths = context["required"].get(cid, [])
         if paths and all(path.get("review_status", "approved") != "approved" for path in paths):
             decision["status"] = "needs_review"

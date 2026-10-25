@@ -168,6 +168,11 @@ def ai_config():
     return (settings.base_url if not settings.problem() else ""), settings.effective_model, settings.api_key
 
 
+class ContextLengthExceeded(HTTPException):
+    def __init__(self):
+        super().__init__(502, '模型明确拒绝了超出上下文容量的请求。')
+
+
 def _chat_json(system_prompt, user_payload, failure_message, *, usage='knowledge'):
     settings = SELECTED_SETTINGS.get() or ai_keys.apply(AISettings.from_env(), usage=usage)
     if settings.problem():
@@ -185,6 +190,8 @@ def _chat_json(system_prompt, user_payload, failure_message, *, usage='knowledge
             raise ValueError("Invalid answer schema")
         return answer, settings.effective_model
     except TransportError as exc:
+        if exc.kind == 'context_length':
+            raise ContextLengthExceeded() from None
         if exc.kind == 'incomplete':
             raise HTTPException(502, 'AI 输出未完整结束，可能达到输出上限；已停止本批，请调整输出容量或缩小批次后重试。') from None
         if exc.kind == "keys_unavailable" or (exc.kind == "http" and exc.status in {401, 402}):

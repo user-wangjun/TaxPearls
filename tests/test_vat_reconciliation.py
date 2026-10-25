@@ -74,10 +74,9 @@ class VATReconciliationTests(unittest.TestCase):
         self.assertEqual(self.client.get(url+"/1?format=html").status_code,404)
 
     def test_multiline_red_void_duplicate_and_unknown_status(self):
-        task=self.task()
         workbook=load_workbook(BytesIO(book("vat_declaration")))
         workbook.active['C6']='1300';content=BytesIO();workbook.save(content);workbook.close()
-        # Separate task avoids overlapping declaration versions.
+        # This case tests net amounts; cross-task declaration conflicts have their own coverage.
         created=self.client.post('/api/enterprise/input-tasks',json={'company_name':'纯合成测试净额','tax_no':TAX,'start_date':'2026-01-01','end_date':'2026-01-31','applicable_forms':[]}).json()
         task=self.upload(created,content.getvalue(),'主表.xlsx','vat_declaration')
         task=self.upload(task,invoices([('I5','L1','1000','蓝字','正常'),('I5','L2','500','蓝字','正常'),('I6','L1','-200','红字','正常'),('I7','L1','999','蓝字','作废'),('I5','L2','500','蓝字','正常')]))
