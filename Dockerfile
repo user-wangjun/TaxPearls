@@ -20,6 +20,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     && useradd --uid 10001 --create-home taxpearls \
     && mkdir -p /data && chown taxpearls:taxpearls /data
 COPY src ./src
+COPY tests/fixtures/kg_retrieval/gold_cases.json ./tests/fixtures/kg_retrieval/gold_cases.json
 COPY webapp ./webapp
 COPY rules ./rules
 COPY ["docs/企业政策适用目录.yaml", "./docs/企业政策适用目录.yaml"]

@@ -162,17 +162,46 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
   assert.equal(appearanceBoundary(light.dataset.themePreference).initial.theme,"light");
 }
 
+// Retrieval checks preserve drafts and discard stale responses across sessions.
+(async()=>{
+  const nodes=new Map(),timers=new Map();let next=0,actor={id:"platform",role:"platform_admin"},visible=true;
+  const node=()=>({children:[],value:"",checked:false,disabled:false,hidden:false,textContent:"",append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
+  const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
+  const el=(tag,className,text)=>Object.assign(node(),{tag,className,textContent:text||""});
+  const calls=[];let hold=null;
+  let state={schedule:{enabled:false,interval_hours:24,revision:0,next_due:null},gate:{passed:false,reason:"尚未检测"},current_version:"current-version",model:"synthetic-model",history:[],active:null};
+  const api=async(url,options)=>{calls.push({url,options});if(hold)return await hold;if(options?.method==="PUT"){const body=JSON.parse(options.body);assert.equal(body.revision,0,"polls must not silently rebase a dirty schedule draft");state={...state,schedule:{...state.schedule,...body,revision:2}};return {saved:true};}if(options?.method==="POST")return {status:"queued"};return structuredClone(state);};
+  const ctx={setTimeout(fn){const id=++next;timers.set(id,fn);return id;},clearTimeout(id){timers.delete(id);}};vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync("webapp/static/retrieval-checks.js","utf8"),ctx);
+  const ui=ctx.createRetrievalChecks({api,el,$,user:()=>actor,active:()=>visible});
+  await ui.load();assert.equal($("retrievalChecksAdmin").hidden,false);assert.equal($("retrievalCheckHours").value,"24");
+  $("retrievalCheckHours").value="12";$("retrievalCheckHours").oninput();state.schedule.revision=1;
+  await ui.load();assert.equal($("retrievalCheckHours").value,"12","polling retains unsaved input");
+  await $("retrievalCheckSave").onclick();assert.equal(JSON.parse(calls.find(c=>c.options?.method==="PUT").options.body).interval_hours,12);
+  let release;hold=new Promise(resolve=>{release=resolve;});
+  const pending=$("retrievalCheckRun").onclick();$("retrievalCheckRun").onclick();
+  assert.equal(calls.filter(c=>c.options?.method==="POST").length,1,"double clicks do not enqueue duplicate jobs");
+  ui.reset();actor={id:"business",role:"org_admin"};release({status:"queued"});await pending;hold=null;
+  assert.equal($("retrievalChecksAdmin").hidden,true);assert.equal(timers.size,0);
+  const before=calls.length;await ui.load();assert.equal(calls.length,before,"non-platform users do not read check history");
+  actor={id:"platform",role:"platform_admin"};let resolveStatus;hold=new Promise(resolve=>{resolveStatus=resolve;});
+  const loading=ui.load();actor={id:"new-platform",role:"platform_admin"};resolveStatus(state);await loading;hold=null;
+  assert.equal(timers.size,0,"old-session responses do not start polling for a new session");
+  visible=false;ui.reset();
+  console.log("Retrieval checks: platform scope, dirty schedule revisions, single submission, timers and stale-session guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
 // Refresh restores the actual selected workspace view, while role-hidden views stay unavailable.
 {
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
   const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("/* ---------- 多材料上传"));
-  const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel"];
+  const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel", "retrievalChecksPanel"];
   const permitted = {
-    org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel"].includes(id)),
-    accountant: panels.filter(id => !["trainingPanel", "orgReportPanel", "aiKeysPanel"].includes(id)),
-    teacher: panels.filter(id => !["orgReportPanel", "aiKeysPanel"].includes(id)),
+    org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
+    accountant: panels.filter(id => !["trainingPanel", "orgReportPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
+    teacher: panels.filter(id => !["orgReportPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
     student: ["trainingPanel", "knowledgePanel", "userSettingsPanel"],
-    platform_admin: ["adminPanel", "knowledgePanel", "userSettingsPanel", "aiKeysPanel"],
+    platform_admin: ["adminPanel", "knowledgePanel", "userSettingsPanel", "aiKeysPanel", "retrievalChecksPanel"],
   };
   function navigation(role, href = "http://localhost/?view=test") {
     const calls = [], url = new URL(href);
@@ -189,6 +218,7 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
       document:{querySelectorAll:selector=>selector===".panel"?views:buttons},
       noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0,
       aiKeyProbes:{load(){calls.push("loadAIKeys");},reset(){}},
+      retrievalChecks:{load(){calls.push("loadRetrievalChecks");},reset(){}},
       refreshAIStatus(){calls.push("ai");},refreshAuditClients(){calls.push("clients");},enterpriseMaterials:{refresh(){calls.push("materials");}},coreInputs:{refresh(){return Promise.resolve();}}};
     for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge"])ctx[name]=()=>calls.push(name);
     vm.createContext(ctx);vm.runInContext(code,ctx);
@@ -211,6 +241,10 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
     ["accountant","orgReportPanel","dashboardPanel"],
     ["org_admin","aiKeysPanel","dashboardPanel"],
     ["student","aiKeysPanel","trainingPanel"],
+    ["org_admin","retrievalChecksPanel","dashboardPanel"],
+    ["accountant","retrievalChecksPanel","dashboardPanel"],
+    ["teacher","retrievalChecksPanel","dashboardPanel"],
+    ["student","retrievalChecksPanel","trainingPanel"],
     ["org_admin","unknownPanel","dashboardPanel"],
   ]) {
     const view=navigation(role,"http://localhost/#panel="+requested);
@@ -220,6 +254,9 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
   }
   const graph=navigation("org_admin","http://localhost/#panel=knowledgePanel");
   graph.ctx.switchPanel(graph.ctx.initialWorkspacePanel());assert.deepEqual(graph.calls,["loadKnowledge"]);
+  const retrieval=navigation("platform_admin","http://localhost/#panel=retrievalChecksPanel");
+  retrieval.ctx.switchPanel(retrieval.ctx.initialWorkspacePanel());assert.deepEqual(retrieval.calls,["loadRetrievalChecks"]);
+  const admin=navigation("platform_admin");admin.ctx.switchPanel("adminPanel");assert.deepEqual(admin.calls,["loadAdmin"]);
   const guest=navigation("org_admin");guest.ctx.currentUser=null;guest.ctx.switchPanel("adminPanel");
   assert.equal(guest.calls.length,0);assert.equal(guest.location.hash,"");
   const hashStart=source.indexOf('window.addEventListener("hashchange"');

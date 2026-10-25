@@ -60,6 +60,11 @@ def analysis_profile(settings, output_tokens=None):
 
 
 def acceptance_gate(path=None):
+    if path is None:
+        from webapp.retrieval_checks import current_gate
+        saved = current_gate()
+        if saved is not None:
+            return saved
     path = Path(path) if path else ROOT / "output/kg-retrieval/retrieval_report.json"
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
@@ -72,10 +77,14 @@ def acceptance_gate(path=None):
                  and {f"K{i:02}" for i in range(1, 13)} <= ids
                  and all(c["passed"] for c in report["cases"])
                  and report["implementation_fingerprint"] == implementation_fingerprint())
-        return {"passed": bool(valid), "report_hash": digest(report), "data_scope": report["data_scope"],
+        reason = ('检索检测版本已过期，请平台管理员重新运行检测。'
+                  if report['implementation_fingerprint'] != implementation_fingerprint()
+                  else '检索检测未通过，请平台管理员查看检测结果。')
+        return {"passed": bool(valid), "reason": '检索检测通过。' if valid else reason,
+                "report_hash": digest(report), "data_scope": report["data_scope"],
                 "formal_policy_acceptance": False, "model_fingerprints": report["model_fingerprints"]}
     except (OSError, ValueError, KeyError, TypeError):
-        return {"passed": False, "reason": "尚无通过离线检索门槛的本地评测报告。"}
+        return {"passed": False, "reason": "尚无检索检测报告，请平台管理员在管理页面运行检测。"}
 
 
 def validate_answer(answer, package):
@@ -160,8 +169,10 @@ def validate_saved_analysis(analysis, package):
 def analyze(package, prior=None):
     gate = acceptance_gate()
     model_fingerprint = package["retrieval_trace"]["routes"]["semantic"].get("model_fingerprint")
-    if not gate["passed"] or model_fingerprint not in gate.get("model_fingerprints", []):
-        raise HTTPException(409, "本地检索评测尚未通过，暂不进行 AI 联调。")
+    if not gate["passed"]:
+        raise HTTPException(409, gate.get('reason') or "检索检测未通过，请联系平台管理员。")
+    if model_fingerprint not in gate.get('model_fingerprints', []):
+        raise HTTPException(409, '本次使用的检索模型与检测报告不一致，请平台管理员重新检测。')
     if package["batching"]["unsplittable"]:
         return {"status": "needs_review", "validated": False, "assessments": [], "external_api_calls": 0,
                 "reason": "单条结构化记录或基础核查信息仍超出本次容量，已保留完整内容，请核对模型容量或缩小核查范围。"}

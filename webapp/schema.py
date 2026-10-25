@@ -864,6 +864,8 @@ def initialize(store) -> None:
         ai_keys.migrate(db)
         from webapp import policy_graph
         policy_graph.migrate(db)
+        from webapp import retrieval_checks
+        retrieval_checks.migrate(db)
         from src import vat_reconciliation
         vat_reconciliation.initialize(db)
         from webapp import university_members
