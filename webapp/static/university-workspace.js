@@ -46,14 +46,8 @@ window.universityWorkspace = (() => {
     const prompts=[["学习依据","请解释当前知识点或规则的学习依据，区分已核实来源与待审核内容。"],["知识点关联","请解释当前节点与关联知识点、规则和政策原文的关系，不将学习关联当作法律推导。"],["复习建议","请根据当前节点提供复习顺序；没有学生作答记录时，不推断其掌握程度。"]];
     $("graphAssistant").querySelectorAll("[data-question]").forEach((button,i)=>{button.textContent=prompts[i][0];button.dataset.question=prompts[i][1];});
   }
-  function renderOverview(data, archive=false) {
+  function renderOverview(data) {
     overview.replaceChildren();
-    if(archive) {
-      const card=element("section","sheet");card.append(element("h2",null,identity.role==="student"?"课程学习记录":"教学作答与复核记录"));
-      if(!data.records.length)card.append(element("p","muted","暂无课程作答记录。完成课堂任务后，在这里查看成绩与复核记录。"));
-      for(const row of data.records){const item=element("div","data-item");item.append(element("strong",null,row.title),element("p","muted",(row.student?row.student+" · ":"")+row.score+" 分 · "+(row.reviewed?"已人工复核":"自动评分")+" · "+new Date(row.submitted_at).toLocaleString()));card.append(item);}
-      overview.append(card);return;
-    }
     const c=data.counts, grid=element("div","kpi-grid");
     const metrics=identity.role==="student"?[["所在班级",c.classrooms,"个"],["课程任务",c.assignments,"项"],["已提交",c.submitted,"项"],["在学课程",c.courses,"门"]]:[["教学班级",c.classrooms,"个"],["在校学生",c.students,"人"],["课程",c.courses,"门"],["作业",c.assignments,"项"]];
     for(const [label,value,unit]of metrics){const card=element("div","kpi");card.append(element("div",null,label));const number=element("div","value",value);number.append(element("span","unit",unit));card.append(number);grid.append(card);}overview.append(grid);
@@ -76,6 +70,75 @@ window.universityWorkspace = (() => {
     if(identity.role!=="student")tasks.append(element("p","muted","已提交作答 "+c.submitted+" 份；尚未人工复核 "+c.unreviewed+" 份。自动评分和人工复核分别保留。"));overview.append(tasks);
     if(identity.role!=="student"&&c.unreviewed){const review=element("button","btn re","复核学生作答（"+c.unreviewed+"）");review.onclick=async()=>{if(await choose("tasks"))$("reviewBox").scrollIntoView({behavior:"smooth",block:"start"});};tasks.append(review);}
     const knowledge=element("section","sheet");knowledge.append(element("h2",null,"公共政策与教学依据"),element("p","muted","政策、条款和规则来自统一公共知识目录；课程知识点以明确关联接入同一图谱。候选或未核实内容保留来源状态，历史作答沿用当时发布的版本。"));overview.append(knowledge);
+  }
+
+  // 教学档案：提交流水 + 班级/课程/归档筛选 + CSV 导出。口径同「学情统计」「成绩单导出」
+  // （当前分取复核分优先、未交不补 0 分），筛选在后端做，不把全量流水丢给浏览器。
+  async function loadArchives() {
+    const filters = {class_id:"", course_id:"", include_archived:false, keyword:""};
+    const query = () => {
+      const qs = new URLSearchParams();
+      if(filters.class_id) qs.set("class_id", filters.class_id);
+      if(filters.course_id) qs.set("course_id", filters.course_id);
+      if(filters.include_archived) qs.set("include_archived", "1");
+      if(filters.keyword) qs.set("keyword", filters.keyword);
+      return qs.toString();
+    };
+    const redraw = () => draw().catch(err => showToast(err.message));
+    const draw = async () => {
+      const data = await request("/api/training/workspace/records?" + query());
+      overview.replaceChildren();
+      const card = element("section","sheet");
+      card.append(element("h2", null, identity.role === "student" ? "我的学习记录" : "教学档案 · 提交流水"),
+                  element("p","muted", data.scope));
+      if(!data.capable) {
+        card.append(element("p","muted","当前账号尚未绑定课堂身份，暂无可导出的提交流水。管理员关联教学身份后，这里会按班级、课程列出记录。"));
+        overview.append(card);
+        return;
+      }
+      const bar = element("div","archive-filters");
+      bar.style.cssText = "display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin:8px 0 10px";
+      const pick = (labelText, options, key, blank) => {
+        const field = element("div","field"), label = element("label", null, labelText), node = element("select");
+        node.id = "archive-" + key; label.htmlFor = node.id; node.append(new Option(blank, ""));
+        for(const item of options) node.append(new Option(item.name, item.id));
+        node.value = filters[key];
+        node.onchange = () => { filters[key] = node.value; redraw(); };
+        field.append(label, node); bar.append(field);
+      };
+      pick("班级", data.classes, "class_id", "全部班级");
+      if(identity.role !== "student") pick("课程", data.courses, "course_id", "全部课程");
+      const kwField = element("div","field"), kwLabel = element("label", null, "学生 / 任务");
+      const kw = element("input"); kw.type = "search"; kw.id = "archive-keyword";
+      kw.placeholder = "姓名、学号或任务名"; kw.value = filters.keyword; kwLabel.htmlFor = kw.id;
+      kw.oninput = () => { filters.keyword = kw.value.trim(); clearTimeout(kw._timer); kw._timer = setTimeout(redraw, 350); };
+      kwField.append(kwLabel, kw); bar.append(kwField);
+      const toggle = element("label","archive-toggle"), box = element("input");
+      box.type = "checkbox"; box.checked = filters.include_archived;
+      box.onchange = () => { filters.include_archived = box.checked; redraw(); };
+      toggle.append(box, document.createTextNode("含已归档")); bar.append(toggle);
+      const exportBtn = element("button","btn re","导出 CSV");
+      exportBtn.onclick = () => { window.open("/api/training/workspace/records.csv?" + query(), "_blank", "noopener"); };
+      bar.append(exportBtn); card.append(bar);
+      card.append(element("p","muted","共 " + data.total + " 条，其中已归档 " + data.archived_total + " 条；未交记录不进流水，也不按 0 分计。"));
+      if(!data.rows.length) {
+        card.append(element("p","muted","按当前筛选没有提交流水。换个班级、清空关键字，或勾选「含已归档」再看。"));
+        overview.append(card);
+        return;
+      }
+      for(const row of data.rows) {
+        const item = element("div","data-item" + (row.archived ? " archived" : ""));
+        if(row.archived) item.style.opacity = ".65";
+        item.append(element("strong", null, (row.course_name ? row.course_name + " · " : "") + row.title + (row.archived ? "（已归档）" : "")),
+          element("p","muted", [row.student_no, row.name, row.class_name || "未分班", row.kind,
+            row.reviewed ? "已复核" : "自动评分",
+            (row.final === null || row.final === undefined ? "—" : row.final + " 分"),
+            new Date(row.submitted_at).toLocaleString()].join(" · ")));
+        card.append(item);
+      }
+      overview.append(card);
+    };
+    await draw();
   }
 
   async function loadCourseBindings() {
@@ -251,9 +314,10 @@ window.universityWorkspace = (() => {
     $("universityRefresh").disabled=true;status("正在读取教学数据…");
     try {
       if(identity.role==="unlinked")throw new Error("高校账号尚未关联教学身份，请联系平台管理员核对。当前不会进入企业业务面板。");
-      if(["home","archives"].includes(view)){
-        const data=await request("/api/training/workspace/dashboard");if(ticket!==viewRevision)return false;renderOverview(data,view==="archives");
-        if(view==="home"&&usesNative(view))await ensureNative();
+      if(view==="archives"){await loadArchives();if(ticket!==viewRevision)return false;}
+      else if(view==="home"){
+        const data=await request("/api/training/workspace/dashboard");if(ticket!==viewRevision)return false;renderOverview(data);
+        if(usesNative(view))await ensureNative();
       }
       else if(view==="knowledge"){await loadKnowledge({throwOnError:true});}
       else {

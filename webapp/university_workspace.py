@@ -1,7 +1,9 @@
 """Teaching workbench over existing identities, classrooms and public knowledge."""
+import csv
+import io
 from datetime import UTC, datetime
 
-from fastapi import HTTPException, Request
+from fastapi import HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -129,6 +131,130 @@ def dashboard(store, user):
             'scope':'课程与教学名册按高校隔离；班级、作业和学情按当前教师或学生的已有访问范围读取。'}
 
 
+ARCHIVE_SCOPE = ('导出与「班级学情统计」「成绩单导出」同源：当前分取复核分优先，人工调分不改自动分；'
+                 '未交记录不进流水（不补 0 分）；已归档任务默认不列出，需显式勾选。')
+
+
+def _archive_actor(store, user):
+    """Resolve the classroom actor exactly like the dashboard does."""
+    student = user['education_role'] == 'student'
+    linked = not user.get('legacy_teaching')
+    with store.connect() as db:
+        if linked:
+            link = db.execute('SELECT * FROM university_identity_links WHERE user_id=?', (user['id'],)).fetchone()
+            if not link:
+                raise HTTPException(403, '教学身份已变化，请重新登录。')
+            table, pid = ('student_info', link['student_id']) if student else ('college_user', link['staff_id'])
+        else:
+            table = 'student_info' if student else 'college_user'
+            pid = str(user['id']).removeprefix('student-' if student else 'staff-')
+        profile = db.execute(f'SELECT * FROM {table} WHERE id=? AND active=1', (pid,)).fetchone()
+        if not profile:
+            raise HTTPException(403, '教学身份已变化，请重新登录。')
+        actor = teaching_actor(db, user) if linked else None
+    return actor, profile
+
+
+def _archive_rows(db, who, class_id, course_id, include_archived, keyword):
+    """提交流水：一行 = 一名学生对一份任务的一次提交（订正不重复成行）。"""
+    sql = """SELECT sub.assignment_id, sub.student_id, u.username AS student_no, u.display_name AS name,
+                    a.title, s.class_id, c.name AS class_name, s.paper_id,
+                    COALESCE(tp.archived_at, ta.archived_at) AS archived_at,
+                    sub.score, sub.adjusted_score, sub.submitted_at,
+                    uc.course_id, co.name AS course_name
+               FROM submissions sub
+               JOIN assignments a ON a.id=sub.assignment_id
+               JOIN training_assignment_settings s ON s.assignment_id=a.id
+               JOIN users u ON u.id=sub.student_id
+          LEFT JOIN training_classes c ON c.id=s.class_id
+          LEFT JOIN training_task_settings ta ON ta.subject_kind='assignment' AND ta.subject_id=a.id
+          LEFT JOIN training_task_settings tp ON tp.subject_kind='paper' AND tp.subject_id=s.paper_id
+          LEFT JOIN university_assignment_courses uc ON uc.assignment_id=a.id
+          LEFT JOIN course co ON co.id=uc.course_id
+              WHERE a.org_id=?"""
+    args = [who['org_id']]
+    if who['role'] == 'student':
+        sql += ' AND sub.student_id=?'
+        args.append(who['id'])
+    else:
+        # 教师只看自己建的作业：同校其他教师的班级不在这条流水里，避免"看着有记录却改不了"。
+        sql += ' AND a.created_by=?'
+        args.append(who['id'])
+    if class_id:
+        sql += ' AND s.class_id=?'
+        args.append(class_id)
+    if course_id:
+        sql += ' AND uc.course_id=?'
+        args.append(course_id)
+    if not include_archived:
+        sql += ' AND COALESCE(tp.archived_at, ta.archived_at) IS NULL'
+    sql += ' ORDER BY sub.submitted_at DESC, sub.student_id, sub.assignment_id'
+    rows = []
+    for row in db.execute(sql, args):
+        item = dict(row)
+        item['kind'] = '组卷' if item.pop('paper_id') else '案例作业'
+        item['archived'] = bool(item.pop('archived_at'))
+        item['reviewed'] = item['adjusted_score'] is not None
+        # 当前分 = 复核分优先；自动分原样保留，人工调分不改写客观记录。
+        item['final'] = item['adjusted_score'] if item['adjusted_score'] is not None else item['score']
+        rows.append(item)
+    if keyword:
+        needle = keyword.strip().lower()
+        rows = [r for r in rows if any(needle in str(r[key] or '').lower()
+                                       for key in ('name', 'student_no', 'title', 'class_name', 'course_name'))]
+    return rows
+
+
+def archive_records(store, user, *, class_id=None, course_id=None, include_archived=False, keyword=None):
+    student = user['education_role'] == 'student'
+    actor, profile = _archive_actor(store, user)
+    capable = actor is not None and actor['role'] in {'teacher', 'student'} and user['education_role'] != 'school_admin'
+    data = {'rows': [], 'classes': [], 'courses': [], 'scope': ARCHIVE_SCOPE, 'capable': capable}
+    if not capable:
+        # 通用工作台账号（未绑定课堂身份）没有提交流水；页面按 capable=false 显示说明而不是空表。
+        return data
+    with store.connect() as db:
+        if actor['role'] == 'teacher':
+            classes = [dict(r) for r in db.execute(
+                'SELECT id,name FROM training_classes WHERE org_id=? AND owner_id=? ORDER BY created_at DESC',
+                (actor['org_id'], actor['id']))]
+        else:
+            classes = [dict(r) for r in db.execute(
+                'SELECT c.id,c.name FROM training_classes c JOIN training_class_members m ON m.class_id=c.id '
+                'WHERE c.org_id=? AND m.student_id=? ORDER BY c.created_at DESC',
+                (actor['org_id'], actor['id']))]
+        courses = [dict(r) for r in db.execute(
+            'SELECT id,name FROM course WHERE college=? AND active=1 ORDER BY created_at DESC',
+            (profile['college'],))] if not student else []
+        data.update(classes=classes, courses=courses,
+                    rows=_archive_rows(db, actor, class_id, course_id, include_archived, keyword))
+    data['total'] = len(data['rows'])
+    data['archived_total'] = sum(1 for r in data['rows'] if r['archived'])
+    return data
+
+
+def archive_csv(data):
+    """提交流水 CSV：UTF-8 BOM，前三行写明范围与口径，Excel 双击即开。"""
+    buffer = io.StringIO(newline='')
+    writer = csv.writer(buffer)
+    exported = datetime.now(UTC).astimezone().isoformat(timespec='seconds')
+    writer.writerow(['# 教学档案 · 提交流水'])
+    writer.writerow([f'# 导出时间 {exported} · 记录 {len(data["rows"])} 条'
+                     f' · 其中已归档 {data["archived_total"]} 条'])
+    writer.writerow([f'# 口径：{data["scope"]}'])
+    writer.writerow(['学号', '姓名', '班级', '课程', '任务', '类型', '归档', '自动分', '复核分', '当前分', '提交时间'])
+    for row in data['rows']:
+        writer.writerow([row['student_no'], row['name'], row['class_name'] or '', row['course_name'] or '',
+                         row['title'], row['kind'], '已归档' if row['archived'] else '在办',
+                         _blank(row['score']), _blank(row['adjusted_score']), _blank(row['final']),
+                         row['submitted_at']])
+    return ('\ufeff' + buffer.getvalue()).encode('utf-8')
+
+
+def _blank(value):
+    return '' if value is None else value
+
+
 def register(app, store_provider, effective_rules, ai_config):
     def response(value):
         return JSONResponse(value, headers={'Cache-Control':'private, no-store'})
@@ -137,6 +263,23 @@ def register(app, store_provider, effective_rules, ai_config):
     def workbench(request: Request):
         store = store_provider()
         return response(dashboard(store, identity(store, request)))
+
+    @app.get('/api/training/workspace/records')
+    def archive(request: Request, class_id: str | None = None, course_id: str | None = None,
+                include_archived: bool = False, keyword: str | None = Query(default=None, max_length=50)):
+        store = store_provider()
+        return response(archive_records(store, identity(store, request), class_id=class_id, course_id=course_id,
+                                        include_archived=include_archived, keyword=keyword))
+
+    @app.get('/api/training/workspace/records.csv')
+    def archive_export(request: Request, class_id: str | None = None, course_id: str | None = None,
+                       include_archived: bool = False, keyword: str | None = Query(default=None, max_length=50)):
+        store = store_provider()
+        data = archive_records(store, identity(store, request), class_id=class_id, course_id=course_id,
+                               include_archived=include_archived, keyword=keyword)
+        return Response(archive_csv(data), media_type='text/csv; charset=utf-8',
+                        headers={'Content-Disposition': 'attachment; filename="teaching-archives.csv"',
+                                 'Cache-Control': 'private, no-store'})
 
     @app.get('/api/training/knowledge/graph')
     def graph(request: Request):
