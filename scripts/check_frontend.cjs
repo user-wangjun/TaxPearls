@@ -187,10 +187,10 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
       history:{state:{retained:true}, replaceState(_state,_title,path){const next=new URL(path,location.href);Object.assign(location,{href:next.href,pathname:next.pathname,search:next.search,hash:next.hash});}},
       $:id=>views.find(view=>view.id===id),
       document:{querySelectorAll:selector=>selector===".panel"?views:buttons},
-      noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0,
+      noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0, ruleCatalogRequest:0,
       aiKeyProbes:{load(){calls.push("loadAIKeys");},reset(){}},
       refreshAIStatus(){calls.push("ai");},refreshAuditClients(){calls.push("clients");},enterpriseMaterials:{refresh(){calls.push("materials");}},coreInputs:{refresh(){return Promise.resolve();}}};
-    for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge"])ctx[name]=()=>calls.push(name);
+    for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge","loadGraphRules"])ctx[name]=()=>calls.push(name);
     vm.createContext(ctx);vm.runInContext(code,ctx);
     return {ctx,calls,location,views,buttons};
   }
@@ -219,7 +219,7 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
     assert.equal(view.location.hash,"#panel="+expected);
   }
   const graph=navigation("org_admin","http://localhost/#panel=knowledgePanel");
-  graph.ctx.switchPanel(graph.ctx.initialWorkspacePanel());assert.deepEqual(graph.calls,["loadKnowledge"]);
+  graph.ctx.switchPanel(graph.ctx.initialWorkspacePanel());assert.deepEqual(graph.calls,["loadKnowledge","loadGraphRules"]);
   const guest=navigation("org_admin");guest.ctx.currentUser=null;guest.ctx.switchPanel("adminPanel");
   assert.equal(guest.calls.length,0);assert.equal(guest.location.hash,"");
   const hashStart=source.indexOf('window.addEventListener("hashchange"');
@@ -291,6 +291,43 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   // and navigation while a write is in flight. No browser globals are replaced
   // in application code; this tiny boundary provides only the needed DOM/API.
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
+  // One graph catalog replaces the old admin list; compatibility never implies approval.
+  {
+    const nodes=new Map(),calls=[],errors=[],editors=[];let active=true;
+    function element(tag,cls,text){return {tag,textContent:text||"",value:"",hidden:false,open:true,children:[],handlers:{},
+      classList:{contains:()=>active},append(...items){this.children.push(...items);},
+      replaceChildren(...items){this.children=items;},addEventListener(name,fn){this.handlers[name]=fn;}};}
+    const ctx={currentUser:{id:"admin",role:"platform_admin"},editingRule:null,
+      $:id=>{if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);},el:element,
+      api:(url,options)=>new Promise((resolve,reject)=>calls.push({url,options,resolve,reject})),
+      showError:error=>errors.push(error),openRuleEditor:rule=>editors.push(rule),loadRuleVersionHistory(){}};
+    vm.createContext(ctx);
+    vm.runInContext('let graphRuleCatalog=[],ruleCatalogRequest=0;'+source.slice(source.indexOf('async function loadGraphRules('),source.indexOf('function setRuleDraft(')),ctx);
+    const row={rule_id:'R-001@2.0:converted:test',rule_code:'R-001',version:'2.0',name:'收入差异',source:'converted',review_status:'candidate',legacy:{id:'R-001',enabled:true}};
+    ctx.$('ruleAdmin').open=false;await ctx.loadGraphRules();assert.equal(calls.length,0,'Closed maintenance does not fetch a second catalog');
+    ctx.$('ruleAdmin').open=true;
+    const stale=ctx.loadGraphRules(),first=calls.shift(),latest=ctx.loadGraphRules();
+    assert.equal(calls[0].url,'/api/knowledge/rule-catalog');calls.shift().resolve([row]);await latest;
+    first.resolve([{...row,name:'stale'}]);await stale;
+    const text=node=>[node.textContent,...node.children.map(text)].join(' ');
+    assert.ok(text(ctx.$('ruleList')).includes('候选 · 待审核'));assert.ok(!text(ctx.$('ruleList')).includes('已启用'));
+    const buttons=[];function walk(node){if(node.tag==='button')buttons.push(node);node.children.forEach(walk);}walk(ctx.$('ruleList'));
+    buttons.find(b=>b.textContent==='配置参数版本').handlers.click();assert.equal(editors[0].id,'R-001');
+    const toggle=buttons.find(b=>b.textContent==='关闭历史审计筛查'),writing=toggle.handlers.click();
+    assert.equal(calls[0].url,'/api/rules/R-001/state');assert.deepEqual(JSON.parse(calls[0].options.body),{enabled:false});
+    active=false;calls.shift().resolve({enabled:false});await writing;assert.equal(calls.length,0,'Leaving while a write finishes must not reload another panel');
+    active=true;ctx.$('ruleCatalogSearch').value='not-found';ctx.renderGraphRules();assert.ok(text(ctx.$('ruleList')).includes('没有匹配'));
+    ctx.$('ruleCatalogSearch').value='';const changedUser=ctx.loadGraphRules();ctx.currentUser={id:'other',role:'accountant'};
+    calls.shift().reject(new Error('old-user failure'));await changedUser;assert.equal(errors.length,0);
+    ctx.currentUser={id:'admin',role:'platform_admin'};
+    const failed=ctx.loadGraphRules();calls.shift().reject(new Error('catalog unavailable'));await failed;
+    assert.ok(ctx.$('ruleCatalogStatus').textContent.includes('catalog unavailable'));
+    assert.equal(ctx.$('ruleList').children.length,0,'Failed refresh must not leave stale enabled controls');
+    const markup=fs.readFileSync('webapp/static/index.html','utf8');
+    assert.ok(markup.indexOf('id="ruleAdmin"')>markup.indexOf('id="knowledgePanel"'));
+    assert.ok(markup.indexOf('id="ruleAdmin"')<markup.indexOf('id="uploadPanel"'));
+    assert.ok(!source.slice(source.indexOf('async function loadAdmin()')).includes('api("/api/rules")'));
+  }
   // Settings reuses self-only preferences; stale reads/writes may not alter another view/account.
   const settingsCode = source.slice(source.indexOf("function isCampusUser("), source.indexOf("async function teachingRequest("))+source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
   function settingsBoundary(role = "accountant") {
@@ -451,7 +488,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
     $:id=>{if(!ruleNodes.has(id))ruleNodes.set(id,{...node(),value:"audit-1",querySelectorAll:()=>[]});return ruleNodes.get(id);},
     el:node,api:url=>new Promise((resolve,reject)=>ruleCalls.push({url,resolve,reject})),
     ruleDraftBody:()=>({new_version:"2.1"}),showRuleTrial:r=>shown.push(r),showError:e=>ruleErrors.push(e),
-    openRuleEditor:r=>shown.push(r),loadAdmin:async()=>{}};
+    openRuleEditor:r=>shown.push(r),loadGraphRules:async()=>{}};
   vm.createContext(ruleCtx);
   vm.runInContext('let ruleEditorRequest=0,ruleHistoryRequest=0,ruleBusy=false;'+
     source.slice(source.indexOf("async function loadRuleVersionHistory("),source.indexOf("function ruleDraftBody(")),ruleCtx);
