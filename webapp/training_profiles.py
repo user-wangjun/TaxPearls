@@ -64,7 +64,10 @@ def collect(db, student, classroom=None, include_withdrawn=False):
     args = [student['org_id'], student['id']]
     if classroom is None:
         where += """ AND a.published=1 AND (s.class_id IS NULL OR EXISTS (
-            SELECT 1 FROM training_class_members m WHERE m.class_id=s.class_id AND m.student_id=?))"""
+            SELECT 1 FROM training_class_members m WHERE m.class_id=s.class_id AND m.student_id=?))
+            AND NOT EXISTS (SELECT 1 FROM training_task_settings t
+                WHERE t.subject_kind=CASE WHEN s.paper_id IS NULL THEN 'assignment' ELSE 'paper' END
+                  AND t.subject_id=COALESCE(s.paper_id,a.id) AND t.archived_at IS NOT NULL)"""
         args.append(student['id'])
     else:
         where += " AND s.class_id=? AND a.created_by=? AND (a.published=1 OR (? AND sub.id IS NOT NULL))"
@@ -79,7 +82,7 @@ def collect(db, student, classroom=None, include_withdrawn=False):
             WHERE {where} ORDER BY a.id""", [student['id'], *args]).fetchall()
     versions = _versions_by_assignment(db, student['id'], [row['id'] for row in rows])
     totals = {'assignments': len(rows), 'submitted': 0, 'valid': 0, 'invalid': 0,
-              'unsubmitted': 0, 'adjusted': 0, 'undated': 0}
+              'unsubmitted': 0, 'adjusted': 0, 'undated': 0, 'pending_results': 0}
     records, phases, rules, categories = [], {}, {}, {}
     audits, scores, automatic_scores = set(), [], []
     for row in rows:
@@ -91,6 +94,18 @@ def collect(db, student, classroom=None, include_withdrawn=False):
         record.update(published=bool(row['published']), submitted_at=None, valid=False, warning=None,
                       score=None, automatic_score=None, adjusted=False,
                       versions=versions.get(row['id'], []))
+        if classroom is None:
+            from webapp.training_submissions import result_visible
+            visible, note = result_visible(db, row['id'], student['id'])
+            if not visible:
+                totals['pending_results'] += 1
+                record.update(versions=[], warning=note)
+                try:
+                    record['submitted_at'] = timestamp(row['submitted_at']).isoformat()
+                except (ValueError, TypeError):
+                    pass
+                records.append(record)
+                continue
         phase = None
         try:
             date = timestamp(row['submitted_at'])
@@ -191,7 +206,7 @@ def collect(db, student, classroom=None, include_withdrawn=False):
         'categories': sorted(categories.values(), key=lambda c: (-c['errors'], c['category'])),
         'rules': sorted(rules.values(), key=lambda r: (-r['errors'], r['rule_id'], r['definition_id'])),
         'scope': ('仅此班当前名册学生、本教师明确分配到此班且适用于该学生的作业。' if classroom else
-                  '仅本人当前有权访问的已发布作业（含已截止），含全机构公开及当前班级作业；撤回、移出班级后不再显示。')
+                  '仅本人当前有权访问的已发布作业（含已截止），含全机构公开及当前班级作业；撤回、归档、移出班级后不再显示。成绩未开放时只计提交，不提供评分与画像。')
                  + '每份作业仅采用最新保存提交，重交会替换该作业的时间点，不是历次尝试记录。',
         'method': '按最新提交的 UTC 时刻排序，同一时刻合并，不推测先后；未交不算答错。'
                   '漏检率以命中机会为分母，误报率以已执行通过机会为分母；未执行另列。'

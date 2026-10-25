@@ -51,7 +51,7 @@ window.universityWorkspace = (() => {
     if(archive) {
       const card=element("section","sheet");card.append(element("h2",null,identity.role==="student"?"课程学习记录":"教学作答与复核记录"));
       if(!data.records.length)card.append(element("p","muted","暂无课程作答记录。完成课堂任务后，在这里查看成绩与复核记录。"));
-      for(const row of data.records){const item=element("div","data-item");item.append(element("strong",null,row.title),element("p","muted",(row.student?row.student+" · ":"")+row.score+" 分 · "+(row.reviewed?"已人工复核":"自动评分")+" · "+new Date(row.submitted_at).toLocaleString()));card.append(item);}
+      for(const row of data.records){const item=element("div","data-item");const score=row.result_released===false?"成绩尚未开放":row.score+" 分";item.append(element("strong",null,row.title),element("p","muted",(row.student?row.student+" · ":"")+score+" · "+(row.reviewed?"已人工复核":"自动评分")+" · "+new Date(row.submitted_at).toLocaleString()));card.append(item);}
       overview.append(card);return;
     }
     const c=data.counts, grid=element("div","kpi-grid");

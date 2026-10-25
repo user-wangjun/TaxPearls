@@ -2198,7 +2198,7 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
     if not assignment:
         raise HTTPException(status_code=404, detail="作业不存在。")
     if not assignment["can_submit"]:
-        raise HTTPException(409,"已到截止时间，不能提交或覆盖已有成绩。")
+        raise HTTPException(409,"任务尚未开放或已截止，不能提交或覆盖已有成绩。")
     entry = store.get_audit(assignment["audit_id"])
     if not entry or entry["org_id"] != user["org_id"]:
         raise HTTPException(404,"作业材料不存在。")
@@ -2219,7 +2219,7 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
         return {**result, "result_released": True, "result_note": ""}
     return {"result_released": False, "result_note": note, "score": None,
             "correct": [], "missed": [], "false_positives": [],
-            "false_positive_deduction": result.get("false_positive_deduction")}
+            "false_positive_deduction": None}
 
 
 @app.post("/api/assignments/{assignment_id}/feedback")

@@ -1,5 +1,5 @@
 /* AI 备课助手 / 学生任务卡。
-   自包含：自行判定身份、自行挂载到“课程与作业”视图，不依赖 training-staff.js 或 training-portal.js 的内部状态。 */
+   使用统一登录身份，挂载到“课程与作业”视图，不依赖 training-staff.js 或 training-portal.js 的内部状态。 */
 "use strict";
 (() => {
   const $ = (id, root = document) => root.querySelector("#" + CSS.escape(id));
@@ -714,7 +714,8 @@
   async function init() {
     const box = host();
     if (!box) return false;
-    const who = await api("/api/me");
+    const who = typeof currentUser === "undefined" ? null : currentUser;
+    if (!who) return false;
     const studentRole = who.education_role === "student" || who.role === "student";
     const teacherRole = ["teacher", "org_admin"].includes(who.role) || who.education_role === "teacher";
     if (studentRole) {
@@ -732,6 +733,7 @@
   let attempts = 0;
   function tryBoot() {
     if (booted) return;
+    if (typeof currentUser === "undefined" || !currentUser) return;
     const box = host();
     if (!box) return;
     if (box.node.id === "app-view" && box.node.hidden) return;
@@ -740,7 +742,7 @@
       if (!ok) booted = false;
     }).catch(() => {
       booted = false;
-      // 未登录时 /api/me 返回 401：等登录后的 DOM 变化再试，最多约 30 秒。
+      // 仅在已登录后的数据加载失败时重试；登录前不发送请求。
       if (attempts++ < 20) window.setTimeout(tryBoot, 1500);
     });
   }

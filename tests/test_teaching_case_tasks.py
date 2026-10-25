@@ -190,7 +190,7 @@ class TeachingCaseTaskTests(unittest.TestCase):
         locked = self.client.put(f"/api/assignments/{assignment_id}/case-delivery",
                                  json={"step": "receive", "content": "改一下"})
         self.assertEqual(locked.status_code, 409, locked.text)
-        self.assertIn("已正式提交", locked.json()["detail"])
+        self.assertIn("已经提交过", locked.json()["detail"])
 
     def test_teacher_reads_deliveries_of_own_class_only(self):
         assignment_id = self.assignment_of(self.publish())
@@ -210,7 +210,84 @@ class TeachingCaseTaskTests(unittest.TestCase):
             f"/api/training/teaching/case-tasks/{found['id']}/deliveries"
             f"?student_id={self.outsider['id']}").json()["items"], [])
 
+    def test_delivery_respects_schedule_and_correction_deadline(self):
+        aid = self.assignment_of(self.publish())
+        settings = f"/api/training/tasks/assignment/{aid}/settings"
+        view = f"/api/assignments/{aid}/case"
+        delivery = f"/api/assignments/{aid}/case-delivery"
+        scheduled = self.client.put(settings, json={"open_at": "2031-01-01T00:00:00Z"})
+        self.assertEqual(scheduled.status_code, 200, scheduled.text)
+        self.login(self.student)
+        self.assertFalse(self.client.get(view).json()["editable"])
+        self.assertEqual(self.client.put(delivery, json={"step": "receive", "content": "提前填写"}).status_code, 409)
+        self.login(self.teacher)
+        self.assertEqual(self.client.put(settings, json={"open_at": None}).status_code, 200)
+        self.login(self.student)
+        self.assertEqual(self.client.put(delivery, json={"step": "receive", "content": "原始过程"}).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/assignments/{aid}/submit", json={"selected_rule_ids": []}).status_code, 200)
+        self.login(self.teacher)
+        returned = self.client.post(f"/api/assignments/{aid}/return", json={
+            "student_id": self.student["id"], "reason": "补充依据", "correct_due_at": self.future})
+        self.assertEqual(returned.status_code, 200, returned.text)
+        self.login(self.student)
+        self.assertTrue(self.client.get(view).json()["editable"])
+        self.assertEqual(self.client.put(delivery, json={"step": "receive", "content": "订正过程"}).status_code, 200)
+        with self.store.connect() as db:
+            db.execute("UPDATE training_submission_state SET correct_due_at=? WHERE assignment_id=? AND student_id=?",
+                       ("2000-01-01T00:00:00+00:00", aid, self.student["id"]))
+        self.assertFalse(self.client.get(view).json()["editable"])
+        for content in ("过期修改", ""):
+            with self.subTest(content=content):
+                self.assertEqual(self.client.put(delivery, json={"step": "receive", "content": content}).status_code, 409)
+        saved = self.client.get(view).json()["steps_detail"]
+        self.assertEqual(next(s["content"] for s in saved if s["step"] == "receive"), "订正过程")
+
+    def test_delivery_uses_correction_limit_and_free_retake_policy(self):
+        aid = self.assignment_of(self.publish())
+        settings = f"/api/training/tasks/assignment/{aid}/settings"
+        self.assertEqual(self.client.put(settings, json={"correction_limit": 0}).status_code, 200)
+        self.login(self.student)
+        self.assertEqual(self.client.post(f"/api/assignments/{aid}/submit", json={"selected_rule_ids": []}).status_code, 200)
+        self.login(self.teacher)
+        self.assertEqual(self.client.post(f"/api/assignments/{aid}/return", json={
+            "student_id": self.student["id"], "reason": "待订正"}).status_code, 200)
+        self.login(self.student)
+        self.assertFalse(self.client.get(f"/api/assignments/{aid}/case").json()["editable"])
+        self.assertEqual(self.client.put(f"/api/assignments/{aid}/case-delivery",
+            json={"step": "receive", "content": "次数已用尽"}).status_code, 409)
+        self.login(self.teacher)
+        self.assertEqual(self.client.put(settings, json={"retake_policy": "free"}).status_code, 200)
+        self.login(self.student)
+        self.assertTrue(self.client.get(f"/api/assignments/{aid}/case").json()["editable"])
+        self.assertEqual(self.client.put(f"/api/assignments/{aid}/case-delivery",
+            json={"step": "receive", "content": "自由重交过程"}).status_code, 200)
+        self.assertEqual(self.client.post(f"/api/assignments/{aid}/submit", json={"selected_rule_ids": []}).status_code, 200)
+        self.assertTrue(self.client.get(f"/api/assignments/{aid}/case").json()["editable"])
+
     # ------------------------------------------------------------------ 归档
+
+    def test_legacy_archive_is_reconciled_without_resetting_task_policy(self):
+        from webapp import teaching_case_tasks
+        aid = self.assignment_of(self.publish())
+        settings = f"/api/training/tasks/assignment/{aid}/settings"
+        self.assertEqual(self.client.put(settings, json={"answer_release": "manual"}).status_code, 200)
+        with self.store.connect() as db:
+            db.execute("UPDATE teaching_case_task SET archived_at=? WHERE assignment_id=?",
+                       ("2026-10-22T10:00:00+00:00", aid))
+            teaching_case_tasks.migrate(db)
+            teaching_case_tasks.migrate(db)
+        task = self.client.get(f"/api/training/tasks/assignment/{aid}").json()
+        self.assertEqual(task["state"], "archived")
+        self.assertEqual(task["answer_release"], "manual")
+        self.login(self.student)
+        self.assertEqual(self.client.get(f"/api/assignments/{aid}/case").status_code, 404)
+        self.assertNotIn(aid, [t["id"] for t in self.client.get("/api/training/tasks").json()["items"]])
+        self.login(self.teacher)
+        self.assertEqual(self.client.post(f"/api/training/tasks/assignment/{aid}/archive",
+                                          json={"archived": False}).status_code, 200)
+        with self.store.connect() as db:
+            teaching_case_tasks.migrate(db)
+        self.assertEqual(self.client.get(f"/api/training/tasks/assignment/{aid}").json()["state"], "published")
 
     def test_archive_hides_it_from_students_but_keeps_the_record(self):
         assignment_id = self.assignment_of(self.publish())
@@ -223,10 +300,29 @@ class TeachingCaseTaskTests(unittest.TestCase):
                                           json={"archived": True}).json()["archived"], True)
         self.login(self.student)
         self.assertEqual(self.client.get(f"/api/assignments/{assignment_id}/case").status_code, 404)
+        self.assertNotIn(assignment_id, [t["id"] for t in self.client.get("/api/training/tasks").json()["items"]])
+        self.assertEqual(self.client.get(f"/api/assignments/{assignment_id}").status_code, 404)
+        self.assertEqual(self.client.post(f"/api/assignments/{assignment_id}/submit",
+                                         json={"selected_rule_ids": []}).status_code, 404)
         self.login(self.teacher)
         with self.store.connect() as db:
             kept = db.execute("SELECT COUNT(*) c FROM teaching_case_delivery").fetchone()["c"]
         self.assertEqual(kept, 1, "归档不删学生记录")
+        # 从主任务入口恢复、再归档；案例入口与主任务入口必须保持一致。
+        archive = f"/api/training/tasks/assignment/{assignment_id}/archive"
+        self.assertEqual(self.client.post(archive, json={"archived": False}).status_code, 200)
+        self.assertFalse(self.client.get("/api/training/teaching/case-tasks").json()["items"][0]["archived"])
+        self.login(self.student)
+        restored = self.client.get(f"/api/assignments/{assignment_id}/case")
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(restored.json()["steps_detail"][0]["content"], "已收到材料")
+        self.login(self.teacher)
+        self.assertEqual(self.client.post(archive, json={"archived": True}).status_code, 200)
+        self.assertTrue(self.client.get("/api/training/teaching/case-tasks").json()["items"][0]["archived"])
+        self.assertEqual(self.client.post(f"/api/training/teaching/case-tasks/{task_id}/archive",
+                                          json={"archived": False}).status_code, 200)
+        self.login(self.student)
+        self.assertEqual(self.client.get(f"/api/assignments/{assignment_id}/case").status_code, 200)
 
 
 if __name__ == "__main__":
