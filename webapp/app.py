@@ -67,11 +67,15 @@ async def lifespan(application):
     application.state.public_knowledge = await run_in_threadpool(bootstrap, store, RULES_DIR)
     worker = NotificationWorker(lambda: store)
     worker.start()
+    from webapp.retrieval_checks import Worker as RetrievalCheckWorker
+    retrieval_worker = RetrievalCheckWorker(lambda: store)
+    retrieval_worker.start()
     try:
         application.state.material_worker.start()
         yield
     finally:
         application.state.material_worker.stop()
+        retrieval_worker.stop()
         worker.stop()
 
 
@@ -1791,6 +1795,8 @@ from webapp.core_inputs import register as register_core_inputs
 register_core_inputs(app, lambda: store, _user, _allow, STATIC_DIR)
 from webapp.knowledge_evidence import register as register_knowledge_evidence
 register_knowledge_evidence(app, lambda: store, _user, _allow)
+from webapp.retrieval_checks import register as register_retrieval_checks
+register_retrieval_checks(app, lambda: store, _user, _allow)
 from webapp.core_reports import register as register_core_reports
 register_core_reports(app, lambda: store, _user, _allow)
 register_enterprise_materials(app, lambda: store, _user, _allow, RULES_DIR,
