@@ -189,27 +189,11 @@ html[data-theme=dark] .university-workspace .ok { color:#8bdbbe; }
   #appMain .nav-collapsed #universityNav .nav-label { opacity:0; pointer-events:none; }
 }
 @media(max-width:760px) {
-  body.university-ready #appMain > .wrap { padding:12px 16px 32px; transition:none; }
-  body.university-ready #appMain .nav { position:relative; inset:auto; width:100%; height:auto; min-height:0; max-height:none; margin:0 0 20px; padding:12px; box-sizing:border-box; flex-direction:column; flex-wrap:nowrap; gap:10px; border-radius:18px; overflow:visible; transition:none; }
-  body.university-ready #appMain .nav .nav-brand { display:none; }
-  body.university-ready #appMain .nav .nav-heading { position:relative; width:100%; min-height:42px; height:42px; margin:0; padding:0; border:0; justify-content:space-between; }
-  body.university-ready #appMain .nav .nav-heading::after { content:none; }
-  body.university-ready #appMain .nav .nav-caption { display:block; padding:0 52px 0 4px; font-size:14px; white-space:nowrap; opacity:1; }
-  body.university-ready #appMain .nav #navToggle { right:0; top:2px; }
-  body.university-ready #appMain .nav-collapsed #universityNav,
-  body.university-ready #appMain .nav-collapsed #appHeader { display:none !important; }
-  body.university-ready #appMain #appHeader { margin:4px 0 0; padding:12px 0 0; }
   body.university-ready #appMain #appHeader .top-tools { display:grid; grid-template-columns:minmax(0,1fr); gap:8px; }
   body.university-ready #appMain #appHeader .account-control { width:100%; min-width:0; min-height:44px; gap:10px; white-space:nowrap; justify-content:flex-start; }
   body.university-ready #appMain #appHeader .account-icon { flex:0 0 40px; width:40px; height:40px; }
   body.university-ready #appMain #appHeader .account-label { display:inline; white-space:nowrap; }
   body.university-ready #appMain #themePicker { width:100%; }
-  body.university-ready #appFooter { margin-left:0; }
-  #appMain #universityNav { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px; width:100%; }
-  #appMain #universityNav[hidden] { display:none; }
-  #appMain .nav #universityNav button { min-height:42px; padding:10px; font-size:13px; justify-content:flex-start; }
-  #appMain .nav #universityNav .nav-label { display:inline; margin-left:10px; opacity:1; pointer-events:auto; }
-  #appMain .nav #universityNav .nav-icon { position:static; width:18px; height:18px; }
   .university-workspace .page-head { align-items:flex-start; }
   .university-workspace .page-head { flex-wrap:wrap; }
   .university-workspace .page-head > div { min-width:0; flex:1 1 100%; }

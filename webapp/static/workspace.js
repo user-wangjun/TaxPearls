@@ -1,23 +1,79 @@
 "use strict";
 const workspace = document.querySelector("#appMain > .wrap");
 const navToggle = document.getElementById("navToggle");
+const workspaceNav = document.getElementById("nav");
+const mobileNavToggle = document.getElementById("mobileNavToggle");
+const navBackdrop = document.getElementById("navBackdrop");
+const mobileNavQuery = window.matchMedia("(max-width: 760px)");
+const drawerBackground = new Map();
 function setNavCollapsed(collapsed) {
+  const mobile = mobileNavQuery.matches, open = mobile && !collapsed;
   workspace.classList.toggle("nav-collapsed", collapsed);
+  document.body.classList.toggle("mobile-nav-open", open);
+  workspaceNav.inert = mobile && collapsed;
+  workspaceNav.setAttribute("role", mobile ? "dialog" : "navigation");
+  if (open) workspaceNav.setAttribute("aria-modal", "true");
+  else workspaceNav.removeAttribute("aria-modal");
+  navBackdrop.hidden = !open;
+  mobileNavToggle.setAttribute("aria-expanded", String(open));
   navToggle.setAttribute("aria-expanded", String(!collapsed));
-  const label = collapsed ? "展开侧边栏" : "收起侧边栏";
+  const label = mobile ? "关闭导航菜单" : collapsed ? "展开侧边栏" : "收起侧边栏";
   navToggle.setAttribute("aria-label", label);
   navToggle.title = label;
+  if (open) {
+    for (const node of [...workspace.children, document.getElementById("appFooter")]) {
+      if (!node || node === workspaceNav || node === navBackdrop || drawerBackground.has(node)) continue;
+      drawerBackground.set(node, node.inert);
+      node.inert = true;
+    }
+  } else {
+    for (const [node, inert] of drawerBackground) node.inert = inert;
+    drawerBackground.clear();
+  }
 }
-let initialNavCollapsed = !(window.matchMedia?.("(max-width: 760px)").matches ?? false);
+let desktopNavCollapsed = true;
 try {
   const savedNavCollapsed = localStorage.getItem("taxpearls.navCollapsed");
-  if (savedNavCollapsed === "true" || savedNavCollapsed === "false") initialNavCollapsed = savedNavCollapsed === "true";
+  if (savedNavCollapsed === "true" || savedNavCollapsed === "false") desktopNavCollapsed = savedNavCollapsed === "true";
 } catch (_) {}
-setNavCollapsed(initialNavCollapsed);
+setNavCollapsed(mobileNavQuery.matches || desktopNavCollapsed);
+function closeMobileNav() {
+  setNavCollapsed(true);
+  mobileNavToggle.focus({preventScroll:true});
+}
+mobileNavToggle.addEventListener("click", () => {
+  setNavCollapsed(false);
+  navToggle.focus({preventScroll:true});
+});
+navBackdrop.addEventListener("click", closeMobileNav);
 navToggle.addEventListener("click", () => {
+  if (mobileNavQuery.matches) return closeMobileNav();
   const collapsed = !workspace.classList.contains("nav-collapsed");
+  desktopNavCollapsed = collapsed;
   setNavCollapsed(collapsed);
   try { localStorage.setItem("taxpearls.navCollapsed", String(collapsed)); } catch (_) {}
+});
+workspaceNav.addEventListener("click", event => {
+  if (mobileNavQuery.matches && event.target.closest("button[data-panel], #universityNav button")) closeMobileNav();
+});
+document.addEventListener("keydown", event => {
+  if (!mobileNavQuery.matches || workspace.classList.contains("nav-collapsed")) return;
+  if (event.key === "Escape") { event.preventDefault(); closeMobileNav(); return; }
+  if (event.key !== "Tab") return;
+  const controls = [...workspaceNav.querySelectorAll('button, a[href], input, select, textarea, [tabindex="0"]')]
+    .filter(node => !node.disabled && !node.closest("[inert]") && node.getClientRects().length);
+  const first = controls[0], last = controls.at(-1);
+  if (!first) return;
+  if (!workspaceNav.contains(document.activeElement) || (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+    event.preventDefault(); (event.shiftKey ? last : first).focus();
+  }
+});
+mobileNavQuery.addEventListener("change", () => {
+  const focusInNav = workspaceNav.contains(document.activeElement);
+  const focusOnOpener = document.activeElement === mobileNavToggle;
+  setNavCollapsed(mobileNavQuery.matches || desktopNavCollapsed);
+  if (mobileNavQuery.matches && focusInNav) mobileNavToggle.focus({preventScroll:true});
+  else if (!mobileNavQuery.matches && focusOnOpener) navToggle.focus({preventScroll:true});
 });
 let dashboardData = {records:[],history:[],clients:[]}, knowledgeRules = [], selectedKnowledge = "";
 /* ---------- 数字滚动（count-up）----------
@@ -144,7 +200,7 @@ function renderDashboard(){
   const rows=dashboardData.records.filter(r=>companyKey(r)===$("dashboardCompany").value);
   const r=rows.find(r=>r.period===$("dashboardPeriod").value);
   $("dashboardUpdated").textContent=r?"最近更新 "+r.audited_at:"";
-  if(!r){const client=dashboardData.clients.find(c=>c.taxpayer_id===$("dashboardCompany").value),s=section(client?"为该客户完成首次审计":"从第一份企业材料开始");s.append(el("p","empty",client?"客户档案已建立。上传匹配该纳税人识别号的材料后，这里会展示经营指标、风险概况和历史记录。":"上传并完成审计后，这里会展示经营指标、风险概况和历史记录。"),action(client?"上传该客户材料":"上传材料",startClientUpload));box.append(s);return;}
+  if(!r){const client=dashboardData.clients.find(c=>c.taxpayer_id===$("dashboardCompany").value),s=section(client?"为该客户完成首次审计":"从第一份企业材料开始");s.classList.add("dashboard-empty");s.append(el("p","empty",client?"客户档案已建立。上传匹配该纳税人识别号的材料后，这里会展示经营指标、风险概况和历史记录。":"上传并完成审计后，这里会展示经营指标、风险概况和历史记录。"),action(client?"上传该客户材料":"上传材料",startClientUpload));box.append(s);return;}
   const kpis=el("div","kpi-grid");
   metricSpecs.forEach(([label,key],i)=>{
     const m=metricOf(r,key),c=el("div","kpi");c.append(el("p","muted",label));
