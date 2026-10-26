@@ -537,12 +537,16 @@ class Store:
 
     def create_invite_code(self, creator: dict[str, Any], org_name: str, seats: int,
                            bound_email: str = "", expires_days: int = INVITE_CODE_DAYS,
-                           *, org_type: str, student_seats: int = 0) -> dict[str, Any]:
+                           *, org_type: str, student_seats: int | None = None) -> dict[str, Any]:
         """平台管理员签发一次性创始码。明文只在此刻返回一次。
 
         创始码与机构名称、类别捆绑（不绑邮箱）：一码一位、私聊交付；注册时
         仍须通过邮箱验证码核验，构成「码 + 邮箱验证」双因子。bound_email
         留空即不绑定（保留参数以兼容旧码）。
+
+        student_seats 为 None 表示「未指定」：高校落到默认学生档，企业恒为 0。
+        显式传 0 仍按 0 执行——但 0 席院校连一个学生都加不进来，只有确实要
+        「先建校、后开学生权限」时才这么签。
         """
         if creator.get("role") != "platform_admin":
             raise ValueError("只有平台管理员可以签发创始码")
@@ -551,6 +555,9 @@ class Store:
             raise ValueError("机构名称不能为空")
         if org_type not in ("enterprise", "university"):
             raise ValueError("请选择机构类别：企业或高校")
+        if student_seats is None:
+            from webapp.university_members import default_student_seats
+            student_seats = default_student_seats() if org_type == "university" else 0
         if type(student_seats) is not int or not 0 <= student_seats <= 100000 or (org_type == 'enterprise' and student_seats):
             raise ValueError('学生额度仅适用于高校，须为 0–100000 的整数。')
         if not isinstance(seats, int) or not 1 <= seats <= 200:

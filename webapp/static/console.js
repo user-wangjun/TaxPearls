@@ -2113,7 +2113,11 @@ $("btnCreateInvite").addEventListener("click",async()=>{
     if(!Number.isInteger(seats)||seats<1||seats>200)throw new Error("席位须为 1–200 的整数（含管理员）。");
     if(!["enterprise","university"].includes(orgType))throw new Error("请选择机构类别：企业或高校。");
     if(!org)throw new Error("请填写机构名称。");
-    const inv=await api("/api/invites",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({org_name:org,org_type:orgType,seats,student_seats:orgType==="university"?Number($("inviteStudentSeats").value):0})});
+    // 学生额度留空 = 未指定，交后端落默认档；显式 0 会让该院校连一个学生都加不进来。
+    const studentRaw=$("inviteStudentSeats").value.trim();
+    const studentSeats=orgType==="university"?(studentRaw===""?null:Number(studentRaw)):0;
+    if(studentSeats!==null&&(!Number.isInteger(studentSeats)||studentSeats<0||studentSeats>100000))throw new Error("学生额度须为 0–100000 的整数。");
+    const inv=await api("/api/invites",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({org_name:org,org_type:orgType,seats,student_seats:studentSeats})});
     $("inviteOrgName").value="";
     $("inviteRevealCode").textContent=inv.code;
     $("inviteRevealOrg").textContent=inviteOrgTypeLabel(inv.org_type)+" · "+inv.org_name;

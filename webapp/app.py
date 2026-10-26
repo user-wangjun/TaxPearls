@@ -449,7 +449,8 @@ class InviteBody(BaseModel):
     org_name: str = Field(min_length=1, max_length=120)
     org_type: Literal['enterprise', 'university']
     seats: int = Field(default=5, ge=1, le=200)
-    student_seats: int = Field(default=0, ge=0, le=100000)
+    # None = 未指定：高校落默认学生档，企业恒为 0（见 Store.create_invite_code）。
+    student_seats: int | None = Field(default=None, ge=0, le=100000)
     bound_email: str = ""
     expires_days: int = Field(default=7, ge=1, le=30)
 

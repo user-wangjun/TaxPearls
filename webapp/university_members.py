@@ -88,7 +88,10 @@ def backfill_existing_organizations(db):
                or db.execute("SELECT 1 FROM university_identity_links WHERE user_id=?", (user['id'],)).fetchone()
                for user in administrators):
             continue
-        provision_founder(db, administrators[0]['id'], org_id, quota[0], 0)
+        # 旧库的院校没有「学生额度」这一概念：补默认档而不是 0。写成 0 会让
+        # 升级后的院校在建第一个学生时就撞「学校学生席位已满」，且管理员看到
+        # 的额度是 0 也无从判断该填多少。已有 college_quota 的院校走不到这里。
+        provision_founder(db, administrators[0]['id'], org_id, quota[0], default_student_seats())
         for user in administrators[1:]:
             staff_id = secrets.token_hex(16)
             db.execute("""INSERT INTO college_user
@@ -96,6 +99,16 @@ def backfill_existing_organizations(db):
                 VALUES (?,?,?,?,?,?,'admin',1,?)""",
                 (staff_id, user['username'], user['password_hash'], user['display_name'], org_id, user['email'], now()))
             db.execute("INSERT INTO university_identity_links VALUES (?,?,NULL)", (user['id'], staff_id))
+
+
+def default_student_seats():
+    """院校默认学生额度，与配额核销的默认档同源（training_portal 单一出处）。
+
+    延迟导入：training_portal 反向依赖本模块，模块级导入会成环。
+    """
+    from webapp.training_portal import _DEFAULT_STUDENT_QUOTA
+
+    return _DEFAULT_STUDENT_QUOTA
 
 
 def now():
