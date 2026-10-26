@@ -280,10 +280,12 @@ const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:a
 const nodes = new Map(), starts = [], requests = [];
 function node(id) {
   if (!nodes.has(id)) nodes.set(id, {id, listeners: {}, value: '', innerHTML: '', textContent: '',
+    focus() { this.focused = true; },
     addEventListener(kind, fn) { this.listeners[kind] = fn; }});
   return nodes.get(id);
 }
-const ctx = {document: {getElementById: node}, setTimeout() {}};
+const ctx = {disposed: false, embedded: false,
+  document: {getElementById: node, querySelectorAll() { return []; }}, setTimeout() {}};
 vm.createContext(ctx);
 const source = fs.readFileSync('webapp/static/training-portal.js', 'utf8');
 const controller=source.split('/* controller body */')[1].split('/* controller end */')[0];
@@ -294,7 +296,8 @@ ctx.renderAttempt = () => {};
 vm.runInContext("state.prCert='cert';", ctx);
 async function click(container, dataset) {
   const btn = {dataset, closest() { return this; }};
-  for (const id of [container, 'pr-card', 'app-view']) {
+  const card = container === 'pr-attempt' ? 'answer-card' : 'pr-card';
+  for (const id of [container, card, 'app-view']) {
     const handler = node(id).listeners.click;
     if (handler) await handler({target: btn});
   }
@@ -310,6 +313,10 @@ async function click(container, dataset) {
   await click('pr-open', {act: 'practice-resume', id: 'unfinished'});
   assert.equal(requests.length, 1, 'Continue button must load the unfinished practice');
   assert.equal(requests[0], '/api/training/my/practice/unfinished');
+  assert.equal(node('pr-card').hidden, true, 'Continue must leave the practice list');
+  assert.equal(node('answer-card').hidden, false, 'Continue must open the answer page');
+  assert.equal(node('answer-title').focused, true, 'Continue must focus the answer heading');
+  assert.equal(node('app-error').textContent, '', 'Continue must not fall into the error handler');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
         result = subprocess.run(["node", "-e", script], cwd=Path(__file__).resolve().parents[1],
