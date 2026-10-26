@@ -985,6 +985,9 @@ function enterApp(user) {
   $("exerciseGenerationResult").textContent=""; $("exerciseGenerationResult").hidden=true;
   const campusIdentity=universityWorkspace.resolveIdentity(user);
   currentUser=campusIdentity?{...user,workspace:"university",role:campusIdentity.role==="admin"?"teacher":user.role}:user;
+  window.tpTrainingTasks?.setUser(currentUser);
+  window.tpSubmissionUI?.reset();
+  $("tp-case-panel")?.remove();
   $("loginCollege").value="";delete $("loginCollege").dataset.needed;$("loginCollegeField").hidden=true;$("loginCollege").disabled=true;
   if(campusIdentity){universityWorkspace.enter(campusIdentity);return;}
   settingsRequest++; settingsReady = false;
@@ -1576,7 +1579,8 @@ async function loadAssignments({throwOnError=false}={}) {
   try {
     const [rows,classes,papers,students,audits,submissions,courses]=await Promise.all([
       api("/api/assignments"),api("/api/classes"),api("/api/papers"),
-      isTeacher?api("/api/classes/students"):[],isTeacher?api(currentUser.org_type==="university"?"/api/teaching/cases":"/api/audits"):[],isTeacher?api("/api/submissions"):[],isTeacher&&currentUser.org_type==="university"?api("/api/teaching/courses"):[]
+      isTeacher?api("/api/classes/students"):[],isTeacher?api(currentUser.org_type==="university"?"/api/teaching/cases":"/api/audits"):[],isTeacher?api("/api/submissions"):[],isTeacher&&currentUser.org_type==="university"?api("/api/teaching/courses"):[],
+      window.tpTrainingTasks?.refresh({throwOnError})
     ]);
     if(request!==trainingLoadRequest||uid!==currentUser?.id)return;
     classroomUI.render({classes,papers,students,audits});
