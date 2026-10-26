@@ -1193,6 +1193,8 @@ html[data-theme=dark] #appMain #aiKeysPanel .btn:not(:disabled):hover { filter:b
 .probe-help p { text-align:left; margin:12px 0 0; line-height:1.8; }
 .probe-grid { display:flex; flex-direction:column; gap:14px; }
 #aiKeysPanel .probe-card { display:grid; grid-template-columns:minmax(0,1fr) 135px 190px auto; align-items:center; gap:18px 26px; min-width:0; padding:26px 28px 18px; margin:0; border-radius:18px; }
+/* Lift the whole card above adjacent cards' transform/backdrop stacking contexts. */
+#appMain #aiKeysPanel .probe-card:has(.probe-purpose[open]) { position:relative; z-index:35; transform:none; }
 .probe-identity { display:flex; align-items:center; gap:16px; min-width:0; }
 .probe-service-icon { display:grid; place-items:center; flex:0 0 48px; height:48px; border:1px solid var(--line); border-radius:15px; color:var(--ink-2); font-size:15px; font-weight:700; background:var(--card); }
 .probe-info { min-width:0; }
