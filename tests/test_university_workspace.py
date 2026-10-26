@@ -1,4 +1,5 @@
 """University shell, shared public knowledge and real classroom integration."""
+import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -7,6 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from src.settings import AISettings
 from webapp import app as main, university_members
 from webapp.access import AccessDenied, current_actor
 from webapp.login_guard import LoginGuard
@@ -329,6 +331,42 @@ class UniversityWorkspaceTests(unittest.TestCase):
         self.assertEqual(data['assignments'], [])
         self.assertNotIn('audits', data)
         self.assertNotIn('taxpayer_id', response.text)
+
+    def test_student_public_question_uses_only_public_evidence(self):
+        from tests.test_public_rag import fixtures
+        from webapp import node_qa, public_rag
+        self.login(self.student)
+        with self.store.connect() as db:
+            fixtures(db)
+        contexts = []
+        async def answer(_settings, messages, **kwargs):
+            payload = json.loads(messages[-1]['content'])
+            contexts.append(payload)
+            source = payload['nodes'][0]['id']
+            yield json.dumps({'status':'answerable', 'citations':[source], 'summary':'合成原文说明',
+                              'answer':'合成测试：核对抵扣凭证。['+source+']'})
+        with patch('webapp.ai_keys.apply', return_value=AISettings(enabled=True, api_key='synthetic')), \
+             patch.object(public_rag, 'semantic', return_value={'status':'not_ready','hits':[]}), \
+             patch.object(node_qa, 'chat_stream', answer):
+            response = self.client.post('/api/knowledge/rag-ask', json={'question':'什么是进项税额抵扣？'})
+        self.assertEqual(response.status_code, 200, response.text)
+        events = [json.loads(row[6:]) for row in response.text.splitlines() if row.startswith('data: ')]
+        self.assertEqual(events[-1]['type'], 'done')
+        self.assertTrue(events[-1]['citations'])
+        self.assertIsNone(contexts[0]['as_of'])
+        text = json.dumps(contexts)
+        for private in ['campus-student', 'learner', 'student_info', 'submissions', 'audit_id', 'taxpayer_id']:
+            self.assertNotIn(private, text)
+
+    def test_student_public_question_rejects_private_scope_and_revoked_identity(self):
+        self.login(self.student)
+        for key in ['student_id','class_id','assignment_id','audit_id','taxpayer_id','node_id']:
+            result = self.client.post('/api/knowledge/rag-ask', json={'question':'进项税额抵扣', key:'private'})
+            self.assertEqual(result.status_code, 422, result.text)
+        with self.store.connect() as db:
+            db.execute("UPDATE student_info SET active=0 WHERE id='learner'")
+        response = self.client.post('/api/knowledge/rag-ask', json={'question':'进项税额抵扣'})
+        self.assertIn(response.status_code, (401,403), response.text)
 
     def test_teaching_graph_reuses_public_ids_and_adds_only_explicit_learning_links(self):
         original = self.client.get('/api/knowledge/graph').json()

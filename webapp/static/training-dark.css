@@ -131,6 +131,14 @@ th { background: rgba(255,255,255,.09); font-weight: 500; color: #dfe9f2; }
 .kp-children { margin-left: 22px; }
 
 /* ---------- 找证书：搜索框、结果、详情（倒计时 / 重点知识点 / 实操） ---------- */
+.student-knowledge-item > summary { cursor:pointer; list-style:none; min-height:44px; }
+.knowledge-disclosure-label { display:block; margin-top:12px; }
+.knowledge-disclosure-label::before { content:"▸ "; }
+.student-knowledge-item[open] > summary .knowledge-disclosure-label::before { content:"▾ "; }
+.risk-choices { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr)); gap:10px; margin:16px 0; }
+label.practice-choice { display:flex; align-items:flex-start; gap:12px; padding:12px; min-height:48px; box-sizing:border-box; cursor:pointer; border:1px solid var(--card-line); border-radius:10px; }
+.practice-choice input[type=checkbox] { flex:none; width:18px; height:18px; margin:2px 0 0; }
+.practice-choice:has(input:checked) { border-color:var(--accent); background:var(--sub-card-bg); }
 .cert-search { display: flex; gap: 8px; align-items: center; margin: 6px 0 10px; flex-wrap: wrap; }
 .cert-search input { flex: 1; min-width: 200px; }
 .cert-search button { flex: 0 0 auto; }
