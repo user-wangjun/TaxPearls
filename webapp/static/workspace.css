@@ -386,23 +386,7 @@ body.workspace-ready #appFooter { background: transparent; color: var(--ink-2); 
 @media (max-width: 1050px) {
   #appMain > .wrap, #appMain > .wrap.nav-collapsed { padding-right: 24px; padding-left: calc(var(--sidebar-width) + 24px); }
 }
-@media (max-width: 760px) {
-  #appMain > .wrap, #appMain > .wrap.nav-collapsed { padding: 0 16px 32px; }
-  #appMain .nav, #appMain .nav-collapsed .nav {
-    position: relative; top: auto; bottom: auto; width: calc(100% + 32px); margin: 0 -16px 24px;
-    padding: 16px; border-radius: 0 0 24px 24px; flex-direction: row; flex-wrap: wrap;
-  }
-  .nav-brand { width: 100%; padding: 0 0 8px; }
-  .nav-brand-logo { width: 80px; }
-
-
-  #appMain #appHeader { width: 100%; margin: 8px 0 0; padding: 12px 0 0; border-top: 1px solid #d9e1e8; }
-  #appHeader .top-tools { flex-direction: row; justify-content: space-between; }
-  #appHeader #btnLogout { font-size: 13px; padding: 7px 14px; }
-  #appMain .nav-collapsed .nav-brand { display: none; }
-  #appMain .nav-collapsed #currentUser { display: block; }
-  #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector) { border-radius: 18px; }
-}
+.mobile-workspace-bar, .nav-backdrop { display:none; }
 
 @media (min-width: 761px) and (max-height: 760px) {
   #appMain .nav {
@@ -1174,6 +1158,106 @@ html[data-theme=dark] #appMain .nav #navToggle {
 @media (prefers-reduced-motion: reduce) {
   #appMain #navToggle, #appMain #navToggle *, #appMain #navToggle::before, #appMain #navToggle::after { transition: none !important; }
   #appMain #navToggle .nav-toggle-track { transform: none !important; }
+}
+/* Mobile navigation overlays the page instead of taking up its first screen. */
+@media (max-width: 760px) {
+  #appMain > .wrap, #appMain > .wrap.nav-collapsed { padding:0 16px 32px; }
+  body.workspace-ready #appFooter { margin-left:0; }
+  body.mobile-nav-open { overflow:hidden; }
+  #appMain .mobile-workspace-bar {
+    display:flex; align-items:center; gap:12px; position:sticky; top:0; z-index:40;
+    box-sizing:border-box; min-height:64px; width:calc(100% + 32px); margin:0 -16px 22px;
+    padding:10px 16px; padding-top:max(10px, env(safe-area-inset-top));
+    background:#f0f4f8ed; border-bottom:1px solid var(--line); backdrop-filter:blur(16px);
+  }
+  .mobile-workspace-bar img { display:block; width:112px; height:auto; }
+  .mobile-workspace-bar > span { margin-left:auto; font-size:12px; color:var(--ink-2); white-space:nowrap; }
+  #appMain #mobileNavToggle {
+    display:grid; place-items:center; flex:0 0 44px; height:44px; padding:0;
+    border:1px solid var(--line); border-radius:12px; background:var(--card, #fff); color:var(--ink);
+  }
+  #mobileNavToggle svg { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; }
+  #appMain .nav-backdrop {
+    display:block; position:fixed; inset:0; z-index:70; width:100%; height:100dvh; margin:0; padding:0;
+    border:0; border-radius:0; background:#13253666; backdrop-filter:blur(3px); cursor:pointer;
+  }
+  #appMain .nav-backdrop[hidden] { display:none; }
+  #appMain .nav, #appMain .nav-collapsed .nav {
+    position:fixed; inset:0 auto 0 0; z-index:80; box-sizing:border-box;
+    width:min(320px, calc(100vw - 48px)); height:100dvh; min-height:0; margin:0;
+    padding:20px 18px max(20px, env(safe-area-inset-bottom));
+    padding-top:max(20px, env(safe-area-inset-top));
+    display:flex; flex-direction:column; flex-wrap:nowrap; align-items:stretch; gap:6px;
+    overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain;
+    border:0; border-right:1px solid var(--line); border-radius:0 24px 24px 0;
+    background:linear-gradient(150deg, #f8fafc, #e6edf3); box-shadow:12px 0 40px #12273826;
+    transform:translateX(0); visibility:visible; transition:transform .25s ease, visibility .25s;
+  }
+  #appMain .nav-collapsed .nav { transform:translateX(-100%); visibility:hidden; pointer-events:none; }
+  #appMain .nav .nav-brand { width:100%; padding:0 0 12px; }
+  #appMain .nav .nav-brand-logo { width:64px; flex-basis:64px; }
+  #appMain .nav .nav-brand-wordmark { display:block; width:150px; max-width:calc(100% - 72px); }
+  #appMain .nav .nav-heading { display:flex; align-items:center; justify-content:space-between; flex:none; width:100%; min-height:44px; margin:0 0 10px; padding-bottom:12px; }
+  #appMain .nav .nav-caption { display:block; padding:0 4px; font-size:13px; letter-spacing:0; }
+  #appMain .nav > button[data-panel] { display:flex; align-items:center; width:100%; min-height:46px; padding:11px 14px; font-size:16px; }
+  #appMain .nav .nav-icon { width:20px; height:20px; }
+  #appMain .nav .nav-label { display:inline; margin-left:12px; }
+  #appMain .nav .nav-heading::after { content:none; }
+  #appMain #universityNav { display:flex; flex-direction:column; gap:6px; width:100%; }
+  #appMain #universityNav[hidden] { display:none; }
+  #appMain .nav #universityNav button { min-height:46px; padding:11px 14px; font-size:16px; }
+  #appMain #appHeader { width:100%; margin-top:auto; padding-top:18px; border-top:1px solid var(--line); }
+  #appMain #appHeader .top-tools { gap:10px; }
+  #appMain #appHeader .account-control { font-size:14px; }
+  #appMain #appHeader .account-icon { flex-basis:40px; width:40px; height:40px; }
+  #appMain .page-head { align-items:flex-start; gap:12px; }
+  #appMain .page-head > div { min-width:0; }
+  #appMain .page-head > button { flex-shrink:0; white-space:nowrap; padding:12px 14px; font-size:14px; }
+  #appMain :is(.sheet, .stat, .card, .co-bar, .dropzone, .kpi, .graph-filterbar, .graph-stage, .graph-inspector) { border-radius:18px; }
+  html[data-theme=dark] #appMain .mobile-workspace-bar { background:#14191eed; }
+  html[data-theme=dark] #appMain .nav { background:linear-gradient(150deg, #1c2229, #12171c); }
+  /* Filters and the first-use message flow directly on the mobile page. */
+  html[data-theme] #appMain #dashboardFilters,
+  html[data-theme] #appMain #dashboardBody > .dashboard-empty {
+    padding:0; border:0; border-radius:0; background:none; box-shadow:none;
+    -webkit-backdrop-filter:none; backdrop-filter:none;
+  }
+  html[data-theme] #appMain #dashboardFilters::before,
+  html[data-theme] #appMain #dashboardBody > .dashboard-empty::before { content:none; }
+  #appMain #dashboardFilters { display:grid; grid-template-columns:minmax(0,1.25fr) minmax(0,1fr); gap:10px 16px; margin:0 0 24px; }
+  #appMain #dashboardFilters .field { min-width:0; margin:0; }
+  #appMain #dashboardFilters label { margin:0; font-size:12px; color:var(--ink-3); }
+  html[data-theme] #appMain #dashboardFilters .dropdown-toggle {
+    width:100%; min-height:44px; padding:8px 22px 8px 0; border:0; border-bottom:1px solid var(--line);
+    border-radius:0; background:none; box-shadow:none; font-size:14px; text-align:left;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  #appMain #dashboardFilters .dropdown-toggle::after { right:4px; }
+  html[data-theme] #appMain #dashboardFilters .dropdown-toggle:focus-visible { outline:2px solid var(--ink-2); outline-offset:3px; }
+  #appMain #dashboardUpdated { grid-column:1/-1; margin:0; font-size:12px; }
+  #appMain #dashboardUpdated:empty { display:none; }
+  #appMain #dashboardPanel .kpi-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 20px; margin-bottom:20px; }
+  html[data-theme] #appMain #dashboardPanel .kpi {
+    min-height:0; padding:12px 0; border:0; border-bottom:1px solid var(--line); border-radius:0;
+    background:none; box-shadow:none; -webkit-backdrop-filter:none; backdrop-filter:none;
+  }
+  html[data-theme] #appMain #dashboardPanel .kpi::before { content:none; }
+  #appMain #dashboardPanel .kpi > .muted { margin:0; font-size:13px; }
+  #appMain #dashboardPanel .kpi .value { margin:8px 0 0; font-size:clamp(17px,4.6vw,24px); line-height:1.5; letter-spacing:-.5px; }
+  #appMain #dashboardPanel .kpi .unit { display:inline-block; margin-left:4px; font-size:12px; }
+  #appMain #dashboardPanel .summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 20px; margin:16px 0; }
+  #appMain #dashboardPanel .summary-grid strong { font-size:24px; }
+  #appMain #dashboardPanel .summary-grid span { font-size:13px; }
+  #appMain #dashboardPanel > .page-head { margin-bottom:18px; }
+  #appMain #dashboardBody > .dashboard-empty { margin:0 0 28px; }
+  #appMain #dashboardBody > .dashboard-empty h2 { margin:0 0 12px; font-size:21px; line-height:1.5; }
+  #appMain #dashboardBody > .dashboard-empty .empty { margin:0 0 20px; padding:0; font-size:15px; line-height:1.8; text-align:left; }
+  #appMain #dashboardBody > .dashboard-empty > .btn { margin:0; }
+  #dashboardPanel:has(.dashboard-empty) #dashboardUpload { display:none; }
+}
+@media (min-width:600px) and (max-width:760px) {
+  #appMain #dashboardFilters:has(#dashboardUpdated:not(:empty)) { grid-template-columns:minmax(0,1.25fr) minmax(0,1fr) minmax(0,1fr); align-items:end; }
+  #appMain #dashboardFilters #dashboardUpdated { grid-column:auto; padding:0 0 10px; white-space:normal; }
 }
 /* Platform administrator single-key diagnostics. */
 #aiKeysPanel { --probe-control-face:linear-gradient(#ffffff,#edf3f7); --probe-control-rim:linear-gradient(#c1cdd7,#b8c8d4); --probe-control-text:#405d74; --probe-control-shadow:inset 0 1px 0 #ffffffb3,0 2px 3px #32485b14; }
