@@ -78,6 +78,15 @@ def migrate(db):
     # 自动模糊匹配会把成绩算到错的院系，所以绑定必须由管理员确认（可为空=未归属）。
     if 'college_class_id' not in {r['name'] for r in db.execute('PRAGMA table_info(training_classes)')}:
         db.execute('ALTER TABLE training_classes ADD COLUMN college_class_id TEXT')
+    # 归属的判定来源（FR-U01 尾巴）。四态各有明确含义，回填只碰 NULL：
+    # NULL=从未判定（本次升级前的历史行）｜auto=按「同院校内同名唯一」自动认领
+    # ｜unbound=已判定但未归属（无唯一同名，或管理员显式解绑）｜manual=管理员指定。
+    # 有了它，管理员解绑过的教学班不会在下次启动又被自动挂回去。
+    #
+    # 回填**不在启动时自动跑**：报表数字会因此跨院系移位，属于会被审计追问的改动，
+    # 必须先用 `scripts/backfill_class_bindings.py --dry-run` 预演、复核后再 --apply。
+    if 'binding_source' not in {r['name'] for r in db.execute('PRAGMA table_info(training_classes)')}:
+        db.execute('ALTER TABLE training_classes ADD COLUMN binding_source TEXT')
 
 
 def decorate(db, item):
@@ -370,8 +379,8 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
                 db.execute("BEGIN IMMEDIATE")
                 current_actor(db, who, {'teacher'})
                 validate_students(db,body.student_ids,who['org_id'])
-                db.execute("INSERT INTO training_classes (id,org_id,owner_id,name,revision,created_at)"
-                           " VALUES (?,?,?,?,1,?)",(sid,who['org_id'],who['id'],clean_title(body.name),now().isoformat()))
+                db.execute("INSERT INTO training_classes (id,org_id,owner_id,name,revision,created_at,binding_source)"
+                           " VALUES (?,?,?,?,1,?, 'unbound')",(sid,who['org_id'],who['id'],clean_title(body.name),now().isoformat()))
                 db.executemany("INSERT INTO training_class_members VALUES (?,?)",[(sid,s) for s in body.student_ids])
                 store_provider()._log(db,who,'create_class','class',sid,f"members={len(body.student_ids)}")
             return {'id':sid,'revision':1}

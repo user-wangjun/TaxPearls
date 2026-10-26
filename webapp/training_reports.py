@@ -6,7 +6,9 @@
 2. **不猜归属。** 教学班（`training_classes`）与组织架构班级实体（`college_class`）之间
    靠 `training_classes.college_class_id` 显式绑定。历史上实体叫「会计2601」、教学班叫
    「会计2601 演示班」，按名字模糊匹配会把成绩算到错误院系，因此未绑定的教学班一律进
-   「未归属」，并给出候选建议供管理员人工确认。
+   「未归属」，并给出候选建议供管理员人工确认。历史遗留行由
+   `scripts/backfill_class_bindings.py` 显式回填（默认预演）：仅当同院校内同名实体
+   恰好一个才自动认领，判定结果写进 `binding_source`，人工绑定/解绑的行永不被覆盖。
 3. **不补造。** 没有任务的班级照样列出来，数字为 0 并写明"暂无已发布任务"，不因为 0 就隐藏。
 """
 from __future__ import annotations
@@ -244,7 +246,48 @@ def bind_teaching_class(db: sqlite3.Connection, college: str, teaching_class_id:
                             (college_class_id, college)).fetchone()
         if not entity:
             raise classroom.ClassroomError("班级实体不存在或已归档。", 404)
-    db.execute("UPDATE training_classes SET college_class_id=? WHERE id=?",
-               (college_class_id, teaching_class_id))
+    db.execute("UPDATE training_classes SET college_class_id=?, binding_source=? WHERE id=?",
+               (college_class_id, "manual" if college_class_id else "unbound", teaching_class_id))
     return {"teaching_class_id": teaching_class_id, "name": teaching["name"],
             "college_class_id": college_class_id}
+
+
+def backfill_bindings(db: sqlite3.Connection, *, college: str | None = None,
+                      dry_run: bool = False) -> dict[str, Any]:
+    """把历史教学班按「同院校内同名唯一」一次性认领到班级实体（FR-U01 尾巴）。
+
+    三条边界，缺一不可：
+    1. **只碰从未判定的行**（`college_class_id IS NULL AND binding_source IS NULL`）。
+       管理员绑定过、解绑过的行都带标记，永不被覆盖——否则「解绑」下次启动就失效。
+    2. **只在同名实体恰好一个时认领**。0 个或多个一律留 NULL 并记 `unbound`，
+       宁可让它留在「未归属」等人工确认，也不能把成绩算到错的院系。
+    3. **判定一次即定案**。认领写 `auto`，没认领写 `unbound`，之后不再扫描；
+       同一行不会被反复评估，报表数字也就不会自己漂移。
+    """
+    sql = """SELECT tc.id, tc.name, u.college AS college
+               FROM training_classes tc
+               JOIN university_identity_links l ON l.user_id = tc.owner_id
+               JOIN college_user u ON u.id = l.staff_id
+              WHERE tc.college_class_id IS NULL
+                AND (tc.binding_source IS NULL OR tc.binding_source = '')"""
+    params: tuple[Any, ...] = ()
+    if college:
+        sql += " AND u.college = ?"
+        params = (college,)
+    result = {"bound": 0, "unmatched": 0, "ambiguous": 0, "dry_run": dry_run, "bindings": []}
+    for row in db.execute(sql, params).fetchall():
+        matches = db.execute(
+            "SELECT id, name FROM college_class WHERE college=? AND name=? AND archived=0",
+            (row["college"], row["name"])).fetchall()
+        if len(matches) == 1:
+            result["bound"] += 1
+            result["bindings"].append({"teaching_class_id": row["id"], "name": row["name"],
+                                       "college_class_id": matches[0]["id"]})
+            if not dry_run:
+                db.execute("UPDATE training_classes SET college_class_id=?, binding_source='auto' WHERE id=?",
+                           (matches[0]["id"], row["id"]))
+            continue
+        result["ambiguous" if matches else "unmatched"] += 1
+        if not dry_run:
+            db.execute("UPDATE training_classes SET binding_source='unbound' WHERE id=?", (row["id"],))
+    return result
