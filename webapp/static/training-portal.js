@@ -85,8 +85,9 @@ function renderGoals() {
           ${officialOptions(cert.id)}
         </select>
         <label>或自定义个人计划日</label>
-        <input type="date" data-role="planned" data-id="${esc(g.id)}" min="${todayISO()}"
+        <input type="date" data-role="planned" data-id="${esc(g.id)}" min="${todayISO()}" max="9999-12-31"
                value="${esc(g.planned_date || "")}">
+        <p class="muted">请选择今天或未来日期（${todayISO().slice(0, 4)}年及以后）。</p>
         <div class="actions">
           <button class="small primary" data-act="save-edit" data-id="${esc(g.id)}">保存</button>
           <button class="small" data-act="cancel-edit" data-id="${esc(g.id)}">取消</button>
@@ -141,12 +142,12 @@ function renderCertSearch(data) {
         : `<span class="badge gray">暂未公布考试日期</span>`;
       return `<div class="cert">
         <div class="cert-head">
-          <div><strong>${esc(c.name)}</strong> <span class="muted">${esc(c.code)}</span></div>
+          <div><strong>${esc(c.name)}</strong></div>
           <button class="small primary" type="button" data-act="open-cert" data-id="${esc(c.id)}">进入备考 →</button>
         </div>
         <div>${(c.subjects || []).map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>
         <div class="muted" style="margin-top:6px;">${dateLine}</div>
-        <div class="muted">知识点 ${c.counts.knowledge_points} 个 · 大纲标注常考 ${c.counts.high_freq} 个 ·
+        <div class="muted">知识点 ${c.counts.knowledge_points} 个${Number.isInteger(c.counts.high_freq) ? ` · 大纲标注常考 ${c.counts.high_freq} 个` : ""} ·
           已有仿真题的知识点 ${c.counts.practice_kps} 个</div>
         ${c.my_goal ? `<div class="muted">我的目标日期：${esc(c.my_goal.official_date || c.my_goal.planned_date || "未设")}
           ${countdownBadge(c.my_goal.countdown)}</div>` : ""}
@@ -170,12 +171,14 @@ function closeGuide() {
   const guide = document.getElementById("cert-guide");
   guide.hidden = true;
   guide.innerHTML = "";
+  document.getElementById("cert-discovery").hidden = false;
   document.getElementById("cert-results").hidden = false;
   document.getElementById("cert-suggest").hidden = false;
 }
 
 async function openGuide(certId) {
   const box = document.getElementById("cert-guide");
+  document.getElementById("cert-discovery").hidden = true;
   document.getElementById("cert-results").hidden = true;
   document.getElementById("cert-suggest").hidden = true;
   box.hidden = false;
@@ -237,7 +240,8 @@ function renderGuide(g) {
              ${officialOptions(cert.id)}
            </select>
            <label>或自定义个人计划日</label>
-           <input type="date" data-role="planned" min="${todayISO()}" value="${esc(goal.planned_date || "")}">
+           <input type="date" data-role="planned" min="${todayISO()}" max="9999-12-31" value="${esc(goal.planned_date || "")}">
+           <p class="muted">请选择今天或未来日期（${todayISO().slice(0, 4)}年及以后）。</p>
            <div class="actions">
              <button class="small primary" type="button" data-act="g-save-goal" data-id="${esc(goal.id)}">保存</button>
              <button class="small" type="button" data-act="g-cancel-goal" data-id="${esc(goal.id)}">取消</button>
@@ -250,7 +254,8 @@ function renderGuide(g) {
          <label>选择官方/预计考试日</label>
          <select id="g-pick-official"><option value="">（不指定）</option>${officialOptions(cert.id)}</select>
          <label>或填写个人计划日</label>
-         <input type="date" id="g-pick-planned" min="${todayISO()}">
+         <input type="date" id="g-pick-planned" min="${todayISO()}" max="9999-12-31">
+         <p class="muted">请选择今天或未来日期（${todayISO().slice(0, 4)}年及以后）。</p>
          <div class="actions">
            <button class="small primary" type="button" data-act="g-create-goal" data-id="${esc(cert.id)}">设为目标</button>
          </div>
@@ -334,9 +339,9 @@ function renderGuide(g) {
 
   box.innerHTML = `
     <div class="guide-head">
-      <button class="small" type="button" data-act="cert-back">← 返回搜索结果</button>
-      <div>
-        <h2 style="margin:0 0 4px;">${esc(cert.name)} <span class="muted">${esc(cert.code)}</span></h2>
+      <div class="guide-navigation"><button class="small" type="button" data-act="cert-back">← 返回搜索结果</button></div>
+      <div class="guide-title">
+        <h2>${esc(cert.name)}</h2>
         <div>${(cert.subjects || []).map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>
         ${cert.description ? `<div class="muted">${esc(cert.description)}</div>` : ""}
       </div>
@@ -369,6 +374,23 @@ function todayISO() {
   const cst = new Date(now.getTime() + (8 * 60 + now.getTimezoneOffset()) * 60000);
   return cst.toISOString().slice(0, 10);
 }
+
+function plannedDateValue(input) {
+  input.min = todayISO();
+  input.max = "9999-12-31";
+  input.setCustomValidity("");
+  if ((input.value && !/^\d{4}-\d{2}-\d{2}$/.test(input.value)) || !input.checkValidity()) {
+    const message = `年份须为4位，个人计划日请选择今天（${input.min}）或未来的有效日期。`;
+    input.setCustomValidity(message);
+    input.reportValidity();
+    throw new Error(message);
+  }
+  return input.value || null;
+}
+
+document.getElementById("app-view").addEventListener("input", event => {
+  if (event.target.matches('input[type="date"]')) event.target.setCustomValidity("");
+});
 
 /* ---------- 行为 ---------- */
 
@@ -509,7 +531,7 @@ function renderKpRows() {
         ${r.inputs ? `<details><summary>查看取数口径</summary><ul>${Object.entries(r.inputs).map(([name, meaning]) => `<li>${esc(name)}：${esc(meaning)}</li>`).join("")}</ul></details>` : ""}
         ${sources ? `<details><summary>政策原文与来源</summary><ul class="student-policy-list">${sources}</ul></details>` : `<p class="muted">尚未关联原文依据，待完善；不据此确认政策适用。</p>`}</section>`;
     }).join("");
-    return `<div class="item"><div class="item-head">
+    const heading = `<div class="item-head">
       <div><strong>${esc(k.name)}</strong>
         ${k.high_freq.map((m) => `<span class="badge warn">常考${m.basis_ref ? " · " + esc(m.basis_ref) : ""}</span>`).join("")}
         ${k.rule_links ? "" : `<span class="badge gray">暂无题目</span>`}
@@ -517,8 +539,10 @@ function renderKpRows() {
       <div class="muted">已练 ${k.attempts} 次 · 满分 ${k.perfect} 次</div>
     </div>${k.subject ? `<div class="muted">${esc(k.subject)}</div>` : ""}
     ${k.knowledge_update?.pending ? `<p class="muted">相关依据已有更新，教师核对后会更新练习内容。</p>` : ""}
-    ${relChips ? `<div style="margin-top:4px;">${relChips}</div>` : ""}
-    ${knowledge ? `<details><summary>规则与政策依据</summary><p class="muted">供仿真练习参考，具体政策适用请结合原文核对。</p>${knowledge}</details>` : ""}</div>`;
+    ${relChips ? `<div style="margin-top:4px;">${relChips}</div>` : ""}`;
+    return knowledge
+      ? `<details class="item student-knowledge-item"><summary>${heading}<span class="knowledge-disclosure-label">规则与政策依据</span></summary><p class="muted">供仿真练习参考，具体政策适用请结合原文核对。</p>${knowledge}</details>`
+      : `<div class="item">${heading}</div>`;
   }).join("");
 }
 
@@ -613,8 +637,8 @@ function bankBadge(a) {
 
 function renderBankAttempt(box, a) {
   if (a.status === "open") {
-    const options = (a.options || []).map((o) => `<label style="display:flex;gap:8px;align-items:flex-start;margin:6px 0;">
-      <input type="checkbox" class="bank-pick" value="${esc(o.key)}" style="width:auto;margin-top:4px;">
+    const options = (a.options || []).map((o) => `<label class="practice-choice">
+      <input type="checkbox" class="bank-pick" value="${esc(o.key)}">
       <span>${esc(o.key)}. ${esc(o.text)}</span></label>`).join("");
     box.innerHTML = `<div class="item">
       <div class="item-head">
@@ -678,8 +702,8 @@ function renderAttempt() {
     const metrics = Object.entries(m.metrics || {}).map(([k, mt]) =>
       `<tr><td>${esc(mt.name)}</td><td class="num">${fmtNum(mt.value)}</td><td>${esc(mt.source)}</td></tr>`).join("");
     const catalog = a.rule_catalog.map((r) =>
-      `<label style="display:inline-flex;gap:6px;align-items:center;font-size:13px;margin:2px 12px 2px 0;">
-        <input type="checkbox" class="risk-pick" value="${esc(r.id)}"> ${esc(r.name)}</label>`).join("");
+      `<label class="practice-choice">
+        <input type="checkbox" class="risk-pick" value="${esc(r.id)}"><span>${esc(r.name)}</span></label>`).join("");
     box.innerHTML = `
       <div class="item"><strong>仿真材料（纯仿真教学企业，非真题）</strong>
         <div class="muted">${esc(m.company.name)} · 税号 ${esc(m.company.taxpayer_id)} · ${esc(m.company.industry)} · ${esc(m.company.period)}</div>
@@ -692,7 +716,7 @@ function renderAttempt() {
       </div>
       <div class="item"><strong>训练任务：识别涉税风险</strong>
         <div class="muted">先核对上方账务、申报数据与指标，再勾选需要进一步核查的涉税风险（可多选）。选错扣分，漏选不得分；提交后查看判定依据与逐项解析。风险线索不等同于税务违法结论。</div>
-        <div style="margin:6px 0;">${catalog}</div>
+        <div class="risk-choices">${catalog}</div>
         <div class="actions">
           <button class="primary" data-act="submit">提交判分</button>
           <button data-act="abandon">跳过本题（留痕，不计入统计）</button>
@@ -825,7 +849,7 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
         method: "PATCH",
         body: {
           official_date_id: scope.querySelector("[data-role=official]").value || null,
-          planned_date: scope.querySelector("[data-role=planned]").value || null,
+          planned_date: plannedDateValue(scope.querySelector("[data-role=planned]")),
         },
       });
       flash("目标日期已更新，历史创建时间保留。");
@@ -837,7 +861,7 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
         body: {
           certificate_id: id,
           official_date_id: scope.querySelector("[data-role=pick-official]").value || null,
-          planned_date: scope.querySelector("[data-role=pick-planned]").value || null,
+          planned_date: plannedDateValue(scope.querySelector("[data-role=pick-planned]")),
         },
       });
       flash("目标已建立，倒计时开始。");
@@ -927,7 +951,7 @@ document.getElementById("cert-guide").addEventListener("click", async (event) =>
         method: "PATCH",
         body: {
           official_date_id: scope.querySelector("[data-role=official]").value || null,
-          planned_date: scope.querySelector("[data-role=planned]").value || null,
+          planned_date: plannedDateValue(scope.querySelector("[data-role=planned]")),
         },
       });
       flash("目标日期已更新，倒计时按新日期重算。");
@@ -940,7 +964,7 @@ document.getElementById("cert-guide").addEventListener("click", async (event) =>
         body: {
           certificate_id: certId,
           official_date_id: document.getElementById("g-pick-official").value || null,
-          planned_date: document.getElementById("g-pick-planned").value || null,
+          planned_date: plannedDateValue(document.getElementById("g-pick-planned")),
         },
       });
       flash("目标已建立，倒计时与每日节奏按你的目标日期算。");

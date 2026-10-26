@@ -156,10 +156,27 @@ class TrainingPortalTests(unittest.TestCase):
 
     def test_goal_rejects_past_planned_date(self):
         self._login()
-        res = self.client.post("/api/training/my/goals", json={
-            "certificate_id": self.cert, "planned_date": self.past})
-        self.assertEqual(res.status_code, 422)
-        self.assertIn("过期", res.json()["detail"])
+        for planned in [self.past, "1111-09-09", f"{today_cst().year - 1}-12-31"]:
+            with self.subTest(planned=planned):
+                res = self.client.post("/api/training/my/goals", json={
+                    "certificate_id": self.cert, "planned_date": planned})
+                self.assertEqual(res.status_code, 422)
+                self.assertIn("过期", res.json()["detail"])
+
+    def test_goal_rejects_five_digit_year_on_create_and_update(self):
+        self._login()
+        invalid = "20155-12-31"
+        created = self.client.post("/api/training/my/goals", json={
+            "certificate_id": self.cert, "planned_date": invalid})
+        self.assertEqual(created.status_code, 422, created.text)
+        planned = _iso(today_cst() + timedelta(days=30))
+        goal_id = self._goal_id(self.client.post("/api/training/my/goals", json={
+            "certificate_id": self.cert, "planned_date": planned}))
+        updated = self.client.patch(f"/api/training/my/goals/{goal_id}", json={
+            "planned_date": invalid})
+        self.assertEqual(updated.status_code, 422, updated.text)
+        saved = self.client.get("/api/training/my/goals").json()["goals"][0]
+        self.assertEqual(saved["planned_date"], planned)
 
     def test_goal_rejects_expired_official_date(self):
         self._login()
