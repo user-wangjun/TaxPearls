@@ -2494,7 +2494,8 @@ def search_certificates(store, student_id: str, query: str = "", *, limit: int =
             "description": cert.get("description") or "", "subjects": subjects,
             "next_exam": upcoming[0] if upcoming else None,
             "exam_dates": upcoming,
-            "counts": stats.get(cert["id"], {"knowledge_points": 0, "high_freq": 0, "practice_kps": 0}),
+            "counts": {"knowledge_points": 0, "high_freq": 0, "practice_kps": 0,
+                       **stats.get(cert["id"], {})},
             "my_goal": ({"countdown": goal["countdown"], "countdown_source": goal["countdown_source"],
                          "planned_date": goal["planned_date"],
                          "official_date": (goal["official_date"] or {}).get("exam_date")}

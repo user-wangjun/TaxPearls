@@ -116,13 +116,15 @@ def dashboard(store, user):
                     'score':r['adjusted_score'] if r['adjusted_score'] is not None else r['score'],
                     'reviewed':r['adjusted_score'] is not None,'submitted_at':r['submitted_at']} for r in submissions]
     elif capable:
+        from webapp.training_submissions import result_for_student
         for item in assignments:
-            submission = store.get_submission(item['id'], actor['id'])
+            submission = result_for_student(store, item['id'], actor['id'])
             if submission:
                 counts['submitted'] += 1
                 records.append({'id':submission['id'],'assignment_id':item['id'],'title':item['title'],
                                 'score':submission['adjusted_score'] if submission['adjusted_score'] is not None else submission['score'],
-                                'submitted_at':submission['submitted_at'],'reviewed':submission['adjusted_score'] is not None})
+                                'submitted_at':submission['submitted_at'],'reviewed':bool(submission['reviewed_by']),
+                                'result_released':submission['result_released']})
     counts['assignments'] = len(assignments)
     return {'school':school[0] if school else college,'classroom_capable':capable,'student':student,
             'counts':counts,'classes':classes,'courses':courses[:10],

@@ -130,70 +130,51 @@ from src.snapshots import serialize_dataset, deserialize_dataset, serialize_find
 
 
 class _WriteGuard:
-    """连接代理：把写事务纳入 Store 级写锁。
+    """Serialize writers until commit/rollback; leave read-only connection scopes unlocked.
 
-    Store 的写方法外层已有 ``with self._lock``，但 material_jobs
-    等模块级函数直接 ``store.connect()`` 后写库，不经过那层锁；两个写事务并发时
-    SQLite 会以 ``database is locked``（10s 超时）报错。这里按两种粒度取同一把
-    可重入锁，让写事务串行、读仍可并发（全程持锁会让持连接的主线程等后台线程、
-    后台线程等锁，回到 ``test_engineering`` 探针超时那个死锁）。
-
-    - ``BEGIN IMMEDIATE``：事务级锁，一直持有到连接关闭（``release()``）。
-    - 事务外的裸写（``INSERT/UPDATE/DELETE/...``）：单语句级锁，执行完立即释放。
-      sqlite3 对这些语句隐式开事务，若不取锁就会与并发写撞 ``database is locked``
-      （``material_jobs.ai_slot`` 收尾的 ``DELETE FROM material_ai_slots`` 即此）。
-
-    ``BEGIN``/``BEGIN DEFERRED`` 不取锁：读事务持锁到关闭同样会造成上述死锁，
-    其升级为写时的 ``SQLITE_BUSY`` 由 sqlite3 的 10s 超时兜底。
-    ``with db:`` 事务上下文按原样转发。
+    A bare INSERT/UPDATE also starts a SQLite transaction. Releasing the Python
+    lock after that statement would let a second writer hold it while waiting on
+    SQLite, preventing the first writer from acquiring it to commit.
     """
 
     __slots__ = ("_db", "_lock", "_acquired")
-
-    # 无显式事务时 sqlite3 会自动开事务的语句，需按单语句粒度取锁。
-    _IMPLICIT_WRITE = frozenset({
-        "INSERT", "UPDATE", "DELETE", "REPLACE",
-        "CREATE", "DROP", "ALTER", "VACUUM", "REINDEX",
-    })
+    _WRITE = frozenset({"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER", "VACUUM", "REINDEX"})
 
     def __init__(self, db, lock):
         self._db = db
         self._lock = lock
         self._acquired = 0
 
-    @staticmethod
-    def _head(sql) -> str:
-        return str(sql).lstrip()[:32].upper()
-
-    def _acquire_transaction(self, sql) -> None:
-        if self._head(sql).startswith("BEGIN IMMEDIATE"):
+    def _acquire_write(self):
+        if not self._acquired:
             self._lock.acquire()
-            self._acquired += 1
+            self._acquired = 1
 
-    def _implicit_write(self, sql) -> bool:
-        """事务外的裸写语句：需要单语句级锁。"""
-        if self._db.in_transaction:
-            return False
-        return self._head(sql).split(None, 1)[0] in self._IMPLICIT_WRITE
+    def _guard_statement(self, sql):
+        head = str(sql).lstrip().upper()
+        command = head.split(None, 1)
+        if head.startswith("BEGIN IMMEDIATE") or (command and command[0] in self._WRITE):
+            self._acquire_write()
 
     def execute(self, sql, *params):
-        self._acquire_transaction(sql)
-        if self._implicit_write(sql):
-            with self._lock:
-                return self._db.execute(sql, *params)
+        self._guard_statement(sql)
         return self._db.execute(sql, *params)
 
     def executemany(self, sql, params):
-        self._acquire_transaction(sql)
-        if self._implicit_write(sql):
-            with self._lock:
-                return self._db.executemany(sql, params)
+        self._guard_statement(sql)
         return self._db.executemany(sql, params)
 
     def executescript(self, sql):
-        self._acquire_transaction(sql)
-        with self._lock:
-            return self._db.executescript(sql)
+        self._acquire_write()
+        return self._db.executescript(sql)
+
+    def backup(self, target, *args, **kwargs):
+        # sqlite3 checks the concrete destination type in C, so __getattr__
+        # forwarding cannot accept another guarded Store connection.
+        if isinstance(target, _WriteGuard):
+            target._acquire_write()
+            target = target._db
+        return self._db.backup(target, *args, **kwargs)
 
     def __enter__(self):
         self._db.__enter__()
@@ -217,6 +198,7 @@ class Store:
     # 模块级共享锁：同进程所有 Store 实例（含指向同一库文件的多个实例）串行化库访问。
     # 实例级锁无法保护跨实例并发；跨进程部署无此场景（单进程单实例服务）。
     _LOCK = RLock()
+    _CONNECTION_LOCK = RLock()
 
     def __init__(self, path: str | Path | None = None, *, notification_adapters=None,
                  keepalive: bool = False) -> None:
@@ -279,17 +261,10 @@ class Store:
 
     @contextmanager
     def connect(self):
-        # 锁分两层：
-        # - 开/关连接串行——关闭会触发 WAL -shm/-wal 删除重建，与另一连接的映射
-        #   重叠时在 Windows 上以 SQLITE_READONLY 的面目打断写事务
-        #   （test_training_profiles/stats、test_vat_* 稳定复现）。
-        # - 业务执行期不持锁，否则主线程持连接等后台线程、后台线程等锁会死锁
-        #   （test_engineering 的后台查询探针 5s 超时即此症状）。
-        # - 写事务（BEGIN IMMEDIATE）由 _WriteGuard 单独持锁：Store 方法外层虽有
-        #   self._lock，但 material_jobs 等模块级函数直接 connect 写，不持锁就会
-        #   与并发写撞出 database is locked（test_auth_hardening 稳定复现）。
-        # RLock 可重入，同线程重复获取不会自锁。
-        with self._lock:
+        # Connection lifecycle serialization protects Windows WAL open/close.
+        # It must be independent from the transaction lock: a reader can open,
+        # commit and close while another thread retains a write transaction.
+        with self._CONNECTION_LOCK:
             db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
             try:
                 sensitive_storage.attach(db, self._field_codec)
@@ -308,10 +283,10 @@ class Store:
             # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
             # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
             # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
-            with self._lock:
+            with self._CONNECTION_LOCK:
                 db.commit()
         except Exception:
-            with self._lock:
+            with self._CONNECTION_LOCK:
                 try:
                     db.rollback()
                 except Exception:
@@ -319,7 +294,7 @@ class Store:
             raise
         finally:
             guard.release()
-            with self._lock:
+            with self._CONNECTION_LOCK:
                 db.close()
 
     def _init_schema(self) -> None:

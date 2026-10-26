@@ -1,4 +1,6 @@
 """A downloaded checkout serves the full campus graph without an import command."""
+import gzip
+import json
 import os
 import tempfile
 import unittest
@@ -30,11 +32,18 @@ class PublicKnowledgeStartupTests(unittest.TestCase):
 
     def test_first_start_teacher_student_source_chain_and_restart(self):
         password = 'Campus-startup-2026!'
+        # Expectations come from the checked-in delivery, independently of the DB
+        # import/projection code, so a source expansion does not stale the test.
+        package = Path(__file__).resolve().parents[1] / 'data/public-policy/snapshot.json.gz'
+        with gzip.open(package, 'rt', encoding='utf-8') as stream:
+            tables = json.load(stream)['tables']
+        policies = {row['policy_id'] for row in tables['Policy']}
+        clauses = {row['clause_id'] for row in tables['Clause']}
         with TestClient(main.app) as client:
             self.assertEqual(main.app.state.public_knowledge['status'], 'installed')
             with self.store.connect() as db:
-                self.assertEqual(db.execute('SELECT count(*) FROM Policy').fetchone()[0], 37)
-                self.assertEqual(db.execute('SELECT count(*) FROM Clause').fetchone()[0], 1333)
+                self.assertEqual({r[0] for r in db.execute('SELECT policy_id FROM Policy')}, policies)
+                self.assertEqual({r[0] for r in db.execute('SELECT clause_id FROM Clause')}, clauses)
                 self.assertEqual(db.execute('SELECT count(*) FROM users').fetchone()[0], 0)
                 self.assertEqual(db.execute('SELECT count(*) FROM knowledge_point').fetchone()[0], 28)
                 self.assertEqual(db.execute("SELECT count(*) FROM TaxRule WHERE review_status='approved'").fetchone()[0], 0)
@@ -55,8 +64,8 @@ class PublicKnowledgeStartupTests(unittest.TestCase):
                 graph = response.json()
                 graphs.append(graph)
                 self.assertEqual(graph['public_source'], 'shared_policy_catalog')
-                self.assertEqual(sum(n['schema_type'] == 'Policy' for n in graph['nodes']), 37)
-                self.assertEqual(sum(n['schema_type'] == 'Clause' for n in graph['nodes']), 1333)
+                self.assertEqual({n['record_id'] for n in graph['nodes'] if n['schema_type'] == 'Policy'}, policies)
+                self.assertEqual({n['record_id'] for n in graph['nodes'] if n['schema_type'] == 'Clause'}, clauses)
                 kp = next(n for n in graph['nodes'] if n['record_id'] == PREFIX + 'R-001')
                 self.assertTrue(any(e['source'] == kp['id'] and e['target'] == 'R-001' for e in graph['edges']))
                 sources = [e['source'] for e in graph['edges'] if e['target'] == 'R-001' and e.get('relation_type') == 'PROVIDES_CONTEXT']

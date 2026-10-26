@@ -1,28 +1,76 @@
 name: Repository checks
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: repository-checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
+env:
+  TAXPEARLS_PDF_BROWSER: chromium
+  TAXPEARLS_AI_ENABLED: "0"
+  TAXPEARLS_NOTIFICATION_EMAIL_ENABLED: "0"
 jobs:
-  checks:
-    runs-on: ubuntu-latest
-    env:
-      TAXPEARLS_PDF_BROWSER: chromium
-      TAXPEARLS_AI_ENABLED: "0"
-      TAXPEARLS_NOTIFICATION_EMAIL_ENABLED: "0"
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            requirements.lock
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm ci --ignore-scripts
-        working-directory: integrations/feishu
-      - run: npm test
+          cache: npm
+          cache-dependency-path: integrations/feishu/package-lock.json
+      - run: npm ci --ignore-scripts && npm test
         working-directory: integrations/feishu
       - run: python -m pip install -r requirements-dev.txt
-      - run: python -m playwright install --with-deps chromium
-      - run: sudo apt-get update && sudo apt-get install -y fonts-noto-cjk
-      - run: python -B -X utf8 scripts/check_project.py
+      - run: python -B -X utf8 scripts/check_project.py --static-only
       - run: git diff --exit-code
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements-dev.txt
+            requirements.lock
+      - run: python -m pip install -r requirements-dev.txt
+      - name: Install browser and fonts (one apt index refresh, bounded network waits)
+        timeout-minutes: 10
+        run: |
+          # The Azure mirror repeatedly stalls on the 61 MB CJK font package.
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          printf 'Acquire::Retries "2";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-taxpearls-ci
+          python -m playwright install --with-deps chromium
+          sudo apt-get install -y --no-install-recommends fonts-noto-cjk
+      - run: python -B -X utf8 scripts/check_project.py --tests-only --shard ${{ matrix.shard }}/4 --test-timeout 300
+      - run: git diff --exit-code
+  # Keep branch protection's existing required check name. Every shard must pass.
+  checks:
+    if: ${{ always() }}
+    needs: [quality, tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require all checks
+        env:
+          QUALITY_RESULT: ${{ needs.quality.result }}
+          TESTS_RESULT: ${{ needs.tests.result }}
+        run: test "$QUALITY_RESULT" = success && test "$TESTS_RESULT" = success

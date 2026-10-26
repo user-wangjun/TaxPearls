@@ -20,7 +20,7 @@ from webapp.access import AccessDenied, current_actor
 
 ROOT = Path(__file__).resolve().parents[1]
 _LOCK, _ACTIVE = Lock(), set()
-AI_VALIDATION_VERSION = 5
+AI_VALIDATION_VERSION = 6
 _AUTHORIZE_BATCH = ContextVar('knowledge_authorize_batch', default=None)
 
 
@@ -34,10 +34,13 @@ ANALYSIS_PROMPT = (
     "优先级最高：只看check.evaluation判断整体核查状态。bundle_status不是ready时，所有数组项的type都必须为insufficient_evidence，"
     "不得另加condition_not_met或risk_clue项。check.fact_evaluation和conditions中的FALSE/TRUE只是计算事实，不能覆盖整体UNKNOWN；可在证据不足项的text中解释这些事实。"
     "金额只在amounts里按{metric_id:指标ID,value:十进制字符串}引用，正文不重复金额；dates只使用包内ISO日期。"
-    "规则阈值也属于金额，禁止在text中写数字金额或数字阈值，统一用‘内部筛查阈值’代称；具体比较值保留在程序条件中。"
+    "规则门槛也属于金额，禁止在text中写数字金额或数字阈值，具体比较值保留在程序条件中。"
+    "仅程序明确标为内部筛查参数的门槛可称内部筛查阈值；法定免税标准等仍称法定标准，不得改称内部筛查阈值。来源性质未明确时只称规则所列门槛。"
     "fact_assessment为程序已保存事实，不能改写；风险待核查不能否定已确认差额。"
     "每项type必须严格使用response_constraints.required_type，不得因事实差额为零或已知而改成其他类型。"
     "所有引用必须来自本包，缺少企业事实时source_ids和amounts可为空。政策条款存在时必须引用；没有政策不得编造引用。列出需补材料。"
+    "优先合并同类缺口，最多返回三项简洁分析，不重复长段原文。严格逐字使用response_constraints中的允许ID，不补造来源。"
+    "supporting_materials是额外佐证文字，引用其中source_id并保留其待核实状态；不能替代核心材料、程序指标或认定材料有效。"
 )
 
 def legal_claim(text):
@@ -57,6 +60,11 @@ def analysis_profile(settings, output_tokens=None):
 
 
 def acceptance_gate(path=None):
+    if path is None:
+        from webapp.retrieval_checks import current_gate
+        saved = current_gate()
+        if saved is not None:
+            return saved
     path = Path(path) if path else ROOT / "output/kg-retrieval/retrieval_report.json"
     try:
         report = json.loads(path.read_text(encoding="utf-8"))
@@ -69,10 +77,14 @@ def acceptance_gate(path=None):
                  and {f"K{i:02}" for i in range(1, 13)} <= ids
                  and all(c["passed"] for c in report["cases"])
                  and report["implementation_fingerprint"] == implementation_fingerprint())
-        return {"passed": bool(valid), "report_hash": digest(report), "data_scope": report["data_scope"],
+        reason = ('检索检测版本已过期，请平台管理员重新运行检测。'
+                  if report['implementation_fingerprint'] != implementation_fingerprint()
+                  else '检索检测未通过，请平台管理员查看检测结果。')
+        return {"passed": bool(valid), "reason": '检索检测通过。' if valid else reason,
+                "report_hash": digest(report), "data_scope": report["data_scope"],
                 "formal_policy_acceptance": False, "model_fingerprints": report["model_fingerprints"]}
     except (OSError, ValueError, KeyError, TypeError):
-        return {"passed": False, "reason": "尚无通过离线检索门槛的本地评测报告。"}
+        return {"passed": False, "reason": "尚无检索检测报告，请平台管理员在管理页面运行检测。"}
 
 
 def validate_answer(answer, package):
@@ -80,6 +92,7 @@ def validate_answer(answer, package):
     allowed_clauses = {p["clause_id"] for p in evidence}
     facts = {f["metric_id"]: f for f in package["facts"]}
     allowed_sources = {sid for fact in facts.values() for sid in fact["source_ids"]}
+    allowed_sources |= {row["source_id"] for row in package.get("supporting_materials", [])}
     dates = {str(package["task"].get(k)) for k in ("period_start", "period_end")}
     dates |= {str(p.get(k)) for p in evidence for k in ("effective_from", "effective_to") if p.get(k)}
     if set(answer) != {"assessments"} or not isinstance(answer["assessments"], list) or not 1 <= len(answer["assessments"]) <= 8:
@@ -132,11 +145,34 @@ def validate_answer(answer, package):
     return answer
 
 
+def validate_saved_analysis(analysis, package):
+    """Recheck saved responses against the same evidence each batch received."""
+    parts = package['batching']['parts']
+    if len(parts) <= 1:
+        return validate_answer({'assessments': analysis['assessments']}, package)
+    results = analysis.get('batch_results')
+    if not isinstance(results, list) or len(results) != len(parts):
+        raise ValueError('分批分析记录不完整。')
+    claims = {}
+    for part, result in zip(parts, results):
+        if result.get('status') != 'completed':
+            raise ValueError('分批分析尚未完成。')
+        transmitted = {**package, 'facts': part['facts'], 'policy_evidence': part['policy_evidence'],
+                       'policy_leads': part['policy_leads'], 'bundle_status': 'needs_review'}
+        validate_answer({'assessments': result['assessments']}, transmitted)
+        claims.update((digest(claim), claim) for claim in result['assessments'])
+    if analysis['assessments'] != list(claims.values()):
+        raise ValueError('汇总分析与已校验的分批记录不一致。')
+    return {'assessments': analysis['assessments']}
+
+
 def analyze(package, prior=None):
     gate = acceptance_gate()
     model_fingerprint = package["retrieval_trace"]["routes"]["semantic"].get("model_fingerprint")
-    if not gate["passed"] or model_fingerprint not in gate.get("model_fingerprints", []):
-        raise HTTPException(409, "本地检索评测尚未通过，暂不进行 AI 联调。")
+    if not gate["passed"]:
+        raise HTTPException(409, gate.get('reason') or "检索检测未通过，请联系平台管理员。")
+    if model_fingerprint not in gate.get('model_fingerprints', []):
+        raise HTTPException(409, '本次使用的检索模型与检测报告不一致，请平台管理员重新检测。')
     if package["batching"]["unsplittable"]:
         return {"status": "needs_review", "validated": False, "assessments": [], "external_api_calls": 0,
                 "reason": "单条结构化记录或基础核查信息仍超出本次容量，已保留完整内容，请核对模型容量或缩小核查范围。"}
@@ -202,7 +238,11 @@ def analyze(package, prior=None):
             "condition_met": "risk_clue", "condition_not_met": "condition_not_met", "excluded": "excluded"
         }.get(package["check"].get("disposition"), "insufficient_evidence")
         payload["response_constraints"] = {"required_type": required_type,
-            "fact_assessment_is_readonly": True, "policy_readiness_is_independent_of_numeric_difference": True}
+            "fact_assessment_is_readonly": True, "policy_readiness_is_independent_of_numeric_difference": True,
+            "allowed_rule_id": payload['check']['rule_id'],
+            "allowed_clause_ids": sorted({p['clause_id'] for p in payload['policy_evidence'] + payload['policy_leads']}),
+            "allowed_source_ids": sorted({s for f in payload['facts'] for s in f.get('source_ids', [])} |
+                                         {r['source_id'] for r in payload.get('supporting_materials', [])})}
         if partial:
             payload['bundle_status'] = 'needs_review'
             payload['analysis_mode'] = 'review_only'
@@ -287,6 +327,7 @@ def analyze(package, prior=None):
                 return refine()
         # Validate against the actual transmitted part, not untransmitted evidence.
         transmitted = {**package, "facts": part['facts'], "policy_evidence": part["policy_evidence"], "policy_leads": part["policy_leads"]}
+        transmitted["supporting_materials"] = part.get("supporting_materials", [])
         if partial:
             transmitted["bundle_status"] = "needs_review"
         try:
@@ -343,7 +384,7 @@ def register(app, get_store, get_user, allow):
         from src import vat_reconciliation as vat
         user, store = get_user(session), get_store()
         allow(user, "org_admin", "accountant")
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         if view["revision"] != body.expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         payload = deepcopy(core_inputs.latest(view, writable=True))
@@ -362,7 +403,7 @@ def register(app, get_store, get_user, allow):
     def recheck(task_id: str, body: RecheckBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         user, store = get_user(session), get_store()
         allow(user, "org_admin", "accountant")
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         if view["revision"] != body.expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         payload = deepcopy(core_inputs.latest(view, writable=True))
@@ -441,7 +482,9 @@ def register(app, get_store, get_user, allow):
         view, payload = None, None
         if body.task_id:
             allow(user, "org_admin", "accountant")
-            view = batches.read(store, user, body.task_id)
+            from webapp.knowledge_runs import require_idle
+            view = batches.read_current(store, user, body.task_id)
+            require_idle(user, body.task_id)
             if body.expected_revision != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
             payload = deepcopy(core_inputs.latest(view, writable=True))
@@ -486,6 +529,7 @@ def register(app, get_store, get_user, allow):
                 return {**old, "revision": view["revision"], "cached": True, "saved": True}
             key = (user["org_id"], body.task_id, package["content_hash"])
             with _LOCK:
+                require_idle(user, body.task_id)
                 if key in _ACTIVE:
                     raise HTTPException(409, "相同检查正在处理，请稍后重新读取。")
                 _ACTIVE.add(key)
@@ -525,3 +569,6 @@ def register(app, get_store, get_user, allow):
                     _ACTIVE.discard(key)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
+
+    from webapp.knowledge_runs import register as register_runs
+    register_runs(app, get_store, get_user, allow)

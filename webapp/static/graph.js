@@ -265,6 +265,7 @@ $("graphQuestionForm").addEventListener("submit",async e=>{
         if(!current())return;
         if(event.type==="context"){
           state.textContent=event.message;
+          turn.querySelectorAll(".ai-reference-scope").forEach(item=>item.remove());
           const details=el("details","ai-reference-scope");details.append(el("summary",null,"本次参考范围"));
           for(const id of event.manifest.node_ids){const n=event.manifest.sources?.find(n=>n.id===id)||graphData.nodes.find(n=>n.id===id);details.append(el("p","muted",n?.label||id));}
           if(event.manifest.message)details.append(el("p","muted",event.manifest.message));
@@ -272,7 +273,8 @@ $("graphQuestionForm").addEventListener("submit",async e=>{
           if(event.manifest.coverage?.omitted_candidates)details.append(el("p","muted","本次发送部分相关原文，尚未穷尽全部候选。"));
           if(event.manifest.capacity_source==="conservative_fallback")details.append(el("p","muted","模型未提供容量，使用保守容量限制。"));
           turn.insertBefore(details,text);
-        }else if(event.type==="gate")state.textContent=event.status==="out_of_scope"&&rag?"超出税务知识范围":nodeGateLabels[event.status]||"正在生成…";
+        }else if(event.type==="progress"&&event.message)state.textContent=event.message;
+        else if(event.type==="gate")state.textContent=event.status==="out_of_scope"&&rag?"超出税务知识范围":nodeGateLabels[event.status]||"正在生成…";
         else if(event.type==="summary"&&event.text){const details=el("details","ai-reason-summary");details.append(el("summary",null,"回答依据说明"),el("p","ai-text",event.text));turn.insertBefore(details,text);}
         else if(event.type==="delta"){const nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<80;text.textContent+=event.text;if(nearBottom)box.scrollTop=box.scrollHeight;}
         else if(event.type==="done"){

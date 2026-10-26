@@ -84,6 +84,8 @@ class SubmissionVersionTests(unittest.TestCase):
         self.assertEqual(len(self.store.list_submissions(self.teacher, self.aid)), 1)
 
     def test_return_then_correct_keeps_previous_score_in_versions(self):
+        self.client.put(f"/api/training/tasks/assignment/{self.aid}/settings",
+                        json={"answer_release": "after_submit"})
         self.login(self.student)
         self.assertEqual(self.submit().status_code, 200)
         self.login(self.teacher)
@@ -207,10 +209,20 @@ class SubmissionVersionTests(unittest.TestCase):
     def test_progress_is_not_shared_between_students(self):
         self.login(self.student)
         self.submit()
+        task = next(t for t in self.client.get("/api/training/tasks").json()["items"] if t["id"] == self.aid)
+        self.assertEqual(task["my_status"], "pending_review")
         self.login(self.teacher)
-        self.review(90, "通过")
+        self.review(0, "已复核为零分")
         self.login(self.student)
         self.assertEqual(self.progress()["status"], "done")
+        task = next(t for t in self.client.get("/api/training/tasks").json()["items"] if t["id"] == self.aid)
+        self.assertEqual(task["my_status"], "done")
+        self.assertEqual(task["mine_reviewed"], 1)
+        self.login(self.teacher)
+        self.give_back()
+        self.login(self.student)
+        task = next(t for t in self.client.get("/api/training/tasks").json()["items"] if t["id"] == self.aid)
+        self.assertEqual(task["my_status"], "returned", "A review score must not hide a subsequent return")
         self.login(self.other)
         self.assertEqual(self.client.get(f"/api/assignments/{self.aid}/progress").status_code, 404)
 

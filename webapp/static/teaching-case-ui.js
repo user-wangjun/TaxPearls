@@ -564,9 +564,15 @@
     return panel;
   }
 
+  let studentRefreshRevision = 0;
   async function refreshStudent(id) {
+    const user = typeof currentUser === "undefined" ? null : currentUser;
+    if (user?.role !== "student") return;
     const host = document.getElementById("exerciseBox");
     if (!host || String(host.dataset.assignment) !== String(id)) return;
+    const ticket = ++studentRefreshRevision, uid = user.id;
+    const current = () => ticket === studentRefreshRevision && currentUser?.id === uid
+      && String(host.dataset.assignment) === String(id);
     document.getElementById("tp-case-panel")?.remove();
     let view;
     try {
@@ -574,7 +580,9 @@
     } catch {
       return;   // 不是实操案例任务：静默，不干扰原页面
     }
+    if (!current()) return;
     const rubric = await api(`/api/assignments/${encodeURIComponent(id)}/rubric`).catch(() => null);
+    if (!current()) return;
     const panel = studentPanel(view, rubric);
     const button = document.getElementById("btnSubmitExercise");
     if (button) button.before(panel);
@@ -587,7 +595,8 @@
   async function init() {
     const box = host();
     if (!box) return false;
-    const who = await api("/api/me");
+    const who = typeof currentUser === "undefined" ? null : currentUser;
+    if (!who) return false;
     const studentRole = who.education_role === "student" || who.role === "student";
     const teacherRole = ["teacher", "org_admin"].includes(who.role) || who.education_role === "teacher";
     if (teacherRole) return mount(await buildTeacherCard());
@@ -610,6 +619,7 @@
   let attempts = 0;
   function tryBoot() {
     if (booted) return;
+    if (typeof currentUser === "undefined" || !currentUser) return;
     if (!host()) return;
     booted = true;
     init().then(ok => { if (!ok) booted = false; }).catch(() => {

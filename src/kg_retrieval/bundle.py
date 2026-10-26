@@ -5,7 +5,8 @@ from time import perf_counter
 
 from src import tax_conditions
 from src.policy_paths import database_directory
-from . import applicability, keyword_search, relation_search, semantic_search
+from src.public_policy_package import citation_view
+from . import applicability, keyword_search, relation_search, semantic_search, passages
 from .common import canonical, checked_task, clause_record, digest, period_basis, unit
 
 
@@ -15,6 +16,8 @@ def content_hash(package):
             "policy_evidence", "policy_leads", "relationships", "gaps", "fact_assessment", "risk_assessment")}
     core["gaps"] = sorted(core["gaps"], key=canonical)
     core["relationships"] = sorted(core["relationships"], key=canonical)
+    if package.get("supporting_materials"):
+        core["supporting_materials"] = package["supporting_materials"]
     return digest({**core, "token_budget": package["batching"]["soft_token_budget"]})
 
 
@@ -120,7 +123,8 @@ def split_bundle(bundle, token_budget=6000):
 
 
 def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_catalog=(), model_dir=None,
-          candidate_limit=20, review_limit=30, token_budget=6000, offline=True, metric_definitions=None, fact_assessment=None):
+          candidate_limit=20, review_limit=30, token_budget=6000, offline=True, metric_definitions=None, fact_assessment=None,
+          supporting_materials=()):
     started = perf_counter()
     task = checked_task(task)
     if not db.in_transaction:
@@ -153,7 +157,20 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
     # Required dependencies bypass both route top-k and review_limit.
     required = set(context["required"])
     closure = relation_search.dependency_closure(db, selected_ids | required)
+    # Preserve all required, parent and change-chain sources. Only optional
+    # retrieval matches with reliable structural boundaries may be excerpted.
+    dependency_ids = set(closure['clause_ids']) - selected_ids
+    dependency_ids |= {edge[key] for edge in closure['relationships'] for key in ('from_id', 'to_id', 'evidence_clause_id')
+                       if edge.get(key)}
+    for cid in closure['clause_ids']:
+        clause, _ = clause_record(db, cid)
+        if clause.get('parent_clause_id'):
+            dependency_ids.add(clause['parent_clause_id'])
     facts, gaps = _facts(context, supplied_facts, task, source_catalog)
+    if supporting_materials:
+        gaps.append({"code": "supporting_validity_review", "message": "额外材料仅作本次任务的佐证线索，其关联期间、适用性与证明力须人工核实，不替代核心资料或程序指标。"})
+        if any(not row.get("source_reviewed") or row.get("extraction_status") == "incomplete" for row in supporting_materials):
+            gaps.append({"code": "supporting_source_review", "message": "额外材料存在未核对内容或未提取部分，请对照原件核实；不得视为已确认事实。"})
     conditions, exceptions, truth_values, condition_gaps = _conditions(context, facts, task)
     gaps += [*condition_gaps, *closure["gaps"]]
     if rule["review_status"] != "approved" or not rule.get("reviewed_by") or not rule.get("reviewed_at"):
@@ -169,10 +186,13 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
             gaps.append({"code": "entity_pending", "entity_id": edge["to_id"], "message": "适用主体尚未核实。"})
     evidence, leads, decisions, source_cache = [], [], {}, {}
     matches = {item["clause_id"]: item["matches"] for item in selected}
+    has_reviews = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='PolicyReview'").fetchone()
+    source_reviews = ([dict(r) for r in db.execute('SELECT * FROM PolicyReview WHERE coverage_start<=? AND coverage_end>=?',
+                                                  (task['period_start'], task['period_end']))] if has_reviews else [])
     for cid in closure["clause_ids"]:
         clause, policy = clause_record(db, cid)
         decision = applicability.check(clause, policy, task, closure["relationships"], source_cache=source_cache,
-                                       source_root=database_directory(db))
+                                       source_root=database_directory(db), source_reviews=source_reviews)
         paths = context["required"].get(cid, [])
         if paths and all(path.get("review_status", "approved") != "approved" for path in paths):
             decision["status"] = "needs_review"
@@ -180,13 +200,21 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
         decisions[cid] = decision
         record = {"clause_id": cid, "policy_id": policy["policy_id"], "clause_version": clause.get("version"),
                   "policy_version": policy.get("version"), "document_no": policy.get("document_no"),
-                  "title": policy["title"], "issuer": policy["issuer"], "text": clause["content"],
+                  "title": policy["title"], "issuer": policy["issuer"], **citation_view(clause, policy),
                   "source_location": clause.get("source_location"), "source_url": policy["source_url"],
                   "file_sha256": policy.get("file_sha256"), "region_code": policy["region_code"],
                   "effective_from": decision["effective_from"], "effective_to": decision["effective_to"],
                   "applicability": decision["status"], "reasons": decision["reasons"], "segments": decision["segments"],
                   "required": cid in required, "retrieval_matches": matches.get(cid, []),
                   "review_status": clause["extraction_status"]}
+        if decision.get('coverage_review'):
+            record['coverage_review'] = decision['coverage_review']
+        for field in ('tax_types_json', 'scope_json', 'date_evidence_json', 'source_metadata_json'):
+            if policy.get(field):
+                record[field.removesuffix('_json')] = json.loads(policy[field])
+        selection = passages.select(record['text'], matches.get(cid, []),
+                                    required=cid in required or bool(record.get('citation_corrections')), dependency=cid in dependency_ids)
+        record.update(selection)
         if decision["status"] == "excluded":
             excluded.append({"clause_id": cid, "stage": "applicability", "reasons": decision["reasons"]})
             if cid in required:
@@ -198,6 +226,9 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
             evidence.append(record)
             if cid in required and decision["status"] == "context_only" and decision.get('context_kind')!='supporting_basis':
                 gaps.append({"code": "rule_source_changed", "clause_id": cid, "message": "本规则的原依据已修改，仅保留历史上下文，须复核执行版本。"})
+        if decision['status'] != 'excluded' and selection.get('partial_clause'):
+            gaps.append({'code': 'retrieval_context_partial', 'clause_id': cid,
+                         'message': '本条仅取回命中段落及检测到的限制语境；完整适用条件、例外和引用仍须结合原文复核。'})
     if not evidence:
         gaps.append({"code": "policy_evidence_missing", "message": "没有可核实的相关政策证据。"})
     try:
@@ -257,6 +288,9 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
     bundle["analysis_readiness"] = bundle["bundle_status"]
     bundle["analysis_mode"] = "evidence_assessment" if bundle["bundle_status"] == "ready" else "review_only"
     core = {key: bundle[key] for key in ("task", "check", "facts", "metric_definitions", "conditions", "exceptions", "policy_evidence", "policy_leads", "relationships", "gaps", "fact_assessment", "risk_assessment")}
+    if supporting_materials:
+        bundle["supporting_materials"] = deepcopy(list(supporting_materials))
+        core["supporting_materials"] = bundle["supporting_materials"]
     bundle["bundle_id"] = digest(core)
     bundle["batching"] = split_bundle(bundle, token_budget)
     if bundle["batching"]["unsplittable"]:

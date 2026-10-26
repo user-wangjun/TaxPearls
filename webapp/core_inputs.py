@@ -14,7 +14,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException
 
-from src import core_materials, core_mapping
+from src import core_materials, core_mapping, material_format_guard
 from src.input_errors import InputError
 from src.settings import AISettings
 from webapp import ai_keys
@@ -70,6 +70,39 @@ def delete_task(store, user, task_id, expected_revision):
         db.execute("DELETE FROM material_batches WHERE id=?", (task_id,))
         members.log(db, user, "core_task_delete", "material_batch", task_id, "permanent")
     return {"id": task_id, "deleted": True}
+
+
+def delete_file(store, user, task_id, file_id, expected_revision):
+    """Remove one original and its current evidence in the same short transaction."""
+    view = batches.read(store, user, task_id)
+    payload = deepcopy(latest(view, writable=True))
+    if view["revision"] != expected_revision:
+        raise AccessDenied("任务版本已变化，请重新读取后再删除材料。", 409)
+    file = next((item for item in view["files"] if item["id"] == file_id), None)
+    if file is None:
+        raise AccessDenied()
+    if file["deleted_at"]:
+        raise AccessDenied("该材料已删除，请重新读取任务。", 410)
+    payload["documents"] = [doc for doc in payload["documents"] if doc["id"] != file_id]
+    payload["source_options"].pop(file_id, None)
+    core_materials.autofill_scope(payload["task"], payload["documents"])
+    payload["processing"] = core_materials.prepare(payload["task"], payload["documents"])
+    if payload.get("policy_input"):
+        from webapp import core_policies
+        core_policies.update(payload)
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        batch = batches._authorize(db, user, task_id)
+        current_actor(db, user, {"org_admin"})
+        if batch["revision"] != expected_revision:
+            raise AccessDenied("任务版本已变化，请重新读取后再删除材料。", 409)
+        batches._require_active_core(db, batch)
+        if db.execute("SELECT 1 FROM material_jobs WHERE batch_id=? AND state='running'", (task_id,)).fetchone():
+            raise AccessDenied("任务正在处理，请处理结束后再删除材料。", 409)
+        db.execute("UPDATE material_originals SET bytes_cipher=NULL,deleted_at=?,deleted_by=? WHERE id=? AND batch_id=?",
+                   (members.now(), user["id"], file_id, task_id))
+        batches._append(db, batch, user, "edit", payload)
+        batches._event(db, batch, user, "delete", {"file_id": file_id, "backup_copies_may_remain": True})
 
 
 def project(view):
@@ -176,7 +209,7 @@ def register(app, get_store, get_user, allow, static_dir):
         return value
 
     def read(user, task_id):
-        return project(batches.read(get_store(), user, task_id))
+        return project(batches.read_current(get_store(), user, task_id))
 
     @app.post("/api/enterprise/input-tasks/{task_id}/deduplication/resolve")
     async def resolve_duplicate(task_id: str, request: Request,
@@ -191,7 +224,7 @@ def register(app, get_store, get_user, allow, static_dir):
                 or any(not isinstance(v, str) or len(v) != 64 for v in value["expected_versions"])
                 or value.get("confirm") is not True):
             raise HTTPException(422, "请核对冲突版本后明确确认，并提供当前任务版本。")
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         payload = deepcopy(latest(view, writable=True))
         with store.connect() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -318,23 +351,36 @@ def register(app, get_store, get_user, allow, static_dir):
              session: str | None = Cookie(default=None, alias="taxpearls_session")):
         from src import material_export
 
-        view = batches.read(get_store(), actor(session), task_id)
+        view = batches.read_current(get_store(), actor(session), task_id)
         if view["revision"] != expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取后下载。", 409)
         return material_export.build(latest(view))
 
-    def process(user, task_id, revision, *, ai=False):
+    @app.delete("/api/enterprise/input-tasks/{task_id}/files/{file_id}")
+    async def remove_file(task_id: str, file_id: str, request: Request,
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user = actor(session)
+        value = await body(request)
+        if (set(value) != {"expected_revision", "confirm"}
+                or type(value.get("expected_revision")) is not int or value["expected_revision"] < 0
+                or value.get("confirm") is not True):
+            raise HTTPException(422, "请明确确认删除材料，并提供当前任务版本。")
+        await run_in_threadpool(delete_file, get_store(), user, task_id, file_id, value["expected_revision"])
+        return read(user, task_id)
+
+    def process(user, task_id, revision, *, ai=False, working_payload=None, vat_review=None):
         if not PROCESS_SLOTS.acquire(blocking=False):
             raise AccessDenied("资料整理繁忙，原件已保存，请稍后重新整理。", 429)
         try:
-            return process_work(user, task_id, revision, ai=ai)
+            return process_work(user, task_id, revision, ai=ai, working_payload=working_payload, vat_review=vat_review)
         finally:
             PROCESS_SLOTS.release()
 
-    def process_work(user, task_id, revision, *, ai=False):
+    def process_work(user, task_id, revision, *, ai=False, working_payload=None, vat_review=None):
         store = get_store()
-        view = batches.read(store, user, task_id)
-        payload = deepcopy(latest(view, writable=True))
+        view = batches.read_current(store, user, task_id)
+        existing = latest(view, writable=True)
+        payload = deepcopy(existing if working_payload is None else working_payload)
         if view["revision"] != revision:
             raise AccessDenied("任务版本已变化，请重新读取。", 409)
         documents = []
@@ -372,6 +418,7 @@ def register(app, get_store, get_user, allow, static_dir):
                                              observation_transaction=mapping_write)
                 mapper.call_limit = calls_remaining
                 try:
+                    core_materials.validate_upload_content(raw, options["original_name"], options["material_type"])
                     previous = next(
                         (
                             d
@@ -379,7 +426,8 @@ def register(app, get_store, get_user, allow, static_dir):
                             if d["id"] == meta["id"]
                             and d["sha256"] == meta["sha256"]
                             and d.get("ocr_candidate")
-                            and d.get("records")
+                            and (d.get("records") or d.get("excerpts"))
+                            and not (d.get("material_type") == "supporting_material" and d.get("issues"))
                             and d.get("parser_version") == core_materials.PARSER_VERSION
                         ),
                         None,
@@ -410,6 +458,17 @@ def register(app, get_store, get_user, allow, static_dir):
                         "issues": [core_materials.issue("parse_failed", str(exc)[:300], meta["id"])],
                     }
                 calls_remaining -= mapper.calls
+            if doc["material_type"] == "supporting_material":
+                prior = next((item for item in payload["documents"] if item["id"] == meta["id"]), None)
+                if options.get("source_reviewed") and (
+                    prior is None
+                    or prior.get("excerpts", []) != doc.get("excerpts", [])
+                    or prior.get("parser_version") != doc.get("parser_version")
+                ):
+                    options["source_reviewed"] = False
+                doc["source_reviewed"] = bool(options.get("source_reviewed"))
+                documents.append(doc)
+                continue
             override = options.get("confirmed_metadata", {})
             if "direction" in override:
                 # Old file-wide overrides must not replace per-invoice evidence on reprocessing.
@@ -503,6 +562,14 @@ def register(app, get_store, get_user, allow, static_dir):
                     record["automatic_direction"] = core_materials.invoice_direction(extracted, payload["task"].get("tax_no"))
         payload["documents"] = documents
         payload["processing"] = core_materials.prepare(payload["task"], documents)
+        if vat_review is not None:
+            from src import vat_reconciliation as vat
+            checked = vat.make_review(payload, vat_review, user['id'], members.now())
+            payload.setdefault('check_reviews', {})[vat.RULE] = checked
+            if vat.RULE in payload.get('tax_checks', {}):
+                payload['tax_checks'][vat.RULE]['stale'] = True
+            from webapp.core_reports import summary
+            payload['tax_check_summary'] = summary(payload.get('tax_checks', {}))
         if payload.get('policy_input'):
             from webapp import core_policies
             core_policies.update(payload)
@@ -514,7 +581,7 @@ def register(app, get_store, get_user, allow, static_dir):
         task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")
     ):
         user = actor(session)
-        view = batches.read(get_store(), user, task_id)
+        view = batches.read_current(get_store(), user, task_id)
         payload = deepcopy(latest(view, writable=True))
         try:
             async with multipart(
@@ -532,7 +599,7 @@ def register(app, get_store, get_user, allow, static_dir):
                 ocr = form.get("ocr", "0")
                 if (
                     not isinstance(kind, str)
-                    or kind not in core_materials.KINDS
+                    or kind not in core_materials.ALLOWED_FORMATS
                     or not isinstance(raw_revision, str)
                     or not raw_revision.isdecimal()
                     or not isinstance(mode, str)
@@ -551,7 +618,7 @@ def register(app, get_store, get_user, allow, static_dir):
                         uploads.append((stored_name, await file.read()))
                 if not uploads:
                     raise InputError("请选择至少一个文件。")
-                if len(view["files"]) + len(uploads) > 20:
+                if sum(not file["deleted_at"] for file in view["files"]) + len(uploads) > 20:
                     raise InputError("一个任务最多保留20份资料，请拆分检查任务。")
                 allowed = core_materials.ALLOWED_FORMATS
                 if any(name.rsplit(".", 1)[-1].lower() not in allowed[kind] for name in names.values()):
@@ -559,6 +626,11 @@ def register(app, get_store, get_user, allow, static_dir):
                 revision = int(raw_revision)
                 if revision != view["revision"]:
                     raise AccessDenied("任务版本已变化，请重新读取。", 409)
+                def validate_batch():
+                    material_format_guard.check(uploads, wait=True)
+                    for stored_name, raw in uploads:
+                        core_materials.validate_upload_content(raw, names[stored_name], kind)
+                await run_in_threadpool(validate_batch)
                 # Preserve raw inputs first. A parser failure can never erase a received original.
                 payload["processing"] = {**payload["processing"], "status": "parsing"}
                 payload["_incoming_source_options"] = {
@@ -566,7 +638,15 @@ def register(app, get_store, get_user, allow, static_dir):
                     for key, name in names.items()
                 }
                 received_revision = batches.supplement(get_store(), user, task_id, revision, uploads, payload)
-                return await run_in_threadpool(process, user, task_id, received_revision, ai=mode == "ai")
+                result = await run_in_threadpool(process, user, task_id, received_revision, ai=mode == "ai")
+                previous_ids = {file["id"] for file in view["files"]}
+                incoming_ids = {file["id"] for file in result["files"]} - previous_ids
+                result["upload_review"] = {"pending_files": [doc["name"] for doc in result["documents"]
+                    if doc["id"] in incoming_ids and (
+                        (doc["material_type"] in core_materials.KINDS and (not doc["records"]
+                            or any(record.get("requires_source_review") for record in doc["records"])))
+                        or (doc["material_type"] == "supporting_material" and doc.get("issues")))]}
+                return result
         except (InputError, batches.MaterialStorageError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from None
 
@@ -577,9 +657,9 @@ def register(app, get_store, get_user, allow, static_dir):
         user = actor(session)
         value = await body(request)
         try:
-            if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input"}:
+            if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input", "vat_review"}:
                 raise InputError("请求包含未知字段。")
-            view = batches.read(get_store(), user, task_id)
+            view = batches.read_current(get_store(), user, task_id)
             payload = deepcopy(latest(view, writable=True))
             revision = value.get("expected_revision")
             if type(revision) is not int or revision != view["revision"]:
@@ -666,6 +746,18 @@ def register(app, get_store, get_user, allow, static_dir):
             mode = value.get("mapping_mode", "local")
             if not isinstance(mode, str) or mode not in {"local", "ai"}:
                 raise InputError("映射方式无效。")
+            if 'vat_review' in value:
+                from webapp.knowledge_evidence import VATReviewBody
+                from src import vat_reconciliation as vat
+                if not isinstance(value['vat_review'], dict):
+                    raise InputError('增值税取数核对须为结构化字段。')
+                checked = VATReviewBody.model_validate({**value['vat_review'], 'expected_revision': revision})
+                review_values = checked.model_dump(exclude={'expected_revision'})
+                vat.make_review(payload, review_values, user['id'], members.now())
+                # Reparse, bind the reviewed row to the final sources, and save
+                # once. Invalid/foreign mappings cannot partly persist options.
+                return await run_in_threadpool(process, user, task_id, revision, ai=mode == 'ai',
+                                               working_payload=payload, vat_review=review_values)
             revision = batches.append_revision(get_store(), user, task_id, revision, "edit", payload)
             return await run_in_threadpool(process, user, task_id, revision, ai=mode == "ai")
         except (InputError, ValueError, batches.MaterialStorageError) as exc:
@@ -730,7 +822,7 @@ def register(app, get_store, get_user, allow, static_dir):
                 raise InputError("请求包含未知字段。")
             if "confirm" in value and type(value["confirm"]) is not bool:
                 raise InputError("确认标记须为布尔值。")
-            view = batches.read(store, user, task_id)
+            view = batches.read_current(store, user, task_id)
             if value.get("expected_revision") != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
             payload = deepcopy(latest(view, writable=True))
@@ -785,16 +877,19 @@ def register(app, get_store, get_user, allow, static_dir):
             raise HTTPException(422, str(exc)) from None
 
     @app.get("/api/enterprise/input-tasks/{task_id}/originals/{file_id}")
-    def original(task_id: str, file_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+    def original(task_id: str, file_id: str, preview: bool = False,
+                 session: str | None = Cookie(default=None, alias="taxpearls_session")):
         user = actor(session)
         value = read(user, task_id)
         _, raw = batches.original(get_store(), user, task_id, file_id)
         name = value["source_options"][file_id]["original_name"]
+        media = {"pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg"}
+        inline_type = media.get(name.rsplit(".", 1)[-1].lower()) if preview else None
         return Response(
             raw,
-            media_type="application/octet-stream",
+            media_type=inline_type or "application/octet-stream",
             headers={
-                "Content-Disposition": "attachment; filename*=UTF-8''" + quote(name, safe=""),
+                "Content-Disposition": ("inline" if inline_type else "attachment") + "; filename*=UTF-8''" + quote(name, safe=""),
                 "Cache-Control": "private, no-store",
                 "X-Content-Type-Options": "nosniff",
             },

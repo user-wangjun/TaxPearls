@@ -33,7 +33,10 @@ def now():
 def deadline(value):
     if value is None:
         return None
-    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    try:
+        parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    except ValueError:
+        raise ClassroomError("截止时间格式无效。") from None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ClassroomError("截止时间必须明确时区。")
     return parsed.astimezone(UTC).isoformat()
@@ -89,13 +92,24 @@ def migrate(db):
         db.execute('ALTER TABLE training_classes ADD COLUMN binding_source TEXT')
 
 
+def task_availability(db, kind, subject_id):
+    row = db.execute("SELECT open_at,archived_at FROM training_task_settings WHERE subject_kind=? AND subject_id=?",
+                     (kind,subject_id)).fetchone()
+    return dict(row) if row else {"open_at":None,"archived_at":None}
+
+
 def decorate(db, item):
+    from webapp.training_tasks import task_state
     row = db.execute("SELECT * FROM training_assignment_settings WHERE assignment_id=?", (item["id"],)).fetchone()
     item.update({"class_id":None,"paper_id":None,"position":1,"points":100,"deadline_at":None,"revision":1})
     if row:
         item.update({k:v for k,v in dict(row).items() if k != "assignment_id"})
-    item["deadline_passed"] = bool(item["deadline_at"] and now() >= datetime.fromisoformat(item["deadline_at"]))
-    item["can_submit"] = bool(item["published"] and not item["deadline_passed"])
+    moment = now()
+    item["deadline_passed"] = bool(item["deadline_at"] and moment >= datetime.fromisoformat(item["deadline_at"]))
+    policy = task_availability(db, "paper" if item["paper_id"] else "assignment", item["paper_id"] or item["id"])
+    item.update(policy)
+    item["can_submit"] = task_state(item["published"], bool(item["archived_at"]),
+                                    item["open_at"], item["deadline_at"], at=moment) == "published"
     course = db.execute("""SELECT c.id,c.name FROM university_assignment_courses ac
         JOIN course c ON c.id=ac.course_id JOIN university_organizations o ON o.college=c.college
         WHERE ac.assignment_id=? AND o.org_id=?""", (item['id'],item['org_id'])).fetchone()
@@ -108,7 +122,7 @@ def can_access(db, item, user):
         return False
     if user["role"] == "teacher":
         return item["created_by"] == user["id"] and bool(audit_row(db, item["audit_id"], user))
-    if user["role"] != "student" or not item["published"] or item["target_student_id"] not in (None,user["id"]):
+    if user["role"] != "student" or not item["published"] or item.get("archived_at") or item["target_student_id"] not in (None,user["id"]):
         return False
     return not item.get("class_id") or bool(db.execute(
         "SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?", (item["class_id"],user["id"])
@@ -124,6 +138,8 @@ def check_submission(db, assignment_id, user):
         raise ClassroomError("作业不存在。",404)
     if item["deadline_passed"]:
         raise ClassroomError("已到截止时间，不能提交或覆盖已有成绩；仍可查阅已获授权作业。",409)
+    if not item["can_submit"]:
+        raise ClassroomError("作业尚未开放，不能提交或覆盖已有成绩。",409)
 
 
 def owned_class(db, class_id, user):
@@ -472,7 +488,8 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
         row=db.execute("SELECT * FROM training_papers WHERE id=? AND org_id=?",(paper_id,who['org_id'])).fetchone()
         if not row or (who['role']=='teacher' and row['owner_id']!=who['id']):
             raise ClassroomError("试卷不存在。",404)
-        if who['role']=='student' and (not row['published'] or (row['class_id'] and not db.execute("SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?",(row['class_id'],who['id'])).fetchone())):
+        policy = task_availability(db,'paper',paper_id)
+        if who['role']=='student' and (not row['published'] or policy['archived_at'] or (row['class_id'] and not db.execute("SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?",(row['class_id'],who['id'])).fetchone())):
             raise ClassroomError("试卷不存在。",404)
         return dict(row)
 
@@ -506,17 +523,23 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
         item['items']=[dict(r) for r in rows]
         item['deadline_passed']=bool(item['deadline_at'] and now()>=datetime.fromisoformat(item['deadline_at']))
         if who['role']=='student':
-            earned=Decimal(0);completed=0
+            from webapp.training_submissions import result_visible
+            earned=Decimal(0);completed=0;results_visible=True
             for question in item['items']:
                 sub=db.execute("SELECT score,adjusted_score FROM submissions WHERE assignment_id=? AND student_id=?",(question['id'],who['id'])).fetchone()
                 question['score']=None
                 if sub:
-                    completed+=1;question['score']=sub['adjusted_score'] if sub['adjusted_score'] is not None else sub['score']
-                    earned+=Decimal(str(question['score']))*Decimal(str(question['points']))/100
+                    completed+=1
+                    visible,_=result_visible(db,question['id'],who['id'])
+                    if visible:
+                        question['score']=sub['adjusted_score'] if sub['adjusted_score'] is not None else sub['score']
+                        earned+=Decimal(str(question['score']))*Decimal(str(question['points']))/100
+                    else:
+                        results_visible=False
             total=sum((Decimal(str(r['points'])) for r in rows),Decimal(0))
             item['progress']={'completed':completed,'case_count':len(rows),'total_points':float(total),
-                              'earned_points':float(earned.quantize(Decimal('.01'),rounding=ROUND_HALF_UP)),
-                              'score':float((earned*100/total).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)) if rows and completed==len(rows) else None}
+                              'earned_points':float(earned.quantize(Decimal('.01'),rounding=ROUND_HALF_UP)) if results_visible else None,
+                              'score':float((earned*100/total).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)) if rows and completed==len(rows) and results_visible else None}
         return item
 
     @app.get("/api/papers")

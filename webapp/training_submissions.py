@@ -141,7 +141,7 @@ def task_row(db, assignment_id: str) -> tuple[dict[str, Any], str | None]:
     return base, None
 
 
-def settings_for(db, assignment_id: str) -> dict[str, int]:
+def settings_for(db, assignment_id: str) -> dict[str, Any]:
     """任务级限制：题目归属试卷时以试卷为准，否则取作业自身。"""
     row, _ = task_row(db, assignment_id)
     limit = int(row["submit_limit"] or 1)
@@ -202,31 +202,33 @@ def _codec(store):
     return store._field_codec
 
 
-def guard_submit(db, assignment_id: str, student_id: str) -> None:
-    """提交前闸门，必须在写入事务内调用。
-
-    - 从未提交：放行（由限交次数以外的逻辑判断截止时间，截止在 classroom 里已校验）；
-    - 已提交：必须处于「已退回」，且订正次数未用尽。
-    """
-    limits = settings_for(db, assignment_id)
+def submission_block_reason(limits: dict[str, Any], state: dict[str, Any],
+                            submitted: bool, expired: bool) -> str | None:
+    """One policy for displaying eligibility and enforcing writes."""
+    if expired:
+        return "订正期限已过，不能再提交或保存草稿。"
     if limits["retake_policy"] == "free":
         # 历史口径：学生可自行重交，覆盖当前提交；旧版本仍会进版本表，不丢记录
-        return
-    state = state_of(db, assignment_id, student_id)
-    current = db.execute(
-        "SELECT 1 FROM submissions WHERE assignment_id=? AND student_id=?", (assignment_id, student_id)
-    ).fetchone()
-    if not current:
+        return None
+    if not submitted:
         if state["attempts"] >= limits["submit_limit"]:
-            raise classroom.ClassroomError(
-                f"已达提交上限（限交 {limits['submit_limit']} 次），如需再交请联系任课教师。", 409)
-        return
+            return f"已达提交上限（限交 {limits['submit_limit']} 次），如需再交请联系任课教师。"
+        return None
     if state["status"] != "returned":
-        raise classroom.ClassroomError(
-            "这份作业已经提交过。需要重新提交请等任课教师退回并说明原因。", 409)
+        return "这份作业已经提交过。需要重新提交请等任课教师退回并说明原因。"
     if state["corrections"] >= limits["correction_limit"]:
-        raise classroom.ClassroomError(
-            f"订正次数已用尽（限 {limits['correction_limit']} 次），请联系任课教师。", 409)
+        return f"订正次数已用尽（限 {limits['correction_limit']} 次），请联系任课教师。"
+    return None
+
+
+def guard_submit(db, assignment_id: str, student_id: str) -> None:
+    """Enforce the submission policy inside the caller's write transaction."""
+    state = state_of(db, assignment_id, student_id)
+    submitted = db.execute("SELECT 1 FROM submissions WHERE assignment_id=? AND student_id=?",
+                           (assignment_id, student_id)).fetchone()
+    reason = submission_block_reason(settings_for(db, assignment_id), state, bool(submitted), correction_expired(state))
+    if reason:
+        raise classroom.ClassroomError(reason, 409)
 
 
 def task_version_id(db, assignment_id: str) -> str | None:
@@ -353,16 +355,24 @@ def save_draft(db, assignment_id: str, student_id: str, answers: list[str]) -> d
     return {"saved_at": stamp}
 
 
+def correction_expired(state: dict[str, Any]) -> bool:
+    if state["status"] != "returned" or not state["correct_due_at"]:
+        return False
+    try:
+        return datetime.fromisoformat(now()) >= datetime.fromisoformat(state["correct_due_at"])
+    except (TypeError, ValueError):
+        return True
+
+
 def progress(db, assignment_id: str, student_id: str, store=None) -> dict[str, Any]:
     limits = settings_for(db, assignment_id)
     state = state_of(db, assignment_id, student_id)
     draft_row = draft(db, assignment_id, student_id)
     status = state["status"]
+    review = db.execute("SELECT adjusted_score FROM submissions WHERE assignment_id=? AND student_id=?",
+                        (assignment_id, student_id)).fetchone()
+    expired = correction_expired(state)
     if status in {"submitted", "pending_review", "done"}:
-        review = db.execute(
-            "SELECT adjusted_score FROM submissions WHERE assignment_id=? AND student_id=?",
-            (assignment_id, student_id),
-        ).fetchone()
         if review is None:
             status = "not_started"
         else:
@@ -377,6 +387,8 @@ def progress(db, assignment_id: str, student_id: str, store=None) -> dict[str, A
         "retake_policy": limits["retake_policy"],
         "draft_saved_at": draft_row["saved_at"] if draft_row else None,
         "correct_due_at": state["correct_due_at"],
+        "correction_deadline_passed": expired,
+        "can_submit": submission_block_reason(limits, state, bool(review), expired) is None,
     }
 
 
@@ -384,6 +396,9 @@ def return_for_revision(store, db, assignment_id: str, student_id: str, teacher:
                         reason: str, correct_due_at: str | None) -> dict[str, Any]:
     if not reason.strip():
         raise SubmissionError("退回必须写明原因，学生要按原因订正。")
+    correct_due_at = classroom.deadline(correct_due_at)
+    if correct_due_at and datetime.fromisoformat(correct_due_at) <= datetime.fromisoformat(now()):
+        raise SubmissionError("订正期限必须在未来。")
     codec = _codec(store)
     set_state(db, assignment_id, student_id, "returned",
               return_reason=codec.seal(reason.strip(), "training_submission_state", "return_reason",
@@ -508,7 +523,7 @@ def register(app, store_provider: Callable[[], Any], user_fn: Callable[..., dict
             if user["role"] == "teacher":
                 return response({"assignment": {"id": item["id"], "title": item["title"]}})
             body = progress(db, assignment_id, user["id"], store_provider())
-            body["can_submit"] = bool(item["can_submit"])
+            body["can_submit"] = bool(item["can_submit"] and body["can_submit"])
             return response(body)
 
     @app.get("/api/assignments/{assignment_id}/draft")
@@ -536,7 +551,8 @@ def register(app, store_provider: Callable[[], Any], user_fn: Callable[..., dict
             current_actor(db, user, {"student"})
             item = accessible(db, assignment_id, user)
             if not item["can_submit"]:
-                raise SubmissionError("已到截止时间，不能再保存草稿。", 409)
+                raise SubmissionError("任务尚未开放或已截止，不能保存草稿。", 409)
+            guard_submit(db, assignment_id, user["id"])
             # 组卷每题本来就是一道独立作业，草稿按题存不会拆散整份进度：
             # 草稿不写 submissions，试卷的 completed / earned_points 只认正式提交。
             value = save_draft(db, assignment_id, user["id"], body.answers)
@@ -573,7 +589,12 @@ def register(app, store_provider: Callable[[], Any], user_fn: Callable[..., dict
                 target = student_id
             else:
                 target = user["id"]
-            return response({"items": versions(store_provider(), db, assignment_id, target)})
+            items = versions(store_provider(), db, assignment_id, target)
+            if user["role"] == "student" and not result_visible(db, assignment_id, target)[0]:
+                for item in items:
+                    for field in ("score", "adjusted_score", "feedback"):
+                        item[field] = None
+            return response({"items": items})
 
     @app.post("/api/assignments/{assignment_id}/return")
     @guarded

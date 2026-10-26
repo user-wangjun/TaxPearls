@@ -22,8 +22,9 @@ for (const file of sources) pySource += fs.readFileSync(file, 'utf8') + '\n';
 
 const registered = new Set();
 // 路由写法两种都有（app.py 用双引号，rule_bindings.py 等模块用单引号），只认双引号会误报 404。
-for (const match of pySource.matchAll(/@app\.(?:get|post)\(\s*['"]\/([^'"]+)['"]/g)) registered.add(match[1]);
-for (const match of pySource.matchAll(/["']\/([^"']+)["']:\s*\(/g)) registered.add(match[1]);
+// 用反向引用保证开闭引号一致（main 的修法），避免跨行误匹配到别的字符串。
+for (const match of pySource.matchAll(/@app\.(?:get|post)\(\s*(['"])\/([^'"]+)\1/g)) registered.add(match[2]);
+for (const match of pySource.matchAll(/(['"])\/([^'"]+)\1\s*:\s*\(\s*(['"])/g)) registered.add(match[2]);
 
 function fail(message) {
   console.error('FAIL ' + message);
