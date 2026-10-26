@@ -109,7 +109,7 @@ function switchPanel(id) {
   if (!currentUser) return;
   if (currentUser.workspace === "university") { universityWorkspace.choose(({userSettingsPanel:"settings",trainingPanel:"tasks",knowledgePanel:"knowledge"})[id] || "home"); return; }
   if (!canOpenWorkspacePanel(id)) id = defaultWorkspacePanel();
-  if(currentUser?.role==="platform_admin" && !["adminPanel","aiKeysPanel","knowledgePanel","userSettingsPanel"].includes(id)) id="adminPanel";
+  if(currentUser?.role==="platform_admin" && !["adminPanel","retrievalChecksPanel","aiKeysPanel","knowledgePanel","userSettingsPanel"].includes(id)) id="adminPanel";
   if (id !== "notificationPanel") noticeRequest++;
   if (id !== "userSettingsPanel") settingsRequest++;
   if (id !== "knowledgePanel" && typeof invalidateGraph === "function") invalidateGraph();
@@ -125,6 +125,8 @@ function switchPanel(id) {
   if (id === "trainingPanel") loadAssignments();
   if (id === "examPanel") openTeachingWorkspace();
   if (id === "adminPanel") loadAdmin();
+  if (id === "retrievalChecksPanel") retrievalChecks.load();
+  else retrievalChecks.reset();
   if (id === "aiKeysPanel") aiKeyProbes.load();
   else aiKeyProbes.reset();
   if (id === "dashboardPanel") loadDashboard();
@@ -138,6 +140,7 @@ let materialDraft = null, materialCards = [], originalUrls = [];
 let materialRequest = 0;
 const coreInputs = createCoreInputs({api, el, $, user:()=>currentUser, showError, policyUI:()=>enterpriseMaterials.policyUI,openTaskPanel:()=>switchPanel("uploadPanel"),
   continueCheck:id=>window.KnowledgeRetrieval?.openTask(id)});
+const retrievalChecks = createRetrievalChecks({api,el,$,user:()=>currentUser,active:()=>$("retrievalChecksPanel").classList.contains("active")});
 const enterpriseMaterials = createEnterpriseMaterials({api, el, $, user:()=>currentUser,
   clear:clearMaterials, showError, showResult:result=>{renderResult(result);switchPanel("auditPanel");},
   showReview:()=>switchPanel("uploadPanel")});
@@ -983,6 +986,9 @@ function enterApp(user) {
   $("exerciseGenerationResult").textContent=""; $("exerciseGenerationResult").hidden=true;
   const campusIdentity=universityWorkspace.resolveIdentity(user);
   currentUser=campusIdentity?{...user,workspace:"university",role:campusIdentity.role==="admin"?"teacher":user.role}:user;
+  window.tpTrainingTasks?.setUser(currentUser);
+  window.tpSubmissionUI?.reset();
+  $("tp-case-panel")?.remove();
   $("loginCollege").value="";delete $("loginCollege").dataset.needed;$("loginCollegeField").hidden=true;$("loginCollege").disabled=true;
   if(campusIdentity){universityWorkspace.enter(campusIdentity);return;}
   settingsRequest++; settingsReady = false;
@@ -1001,7 +1007,9 @@ function enterApp(user) {
   const caption=campus?"高校工作空间":user.role==="platform_admin"?"平台管理":user.org_type==="enterprise"?"企业工作空间":"机构工作空间";
   $('nav').setAttribute('aria-label',caption);document.querySelector('#nav .nav-caption').textContent=caption;
   aiKeyProbes.reset();
+  retrievalChecks.reset();
   document.querySelector('[data-panel="aiKeysPanel"]').style.display = user.role === "platform_admin" ? "" : "none";
+  document.querySelector('[data-panel="retrievalChecksPanel"]').style.display = user.role === "platform_admin" ? "" : "none";
   document.querySelectorAll(".training-nav").forEach((n) => n.style.display = ["teacher","student"].includes(user.role) ? "" : "none");
   document.querySelectorAll(".admin-nav").forEach((n) => n.style.display = ["platform_admin","org_admin","teacher","accountant"].includes(user.role) ? "" : "none");
   $("teacherBox").style.display = user.role === "teacher" ? "block" : "none";
@@ -1575,7 +1583,8 @@ async function loadAssignments({throwOnError=false}={}) {
   try {
     const [rows,classes,papers,students,audits,submissions,courses]=await Promise.all([
       api("/api/assignments"),api("/api/classes"),api("/api/papers"),
-      isTeacher?api("/api/classes/students"):[],isTeacher?api(currentUser.org_type==="university"?"/api/teaching/cases":"/api/audits"):[],isTeacher?api("/api/submissions"):[],isTeacher&&currentUser.org_type==="university"?api("/api/teaching/courses"):[]
+      isTeacher?api("/api/classes/students"):[],isTeacher?api(currentUser.org_type==="university"?"/api/teaching/cases":"/api/audits"):[],isTeacher?api("/api/submissions"):[],isTeacher&&currentUser.org_type==="university"?api("/api/teaching/courses"):[],
+      window.tpTrainingTasks?.refresh({throwOnError})
     ]);
     if(request!==trainingLoadRequest||uid!==currentUser?.id)return;
     classroomUI.render({classes,papers,students,audits});

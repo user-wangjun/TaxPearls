@@ -125,6 +125,22 @@ class CertificateSearchTests(unittest.TestCase):
         self.assertEqual(hit["counts"]["high_freq"], 1)
         self.assertEqual(hit["counts"]["practice_kps"], 1)
 
+    def test_search_counts_include_zero_for_absent_marks_and_links(self):
+        self._login()
+        empty = next(c for c in self._search()["results"] if c["id"] == self.other)
+        self.assertEqual(empty["counts"], {"knowledge_points": 0, "high_freq": 0, "practice_kps": 0})
+        with self.store.connect() as db:
+            db.execute("DELETE FROM knowledge_point_mark")
+        counts = self._search("cjkj-2027")["results"][0]["counts"]
+        self.assertEqual(counts, {"knowledge_points": 2, "high_freq": 0, "practice_kps": 1})
+        with self.store.connect() as db:
+            db.execute("UPDATE knowledge_point_link SET active=0")
+        counts = self._search("cjkj-2027")["results"][0]["counts"]
+        self.assertEqual(counts, {"knowledge_points": 2, "high_freq": 0, "practice_kps": 0})
+        with self.store.connect() as db:
+            db.execute("UPDATE knowledge_point SET active=0")
+        self.assertEqual(self._search("cjkj-2027")["results"][0]["counts"], empty["counts"])
+
     def test_search_by_subject_and_case_insensitive_code(self):
         self._login()
         self.assertEqual(self._search("经济法")["results"][0]["match"][0]["field"], "subjects")

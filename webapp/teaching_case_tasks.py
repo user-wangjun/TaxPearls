@@ -99,6 +99,15 @@ def migrate(db) -> None:
         CREATE INDEX IF NOT EXISTS idx_teaching_case_delivery_task
             ON teaching_case_delivery(task_id, student_id);
     """)
+    # 将旧案例入口的归档记录补入任务主链，保留已有排期与答案开放策略。
+    if "training_task_settings" in tables:
+        db.execute("""INSERT INTO training_task_settings
+            (subject_kind,subject_id,org_id,archived_at,updated_at)
+            SELECT 'assignment',a.id,a.org_id,t.archived_at,t.archived_at
+            FROM teaching_case_task t JOIN assignments a ON a.id=t.assignment_id
+            WHERE t.archived_at IS NOT NULL
+            ON CONFLICT(subject_kind,subject_id) DO UPDATE SET archived_at=excluded.archived_at
+            WHERE training_task_settings.archived_at IS NULL""")
 
 
 # --------------------------------------------------------------------------- 取数
@@ -234,6 +243,7 @@ def list_tasks(store, who: dict[str, Any], case_id: str | None = None) -> list[d
 
 
 def set_archived(store, who: dict[str, Any], task_id: str, archived: bool) -> dict[str, Any]:
+    from webapp import training_tasks
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         current_actor(db, who, {"teacher"})
@@ -245,8 +255,10 @@ def set_archived(store, who: dict[str, Any], task_id: str, archived: bool) -> di
         if not assignment or assignment["created_by"] != who["id"] \
                 or assignment["org_id"] != who["org_id"]:
             raise CaseTaskError("案例任务不存在。", 404)
-        db.execute("UPDATE teaching_case_task SET archived_at=? WHERE id=?",
-                   (now() if archived else None, task_id))
+        try:
+            training_tasks.set_archived(db, who, "assignment", row["assignment_id"], archived)
+        except training_tasks.TaskError as exc:
+            raise CaseTaskError(str(exc), exc.status) from None
         value = _payload(task_by_id(db, task_id), db)
         store._log(db, who, "archive_case_task", "case_task", task_id, f"archived={int(archived)}")
     return value
@@ -254,15 +266,15 @@ def set_archived(store, who: dict[str, Any], task_id: str, archived: bool) -> di
 
 # --------------------------------------------------------------------------- 学生视角
 
-def _editable(db, assignment_id: str, student_id: str) -> tuple[bool, str]:
-    """截止前、且还没正式提交（或已被退回）才能改交付物。"""
-    from webapp import training_submissions
-    _, due = training_submissions.task_row(db, assignment_id)
-    if due and now() >= due:
-        return False, "已到截止时间，不能再修改交付物。"
-    status = training_submissions.state_of(db, assignment_id, student_id)["status"]
-    if status in {"submitted", "pending_review", "done"}:
-        return False, "已正式提交，需要修改请等任课教师退回。"
+def _editable(db, task: dict[str, Any], student_id: str) -> tuple[bool, str]:
+    """交付物与正式作答共用排期、重交及订正校验。"""
+    from webapp import classroom, training_submissions
+    if task["state"] != "published":
+        return False, "任务尚未开放或已截止，不能再修改交付物。"
+    try:
+        training_submissions.guard_submit(db, task["id"], student_id)
+    except classroom.ClassroomError as exc:
+        return False, str(exc)
     return True, ""
 
 
@@ -281,7 +293,7 @@ def student_view(store, who: dict[str, Any], assignment_id: str) -> dict[str, An
             raise CaseTaskError("关联案例不存在。", 404)
         picked = json.loads(row["steps_json"])
         visible, note = training_submissions.result_visible(db, assignment_id, who["id"])
-        editable, edit_note = _editable(db, assignment_id, who["id"])
+        editable, edit_note = _editable(db, task, who["id"])
         filled = {d["step"]: d for d in _deliveries(db, row["id"], who["id"])}
     return {
         "task": {"id": row["id"], "steps": picked,
@@ -322,13 +334,13 @@ def save_delivery(store, who: dict[str, Any], assignment_id: str, step: str,
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         current_actor(db, who, {"student"})
-        _visible_assignment(db, who, assignment_id)   # 可见性与班级校验
+        task = _visible_assignment(db, who, assignment_id)   # 可见性与班级校验
         row = task_row(db, assignment_id)
         if row is None or row["archived_at"]:
             raise CaseTaskError("这道作业不是实操案例任务。", 404)
         if step not in json.loads(row["steps_json"]):
             raise CaseTaskError("本次任务不训练这一步。", 409)
-        editable, note = _editable(db, assignment_id, who["id"])
+        editable, note = _editable(db, task, who["id"])
         if not editable:
             raise CaseTaskError(note, 409)
         text = (content or "").strip()

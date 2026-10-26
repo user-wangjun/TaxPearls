@@ -67,11 +67,15 @@ async def lifespan(application):
     application.state.public_knowledge = await run_in_threadpool(bootstrap, store, RULES_DIR)
     worker = NotificationWorker(lambda: store)
     worker.start()
+    from webapp.retrieval_checks import Worker as RetrievalCheckWorker
+    retrieval_worker = RetrievalCheckWorker(lambda: store)
+    retrieval_worker.start()
     try:
         application.state.material_worker.start()
         yield
     finally:
         application.state.material_worker.stop()
+        retrieval_worker.stop()
         worker.stop()
 
 
@@ -1791,6 +1795,8 @@ from webapp.core_inputs import register as register_core_inputs
 register_core_inputs(app, lambda: store, _user, _allow, STATIC_DIR)
 from webapp.knowledge_evidence import register as register_knowledge_evidence
 register_knowledge_evidence(app, lambda: store, _user, _allow)
+from webapp.retrieval_checks import register as register_retrieval_checks
+register_retrieval_checks(app, lambda: store, _user, _allow)
 from webapp.core_reports import register as register_core_reports
 register_core_reports(app, lambda: store, _user, _allow)
 register_enterprise_materials(app, lambda: store, _user, _allow, RULES_DIR,
@@ -2226,7 +2232,7 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
     if not assignment:
         raise HTTPException(status_code=404, detail="作业不存在。")
     if not assignment["can_submit"]:
-        raise HTTPException(409,"已到截止时间，不能提交或覆盖已有成绩。")
+        raise HTTPException(409,"任务尚未开放或已截止，不能提交或覆盖已有成绩。")
     entry = store.get_audit(assignment["audit_id"])
     if not entry or entry["org_id"] != user["org_id"]:
         raise HTTPException(404,"作业材料不存在。")
@@ -2247,7 +2253,7 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
         return {**result, "result_released": True, "result_note": ""}
     return {"result_released": False, "result_note": note, "score": None,
             "correct": [], "missed": [], "false_positives": [],
-            "false_positive_deduction": result.get("false_positive_deduction")}
+            "false_positive_deduction": None}
 
 
 @app.post("/api/assignments/{assignment_id}/feedback")

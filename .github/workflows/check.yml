@@ -55,6 +55,8 @@ jobs:
       - name: Install browser and fonts (one apt index refresh, bounded network waits)
         timeout-minutes: 10
         run: |
+          # The Azure mirror repeatedly stalls on the 61 MB CJK font package.
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
           printf 'Acquire::Retries "2";\nAcquire::http::Timeout "20";\nAcquire::https::Timeout "20";\n' | sudo tee /etc/apt/apt.conf.d/80-taxpearls-ci
           python -m playwright install --with-deps chromium
           sudo apt-get install -y --no-install-recommends fonts-noto-cjk

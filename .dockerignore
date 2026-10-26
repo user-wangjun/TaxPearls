@@ -39,7 +39,12 @@ output/
 node_modules/
 *.log
 samples/
-tests/
+tests/*
+!tests/fixtures/
+tests/fixtures/*
+!tests/fixtures/kg_retrieval/
+tests/fixtures/kg_retrieval/*
+!tests/fixtures/kg_retrieval/gold_cases.json
 prototype/
 tmp/
 *.tpbackup
