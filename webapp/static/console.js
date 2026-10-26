@@ -20,7 +20,7 @@ let exerciseOpenRequest = 0, sandboxFeedbackRequest = 0, sandboxRuleId = null;
 let sandboxEvidence = new Map();
 let trainingLoadRequest = 0, exerciseDeadlineTimer = null;
 let latestFindings = [];
-let ruleCatalog = [];
+let graphRuleCatalog = [], ruleCatalogRequest = 0;
 let editingRule = null;
 let ruleDraftLogic = null;
 let noticeRequest = 0, noticeBusy = false, noticeReady = false, noticeHasEmail = false;
@@ -113,7 +113,8 @@ function switchPanel(id) {
   if (id !== "notificationPanel") noticeRequest++;
   if (id !== "userSettingsPanel") settingsRequest++;
   if (id !== "knowledgePanel" && typeof invalidateGraph === "function") invalidateGraph();
-  if (id !== "adminPanel") { ruleEditorRequest++; adminRequest++; }
+  if (id !== "adminPanel") adminRequest++;
+  if (id !== "knowledgePanel") { ruleEditorRequest++; ruleCatalogRequest++; }
   if (id === "uploadPanel") { refreshAIStatus(); refreshAuditClients(); enterpriseMaterials.refresh(); coreInputs.refresh().catch(err=>showError(err.message)); }
   document.querySelectorAll(".panel").forEach((n) => n.classList.toggle("active", n.id === id));
   document.querySelectorAll("#nav [data-panel]").forEach((n) => n.classList.toggle("active", n.dataset.panel === id));
@@ -130,7 +131,7 @@ function switchPanel(id) {
   else aiKeyProbes.reset();
   if (id === "dashboardPanel") loadDashboard();
   if (id === "orgReportPanel") loadOrgOverview();
-  if (id === "knowledgePanel") loadKnowledge();
+  if (id === "knowledgePanel") { loadKnowledge(); loadGraphRules(); }
 }
 
 /* ---------- 多材料上传与 PDF 核对 ---------- */
@@ -1017,9 +1018,12 @@ function enterApp(user) {
   $("createUserRow").style.display = user.role === "org_admin" ? "flex" : "none";
   $("userAdmin").style.display = ["platform_admin","org_admin"].includes(user.role) ? "block" : "none";
   $("clientAdmin").style.display = user.role === "org_admin" ? "block" : "none";
-  $("ruleAdmin").style.display = ["platform_admin","org_admin","teacher","accountant"].includes(user.role) ? "block" : "none";
-  $("ruleAdmin").querySelector("h2").textContent = user.role === "platform_admin" ? "规则维护与版本发布" : "规则参数与试跑";
-  $("ruleAdmin").querySelector("p.muted").textContent = user.role === "platform_admin" ? "平台维护规则定义、启停与版本，不读取或试跑客户审计。请依据已核对的变更发布。" : "在自己有权访问的历史材料上试跑草稿，不改变冻结审计；正式规则版本仅由平台管理员发布。";
+  const ruleAccess = ["platform_admin","org_admin","teacher","accountant"].includes(user.role) && !isCampusUser();
+  $("ruleAdmin").hidden = !ruleAccess;
+  $("ruleAdminLink").hidden = !ruleAccess;
+  ruleCatalogRequest++; ruleEditorRequest++; ruleHistoryRequest++;
+  graphRuleCatalog=[]; editingRule=null; $("ruleList").replaceChildren(); $("ruleEditor").hidden=true;
+
   $("logAdmin").style.display = ["platform_admin","org_admin","teacher"].includes(user.role) ? "block" : "none";
   $("auditClientField").style.display = ["org_admin","accountant"].includes(user.role) ? "block" : "none";
   const businessUser = !["student","platform_admin"].includes(user.role);
@@ -1030,7 +1034,7 @@ function enterApp(user) {
   document.querySelector('[data-panel="examPanel"] .nav-label').textContent=campusStudent(user)?"考证备考":"考证教学";
   document.querySelector('#examPanel h2').textContent=campusStudent(user)?"考证备考":"考证教学";
   if(campus){
-    $('clientAdmin').style.display='none';$('ruleAdmin').style.display='none';$('logAdmin').style.display='none';
+    $('clientAdmin').style.display='none';$('logAdmin').style.display='none';
     $('userAdmin').style.display=staff?'block':'none';$('createUserRow').style.display='none';
     document.querySelector('[data-panel="adminPanel"]').style.display=staff?'':'none';
     document.querySelector('[data-panel="orgReportPanel"]').style.display='none';
@@ -1741,6 +1745,70 @@ function showOrgSettings(settings,message="") {
 async function loadOrgSettings(){showOrgSettings(await api("/api/org/settings"));}
 
 function nextRuleVersion(version){const parts=version.split(".").map(Number);if(parts.some(n=>!Number.isInteger(n)))return version+".1";parts[parts.length-1]+=1;return parts.join(".");}
+async function loadGraphRules(){
+  if($("ruleAdmin").hidden||!$("ruleAdmin").open)return;
+  const request=++ruleCatalogRequest,owner=currentUser?.id;
+  const current=()=>request===ruleCatalogRequest&&currentUser?.id===owner&&$("knowledgePanel").classList.contains("active")&&$("ruleAdmin").open;
+  graphRuleCatalog=[];$("ruleList").replaceChildren();$("ruleCatalogStatus").textContent="正在读取图谱规则…";
+  try{
+    const rows=await api("/api/knowledge/rule-catalog");if(!current())return;
+    const audits=currentUser.role==="platform_admin"?[]:await api("/api/audits");if(!current())return;
+    const select=$("ruleTrialAudit"),previous=select.value;select.replaceChildren();
+    for(const row of audits){const item=el("option",null,row.company_name+" · "+row.period);item.value=row.id;select.append(item);}
+    if(audits.some(row=>row.id===previous))select.value=previous;
+    if(!audits.length){const item=el("option",null,"暂无可试跑的历史审计");item.value="";select.append(item);}
+    graphRuleCatalog=rows;renderGraphRules();
+    if(editingRule)loadRuleVersionHistory(editingRule.id);
+  }catch(error){if(current())$("ruleCatalogStatus").textContent="图谱规则读取失败："+error.message;}
+}
+function renderGraphRules(){
+  const query=$("ruleCatalogSearch").value.trim().toLowerCase(),box=$("ruleList");box.replaceChildren();
+  const rows=graphRuleCatalog.filter(r=>[r.rule_code,r.name,r.version,r.rule_id].join(" ").toLowerCase().includes(query));
+  $("ruleCatalogStatus").textContent=`共 ${graphRuleCatalog.length} 个图谱规则版本，匹配 ${rows.length} 个`+(rows.length>80?"；显示前 80 个，请搜索缩小范围。":"。");
+  for(const row of rows.slice(0,80)){
+    const item=el("div","data-item"),text=el("div"),actions=el("div","row");
+    const status=({candidate:"候选 · 待审核",approved:"已审核",rejected:"已驳回",retired:"已退役"})[row.review_status]||"审核状态待核实";
+    text.append(el("div",null,(row.rule_code||row.rule_id)+" "+row.name+" · v"+row.version),
+      el("p","muted",row.source==="converted"?"原有规则已转换为图谱计算条件 · 阈值仍为内部筛查参数":"知识图谱政策规则"));
+    actions.append(el("span","role-chip",status));
+    const view=el("button",null,"查看依据与条件");view.addEventListener("click",()=>viewGraphRule(row));actions.append(view);
+    if(row.legacy){
+      const edit=el("button",null,currentUser.role==="platform_admin"?"配置参数版本":"参数草稿 / 历史试跑");
+      edit.addEventListener("click",()=>openRuleEditor(row.legacy));actions.append(edit);
+      const compatibility=el("details"),summary=el("summary",null,"历史审计兼容设置");
+      compatibility.append(summary,el("p","muted",(row.legacy.enabled?"历史审计筛查开启。":"历史审计筛查关闭。")+"此开关仅用于旧审计流程，不改变图谱审核状态或企业材料检查，也不重算历史报告。"));
+      if(currentUser.role==="platform_admin"){
+        const toggle=el("button",null,row.legacy.enabled?"关闭历史审计筛查":"开启历史审计筛查");
+        toggle.addEventListener("click",async()=>{
+          const owner=currentUser?.id,request=ruleCatalogRequest;toggle.disabled=true;
+          try{await api("/api/rules/"+row.legacy.id+"/state",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!row.legacy.enabled})});
+            if(currentUser?.id===owner&&ruleCatalogRequest===request&&$("knowledgePanel").classList.contains("active"))await loadGraphRules();
+          }catch(error){if(currentUser?.id===owner&&ruleCatalogRequest===request)showError(error.message);}
+          finally{toggle.disabled=false;}
+        });compatibility.append(toggle);
+      }
+      text.append(compatibility);
+    }
+    item.append(text,actions);box.append(item);
+  }
+  if(!rows.length)box.append(el("p","muted","没有匹配的图谱规则。"));
+}
+async function viewGraphRule(row){
+  const owner=currentUser?.id,request=ruleCatalogRequest;
+  $("graphScope").value="";updateGraphAudits();
+  const loading=loadGraph(),ticket=graphRequest;await loading;
+  if(currentUser?.id!==owner||request!==ruleCatalogRequest||ticket!==graphRequest||!$("knowledgePanel").classList.contains("active"))return;
+  const node=graphData.nodes.find(n=>n.kind==="rule"&&n.record_id===row.rule_id);
+  if(!node){$("ruleCatalogStatus").textContent="该图谱版本已变化或未能载入，请刷新规则后重试。";return;}
+  for(const id of ["knowledgeCategory","graphStatus","graphRuleLevel","graphRegion"])$(id).value="";
+  $("knowledgeSearch").value=row.rule_id;graphSelected=node.id;filterGraph(true);focusGraph();graphTab(false);
+  $("knowledgeDetail").scrollIntoView({behavior:"smooth",block:"nearest"});
+}
+$("btnOpenGraphRules").addEventListener("click",()=>{switchPanel("knowledgePanel");$("ruleAdmin").open=true;$("ruleAdmin").scrollIntoView({behavior:"smooth",block:"start"});});
+$("btnReloadRules").addEventListener("click",loadGraphRules);
+$("ruleCatalogSearch").addEventListener("input",renderGraphRules);
+$("ruleAdmin").addEventListener("toggle",()=>{if($("ruleAdmin").open)loadGraphRules();else ruleCatalogRequest++;});
+
 function setRuleDraft(path,value){let node=ruleDraftLogic;for(let i=0;i<path.length-1;i++)node=node[path[i]];node[path[path.length-1]]=value;}
 function ruleFieldName(path){const key=path[path.length-1],names={threshold:"相对偏离阈值",tolerance:"差额容差",min:"区间下限",max:"区间上限",left:"左侧指标 / 基准",right:"右侧指标 / 基准",numerator:"分子指标",denominator:"分母指标",direction:"比较方向"};return names[key]||("参数 "+(Number.isInteger(key)?key+1:key));}
 
@@ -1766,7 +1834,7 @@ function openRuleEditor(rule){
   ruleEditorRequest++;
   editingRule=rule;ruleDraftLogic=JSON.parse(JSON.stringify(rule.logic));$("ruleEditor").hidden=false;
   $("ruleEditorTitle").textContent=rule.id+" "+rule.name;$("ruleEditorMeta").textContent=rule.category+" · "+({high:"高",medium:"中",low:"低"}[rule.severity]||rule.severity)+"风险";
-  $("ruleEditorState").textContent=rule.customized?"已配置":"基础规则";$("ruleCurrentVersion").value=rule.version;$("ruleNewVersion").value=nextRuleVersion(rule.version);$("ruleThresholdBasis").value=rule.threshold_basis;
+  $("ruleEditorState").textContent="参数配置不代表图谱已审核";$("ruleCurrentVersion").value=rule.version;$("ruleNewVersion").value=nextRuleVersion(rule.version);$("ruleThresholdBasis").value=rule.threshold_basis;
   $("ruleEffectiveFrom").value="";$("ruleEffectiveTo").value="";
   $("ruleMetricHint").textContent="允许引用的指标："+Object.keys(rule.inputs).join("、");$("btnRuleSave").hidden=currentUser.role!=="platform_admin";
   $("btnRuleTrial").hidden=currentUser.role==="platform_admin";$("ruleTrialAudit").closest(".field").hidden=currentUser.role==="platform_admin";
@@ -1791,12 +1859,12 @@ async function loadRuleVersionHistory(ruleId){
   }catch(err){if(current())box.append(el("p","muted","版本历史加载失败："+err.message));}
 }
 
-function ruleEditorCurrent(request,owner){return request===ruleEditorRequest&&currentUser?.id===owner&&!!editingRule&&$("adminPanel").classList.contains("active");}
+function ruleEditorCurrent(request,owner){return request===ruleEditorRequest&&currentUser?.id===owner&&!!editingRule&&$("knowledgePanel").classList.contains("active");}
 function ruleEditorControls(){
   $("ruleEditor").querySelectorAll("input:not([readonly]),select,textarea,button").forEach(n=>{n.disabled=ruleBusy;});
 }
 async function submitRuleDraft(publish){
-  if(ruleBusy||!editingRule||!$("adminPanel").classList.contains("active"))return;
+  if(ruleBusy||!editingRule||!$("knowledgePanel").classList.contains("active"))return;
   const request=ruleEditorRequest,owner=currentUser.id,id=editingRule.id;
   try{
     const body=ruleDraftBody(),audit=$("ruleTrialAudit").value;
@@ -1806,8 +1874,8 @@ async function submitRuleDraft(publish){
     if(!ruleEditorCurrent(request,owner))return;
     if(publish){
       openRuleEditor(result);
-      $("ruleEditorStatus").textContent="已保存 "+result.id+" v"+result.version+"；审计将按完整所属期选择适用版本。";
-      await loadAdmin();
+      $("ruleEditorStatus").textContent="已保存 "+result.id+" v"+result.version+"；图谱新版本仍须审核，历史报告保持原版本。";
+      await loadGraphRules();
     }else{showRuleTrial(result);$("ruleEditorStatus").textContent="试跑完成，历史审计未被修改。";}
   }catch(err){if(ruleEditorCurrent(request,owner)){
     $("ruleEditorStatus").textContent=(publish?"发布未确认，请刷新核对版本后再操作：":"试跑失败：")+err.message;
@@ -2086,17 +2154,6 @@ async function loadAdmin() {
       }
       if(!invites.length)ib.append(el("div","data-item","暂无签发记录。"));
     }
-    const rules=await api("/api/rules");
-    if(!current())return;
-    const audits=currentUser.role==="platform_admin"?[]:await api("/api/audits");
-    if(!current())return;
-    ruleCatalog=rules;const trialSelect=$("ruleTrialAudit"),selectedAudit=trialSelect.value;trialSelect.textContent="";
-    for(const row of audits){const option=el("option",null,row.company_name+" · "+row.period+" · "+row.audited_at);option.value=row.id;trialSelect.append(option);}if(audits.some(row=>row.id===selectedAudit))trialSelect.value=selectedAudit;
-    if(!audits.length){const option=el("option",null,"暂无可试跑的历史审计");option.value="";trialSelect.append(option);}
-    const rb=$("ruleList");rb.textContent="";
-    for(const r of ruleCatalog){const item=el("div","data-item"),text=el("div");text.append(el("div",null,r.id+" "+r.name+" · v"+r.version),el("p","muted",r.category+(r.customized?" · 已配置参数":" · 基础参数")));const actions=el("div","row"),chip=el("span","role-chip",r.enabled?"已启用":"已停用"),edit=el("button",null,currentUser.role==="platform_admin"?"配置规则":"配置 / 试跑");edit.addEventListener("click",()=>openRuleEditor(r));actions.append(chip,edit);if(currentUser.role==="platform_admin"){const toggle=el("button",null,r.enabled?"停用":"启用");toggle.addEventListener("click",async()=>{await api("/api/rules/"+r.id+"/state",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({enabled:!r.enabled})});await loadAdmin();});actions.append(toggle);}item.append(text,actions);rb.append(item);}
-    // Keep unsaved drafts intact. Selecting a rule explicitly reloads its version.
-    if(editingRule)loadRuleVersionHistory(editingRule.id);
     if(["platform_admin","org_admin","teacher"].includes(currentUser.role)){const logs=await api("/api/audit-log");if(current())renderAdminLogs(logs,current);}
   } catch(err){if(current())showError(err.message);}
 }

@@ -2051,6 +2051,34 @@ def delete_org_logo(session: str | None = Cookie(default=None, alias=COOKIE_NAME
     return saved
 
 
+@app.get("/api/knowledge/rule-catalog")
+def knowledge_rule_catalog(session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    """Current graph editions, with legacy controls explicitly scoped to compatibility."""
+    _user(session)
+    from src.rule_conversion import compile_rule
+    loaded = _effective_rules()
+    overrides, enabled = store.rule_overrides(), store.enabled_rule_ids()
+    definitions = {compile_rule(r)['rule_id']: r for r in loaded}
+    with store.connect() as db:
+        policy_graph.sync_rules(db, loaded)
+        native = [dict(row) for row in db.execute(
+            'SELECT * FROM TaxRule WHERE execution_json IS NULL AND conversion_json IS NULL')]
+        rows = native + [policy_graph.get(db, 'TaxRule', rid) for rid in definitions]
+        result = []
+        for row in rows:
+            rid = row['rule_id']
+            rule = definitions.get(rid)
+            result.append({
+                'rule_id': rid, 'rule_code': row['rule_code'], 'name': row['name'],
+                'version': row['version'], 'review_status': row['review_status'],
+                'reviewed_by': row['reviewed_by'], 'reviewed_at': row['reviewed_at'],
+                'source': 'converted' if rule else 'graph',
+                'legacy': _rule_payload(rule, enabled is None or rule.id in enabled,
+                                        overrides.get(rule.id)) if rule else None,
+            })
+    return sorted(result, key=lambda row: (row['rule_code'] or '', row['version'], row['rule_id']))
+
+
 @app.get("/api/rules")
 def rules(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
     _user(session)

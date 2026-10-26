@@ -1643,3 +1643,5 @@ html[data-theme] #appMain #inviteAdmin #inviteOrgTypeOptions button:focus-visibl
 #knowledgePanel .ai-rag-source a{color:var(--ink-2)}
 #knowledgePanel #graphMessages{min-height:120px}
 @media(max-width:520px){#knowledgePanel .graph-question-modes{padding:10px 12px}}
+
+#ruleAdmin .rule-editor-head{flex-wrap:wrap}#ruleAdmin .rule-editor-head>div{flex:1 1 240px}
