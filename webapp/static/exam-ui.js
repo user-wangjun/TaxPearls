@@ -235,6 +235,11 @@
     const proctor = el("button", "small", "监考台");
     proctor.onclick = async () => open(() => proctorPanel(paper, college));
     acts.append(questions, roster, proctor);
+    if (paper.status !== "draft") {
+      const scores = el("button", "small", "成绩");
+      scores.onclick = async () => open(() => scoresPanel(paper, college));
+      acts.append(scores);
+    }
 
     if (paper.status === "draft") {
       const publish = el("button", "small primary", "发布");
@@ -481,6 +486,181 @@
     return box;
   }
 
+  // ---------------------------------------------------------------- 判分复核与成绩（E3）
+
+  function scoresPanel(paper, college) {
+    const box = el("div");
+    const note = el("p", "ex-note");
+    const render = async () => {
+      const data = await query(`/api/training/exams/papers/${encodeURIComponent(paper.id)}/sessions`, {college});
+      box.replaceChildren();
+      const released = Boolean(paper.released_at);
+      const closed = paper.status === "closed" || paper.status === "archived";
+      note.textContent = released
+        ? `成绩已发布（${when(paper.released_at)}），考生交卷后即可看到分数与解析。`
+        : (closed ? "成绩尚未发布，考生还看不到分数与解析。"
+          : "考试还没结束：发布成绩前请先「提前结束」，否则考生交卷即见分。");
+      box.append(el("p", "ex-note", `名单 ${data.summary.roster} 人 · 已交 ${data.summary.submitted}`
+        + ` · 满分 ${paper.total_points} 分 · 及格线 ${paper.pass_score === null || paper.pass_score === undefined
+          ? "未设" : paper.pass_score + " 分"} · 口径：复核分优先，未复核用自动判分`), note);
+
+      const acts = el("div", "ex-acts");
+      const release = el("button", "small" + (released ? "" : " primary"), released ? "撤回发布" : "发布成绩");
+      release.onclick = async () => {
+        release.disabled = true;
+        try {
+          await send(`/api/training/exams/papers/${encodeURIComponent(paper.id)}/release`,
+            "POST", {college, release: !released});
+          note.textContent = released ? "已撤回：考生立刻看不到成绩。" : "已发布：考生可查看分数与解析。";
+          const {papers} = await query("/api/training/exams/papers", {college});
+          const fresh = papers.find(item => item.id === paper.id);
+          if (fresh) Object.assign(paper, fresh);
+          await render();
+        } catch (error) {
+          release.disabled = false;
+          note.textContent = error.message;
+        }
+      };
+      const exportButton = el("button", "small", "导出成绩单 CSV");
+      exportButton.onclick = () => {
+        const link = el("a");
+        link.href = `/api/training/exams/papers/${encodeURIComponent(paper.id)}/scores.csv`
+          + "?" + new URLSearchParams({college}).toString();
+        link.download = "";
+        link.click();
+      };
+      const refresh = el("button", "small", "刷新");
+      refresh.onclick = render;
+      acts.append(release, exportButton, refresh);
+      box.append(acts);
+
+      const table = el("table", "ex-table");
+      const head = el("tr");
+      for (const text of ["学号", "姓名", "状态", "自动分", "复核后", "最终", "操作"]) head.append(el("th", null, text));
+      table.append(head);
+      for (const person of data.people) {
+        const row = el("tr");
+        const cell = el("td");
+        const sheet = el("button", "small", "答卷");
+        sheet.onclick = () => openSheet(person);
+        cell.append(sheet);
+        const show = value => (value === null || value === undefined ? "—" : String(value));
+        row.append(el("td", null, person.student_no || "—"),
+          el("td", null, person.name || "—"),
+          el("td", null, SESSION_TEXT[person.status] || person.status),
+          el("td", null, show(person.auto_score)),
+          el("td", null, show(person.adjusted_score)),
+          el("td", null, show(person.score)),
+          cell);
+        table.append(row);
+      }
+      if (!data.people.length) box.append(el("p", "muted", "名单是空的。"));
+      else box.append(table);
+      box.append(note);
+    };
+
+    const holder = el("div");
+    const openSheet = async person => {
+      holder.replaceChildren(el("p", "ex-note", "正在读取答卷…"));
+      try {
+        holder.replaceChildren(await answerSheet(paper, college, person));
+      } catch (error) {
+        holder.replaceChildren(el("p", "muted", error.message));
+      }
+    };
+    box.append(holder);
+    render().catch(error => box.append(el("p", "muted", error.message)));
+    return box;
+  }
+
+  async function answerSheet(paper, college, person) {
+    const base = `/api/training/exams/papers/${encodeURIComponent(paper.id)}/sessions/`
+      + encodeURIComponent(person.student_id);
+    const data = await query(`${base}/answers`, {college});
+    const box = el("div");
+    const note = el("p", "ex-note");
+    const head = () => {
+      const session = data.session;
+      note.textContent = `${data.student.name || "—"}（${data.student.student_no || "—"}）`
+        + ` · 自动判分 ${session.auto_score === null ? "—" : session.auto_score}`
+        + ` · 复核后 ${session.adjusted_score === null ? "未复核" : session.adjusted_score}`
+        + ` · 最终 ${session.score === null ? "—" : session.score}`
+        + ` · 交卷 ${when(session.submitted_at)}`;
+    };
+    head();
+    box.append(note);
+
+    const reload = async () => {
+      const fresh = await query(`${base}/answers`, {college});
+      data.session = fresh.session;
+      data.questions = fresh.questions;
+      box.replaceChildren(note, table);
+      head();
+    };
+
+    const table = el("table", "ex-table");
+    const header = el("tr");
+    for (const text of ["#", "题干", "标准答案", "考生选项", "自动得分", "满分", "复核分", "复核说明", "操作"])
+      header.append(el("th", null, text));
+    table.append(header);
+    for (const question of data.questions) {
+      const row = el("tr");
+      const scoreInput = el("input");
+      scoreInput.type = "number";
+      scoreInput.min = "0";
+      scoreInput.max = String(question.points);
+      scoreInput.step = "0.5";
+      scoreInput.style.width = "70px";
+      scoreInput.value = question.manual_score === null ? "" : String(question.manual_score);
+      scoreInput.placeholder = "0–" + question.points;
+      const noteInput = el("input");
+      noteInput.maxLength = 60;
+      noteInput.placeholder = "可选";
+      noteInput.value = question.manual_note || "";
+      noteInput.style.width = "110px";
+      const save = el("button", "small", "保存");
+      const reset = el("button", "small", "撤销");
+      const ops = el("div", "ex-acts");
+      const submit = async value => {
+        save.disabled = reset.disabled = true;
+        try {
+          await send(`${base}/answers/${encodeURIComponent(question.id)}/review`, "POST",
+            {college, score: value, note: value === null ? null : noteInput.value.trim() || null});
+          await reload();
+        } catch (error) {
+          note.textContent = error.message;
+          save.disabled = reset.disabled = false;
+        }
+      };
+      save.onclick = () => {
+        const raw = scoreInput.value.trim();
+        if (raw === "") return submit(null);
+        const value = Number(raw);
+        if (!Number.isFinite(value) || value < 0 || value > Number(question.points)) {
+          note.textContent = `复核分须在 0–${question.points} 之间。`;
+          return;
+        }
+        return submit(value);
+      };
+      reset.onclick = () => submit(null);
+      ops.append(save, reset);
+      row.append(el("td", null, String(question.position)),
+        el("td", null, question.stem),
+        el("td", null, (question.answer_keys || []).join("、")),
+        el("td", null, (question.picked || []).join("、") || "未作答"),
+        el("td", null, question.points_gained === null ? "—" : String(question.points_gained)),
+        el("td", null, String(question.points)),
+        (() => { const cell = el("td"); cell.append(scoreInput); return cell; })(),
+        (() => { const cell = el("td"); cell.append(noteInput); return cell; })(),
+        (() => { const cell = el("td"); cell.append(ops); return cell; })());
+      table.append(row);
+    }
+    box.append(table);
+    box.append(el("p", "ex-note", "复核只改这一题的得分并重算整卷，自动判分原样保留；"
+      + "清空复核分即撤销，回到自动判分。"));
+    return box;
+  }
+
   // ---------------------------------------------------------------- 学生端
 
   function studentCard() {
@@ -724,6 +904,7 @@
       return box;
     }
     box.append(el("p", null, `得分 ${data.score} 分`
+      + (data.reviewed ? `（含教师复核；自动判分 ${data.auto_score} 分）` : "")
       + (data.pass_score === null || data.pass_score === undefined
         ? "" : ` · 及格线 ${data.pass_score} 分 · ${data.passed ? "及格" : "未及格"}`)));
     for (const question of data.questions) {
@@ -737,9 +918,11 @@
       }
       item.append(options);
       const mine = (question.picked || []).join("、") || "未作答";
+      const gained = question.gain ?? question.points_gained ?? 0;
       const answer = el("p", "ex-answer " + (question.correct ? "ok" : "no"),
         `你的答案：${mine} · 标准答案：${(question.answer_keys || []).join("、")}`
-        + ` · 得分 ${question.points_gained ?? 0}`);
+        + ` · 得分 ${gained}`
+        + (question.manual_score === null || question.manual_score === undefined ? "" : "（教师复核）"));
       item.append(answer);
       if (question.explanation) item.append(el("p", "ex-note", "解析：" + question.explanation));
       box.append(item);

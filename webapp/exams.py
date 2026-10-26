@@ -11,11 +11,13 @@
 3. **名单以 users.id 为准。** 三条身份线不对称（users / student_info / university_identity_links），
    导入时查不到的学号要显式列出，不静默丢弃。
 
-E1 只到这里：**出卷与发布**。E2 做学生机考（会话/限时/收卷/监考台），E3 做判分与成绩发布。
+E1 出卷与发布 / E2 学生机考与监考台 / E3 判分复核、成绩发布与成绩单导出。
 """
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import json
 import random
 import sqlite3
@@ -23,9 +25,10 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from functools import wraps
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import Cookie, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 # draft=草稿 published=已发布（到点即开，见 phase） closed=已结束
@@ -987,12 +990,16 @@ def result_for_student(store, student: dict[str, Any], paper_id: str) -> dict[st
         if not session:
             raise ExamError("还没有参加这场考试。", 404)
         visible = _score_visible(paper, session)
+        # 复核分优先：学生看到的应当与成绩单、监考台是同一个数。
+        final = session["adjusted_score"] if session["adjusted_score"] is not None else session["score"]
         payload = {"released": visible, "status": session["status"],
                    "submitted_at": session["submitted_at"],
-                   "score": float(session["score"]) if visible and session["score"] is not None else None,
+                   "score": float(final) if visible and final is not None else None,
+                   "auto_score": float(session["score"]) if visible and session["score"] is not None else None,
+                   "reviewed": None if not visible else session["adjusted_score"] is not None,
                    "pass_score": paper["pass_score"],
-                   "passed": None if not visible or paper["pass_score"] is None or session["score"] is None
-                             else float(session["score"]) >= float(paper["pass_score"]),
+                   "passed": None if not visible or paper["pass_score"] is None or final is None
+                             else float(final) >= float(paper["pass_score"]),
                    "session": _session_payload(db, paper, session), "questions": []}
         if not visible:
             payload["reason"] = ("成绩尚未发布，教师发布后可见。" if paper["answer_release"] == "manual"
@@ -1000,7 +1007,7 @@ def result_for_student(store, student: dict[str, Any], paper_id: str) -> dict[st
             return payload
         for row in _ordered_questions(db, paper, session["id"]):
             answer = db.execute(
-                "SELECT picked_json, correct, points_gained FROM online_exam_answer"
+                "SELECT picked_json, correct, points_gained, manual_score FROM online_exam_answer"
                 " WHERE session_id=? AND question_id=?", (session["id"], row["id"])).fetchone()
             try:
                 picked = json.loads(answer["picked_json"]) if answer else []
@@ -1012,7 +1019,10 @@ def result_for_student(store, student: dict[str, Any], paper_id: str) -> dict[st
                 "picked": picked, "answer_keys": json.loads(row["answer_keys_json"]),
                 "explanation": row["explanation"],
                 "correct": bool(answer["correct"]) if answer and answer["correct"] is not None else None,
-                "points_gained": answer["points_gained"] if answer else None})
+                "points_gained": answer["points_gained"] if answer else None,
+                "manual_score": answer["manual_score"] if answer else None,
+                "gain": (answer["manual_score"] if answer and answer["manual_score"] is not None
+                         else (answer["points_gained"] if answer else None))})
         return payload
 
 
@@ -1045,6 +1055,10 @@ def proctor_sessions(store, paper_id: str, college: str) -> dict[str, Any]:
                 "violations": int(row["violations"] or 0), "last_heartbeat_at": row["last_heartbeat_at"],
                 "remaining_seconds": (int((datetime.fromisoformat(row["ends_at"]) - datetime.fromisoformat(stamp))
                                           .total_seconds()) if row["ends_at"] and row["status"] == "in_progress" else None),
+                # 三个分数各司其职：自动分原样保留，复核后无人工分时为 None，
+                # score 是最终生效值（复核分优先）——成绩单与学生端都用这一份口径。
+                "auto_score": row["score"],
+                "adjusted_score": row["adjusted_score"],
                 "score": row["adjusted_score"] if row["adjusted_score"] is not None else row["score"]})
         return {"paper": {"id": paper["id"], "title": paper["title"], "status": paper["status"],
                           "phase": _phase(paper), "duration_minutes": paper["duration_minutes"]},
@@ -1071,6 +1085,180 @@ def force_submit(store, actor: dict[str, Any], paper_id: str, college: str,
                    (stamp, session["id"]))
         score = _grade(db, session["id"])
         return {"student_id": student_id, "status": "forced", "score": score, "submitted_at": stamp}
+
+
+# --------------------------------------------------------------------------- 判分复核与成绩（E3）
+
+def _session_by_student(db, paper_id: str, student_id: str) -> sqlite3.Row:
+    row = db.execute("SELECT * FROM online_exam_session WHERE paper_id=? AND student_id=?",
+                     (paper_id, student_id)).fetchone()
+    if not row:
+        raise ExamError("该考生还没有参加考试。", 404)
+    return row
+
+
+def _recalculate(db, session_id: str) -> dict[str, Any]:
+    """复核分重算：每题取人工分优先，没人工分才用自动判分。
+
+    一条人工分都没有时把 adjusted_score 置 NULL——「复核后分数」只有真的复核过
+    才存在，否则成绩单上会多出一个和自动分一模一样的数字，反倒让人以为复核过。
+    """
+    rows = db.execute(
+        "SELECT points_gained, manual_score FROM online_exam_answer WHERE session_id=?",
+        (session_id,)).fetchall()
+    auto = sum(float(r["points_gained"] or 0) for r in rows)
+    reviewed = [r for r in rows if r["manual_score"] is not None]
+    adjusted = sum(float(r["manual_score"]) if r["manual_score"] is not None else float(r["points_gained"] or 0)
+                   for r in rows)
+    db.execute("UPDATE online_exam_session SET adjusted_score=? WHERE id=?",
+               (round(adjusted, 2) if reviewed else None, session_id))
+    return {"auto_score": round(auto, 2), "score": round(adjusted, 2), "reviewed": len(reviewed)}
+
+
+def session_answers(store, paper_id: str, college: str, student_id: str) -> dict[str, Any]:
+    """教师侧的答卷明细：按卷面顺序，带标准答案、考生选项、自动分与人工分。"""
+    stamp = now()
+    with store.connect() as db:
+        paper = _require(db, paper_id, college)
+        _close_due_sessions(db, paper_id, moment=stamp)
+        session = _session_by_student(db, paper_id, student_id)
+        roster = db.execute(
+            "SELECT student_no, name FROM online_exam_roster WHERE paper_id=? AND student_id=?",
+            (paper_id, student_id)).fetchone()
+        answers = {a["question_id"]: a for a in db.execute(
+            "SELECT * FROM online_exam_answer WHERE session_id=?", (session["id"],)).fetchall()}
+        questions = []
+        for row in db.execute("SELECT * FROM online_exam_question WHERE paper_id=? ORDER BY position",
+                              (paper_id,)).fetchall():
+            answer = answers.get(row["id"])
+            try:
+                picked = json.loads(answer["picked_json"]) if answer else []
+            except json.JSONDecodeError:
+                picked = []
+            questions.append({
+                "id": row["id"], "position": row["position"], "kind": row["kind"], "stem": row["stem"],
+                "options": json.loads(row["options_json"]), "answer_keys": json.loads(row["answer_keys_json"]),
+                "explanation": row["explanation"], "points": row["points"],
+                "picked": picked,
+                "answered": answer is not None,
+                "correct": None if not answer or answer["correct"] is None else bool(answer["correct"]),
+                "points_gained": answer["points_gained"] if answer else None,
+                "manual_score": answer["manual_score"] if answer else None,
+                "manual_note": answer["manual_note"] if answer else None,
+                "manual_by": answer["manual_by"] if answer else None})
+        return {"paper": {"id": paper["id"], "title": paper["title"], "status": paper["status"],
+                          "pass_score": paper["pass_score"], "total_points": paper["total_points"],
+                          "answer_release": paper["answer_release"], "released_at": paper["released_at"]},
+                "student": {"student_id": student_id,
+                            "student_no": roster["student_no"] if roster else None,
+                            "name": roster["name"] if roster else None},
+                "session": {"id": session["id"], "status": session["status"],
+                            "auto_score": session["score"], "adjusted_score": session["adjusted_score"],
+                            "score": (session["adjusted_score"] if session["adjusted_score"] is not None
+                                      else session["score"]),
+                            "submitted_at": session["submitted_at"], "violations": session["violations"]},
+                "questions": questions}
+
+
+def review_answer(store, actor: dict[str, Any], paper_id: str, college: str, student_id: str,
+                  question_id: str, *, score: float | None, note: str | None = None) -> dict[str, Any]:
+    """单题复核改分。score=None 撤销人工分，回到自动判分。
+
+    只改这一题的得分并重算整卷，不动 `score`（自动分）与任何其他考生的数据。
+    """
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        _require(db, paper_id, college)
+        session = _session_by_student(db, paper_id, student_id)
+        if session["status"] == "in_progress":
+            raise ExamError("该考生还在作答，交卷后才能复核。", 409)
+        question = db.execute("SELECT points, position FROM online_exam_question WHERE id=? AND paper_id=?",
+                              (question_id, paper_id)).fetchone()
+        if not question:
+            raise ExamError("题目不存在。", 404)
+        if not db.execute("SELECT 1 FROM online_exam_answer WHERE session_id=? AND question_id=?",
+                          (session["id"], question_id)).fetchone():
+            raise ExamError("这份答卷没有这道题的作答记录，无法复核。", 404)
+        if score is not None:
+            top = float(question["points"])
+            if not 0 <= float(score) <= top:
+                raise ExamError(f"复核分须在 0–{top:g} 之间（本题满分 {top:g}）。", 422)
+        db.execute(
+            """UPDATE online_exam_answer SET manual_score=?, manual_by=?, manual_note=?
+                WHERE session_id=? AND question_id=?""",
+            (None if score is None else float(score), None if score is None else actor["id"],
+             _clean(note, 500), session["id"], question_id))
+        totals = _recalculate(db, session["id"])
+        db.execute("INSERT INTO online_exam_event VALUES (?,?,?,?,?)",
+                   (str(uuid.uuid4()), session["id"], "review", now(),
+                    json.dumps({"question_id": question_id, "position": question["position"],
+                                "score": score, "by": actor["id"]}, ensure_ascii=False)))
+        return {"student_id": student_id, "question_id": question_id, "manual_score": score,
+                "manual_note": _clean(note, 500), **totals}
+
+
+def release_scores(store, actor: dict[str, Any], paper_id: str, college: str, *,
+                   release: bool) -> dict[str, Any]:
+    """成绩发布/撤回（`answer_release='manual'` 的开关）。
+
+    发布前必须先结束考试：否则考生交卷即见分，同场还在作答的人会从别人嘴里听到
+    答案与解析。这里把顺序卡死，不用"提醒教师"的方式兜。
+    """
+    stamp = now()
+    with store.connect() as db:
+        # 惰性收卷在独立读连接里先落库（与 E2 同一纪律：写事务里的 409 会连带回滚收卷）
+        _close_due_sessions(db, paper_id, moment=stamp)
+        db.execute("BEGIN IMMEDIATE")
+        paper = _require(db, paper_id, college)
+        if release:
+            if paper["status"] not in ("closed", "archived"):
+                raise ExamError("先结束考试再发布成绩，避免考生边考边看到分数与解析。", 409)
+            db.execute("UPDATE online_exam_paper SET released_at=?, released_by=?, updated_at=? WHERE id=?",
+                       (stamp, actor["id"], stamp, paper_id))
+        else:
+            db.execute("UPDATE online_exam_paper SET released_at=NULL, released_by=NULL, updated_at=? WHERE id=?",
+                       (stamp, paper_id))
+        return _payload(db, _paper_row(db, paper_id), with_questions=False)
+
+
+def scores_csv(store, paper_id: str, college: str) -> tuple[str, bytes]:
+    """成绩单 CSV：UTF-8 BOM，前几行写明场次与口径，Excel 双击即开。"""
+    stamp = now()
+    with store.connect() as db:
+        paper = _require(db, paper_id, college)
+        _close_due_sessions(db, paper_id, moment=stamp)
+        rows = db.execute(
+            """SELECT r.student_id, r.student_no, r.name, s.status, s.score, s.adjusted_score,
+                      s.submitted_at, s.violations
+                 FROM online_exam_roster r
+                 LEFT JOIN online_exam_session s ON s.paper_id=r.paper_id AND s.student_id=r.student_id
+                WHERE r.paper_id=? ORDER BY r.student_no, r.name""", (paper_id,)).fetchall()
+    status_label = {"submitted": "已交卷", "forced": "自动收卷", "in_progress": "作答中"}
+    pass_score = paper["pass_score"]
+    buffer = io.StringIO(newline="")
+    writer = csv.writer(buffer)
+    writer.writerow(["# 在线考试成绩单"])
+    writer.writerow([f"# 考试：{paper['title']} · 状态 {paper['status']} · 满分 {float(paper['total_points']):g}"
+                     + (f" · 及格线 {float(pass_score):g}" if pass_score is not None else " · 未设及格线")])
+    writer.writerow([f"# 导出时间 {datetime.now(UTC).astimezone().isoformat(timespec='seconds')}"
+                     f" · 名单 {len(rows)} 人 · 成绩发布 "
+                     + (f"于 {paper['released_at']}" if paper["released_at"] else "未发布")])
+    writer.writerow(["# 口径：最终成绩 = 复核后分数优先，未复核用自动判分；空分表示未参加或未交卷"])
+    writer.writerow(["学号", "姓名", "状态", "自动判分", "复核后分数", "最终成绩", "是否及格", "交卷时间", "违规次数"])
+    for row in rows:
+        final = row["adjusted_score"] if row["adjusted_score"] is not None else row["score"]
+        if final is None or pass_score is None:
+            passed = ""
+        else:
+            passed = "是" if float(final) >= float(pass_score) else "否"
+        writer.writerow([row["student_no"] or "", row["name"] or "",
+                         status_label.get(row["status"], "未参加"),
+                         "" if row["score"] is None else row["score"],
+                         "" if row["adjusted_score"] is None else row["adjusted_score"],
+                         "" if final is None else final, passed,
+                         row["submitted_at"] or "", int(row["violations"] or 0)])
+    safe = "".join(ch for ch in paper["title"] if ch not in '\\/:*?"<>|').strip() or "exam"
+    return f"{safe}-成绩单.csv", ("\ufeff" + buffer.getvalue()).encode("utf-8")
 
 
 # --------------------------------------------------------------------------- 路由
@@ -1127,6 +1315,20 @@ class AnswersPut(BaseModel):
 class EventsPut(BaseModel):
     model_config = ConfigDict(extra="forbid")
     events: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ReviewScore(BaseModel):
+    """单题复核：score 为 null 即撤销人工分（回到自动判分）。"""
+    model_config = ConfigDict(extra="forbid")
+    college: str = Field(min_length=1)
+    score: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    note: str | None = Field(default=None, max_length=500)
+
+
+class ReleaseBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str = Field(min_length=1)
+    release: bool = True
 
 
 def register(app, store_provider, staff_cookie: str = "taxpearls_staff_session",
@@ -1256,6 +1458,41 @@ def register(app, store_provider, staff_cookie: str = "taxpearls_staff_session",
                           session: str | None = Cookie(default=None, alias=staff_cookie)) -> JSONResponse:
         who = actor(session, college)
         return response(force_submit(store_provider(), who, paper_id, college, student_id))
+
+    # ---- 判分复核与成绩（E3，教师） ----
+
+    @app.get("/api/training/exams/papers/{paper_id}/sessions/{student_id}/answers")
+    @guarded
+    def exam_session_answers(paper_id: str, student_id: str, college: str,
+                             session: str | None = Cookie(default=None, alias=staff_cookie)) -> JSONResponse:
+        actor(session, college)
+        return response(session_answers(store_provider(), paper_id, college, student_id))
+
+    @app.post("/api/training/exams/papers/{paper_id}/sessions/{student_id}/answers/{question_id}/review")
+    @guarded
+    def exam_review_answer(paper_id: str, student_id: str, question_id: str, body: ReviewScore,
+                           session: str | None = Cookie(default=None, alias=staff_cookie)) -> JSONResponse:
+        who = actor(session, body.college)
+        return response(review_answer(store_provider(), who, paper_id, body.college, student_id, question_id,
+                                      score=body.score, note=body.note))
+
+    @app.post("/api/training/exams/papers/{paper_id}/release")
+    @guarded
+    def exam_release(paper_id: str, body: ReleaseBody,
+                     session: str | None = Cookie(default=None, alias=staff_cookie)) -> JSONResponse:
+        who = actor(session, body.college)
+        return response(release_scores(store_provider(), who, paper_id, body.college, release=body.release))
+
+    @app.get("/api/training/exams/papers/{paper_id}/scores.csv")
+    @guarded
+    def exam_scores_csv(paper_id: str, college: str,
+                        session: str | None = Cookie(default=None, alias=staff_cookie)):
+        actor(session, college)
+        filename, payload = scores_csv(store_provider(), paper_id, college)
+        return Response(payload, media_type="text/csv; charset=utf-8",
+                        headers={"Content-Disposition": f'attachment; filename="exam-scores.csv"; '
+                                                        f"filename*=UTF-8''{quote(filename)}",
+                                 "Cache-Control": "private, no-store"})
 
     # ---- 学生机考 ----
 
