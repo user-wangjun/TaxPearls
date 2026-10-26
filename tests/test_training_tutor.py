@@ -127,9 +127,52 @@ class TrainingTutorTests(unittest.TestCase):
         self.assertEqual(msg["model"], "stub-model")
         self.assertEqual(msg["citations"], [f"kp:{self.kp}"])  # 越界引用被过滤
         self.assertEqual(msg["degraded"], "")
+        self.assertEqual(msg["basis_summary"], ["KP-01 收入确认"])
         history = self.client.get("/api/training/my/tutor/history").json()["messages"]
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["question"], "这个知识点常考什么？")
+        self.assertEqual(history[0]["basis_summary"], msg["basis_summary"])
+        self.assertNotIn("grounding_json", history[0])
+
+    def test_followups_and_restored_history_stay_with_the_student_and_attempt(self):
+        self._stub(True)
+        payloads = []
+
+        def answer(cfg, messages):
+            payloads.append(json.loads(messages[-1]["content"]))
+            return json.dumps({"answer": "结合本题解析说明。", "citations": [f"kp:{self.kp}"]})
+
+        training_tutor.chat_fn = answer
+        self._login("2026001", "pass-a")
+        self.assertEqual(self._ask(knowledge_point_id=self.kp, question="其它知识点对话").status_code, 200)
+        self.assertEqual(self._ask(attempt_id=self.attempt, question="本题第一问").status_code, 200)
+        self.assertEqual(payloads[-1]["previous_dialogue"], [])
+        self.assertEqual(self._ask(attempt_id=self.attempt, question="本题继续追问").status_code, 200)
+        self.assertEqual([r["question"] for r in payloads[-1]["previous_dialogue"]], ["本题第一问"])
+        history = self.client.get("/api/training/my/tutor/history", params={"attempt_id": self.attempt}).json()["messages"]
+        self.assertEqual([r["question"] for r in history], ["本题继续追问", "本题第一问"])
+        self._login("2026002", "pass-b")
+        self.assertEqual(self.client.get("/api/training/my/tutor/history", params={"attempt_id": self.attempt}).json()["messages"], [])
+        self.assertEqual(self._ask(knowledge_point_id=self.kp, question="另一学生提问").status_code, 200)
+        self.assertEqual(payloads[-1]["previous_dialogue"], [])
+
+    def test_followup_context_is_bounded_and_does_not_truncate_saved_answers(self):
+        self._stub(True)
+        payloads = []
+
+        def answer(cfg, messages):
+            payloads.append(json.loads(messages[-1]["content"]))
+            return json.dumps({"answer": "解题说明" * 800, "citations": [f"kp:{self.kp}"]})
+
+        training_tutor.chat_fn = answer
+        self._login("2026001", "pass-a")
+        for index in range(5):
+            self.assertEqual(self._ask(attempt_id=self.attempt, question=f"追问{index}").status_code, 200)
+        previous = payloads[-1]["previous_dialogue"]
+        self.assertEqual([row["question"] for row in previous], ["追问1", "追问2", "追问3"])
+        self.assertTrue(all(len(row["answer"]) == 1500 for row in previous))
+        history = self.client.get("/api/training/my/tutor/history").json()["messages"]
+        self.assertTrue(all(len(row["answer"]) == 3200 for row in history))
 
     def test_degrades_on_model_failure_without_blocking_evidence(self):
         self._stub(True)

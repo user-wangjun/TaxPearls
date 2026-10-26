@@ -1,0 +1,44 @@
+/* Shared by the standalone student page and embedded university workspace. */
+dialog.tutor-dialog {
+  width:min(760px,calc(100vw - 32px)); height:min(780px,calc(100dvh - 32px));
+  max-height:calc(100dvh - 32px); box-sizing:border-box; margin:auto; padding:0;
+  border:1px solid var(--line,#cbd5df); border-radius:20px;
+  background:var(--bg,#10223a); color:var(--ink,var(--text,#e9eef5));
+  box-shadow:0 24px 80px #0005; overflow:hidden; text-align:left;
+}
+dialog.tutor-dialog[open] { display:flex; flex-direction:column; }
+.tutor-dialog::backdrop { background:#10223580; backdrop-filter:blur(4px); }
+.tutor-dialog .tutor-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; padding:20px 24px; border-bottom:1px solid var(--line); flex:none; }
+.tutor-dialog .tutor-heading h2 { margin:0 0 6px; font-size:20px; color:inherit; }
+.tutor-dialog .tutor-heading p { margin:0; font-size:13px; color:var(--ink-3,var(--muted)); }
+.tutor-dialog button { min-height:44px; padding:8px 16px; border:1px solid var(--line); border-radius:10px; background:transparent; color:inherit; font:inherit; font-size:14px; cursor:pointer; }
+.tutor-dialog button:disabled { opacity:.5; cursor:wait; }
+.tutor-dialog button:focus-visible,.tutor-dialog textarea:focus-visible,.tutor-dialog summary:focus-visible { outline:2px solid currentColor; outline-offset:2px; }
+.tutor-dialog .tutor-log { flex:1; min-height:0; padding:20px 24px; overflow-y:auto; overscroll-behavior:contain; display:flex; flex-direction:column; gap:20px; }
+.tutor-dialog .tutor-bubble { flex:none; min-width:0; max-width:100%; }
+.tutor-dialog .tutor-user { align-self:flex-end; max-width:88%; padding:12px 16px; border:1px solid var(--line); border-radius:16px 16px 4px 16px; background:color-mix(in srgb,currentColor 5%,transparent); }
+.tutor-dialog .tutor-assistant { align-self:stretch; padding:0; }
+.tutor-dialog .tutor-speaker { margin:0 0 8px; font-size:12px; font-weight:600; color:var(--ink-3,var(--muted)); }
+.tutor-dialog .tutor-text { white-space:pre-wrap; overflow-wrap:anywhere; font-size:15px; line-height:1.85; }
+.tutor-dialog .tutor-text:empty { display:none; }
+.tutor-dialog details { margin-top:12px; font-size:13px; line-height:1.75; color:var(--ink-2,var(--muted)); }
+.tutor-dialog summary { width:fit-content; cursor:pointer; }
+.tutor-dialog details ul { padding-left:20px; margin:8px 0 0; overflow-wrap:anywhere; }
+.tutor-dialog .tutor-status { flex:none; margin:0; min-height:26px; padding:0 24px 8px; font-size:12px; color:var(--ink-3,var(--muted)); }
+.tutor-dialog .tutor-composer { flex:none; margin:0; padding:14px 24px 20px; border-top:1px solid var(--line); }
+.tutor-dialog .tutor-composer label { display:block; margin:0; font-size:13px; }
+.tutor-dialog textarea { display:block; box-sizing:border-box; width:100%; min-height:80px; max-height:150px; resize:vertical; padding:10px 12px; margin:8px 0 0; border:1px solid var(--line); border-radius:10px; background:transparent; color:inherit; font:inherit; font-size:16px; line-height:1.6; }
+.tutor-dialog textarea::placeholder { color:var(--ink-3,var(--muted)); }
+.tutor-dialog .tutor-error { color:var(--danger,#c23a3a); font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
+.tutor-dialog .tutor-error:not(:empty) { margin-top:8px; }
+.tutor-dialog .tutor-actions { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-top:12px; }
+.tutor-dialog .tutor-actions span { font-size:12px; color:var(--ink-3,var(--muted)); }
+.tutor-dialog .tutor-actions button { flex:none; min-width:80px; }
+@media(max-width:600px) {
+  dialog.tutor-dialog { width:calc(100vw - 16px); height:calc(100dvh - 16px); max-height:calc(100dvh - 16px); border-radius:16px; }
+  .tutor-dialog .tutor-heading { padding:16px; }
+  .tutor-dialog .tutor-log { padding:16px; }
+  .tutor-dialog .tutor-status { padding:0 16px 8px; }
+  .tutor-dialog .tutor-composer { padding:12px 16px max(16px,env(safe-area-inset-bottom)); }
+  .tutor-dialog .tutor-actions span { max-width:180px; line-height:1.5; }
+}

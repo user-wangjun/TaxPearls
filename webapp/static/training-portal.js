@@ -7,6 +7,123 @@ let disposed=false;const requests=new AbortController();
 
 const state = { student: null, certificates: [], goals: [], kps: [], attempt: null,
                 profile: null, pfCert: null, certQuery: "", certSearch: null, guideCert: null };
+let tutorView = null, tutorRevision = 0, tutorTimer = null;
+
+function resetTutorDialog() {
+  tutorRevision++;
+  clearInterval(tutorTimer); tutorTimer = null;
+  if (tutorView) { tutorView.dialog.close(); tutorView.dialog.remove(); tutorView = null; }
+}
+
+function tutorBubble(log, role, text) {
+  const bubble = document.createElement("article"); bubble.className = "tutor-bubble tutor-" + role;
+  const label = document.createElement("p"); label.className = "tutor-speaker";
+  label.textContent = role === "user" ? "你" : "答疑助手";
+  const content = document.createElement("div"); content.className = "tutor-text"; content.textContent = text;
+  bubble.append(label, content); log.append(bubble);
+  return {bubble, content};
+}
+
+function tutorBasis(bubble, message) {
+  if (!message.basis_summary?.length) return;
+  const details = document.createElement("details"), summary = document.createElement("summary"), list = document.createElement("ul");
+  details.className = "tutor-basis"; summary.textContent = "解题依据摘要";
+  for (const label of message.basis_summary) { const li = document.createElement("li"); li.textContent = label; list.append(li); }
+  details.append(summary, list); bubble.append(details);
+}
+
+async function sendTutorQuestion(view) {
+  if (view.busy || view.loading || tutorView !== view) return;
+  const question = view.input.value.trim();
+  if (!question) { view.error.textContent = "请输入问题。"; view.input.focus(); return; }
+  if ([...question].length > 500) { view.error.textContent = "问题不能超过 500 字。"; return; }
+  const ticket = tutorRevision, current = () => !disposed && tutorRevision === ticket && tutorView === view && state.attempt?.id === view.attemptId;
+  view.busy = true; view.send.disabled = true; view.error.textContent = ""; view.input.value = "";
+  tutorBubble(view.log, "user", question);
+  const reply = tutorBubble(view.log, "assistant", "");
+  const progress = document.createElement("details"), summary = document.createElement("summary"), list = document.createElement("ul");
+  progress.className = "tutor-progress"; progress.open = true; summary.textContent = "处理过程";
+  const submitted = document.createElement("li"), waiting = document.createElement("li");
+  submitted.textContent = "问题已提交，关联本题解析与知识点依据。";
+  waiting.textContent = "等待答疑服务返回…"; list.append(submitted, waiting); progress.append(summary, list); reply.bubble.append(progress);
+  const started = Date.now();
+  view.status.textContent = "等待回答…";
+  tutorTimer = setInterval(() => { if (current()) view.status.textContent = "等待回答 · 已等待 " + Math.floor((Date.now() - started) / 1000) + " 秒"; }, 1000);
+  view.log.scrollTop = view.log.scrollHeight;
+  try {
+    const data = await api("/api/training/my/tutor", {method:"POST", body:{certificate_id:view.certificateId, attempt_id:view.attemptId, question}});
+    if (!current()) return;
+    const message = data.message;
+    reply.content.textContent = message.answer;
+    waiting.textContent = message.degraded ? "已返回可查看的依据说明。" : "已收到回答，引用已通过服务端校验。";
+    progress.open = false; tutorBasis(reply.bubble, message);
+    view.status.textContent = message.degraded ? "依据说明已返回，可继续提问" : "回答完成，可继续追问";
+  } catch (error) {
+    if (!current()) return;
+    reply.content.textContent = "本次回答未完成。";
+    waiting.textContent = "请求未成功，可重试。";
+    view.error.textContent = error.message;
+    view.status.textContent = "回答未完成";
+    if (!view.input.value) view.input.value = question;
+  } finally {
+    if (current()) {
+      clearInterval(tutorTimer); tutorTimer = null;
+      view.busy = false; view.send.disabled = false;
+      view.log.scrollTop = view.log.scrollHeight;
+    }
+  }
+}
+
+async function openTutorDialog(initialQuestion = "") {
+  const attempt = state.attempt;
+  if (!attempt || attempt.status !== "scored") return;
+  if (tutorView && tutorView.attemptId !== attempt.id) resetTutorDialog();
+  if (!tutorView) {
+    const dialog = document.createElement("dialog"); dialog.className = "tutor-dialog"; dialog.setAttribute("aria-label", "本题 AI 答疑");
+    dialog.innerHTML = `<div class="tutor-heading"><div><h2>本题 AI 答疑</h2><p>围绕本题解析与知识点继续提问</p></div><button type="button" data-tutor="close" aria-label="关闭答疑对话框">关闭</button></div>
+      <div class="tutor-log" role="log" aria-label="答疑对话记录" aria-live="polite" aria-relevant="additions text"></div>
+      <p class="tutor-status" role="status"></p>
+      <form class="tutor-composer"><label>你的问题<textarea rows="2" maxlength="500" placeholder="例如：为什么这里要用这个分母？"></textarea></label>
+      <div class="tutor-error" role="alert"></div><div class="tutor-actions"><span>最多 500 字 · Ctrl / ⌘ + Enter 发送</span><button type="submit">发送</button></div></form>`;
+    const view = {dialog, attemptId:attempt.id, certificateId:attempt.certificate_id || state.prCert, loading:true, busy:false,
+      log:dialog.querySelector(".tutor-log"), input:dialog.querySelector("textarea"), send:dialog.querySelector('[type="submit"]'),
+      status:dialog.querySelector(".tutor-status"), error:dialog.querySelector(".tutor-error")};
+    tutorView = view;
+    (document.getElementById("answer-card") || document.getElementById("pr-card")).append(dialog);
+    dialog.querySelector('[data-tutor="close"]').addEventListener("click", () => dialog.close());
+    dialog.addEventListener("click", event => {
+      if (event.target !== dialog) return;
+      const b = dialog.getBoundingClientRect();
+      if (event.clientX < b.left || event.clientX > b.right || event.clientY < b.top || event.clientY > b.bottom) dialog.close();
+    });
+    dialog.querySelector("form").addEventListener("submit", event => { event.preventDefault(); sendTutorQuestion(view); });
+    view.input.addEventListener("input", () => { view.error.textContent = ""; });
+    view.input.addEventListener("keydown", event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); dialog.querySelector("form").requestSubmit(); } });
+    dialog.showModal(); view.input.value = initialQuestion; view.input.focus(); view.send.disabled = true;
+    view.status.textContent = "正在读取本题对话…";
+    const ticket = tutorRevision;
+    try {
+      const query = new URLSearchParams({certificate_id:view.certificateId, attempt_id:view.attemptId, limit:"20"});
+      const data = await api("/api/training/my/tutor/history?" + query);
+      if (disposed || ticket !== tutorRevision || tutorView !== view) return;
+      for (const message of data.messages.slice().reverse()) {
+        tutorBubble(view.log, "user", message.question);
+        const reply = tutorBubble(view.log, "assistant", message.answer); tutorBasis(reply.bubble, message);
+      }
+      view.status.textContent = data.messages.length ? "已恢复本题对话，可继续追问" : "本题尚无对话，输入问题开始答疑";
+    } catch (error) {
+      if (disposed || ticket !== tutorRevision || tutorView !== view) return;
+      view.status.textContent = "历史对话暂不可用，仍可提交新问题"; view.error.textContent = error.message;
+    } finally {
+      if (tutorView === view && ticket === tutorRevision) { view.loading = false; view.send.disabled = false; view.log.scrollTop = view.log.scrollHeight; }
+    }
+  } else {
+    if (!tutorView.dialog.open) tutorView.dialog.showModal();
+    if (initialQuestion) tutorView.input.value = initialQuestion;
+    tutorView.input.focus();
+  }
+  if (initialQuestion && tutorView?.dialog.open) await sendTutorQuestion(tutorView);
+}
 
 function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
@@ -674,14 +791,14 @@ function renderBankAttempt(box, a) {
       <button class="small" data-act="bank-new" data-source="${esc(a.source_type || "real")}" data-kp="${esc(a.knowledge_point_id || "")}">再练一道</button>
       <button class="small" data-act="bank-redo" data-q="${esc(a.bank_question_id || "")}" data-source="${esc(a.source_type || "real")}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>
     </div>
-    <div class="item" style="margin-top:10px;">
+    <div class="item tutor-entry" style="margin-top:10px;">
       <strong>AI 答疑（基于本题解析与知识点依据）</strong>
       <div class="muted">回答仅作解读参考；标准答案与判分以系统为准，答疑记录仅本人可见。</div>
       <div class="row" style="margin-top:6px;">
         <input id="tutor-q" placeholder="如：为什么我选的这项不对？依据是什么？">
         <button class="small primary" data-act="tutor-ask" style="flex:0 0 auto;">问 AI</button>
       </div>
-      <div id="tutor-out"></div>
+      <p class="muted">在对话框中查看回答并继续追问。</p>
     </div>
   </div>`;
 }
@@ -689,6 +806,7 @@ function renderBankAttempt(box, a) {
 function renderAttempt() {
   const box = document.getElementById("pr-attempt");
   const a = state.attempt;
+  if (tutorView && tutorView.attemptId !== a?.id) resetTutorDialog();
   if (!a) { box.innerHTML = ""; return; }
   if (a.bank) {
     renderBankAttempt(box, a);
@@ -741,14 +859,14 @@ function renderAttempt() {
           <button class="small" data-act="redo-same" data-rule="${esc(a.rule_id)}" data-seed="${esc(a.seed)}" data-kp="${esc(a.knowledge_point_id || "")}">原题重做</button>
         </div>
       </div>
-      <div class="item">
+      <div class="item tutor-entry">
         <strong>AI 答疑（基于本题解析与知识点依据）</strong>
         <div class="muted">回答仅作解读参考；标准答案与判分以系统为准，答疑记录仅本人可见。</div>
         <div class="row" style="margin-top:6px;">
           <input id="tutor-q" placeholder="如：为什么这项是漏检？判定依据是什么？">
           <button class="small primary" data-act="tutor-ask" style="flex:0 0 auto;">问 AI</button>
         </div>
-        <div id="tutor-out"></div>
+        <p class="muted">在对话框中查看回答并继续追问。</p>
       </div>`;
   }
   if (a.applicability?.notice) {
@@ -1055,19 +1173,9 @@ document.getElementById("pr-card").addEventListener("click", async (event) => {
     renderAttempt();
     await refreshPractice().catch(() => {});
   } else if (act === "tutor-ask") {
-    const q = document.getElementById("tutor-q").value.trim();
-    const out = document.getElementById("tutor-out");
-    if (!q) { out.innerHTML = `<p class="error">请输入问题。</p>`; return; }
-    try {
-      const data = await api("/api/training/my/tutor", { method: "POST", body: {
-        certificate_id: state.attempt.certificate_id || state.prCert,
-        attempt_id: state.attempt.id, question: q } });
-      const m = data.message;
-      out.innerHTML = `<div class="detail ${m.degraded ? "miss" : "ok"}">${esc(m.answer).replace(/\n/g, "<br>")}</div>
-        <div class="muted">引用：${m.citations.map(esc).join("、") || "（无）"}${m.model ? " · 模型：" + esc(m.model) : ""}</div>`;
-    } catch (err) {
-      out.innerHTML = `<p class="error">${esc(err.message)}</p>`;
-    }
+    const input = btn.closest(".tutor-entry").querySelector("input");
+    const question = input.value.trim(); input.value = "";
+    await openTutorDialog(question);
   } else if (act === "redo-new") {
     startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
                     rule_id: btn.dataset.rule || null, mode: "new" }).catch((err) => flash(err.message, true));
@@ -1353,5 +1461,5 @@ async function toggleKpHistory(btn, scope, kpId) {
 const ready=boot();
 
 /* controller end */
-return {ready,refresh,destroy(){disposed=true;requests.abort();}};
+return {ready,refresh,destroy(){disposed=true;resetTutorDialog();requests.abort();}};
 };
