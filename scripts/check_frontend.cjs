@@ -2,6 +2,121 @@
 const fs = require("node:fs");
 const vm = require("node:vm");
 const assert = require("node:assert/strict");
+
+// The task board uses the signed-in identity and refreshes progress without polling /api/me.
+(async()=>{
+  const all = node => [node, ...node.children.flatMap(all)];
+  function node(tag, cls="", text="") {
+    return {tag,className:cls,textContent:text,children:[],dataset:{},
+      classList:{add(){},toggle(){}},
+      append(...items){for(const item of items){item.parent=this;this.children.push(item);}},
+      prepend(item){item.parent=this;this.children.unshift(item);},
+      replaceChildren(...items){this.children=[];this.append(...items);},
+      remove(){if(this.parent)this.parent.children=this.parent.children.filter(item=>item!==this);},
+      querySelector(selector){return this.querySelectorAll(selector)[0];},
+      querySelectorAll(selector){return all(this).slice(1).filter(item=>selector==="button"?item.tag==="button":item.className.split(" ").includes(selector.slice(1)));}};
+  }
+  const root=node("body"),head=node("head"),panel=node("section");panel.id="trainingPanel";root.append(head,panel);
+  const calls=[];let pending=null,fail=false;
+  const task={id:"task-1",kind:"assignment",title:"实测作业",state:"published",expected:1,
+    submitted_total:1,reviewed_total:0,answer_release:"after_due",my_status:"not_started",submit_limit:1};
+  const ctx={window:{},document:{head,createElement:tag=>node(tag),getElementById:id=>all(root).find(item=>item.id===id)},
+    fetch:async path=>{calls.push(path);if(pending)return await pending;return {ok:!fail,status:503,json:async()=>fail?{detail:"任务暂不可用"}:{items:[{...task}]}};}};
+  vm.createContext(ctx);vm.runInContext(fs.readFileSync("webapp/static/training-tasks.js","utf8"),ctx);
+  const board=ctx.window.tpTrainingTasks,text=()=>all(root).map(item=>item.textContent).join("\n");
+  assert.equal(calls.length,0,"Loading the login page must not request identity or task data");
+  board.setUser(null);await board.refresh();assert.equal(calls.length,0);
+  board.setUser({id:"enterprise",role:"org_admin"});await board.refresh();assert.equal(calls.length,0);
+  board.setUser({id:"teacher",role:"teacher"});await board.refresh();
+  assert.match(text(),/已交 1\/1 人 · 已复核 0 人/);
+  task.reviewed_total=1;await board.refresh();assert.match(text(),/已复核 1 人/);
+  // A superseded refresh cannot undo a newer review count.
+  let resolve;pending=new Promise(done=>{resolve=done;});const old=board.refresh();pending=null;
+  task.reviewed_total=2;await board.refresh();
+  resolve({ok:true,json:async()=>({items:[{...task,reviewed_total:0}]})});await old;
+  assert.match(text(),/已复核 2 人/);
+  // Account switching must not paint a previous teacher's delayed response.
+  pending=new Promise(done=>{resolve=done;});const previousUser=board.refresh();pending=null;
+  board.setUser({id:"student",role:"student"});await board.refresh();
+  resolve({ok:true,json:async()=>({items:[{...task,title:"private teacher task"}]})});await previousUser;
+  assert.ok(!text().includes("private teacher task"));assert.ok(!text().includes("已复核 2 人"));
+  assert.equal(all(root).filter(item=>item.id==="task-board-card").length,1);
+  fail=true;await assert.rejects(board.refresh({throwOnError:true}),/任务暂不可用/);
+  assert.match(text(),/读取失败：任务暂不可用/);
+  board.setUser(null);assert.ok(!all(root).some(item=>item.id==="task-board-card"));
+  assert.ok(calls.every(path=>path==="/api/training/tasks"));
+  const consoleSource=fs.readFileSync("webapp/static/console.js","utf8");
+  assert.ok(consoleSource.includes("window.tpTrainingTasks?.setUser(currentUser)"));
+  const load=consoleSource.slice(consoleSource.indexOf("async function loadAssignments("),consoleSource.indexOf('$("btnAssignment").addEventListener'));
+  assert.ok(load.includes("window.tpTrainingTasks?.refresh({throwOnError})"),"Classroom refresh must include the task board");
+  console.log("Task board: no anonymous identity polling, current review counts, failure and stale-response guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Auxiliary teaching cards must also stay idle while the shared login screen is visible.
+for(const file of ["training-ai-coach.js","teaching-case-ui.js"]){
+  const observers=[],timers=[],calls=[];
+  const nodes=new Map(),node=id=>{
+    if(!nodes.has(id))nodes.set(id,{id,children:[],append(...items){this.children.push(...items);}});
+    return nodes.get(id);
+  };
+  const ctx={currentUser:null,CSS:{escape:value=>value},window:{setTimeout:fn=>timers.push(fn)},
+    document:{head:node("head"),documentElement:node("html"),readyState:"complete",
+      createElement:()=>({}),getElementById:node,querySelector:selector=>node(selector.slice(1))},
+    MutationObserver:class{constructor(callback){observers.push(callback);}observe(){}},
+    fetch:async path=>{calls.push(path);throw Error("anonymous request");}};
+  vm.createContext(ctx);vm.runInContext(fs.readFileSync("webapp/static/"+file,"utf8"),ctx);
+  for(let n=0;n<10;n++)for(const callback of observers)callback([]);
+  assert.equal(calls.length,0,file+" must not request identity or teaching data before login");
+  assert.equal(timers.length,0,file+" must not schedule anonymous login retries");
+}
+
+// The submission button follows pending, reviewed and returned states, including zero scores.
+(async()=>{
+  const nodes=new Map();
+  const node=(tag="div")=>({tag,children:[],dataset:{},textContent:"",append(...items){this.children.push(...items);},
+    before(item){nodes.set(item.id,item);},remove(){nodes.delete(this.id);}});
+  const button=node("button"),host=node();host.dataset.assignment="task";
+  nodes.set("btnSubmitExercise",button);nodes.set("exerciseBox",host);
+  let progress={status:"pending_review",attempts:1,corrections:0,correction_limit:1,can_submit:false},delayed=null;
+  const ctx={currentUser:{id:"student",role:"student"},window:{addEventListener(){}},document:{head:node(),createElement:node,createTextNode:text=>({textContent:text}),
+    getElementById:id=>nodes.get(id),addEventListener(){}},
+    fetch:async()=>delayed?await delayed:({ok:true,json:async()=>({...progress})})};
+  vm.createContext(ctx);vm.runInContext(fs.readFileSync("webapp/static/training-submission-ui.js","utf8"),ctx);
+  const ui=ctx.window.tpSubmissionUI;
+  await ui.refresh("task");assert.equal(button.textContent,"已提交，等待教师复核");assert.equal(button.disabled,true);
+  progress.status="done";await ui.refresh("task");assert.equal(button.textContent,"已完成（已复核）");assert.equal(button.disabled,true);
+  progress.status="returned";progress.can_submit=true;await ui.refresh("task");assert.equal(button.textContent,"提交答案并评分");assert.equal(button.disabled,false);
+  progress.corrections=1;progress.can_submit=false;await ui.refresh("task");assert.equal(button.textContent,"订正次数已用尽");assert.equal(button.disabled,true);
+  progress={...progress,status:"returned",corrections:0,can_submit:false};
+  await ui.refresh("task");assert.equal(button.disabled,true,"Progress refresh cannot reopen a closed task");
+  progress={...progress,status:"pending_review",can_submit:true,retake_policy:"free"};
+  await ui.refresh("task");assert.equal(button.disabled,false,"Explicit free retakes must remain usable");
+  let resolve;delayed=new Promise(done=>{resolve=done;});const old=ui.refresh("task");delayed=null;
+  host.dataset.assignment="next";progress.status="done";progress.retake_policy="teacher_return";progress.can_submit=false;await ui.refresh("next");
+  resolve({ok:true,json:async()=>({status:"returned",can_submit:true,corrections:0,correction_limit:1})});await old;
+  assert.equal(button.textContent,"已完成（已复核）","A previous exercise response cannot overwrite current controls");
+  delayed=new Promise(done=>{resolve=done;});const previousUser=ui.refresh("next");delayed=null;
+  ctx.currentUser={id:"other-student",role:"student"};ui.reset();
+  resolve({ok:true,json:async()=>({status:"returned",return_reason:"previous student private feedback"})});await previousUser;
+  assert.equal(nodes.get("tp-submission-panel"),undefined,"A switched account cannot receive previous private progress");
+  ctx.currentUser.role="teacher";await ui.refresh("next");assert.equal(nodes.get("tp-submission-panel"),undefined);
+  console.log("Submission controls: pending review, completed review and correction states passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Late case materials and rubric results cannot attach to a different exercise.
+(async()=>{
+  const source=fs.readFileSync("webapp/static/teaching-case-ui.js","utf8");
+  const host={dataset:{assignment:"first"}},panels=[];let resolve;
+  const delayed=new Promise(done=>{resolve=done;});
+  const ctx={currentUser:{id:"student",role:"student"},studentRefreshRevision:0,
+    document:{getElementById:id=>id==="exerciseBox"?host:id==="btnSubmitExercise"?{before:panel=>panels.push(panel)}:null},
+    api:async path=>path.includes("/first/")?await delayed:{case_id:"second"},studentPanel:data=>data};
+  vm.createContext(ctx);vm.runInContext(source.slice(source.indexOf("  async function refreshStudent("),source.indexOf("  // ---------------------------------------------------------------- 启动")),ctx);
+  const first=ctx.refreshStudent("first");host.dataset.assignment="second";await ctx.refreshStudent("second");
+  resolve({case_id:"first-private-case"});await first;
+  assert.deepEqual(panels,[{case_id:"second"}]);
+  console.log("Case materials: late responses stay within the active exercise.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
 // Raw JSON coordinates are kept for evidence, while all teaching views show readable locations.
 {
   const ctx={};vm.createContext(ctx);
@@ -162,17 +277,46 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
   assert.equal(appearanceBoundary(light.dataset.themePreference).initial.theme,"light");
 }
 
+// Retrieval checks preserve drafts and discard stale responses across sessions.
+(async()=>{
+  const nodes=new Map(),timers=new Map();let next=0,actor={id:"platform",role:"platform_admin"},visible=true;
+  const node=()=>({children:[],value:"",checked:false,disabled:false,hidden:false,textContent:"",append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
+  const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
+  const el=(tag,className,text)=>Object.assign(node(),{tag,className,textContent:text||""});
+  const calls=[];let hold=null;
+  let state={schedule:{enabled:false,interval_hours:24,revision:0,next_due:null},gate:{passed:false,reason:"尚未检测"},current_version:"current-version",model:"synthetic-model",history:[],active:null};
+  const api=async(url,options)=>{calls.push({url,options});if(hold)return await hold;if(options?.method==="PUT"){const body=JSON.parse(options.body);assert.equal(body.revision,0,"polls must not silently rebase a dirty schedule draft");state={...state,schedule:{...state.schedule,...body,revision:2}};return {saved:true};}if(options?.method==="POST")return {status:"queued"};return structuredClone(state);};
+  const ctx={setTimeout(fn){const id=++next;timers.set(id,fn);return id;},clearTimeout(id){timers.delete(id);}};vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync("webapp/static/retrieval-checks.js","utf8"),ctx);
+  const ui=ctx.createRetrievalChecks({api,el,$,user:()=>actor,active:()=>visible});
+  await ui.load();assert.equal($("retrievalChecksAdmin").hidden,false);assert.equal($("retrievalCheckHours").value,"24");
+  $("retrievalCheckHours").value="12";$("retrievalCheckHours").oninput();state.schedule.revision=1;
+  await ui.load();assert.equal($("retrievalCheckHours").value,"12","polling retains unsaved input");
+  await $("retrievalCheckSave").onclick();assert.equal(JSON.parse(calls.find(c=>c.options?.method==="PUT").options.body).interval_hours,12);
+  let release;hold=new Promise(resolve=>{release=resolve;});
+  const pending=$("retrievalCheckRun").onclick();$("retrievalCheckRun").onclick();
+  assert.equal(calls.filter(c=>c.options?.method==="POST").length,1,"double clicks do not enqueue duplicate jobs");
+  ui.reset();actor={id:"business",role:"org_admin"};release({status:"queued"});await pending;hold=null;
+  assert.equal($("retrievalChecksAdmin").hidden,true);assert.equal(timers.size,0);
+  const before=calls.length;await ui.load();assert.equal(calls.length,before,"non-platform users do not read check history");
+  actor={id:"platform",role:"platform_admin"};let resolveStatus;hold=new Promise(resolve=>{resolveStatus=resolve;});
+  const loading=ui.load();actor={id:"new-platform",role:"platform_admin"};resolveStatus(state);await loading;hold=null;
+  assert.equal(timers.size,0,"old-session responses do not start polling for a new session");
+  visible=false;ui.reset();
+  console.log("Retrieval checks: platform scope, dirty schedule revisions, single submission, timers and stale-session guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
 // Refresh restores the actual selected workspace view, while role-hidden views stay unavailable.
 {
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
   const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("/* ---------- 多材料上传"));
-  const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel"];
+  const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel", "retrievalChecksPanel"];
   const permitted = {
-    org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel"].includes(id)),
-    accountant: panels.filter(id => !["trainingPanel", "orgReportPanel", "aiKeysPanel"].includes(id)),
-    teacher: panels.filter(id => !["orgReportPanel", "aiKeysPanel"].includes(id)),
+    org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
+    accountant: panels.filter(id => !["trainingPanel", "orgReportPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
+    teacher: panels.filter(id => !["orgReportPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
     student: ["trainingPanel", "knowledgePanel", "userSettingsPanel"],
-    platform_admin: ["adminPanel", "knowledgePanel", "userSettingsPanel", "aiKeysPanel"],
+    platform_admin: ["adminPanel", "knowledgePanel", "userSettingsPanel", "aiKeysPanel", "retrievalChecksPanel"],
   };
   function navigation(role, href = "http://localhost/?view=test") {
     const calls = [], url = new URL(href);
@@ -187,10 +331,11 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
       history:{state:{retained:true}, replaceState(_state,_title,path){const next=new URL(path,location.href);Object.assign(location,{href:next.href,pathname:next.pathname,search:next.search,hash:next.hash});}},
       $:id=>views.find(view=>view.id===id),
       document:{querySelectorAll:selector=>selector===".panel"?views:buttons},
-      noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0,
+      noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0, ruleCatalogRequest:0,
       aiKeyProbes:{load(){calls.push("loadAIKeys");},reset(){}},
+      retrievalChecks:{load(){calls.push("loadRetrievalChecks");},reset(){}},
       refreshAIStatus(){calls.push("ai");},refreshAuditClients(){calls.push("clients");},enterpriseMaterials:{refresh(){calls.push("materials");}},coreInputs:{refresh(){return Promise.resolve();}}};
-    for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge"])ctx[name]=()=>calls.push(name);
+    for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge","loadGraphRules"])ctx[name]=()=>calls.push(name);
     vm.createContext(ctx);vm.runInContext(code,ctx);
     return {ctx,calls,location,views,buttons};
   }
@@ -211,6 +356,10 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
     ["accountant","orgReportPanel","dashboardPanel"],
     ["org_admin","aiKeysPanel","dashboardPanel"],
     ["student","aiKeysPanel","trainingPanel"],
+    ["org_admin","retrievalChecksPanel","dashboardPanel"],
+    ["accountant","retrievalChecksPanel","dashboardPanel"],
+    ["teacher","retrievalChecksPanel","dashboardPanel"],
+    ["student","retrievalChecksPanel","trainingPanel"],
     ["org_admin","unknownPanel","dashboardPanel"],
   ]) {
     const view=navigation(role,"http://localhost/#panel="+requested);
@@ -219,7 +368,10 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
     assert.equal(view.location.hash,"#panel="+expected);
   }
   const graph=navigation("org_admin","http://localhost/#panel=knowledgePanel");
-  graph.ctx.switchPanel(graph.ctx.initialWorkspacePanel());assert.deepEqual(graph.calls,["loadKnowledge"]);
+  graph.ctx.switchPanel(graph.ctx.initialWorkspacePanel());assert.deepEqual(graph.calls,["loadKnowledge","loadGraphRules"]);
+  const retrieval=navigation("platform_admin","http://localhost/#panel=retrievalChecksPanel");
+  retrieval.ctx.switchPanel(retrieval.ctx.initialWorkspacePanel());assert.deepEqual(retrieval.calls,["loadRetrievalChecks"]);
+  const admin=navigation("platform_admin");admin.ctx.switchPanel("adminPanel");assert.deepEqual(admin.calls,["loadAdmin"]);
   const guest=navigation("org_admin");guest.ctx.currentUser=null;guest.ctx.switchPanel("adminPanel");
   assert.equal(guest.calls.length,0);assert.equal(guest.location.hash,"");
   const hashStart=source.indexOf('window.addEventListener("hashchange"');
@@ -291,6 +443,43 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   // and navigation while a write is in flight. No browser globals are replaced
   // in application code; this tiny boundary provides only the needed DOM/API.
   const source = fs.readFileSync("webapp/static/console.js", "utf8");
+  // One graph catalog replaces the old admin list; compatibility never implies approval.
+  {
+    const nodes=new Map(),calls=[],errors=[],editors=[];let active=true;
+    function element(tag,cls,text){return {tag,textContent:text||"",value:"",hidden:false,open:true,children:[],handlers:{},
+      classList:{contains:()=>active},append(...items){this.children.push(...items);},
+      replaceChildren(...items){this.children=items;},addEventListener(name,fn){this.handlers[name]=fn;}};}
+    const ctx={currentUser:{id:"admin",role:"platform_admin"},editingRule:null,
+      $:id=>{if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);},el:element,
+      api:(url,options)=>new Promise((resolve,reject)=>calls.push({url,options,resolve,reject})),
+      showError:error=>errors.push(error),openRuleEditor:rule=>editors.push(rule),loadRuleVersionHistory(){}};
+    vm.createContext(ctx);
+    vm.runInContext('let graphRuleCatalog=[],ruleCatalogRequest=0;'+source.slice(source.indexOf('async function loadGraphRules('),source.indexOf('function setRuleDraft(')),ctx);
+    const row={rule_id:'R-001@2.0:converted:test',rule_code:'R-001',version:'2.0',name:'收入差异',source:'converted',review_status:'candidate',legacy:{id:'R-001',enabled:true}};
+    ctx.$('ruleAdmin').open=false;await ctx.loadGraphRules();assert.equal(calls.length,0,'Closed maintenance does not fetch a second catalog');
+    ctx.$('ruleAdmin').open=true;
+    const stale=ctx.loadGraphRules(),first=calls.shift(),latest=ctx.loadGraphRules();
+    assert.equal(calls[0].url,'/api/knowledge/rule-catalog');calls.shift().resolve([row]);await latest;
+    first.resolve([{...row,name:'stale'}]);await stale;
+    const text=node=>[node.textContent,...node.children.map(text)].join(' ');
+    assert.ok(text(ctx.$('ruleList')).includes('候选 · 待审核'));assert.ok(!text(ctx.$('ruleList')).includes('已启用'));
+    const buttons=[];function walk(node){if(node.tag==='button')buttons.push(node);node.children.forEach(walk);}walk(ctx.$('ruleList'));
+    buttons.find(b=>b.textContent==='配置参数版本').handlers.click();assert.equal(editors[0].id,'R-001');
+    const toggle=buttons.find(b=>b.textContent==='关闭历史审计筛查'),writing=toggle.handlers.click();
+    assert.equal(calls[0].url,'/api/rules/R-001/state');assert.deepEqual(JSON.parse(calls[0].options.body),{enabled:false});
+    active=false;calls.shift().resolve({enabled:false});await writing;assert.equal(calls.length,0,'Leaving while a write finishes must not reload another panel');
+    active=true;ctx.$('ruleCatalogSearch').value='not-found';ctx.renderGraphRules();assert.ok(text(ctx.$('ruleList')).includes('没有匹配'));
+    ctx.$('ruleCatalogSearch').value='';const changedUser=ctx.loadGraphRules();ctx.currentUser={id:'other',role:'accountant'};
+    calls.shift().reject(new Error('old-user failure'));await changedUser;assert.equal(errors.length,0);
+    ctx.currentUser={id:'admin',role:'platform_admin'};
+    const failed=ctx.loadGraphRules();calls.shift().reject(new Error('catalog unavailable'));await failed;
+    assert.ok(ctx.$('ruleCatalogStatus').textContent.includes('catalog unavailable'));
+    assert.equal(ctx.$('ruleList').children.length,0,'Failed refresh must not leave stale enabled controls');
+    const markup=fs.readFileSync('webapp/static/index.html','utf8');
+    assert.ok(markup.indexOf('id="ruleAdmin"')>markup.indexOf('id="knowledgePanel"'));
+    assert.ok(markup.indexOf('id="ruleAdmin"')<markup.indexOf('id="uploadPanel"'));
+    assert.ok(!source.slice(source.indexOf('async function loadAdmin()')).includes('api("/api/rules")'));
+  }
   // Settings reuses self-only preferences; stale reads/writes may not alter another view/account.
   const settingsCode = source.slice(source.indexOf("function isCampusUser("), source.indexOf("async function teachingRequest("))+source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
   function settingsBoundary(role = "accountant") {
@@ -451,7 +640,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
     $:id=>{if(!ruleNodes.has(id))ruleNodes.set(id,{...node(),value:"audit-1",querySelectorAll:()=>[]});return ruleNodes.get(id);},
     el:node,api:url=>new Promise((resolve,reject)=>ruleCalls.push({url,resolve,reject})),
     ruleDraftBody:()=>({new_version:"2.1"}),showRuleTrial:r=>shown.push(r),showError:e=>ruleErrors.push(e),
-    openRuleEditor:r=>shown.push(r),loadAdmin:async()=>{}};
+    openRuleEditor:r=>shown.push(r),loadGraphRules:async()=>{}};
   vm.createContext(ruleCtx);
   vm.runInContext('let ruleEditorRequest=0,ruleHistoryRequest=0,ruleBusy=false;'+
     source.slice(source.indexOf("async function loadRuleVersionHistory("),source.indexOf("function ruleDraftBody(")),ruleCtx);

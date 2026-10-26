@@ -21,6 +21,7 @@
   };
 
   const cache = new Map();
+  let refreshRevision = 0;
 
   async function api(path, options = {}) {
     const response = await fetch(path, {credentials: "same-origin", ...options});
@@ -66,11 +67,7 @@
   }
 
   function blocksSubmit(id) {
-    const item = cache.get(id);
-    if (!item) return false;
-    if (["submitted", "pending_review", "done"].includes(item.status)) return true;
-    if (item.status === "returned" && item.corrections >= item.correction_limit) return true;
-    return false;
+    return cache.get(id)?.can_submit === false;
   }
 
   function panel(id, progress) {
@@ -89,11 +86,15 @@
       box.append(reason);
     } else if (progress.status === "pending_review" || progress.status === "submitted") {
       const note = el("div", "tp-warn");
-      note.append(el("p", "muted", "已提交，等待教师复核。复核前不能重复提交；教师退回后才能订正。"));
+      note.append(el("p", "muted", progress.retake_policy === "free"
+        ? "已提交；当前任务允许自由重交，历史提交按版本保留。"
+        : "已提交，等待教师复核。复核前不能重复提交；教师退回后才能订正。"));
       box.append(note);
     } else if (progress.status === "done") {
       const note = el("div", "tp-ok");
-      note.append(el("p", "muted", "教师已复核。如需重新提交，请联系任课教师退回。"));
+      note.append(el("p", "muted", progress.retake_policy === "free"
+        ? "教师已复核；当前任务允许自由重交，历史提交按版本保留。"
+        : "教师已复核。如需重新提交，请联系任课教师退回。"));
       box.append(note);
     }
 
@@ -150,15 +151,20 @@
   }
 
   async function refresh(id) {
+    const user = typeof currentUser === "undefined" ? null : currentUser;
+    if (user?.role !== "student") return;
     const button = $("btnSubmitExercise");
     const host = $("exerciseBox");
     if (!host || String(host.dataset.assignment) !== String(id)) return;
+    const ticket = ++refreshRevision, uid = user.id;
     let progress;
     try {
       progress = await api(`/api/assignments/${id}/progress`);
     } catch {
       return;   // 老师或非本人作业：静默跳过，不干扰原页面
     }
+    if (ticket !== refreshRevision || currentUser?.id !== uid
+        || String(host.dataset.assignment) !== String(id) || !STATUS[progress.status]) return;
     cache.set(id, progress);
     $("tp-submission-panel")?.remove();
     if (button) {
@@ -166,8 +172,11 @@
       const blocked = blocksSubmit(id);
       if (blocked) {
         button.disabled = true;
-        button.textContent = progress.status === "returned" ? "订正次数已用尽" : "已提交，等待教师复核";
-      } else if (button.textContent.includes("已提交") || button.textContent.includes("订正次数")) {
+        button.textContent = progress.status === "done" ? "已完成（已复核）"
+          : ["submitted", "pending_review"].includes(progress.status) ? "已提交，等待教师复核"
+          : progress.status === "returned" && progress.corrections >= progress.correction_limit
+            ? "订正次数已用尽" : "当前任务不可提交";
+      } else {
         button.disabled = false;
         button.textContent = "提交答案并评分";
       }
@@ -187,7 +196,7 @@
       let due = null;
       if (days && days.trim()) {
         const count = Number(days);
-        if (!Number.isFinite(count) || count <= 0) { window.alert("期限要填正整数天数。"); return; }
+        if (!Number.isInteger(count) || count <= 0) { window.alert("期限要填正整数天数。"); return; }
         due = new Date(Date.now() + count * 86400000).toISOString();
       }
       back.disabled = true;
@@ -204,7 +213,10 @@
     return wrap;
   }
 
-  window.tpSubmissionUI = {blocksSubmit, reviewActions, refresh};
+  function reset() {
+    refreshRevision++; cache.clear(); $("tp-submission-panel")?.remove();
+  }
+  window.tpSubmissionUI = {blocksSubmit, reviewActions, refresh, reset};
 
   injectStyle();
   window.addEventListener("tp:exercise-open", event => {

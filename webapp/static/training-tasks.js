@@ -1,5 +1,5 @@
 /* 课程任务清单：把「单案例作业」与「组卷」统一成一屏，并管排期、答案开放与归档。
-   自包含：自行判定身份、自行挂到“课程与作业”视图；不改既有作答页，进入作答仍走原入口。 */
+   由统一登录传入身份，随课堂数据刷新；进入作答仍走原入口。 */
 "use strict";
 (() => {
   const el = (tag, cls, text) => {
@@ -38,6 +38,7 @@
   let role = null;
   let cache = [];
   let filter = "all";
+  let identityRevision = 0, loadRevision = 0;
   const expanded = new Set();
 
   function injectStyle() {
@@ -269,17 +270,23 @@
     for (const task of rows) box.append(role === "staff" ? teacherRow(task) : studentRow(task));
   }
 
-  async function load() {
+  async function load({throwOnError = false} = {}) {
     const card = document.getElementById("task-board-card");
-    if (!card) return;
+    if (!role || !card) return;
+    const identity = identityRevision, ticket = ++loadRevision;
+    const current = () => identity === identityRevision && ticket === loadRevision
+      && document.getElementById("task-board-card") === card;
     const box = card.querySelector(".tb-list");
     box.replaceChildren(el("p", "muted", "正在读取任务…"));
     try {
       const data = await api("/api/training/tasks");
+      if (!current()) return;
       cache = data.items || [];
       paintList(card);
     } catch (error) {
+      if (!current()) return;
       box.replaceChildren(el("p", "muted", "读取失败：" + error.message));
+      if (throwOnError) throw error;
     }
   }
 
@@ -312,35 +319,16 @@
     return card;
   }
 
-  let booted = false;
-  async function init() {
-    const box = host();
-    if (!box) return false;
-    const who = await api("/api/me");
-    const studentRole = who.education_role === "student" || who.role === "student";
-    const teacherRole = ["teacher", "org_admin"].includes(who.role) || who.education_role === "teacher";
-    if (!studentRole && !teacherRole) return false;
-    role = studentRole ? "student" : "staff";
-    const card = buildCard();
-    if (!mount(card)) return false;
-    await load();
-    return true;
+  function setUser(who) {
+    identityRevision++;
+    cache = []; filter = "all"; expanded.clear();
+    document.getElementById("task-board-card")?.remove();
+    const studentRole = who?.role === "student" || who?.education_role === "student";
+    const teacherRole = who?.role === "teacher" || who?.education_role === "teacher"
+      || who?.education_role === "admin";
+    role = studentRole ? "student" : teacherRole ? "staff" : null;
+    if (role && host()) mount(buildCard());
   }
 
-  let attempts = 0;
-  function tryBoot() {
-    if (booted) return;
-    if (!host()) return;
-    booted = true;
-    init().then(ok => { if (!ok) booted = false; }).catch(() => {
-      booted = false;
-      if (attempts++ < 20) window.setTimeout(tryBoot, 1500);
-    });
-  }
-
-  new MutationObserver(tryBoot).observe(document.documentElement, {
-    childList: true, subtree: true, attributes: true, attributeFilter: ["hidden", "class"],
-  });
-  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", tryBoot);
-  else tryBoot();
+  window.tpTrainingTasks = {setUser, refresh: load};
 })();

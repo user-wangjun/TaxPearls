@@ -30,6 +30,7 @@ main>.wrap{max-width:none;margin:0;padding:calc(var(--app-header-height) + 28px)
 #navToggle svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;transition:transform .22s ease}
 .nav button[data-panel]{padding:12px 10px;white-space:nowrap;min-height:44px;color:#365880;cursor:pointer}
 .nav-icon{display:inline-block;width:20px;height:20px;margin:0 1px;vertical-align:middle;fill:currentColor;flex-shrink:0}
+.nav-icon.nav-icon-outline{fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 .nav-label{margin-left:12px;vertical-align:middle}
 .nav button[data-panel].active{background:#fff;color:#1d4ed8;box-shadow:none}
 .nav button:hover{background:#c7ddfa}.nav #navToggle:hover{background:#c9def9}
@@ -1503,6 +1504,22 @@ html[data-theme=dark] #coreInputs .core-identity-different { color:#ff9b9b; }
 .core-check-toggle{position:absolute;right:0;top:10px;font-size:14px;color:var(--ink-3);white-space:nowrap}
 .core-check-disclosure>summary:focus-visible{outline:2px solid var(--gold,#688aa6);outline-offset:3px;border-radius:4px}
 .core-report-actions{padding:16px 0;border-block:1px solid var(--line);margin:16px 0}
+#retrievalChecksAdmin .retrieval-check-schedule{margin:24px 0;padding:20px;border:1px solid var(--line);border-radius:14px}
+.retrieval-schedule-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px 24px}
+#retrievalScheduleTitle{margin:0;font-size:17px;line-height:1.5}
+#retrievalChecksAdmin .retrieval-schedule-enable{display:flex;align-items:center;gap:9px;margin:0;min-height:32px;font-size:14px;cursor:pointer}
+#retrievalCheckEnabled{width:18px;height:18px;flex:0 0 auto;margin:0;accent-color:var(--gold)}
+#retrievalChecksAdmin .retrieval-schedule-hint{margin:6px 0 18px;font-size:13px;line-height:1.7}
+.retrieval-schedule-controls{display:flex;align-items:flex-end;flex-wrap:wrap;gap:16px 24px}
+#retrievalChecksAdmin .retrieval-schedule-controls .field{flex:0 1 184px;min-width:0;margin:0}
+#retrievalChecksAdmin .retrieval-schedule-controls label{margin:0 0 8px;font-size:14px;line-height:1.5}
+.retrieval-schedule-interval{display:flex;align-items:center;gap:10px}
+#appMain #retrievalCheckHours{width:132px;max-width:100%;height:46px;min-height:46px;box-sizing:border-box;padding:10px 14px;font-size:16px}
+.retrieval-schedule-interval>span{flex-shrink:0;font-size:14px;color:var(--ink-2)}
+#appMain #retrievalCheckSave{min-height:46px;margin:0;padding:10px 20px;font-size:14px;white-space:nowrap}
+#retrievalChecksAdmin #retrievalCheckNext{margin:18px 0 0;padding-top:14px;border-top:1px solid var(--line);font-size:13px;line-height:1.7}
+@media(max-width:520px){#retrievalChecksAdmin .retrieval-check-schedule{padding:16px}.retrieval-schedule-heading{align-items:flex-start;flex-direction:column;gap:8px}.retrieval-schedule-controls{align-items:stretch;flex-direction:column;gap:14px}#retrievalChecksAdmin .retrieval-schedule-controls .field{flex:auto}#appMain #retrievalCheckHours{width:100%;flex:1}#appMain #retrievalCheckSave{width:100%}}
+.retrieval-check-case{padding:10px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}#retrievalChecksAdmin .data-item{flex-wrap:wrap;gap:10px}#retrievalChecksAdmin{overflow-wrap:anywhere}
 .core-report-actions h4{margin:0 0 8px}
 .core-report-buttons{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 .core-report-buttons .btn{margin:0;text-decoration:none}
@@ -1626,3 +1643,5 @@ html[data-theme] #appMain #inviteAdmin #inviteOrgTypeOptions button:focus-visibl
 #knowledgePanel .ai-rag-source a{color:var(--ink-2)}
 #knowledgePanel #graphMessages{min-height:120px}
 @media(max-width:520px){#knowledgePanel .graph-question-modes{padding:10px 12px}}
+
+#ruleAdmin .rule-editor-head{flex-wrap:wrap}#ruleAdmin .rule-editor-head>div{flex:1 1 240px}

@@ -444,7 +444,7 @@
 
 </style>
 <link rel="stylesheet" href="/university.css?v=student-practice-20261026-8">
-<link rel="stylesheet" href="/workspace.css?v=student-nav-20261026-4">
+<link rel="stylesheet" href="/workspace.css?v=student-workspace-20261026-10">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261006-shape-1">
@@ -547,6 +547,7 @@
       <button data-panel="knowledgePanel" aria-label="知识图谱" title="知识图谱"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m11 6 2-1 6 12-2 1zM5 17 11 5l2 1-6 12zM6 17h12v2H6z"/><circle cx="12" cy="5" r="3.5"/><circle cx="5" cy="18" r="3.5"/><circle cx="19" cy="18" r="3.5"/></svg><span class="nav-label">知识图谱</span></button>
       <button data-panel="examPanel" class="training-nav" aria-label="考证教学" title="考证教学"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 3h16v18H4zm3 4h10v2H7zm0 5h10v2H7z"/></svg><span class="nav-label">考证教学</span></button>
       <button data-panel="trainingPanel" class="training-nav" aria-label="实训中心" title="实训中心"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m12 3 11 5-11 5L1 8zm-7 9 7 3.2 7-3.2v5c-3.7 3.5-10.3 3.5-14 0zM21 11h2v8h-2z"/></svg><span class="nav-label">实训中心</span></button>
+      <button data-panel="retrievalChecksPanel" style="display:none" aria-label="检索检测" title="检索检测"><svg class="nav-icon nav-icon-outline" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6m-11 7 2 2 4-4"/></svg><span class="nav-label">检索检测</span></button>
       <button data-panel="adminPanel" class="admin-nav" aria-label="管理" title="管理"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="10" cy="7" r="4"/><path d="M2 21v-3a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v3zm16-18a4 4 0 0 1 0 8h-1a6 6 0 0 0 0-8zm.5 10a5 5 0 0 1 4.5 5v3h-3v-3a8 8 0 0 0-1.5-5z"/></svg><span class="nav-label">管理</span></button>
       <button data-panel="aiKeysPanel" style="display:none" aria-label="AI 密钥检测" title="AI 密钥检测"><svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h18v18H3z"/><path fill="var(--bg,#fff)" d="M5 11h4l2-5 3 11 2-6h3v2h-2l-3 8-3-10-1 2H5z"/></svg><span class="nav-label">AI 密钥检测</span></button>
       <div id="appHeader" class="nav-account" style="display:none">
@@ -648,6 +649,7 @@
         <div class="kg-evidence-actions"><button id="kgBackToInputs" type="button" hidden>返回资料补充</button><button id="kgRecheck" type="button" disabled>重检受影响项目（本地）</button><button id="kgArchiveReport" type="button" disabled>生成检查报告</button></div>
         <p id="kgReportStatus" class="muted" role="status"></p><div id="kgReportVersions"></div>
       </details>
+      <details class="sheet" id="ruleAdmin" hidden><summary>图谱规则维护</summary><h2>图谱规则维护</h2><p class="muted">统一查看知识图谱中的规则、来源版本及审核状态。计算转换和参数保存不会自动完成政策审核；历史审计继续使用冻结版本。</p><label class="field">搜索图谱规则<input id="ruleCatalogSearch" type="search" placeholder="规则编号、名称或版本"></label><p id="ruleCatalogStatus" class="muted" role="status"></p><button class="btn" id="btnReloadRules" type="button">刷新规则</button><div class="data-list" id="ruleList"></div><div class="rule-editor" id="ruleEditor" hidden><div class="rule-editor-head"><div><h3 id="ruleEditorTitle"></h3><p class="muted" id="ruleEditorMeta"></p></div><span class="role-chip" id="ruleEditorState"></span></div><div class="row"><div class="field"><label for="ruleCurrentVersion">最新保存版本</label><input id="ruleCurrentVersion" readonly></div><div class="field"><label for="ruleNewVersion">新版本</label><input id="ruleNewVersion" maxlength="32" inputmode="decimal"></div></div><div class="row"><div class="field"><label for="ruleEffectiveFrom">生效起始日</label><input id="ruleEffectiveFrom" type="date"></div><div class="field"><label for="ruleEffectiveTo">生效终止日（可留空）</label><input id="ruleEffectiveTo" type="date"></div></div><p class="muted">首次配置可留空日期沿用全期间兼容模式；启用定期版本后，后续版本须填写起始日。新起始日会自动截止前一条开放式版本；有限区间不得重叠。跨版本的审计期需拆期审计。</p><div class="field"><label for="ruleThresholdBasis">阈值依据</label><textarea id="ruleThresholdBasis" maxlength="500"></textarea></div><div><h3>可调参数</h3><p class="muted" id="ruleMetricHint"></p><div class="rule-param-grid" id="ruleParamFields"></div></div><div class="field"><label for="ruleTrialAudit">试跑材料</label><select id="ruleTrialAudit"></select></div><div class="row"><button class="btn pdf" id="btnRuleTrial" type="button">试跑当前草稿</button><button class="btn" id="btnRuleSave" type="button">保存参数新版本（待审核）</button><p class="muted" id="ruleEditorStatus" role="status"></p></div><div class="rule-trial-result" id="ruleTrialResult" hidden></div><div id="ruleVersionHistory" class="data-list"></div></div></details>
       <div class="graph-workspace">
         <div class="graph-stage"><div class="graph-stage-heading"><div><span class="graph-live-dot"></span><strong>证据关系网络</strong><p id="graphCount"></p></div><span class="graph-mode" id="graphMode">关联视图</span></div><div class="graph-toolbar"><button id="graphOverview">全景</button><button id="graphFocus">聚焦关联</button><button id="graphExpand">展开一层</button><button id="graphZoomIn" aria-label="放大图谱">＋</button><button id="graphZoomOut" aria-label="缩小图谱">−</button><button id="graphCenter" title="恢复当前视图的布局与缩放">居中</button><button id="graphReset" title="清空筛选，恢复当前图谱的初始视图">复位</button></div><svg id="graphCanvas" viewBox="0 0 960 680" aria-label="交互式知识图谱"></svg><div id="graphLegend" class="graph-legend"></div><p class="graph-hint">滚轮缩放 · 拖动画布或节点 · 点击节点查看证据</p></div>
         <aside class="graph-inspector"><div class="inspector-tabs"><button id="nodeTab" class="active">节点详情</button><button id="aiTab">✦ AI 助手</button></div><div id="knowledgeDetail" aria-live="polite"></div><div id="graphAssistant" hidden><div id="graphQuestionModes" class="graph-question-modes" role="group" aria-label="问答范围"><button id="graphAskPublic" type="button" aria-pressed="true">问公共知识库</button><button id="graphAskNode" type="button" aria-pressed="false">问当前节点</button></div><p id="graphAIStatus" class="muted" hidden></p><div id="graphAIContext" class="ai-context"></div><div class="ai-prompts"><button data-question="请用通俗语言解释当前节点，并说明依据和待核实之处。">解释节点</button><button data-question="当前节点有哪些判断条件和例外？没有依据的部分请说明。">条件与例外</button><button data-question="当前节点的原文依据在哪里？相关关系是否已经审核？">查看依据</button></div><div id="graphMessages" aria-live="polite"></div><form id="graphQuestionForm"><textarea id="graphQuestion" aria-label="向图谱 AI 提问" placeholder="围绕当前节点提问…" maxlength="2000" required></textarea><div class="graph-compose-actions"><button id="graphStop" class="btn" type="button" hidden>停止生成</button><button id="graphSend" class="btn pdf">发送 ↗</button></div></form></div></aside>
@@ -976,7 +978,23 @@
       <div class="sheet" id="reviewBox" style="display:none"><h2>学生提交与人工复核</h2><div class="data-list" id="submissionList"></div></div>
     </section>
 
+    <section class="panel" id="retrievalChecksPanel">
+      <div class="sheet" id="retrievalChecksAdmin" hidden>
+        <h2>知识检索检测</h2><p class="muted">查看检索程序的检测结果，重新检测当前版本，并设置服务器定时检测。使用独立测试库，不读取企业材料，不调用付费大模型；只有实际检测通过才启用当前检测版本。</p>
+        <p id="retrievalCheckStatus" role="status" aria-live="polite">正在读取检测状态…</p><p id="retrievalCheckVersion" class="muted"></p>
+        <div class="row"><button id="retrievalCheckRun" class="btn pdf" type="button">立即重新检测</button><button id="retrievalCheckRefresh" class="btn re" type="button">刷新状态</button></div>
+        <section class="retrieval-check-schedule" aria-labelledby="retrievalScheduleTitle">
+          <div class="retrieval-schedule-heading"><h3 id="retrievalScheduleTitle">定时检测</h3><label class="retrieval-schedule-enable"><input id="retrievalCheckEnabled" type="checkbox">开启定时检测</label></div>
+          <p class="muted retrieval-schedule-hint" id="retrievalScheduleHint">开启后由服务器自动执行，关闭页面不影响检测。</p>
+          <div class="retrieval-schedule-controls"><div class="field"><label for="retrievalCheckHours">检测间隔</label><div class="retrieval-schedule-interval"><input id="retrievalCheckHours" type="number" min="1" max="720" step="1" value="24" aria-describedby="retrievalScheduleHint retrievalScheduleUnit"><span id="retrievalScheduleUnit">小时</span></div></div><button id="retrievalCheckSave" class="btn re" type="button">保存定时设置</button></div>
+          <p id="retrievalCheckNext" class="muted" role="status" aria-live="polite"></p>
+        </section>
+        <div id="retrievalCheckResults"></div><details><summary>最近 20 次检测记录</summary><div id="retrievalCheckHistory" class="data-list"></div></details>
+      </div>
+    </section>
+
     <section class="panel" id="adminPanel">
+
       <div class="sheet" id="orgSettingsAdmin"><h2>报告模板</h2><p class="muted">配置仅对本机构生效，并同步用于 HTML 与 PDF 报告。Logo 仅支持 PNG/JPEG，最大 512KB、宽高不超过 1200 像素。</p><div class="row"><div class="field"><label for="orgDisplayName">机构名称</label><input id="orgDisplayName" maxlength="80"></div><div class="field"><label for="orgReportTitle">报告标题</label><input id="orgReportTitle" maxlength="120"></div></div><div class="field"><label for="orgFooterText">页脚声明</label><textarea id="orgFooterText" maxlength="300" placeholder="例如：仅供内部风险管理使用"></textarea></div><div class="org-logo-editor"><img id="orgLogoPreview" alt="当前机构 Logo" hidden><div><div class="field"><label for="orgLogoFile">机构 Logo</label><input id="orgLogoFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></div><div class="row"><button class="btn pdf" id="btnUploadOrgLogo" type="button">上传 Logo</button><button class="btn re" id="btnRemoveOrgLogo" type="button">移除 Logo</button></div></div></div><div class="row"><button class="btn pdf" id="btnSaveOrgSettings" type="button">保存报告模板</button><p class="muted" id="orgSettingsStatus" role="status"></p></div></div>
       <div class="sheet" id="inviteAdmin" style="display:none"><h2>签发机构创始码</h2><p class="muted">为企业和高校的管理员签发一次性注册码：码与机构名称、类别捆绑，一码一位、私聊交付，不绑定邮箱；注册时仍须通过邮箱验证码核验。明文只在签发时显示一次，系统中仅存哈希。</p><div class="invite-type-row"><div class="field invite-type-field"><span id="inviteOrgTypeLabel" class="field-label">机构类别</span><input id="inviteOrgType" type="hidden" value="enterprise"><div id="inviteOrgTypeOptions" class="workspace-segmented" role="group" aria-labelledby="inviteOrgTypeLabel" data-value="enterprise"><button id="inviteTypeEnterprise" type="button" aria-pressed="true"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5h10v16M14 10h6v11M2 21h20M7 9h4M7 13h4M7 17h4"/></svg><span>企业</span></button><button id="inviteTypeUniversity" type="button" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m2 8 10-5 10 5-10 5ZM6 11v7c4 3 8 3 12 0v-7M22 8v9"/></svg><span>高校</span></button></div></div></div><div class="row invite-issue-form"><div class="field"><label for="inviteOrgName">机构名称</label><input id="inviteOrgName" maxlength="120" placeholder="例如：东莞市某某税务师事务所"></div><div class="field"><label for="inviteSeats" id="inviteSeatsLabel">机构总席位（含管理员）</label><div style="display:flex;gap:10px;align-items:center"><select id="inviteSeats" style="flex:1;min-width:0"><option value="5" selected>小型 · 5 席</option><option value="20">中型 · 20 席</option><option value="50">大型 · 50 席</option><option value="custom">自定义</option></select><div id="inviteCustomSeatsField" hidden style="flex:1;min-width:0"><input id="inviteCustomSeats" aria-label="自定义席位数（含管理员，1–200）" type="number" inputmode="numeric" min="1" max="200" step="1" placeholder="1–200 席" disabled></div></div></div><div class="field" id="inviteStudentSeatsField" hidden><label for="inviteStudentSeats">学生总额度</label><input id="inviteStudentSeats" type="number" min="0" max="100000" value="500"></div><button class="btn pdf" id="btnCreateInvite" type="button">签发邀请码</button></div><div class="data-item" id="inviteReveal" hidden><div><div id="inviteRevealCode" class="invite-code"></div><p class="muted" id="inviteRevealOrg"></p><p class="muted" id="inviteRevealSeats"></p><p class="muted">仅显示这一次，关闭后无法找回，请立即复制并私聊交付给机构负责人。</p></div><div class="row"><button id="btnCopyInvite" type="button" disabled>复制</button><button id="btnHideInvite" type="button">我已保存</button></div></div><h3>邀请码台账</h3><div class="data-list" id="inviteList"></div></div>
       <div class="sheet" id="userAdmin"><h2>账号与成员管理</h2><p class="muted" id="userAdminHint">机构管理员可创建本机构会计；平台只能签发创始码，不手动开户。席位按当前在岗成员计算（含机构管理员，不含平台管理员）；停用释放席位并撤销会话，恢复后须重新登录，不删除历史业务。</p>
@@ -1003,7 +1021,7 @@
         <div id="universityMembers" hidden></div>
       </div>
       <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称</label><input id="clientName"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号</label><input id="clientTaxpayerId"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
-      <div class="sheet" id="ruleAdmin"><h2>规则参数与试跑</h2><p class="muted">选择规则后以表单调整参数，并在指定历史材料快照上试跑。试跑不修改历史审计；只有平台管理员可正式保存。带日期的新版本只适用于完整落在其生效区间内的审计期。</p><div class="data-list" id="ruleList"></div><div class="rule-editor" id="ruleEditor" hidden><div class="rule-editor-head"><div><h3 id="ruleEditorTitle"></h3><p class="muted" id="ruleEditorMeta"></p></div><span class="role-chip" id="ruleEditorState"></span></div><div class="row"><div class="field"><label for="ruleCurrentVersion">最新保存版本</label><input id="ruleCurrentVersion" readonly></div><div class="field"><label for="ruleNewVersion">新版本</label><input id="ruleNewVersion" maxlength="32" inputmode="decimal"></div></div><div class="row"><div class="field"><label for="ruleEffectiveFrom">生效起始日</label><input id="ruleEffectiveFrom" type="date"></div><div class="field"><label for="ruleEffectiveTo">生效终止日（可留空）</label><input id="ruleEffectiveTo" type="date"></div></div><p class="muted">首次配置可留空日期沿用全期间兼容模式；启用定期版本后，后续版本须填写起始日。新起始日会自动截止前一条开放式版本；有限区间不得重叠。跨版本的审计期需拆期审计。</p><div class="field"><label for="ruleThresholdBasis">阈值依据</label><textarea id="ruleThresholdBasis" maxlength="500"></textarea></div><div><h3>可调参数</h3><p class="muted" id="ruleMetricHint"></p><div class="rule-param-grid" id="ruleParamFields"></div></div><div class="field"><label for="ruleTrialAudit">试跑材料</label><select id="ruleTrialAudit"></select></div><div class="row"><button class="btn pdf" id="btnRuleTrial" type="button">试跑当前草稿</button><button id="btnRuleSave" type="button">保存为新版本</button><p class="muted" id="ruleEditorStatus" role="status"></p></div><div class="rule-trial-result" id="ruleTrialResult" hidden></div><div id="ruleVersionHistory" class="data-list"></div></div></div>
+      <div class="sheet" id="ruleAdminLink" hidden><h2>规则维护已整合到知识图谱</h2><p class="muted">在知识图谱统一查看规则依据、计算条件、版本和审核状态。</p><button id="btnOpenGraphRules" type="button">前往图谱规则维护</button></div>
       <div class="sheet" id="logAdmin"><h2>操作日志</h2><div class="data-list" id="logList"></div></div>
     </section>
 
@@ -1018,26 +1036,27 @@
 </footer>
 
 <script src="/mistake-book.js?v=teaching-storage-1"></script>
-<script src="/classroom.js?v=20261023-46cafbdd6932"></script>
+<script src="/classroom.js?v=20261025-01d52ebc8987"></script>
 <script src="/core-inputs.js?v=20261024-d529b7c98612"></script>
 <script src="/enterprise.js?v=20261017-62c89aee0e75"></script>
 <script src="/ai-keys.js?v=20261020-custom-endpoint-1"></script>
+<script src="/retrieval-checks.js?v=20261025-23d7b26ccd4c"></script>
 <script src="/policy-source.js?v=public-policy-1"></script>
 <script src="/member-links.js?v=20261020-native-1"></script>
 <script src="/training-workspace.js?v=20261020-native-1"></script>
 <script src="/training-staff.js?v=20261023-8d1e3b3c25ba"></script>
 <script src="/training-portal.js?v=student-date-year-20261026-9"></script>
-<script src="/university-workspace.js?v=student-home-20261026-3"></script>
-<script src="/console.js?v=20261024-7b50f2056d9f"></script>
+<script src="/university-workspace.js?v=student-workspace-20261026-10"></script>
+<script src="/console.js?v=20261026-a3cd562c84b1"></script>
 <script src="/auth-glass.js?v=20261006-login-layout-1"></script>
 <script src="/workspace.js?v=20261020-native-1"></script>
 <script src="/graph.js?v=student-home-20261026-3"></script>
 <script src="/rule-bindings.js?v=20261016"></script>
 <script src="/knowledge-retrieval.js?v=20261018-32580db4e0ef"></script>
-<script src="/training-ai-coach.js?v=20261023-a411ff55ef65"></script>
-<script src="/training-tasks.js?v=20261023-6ac99ba467e8"></script>
-<script src="/training-submission-ui.js?v=20261023-508016d9555a"></script>
-<script src="/teaching-case-ui.js?v=20261023-8ab9fa42c146"></script>
+<script src="/training-ai-coach.js?v=20261025-d169449854c8"></script>
+<script src="/training-tasks.js?v=20261025-c11f912732d8"></script>
+<script src="/training-submission-ui.js?v=20261025-efc7cd03ac7a"></script>
+<script src="/teaching-case-ui.js?v=20261025-a221b8917953"></script>
 <script>bootstrap().catch((err) => { showToast(err.message); });</script>
 <div id="toastStack" aria-live="polite"></div>
 </body>

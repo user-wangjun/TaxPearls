@@ -250,14 +250,17 @@ def drift(db, kind: str, subject_id: str) -> dict[str, Any]:
                      if changed else "与发布时冻结的规则快照一致。")}
 
 
-def _task_state(published: bool, archived: bool, open_at: str | None, due_at: str | None) -> str:
+def task_state(published: bool, archived: bool, open_at: str | None, due_at: str | None,
+               *, at: datetime | None = None) -> str:
+    """Shared availability for task cards and classroom read/write endpoints."""
     if archived:
         return "archived"
     if not published:
         return "draft"
-    if open_at and now() < open_at:
+    moment = at if at is not None else datetime.fromisoformat(now())
+    if open_at and moment < datetime.fromisoformat(open_at):
         return "scheduled"
-    if due_at and now() >= due_at:
+    if due_at and moment >= datetime.fromisoformat(due_at):
         return "closed"
     return "published"
 
@@ -275,10 +278,13 @@ def _progress(db, assignment_ids: list[str], student_id: str | None) -> dict[str
         ).fetchone()
     else:
         row = db.execute(
-            f"""SELECT COUNT(DISTINCT student_id) c,
-                       COUNT(DISTINCT CASE WHEN adjusted_score IS NOT NULL THEN student_id END) r
-                FROM submissions WHERE assignment_id IN ({marks})""",
-            tuple(assignment_ids),
+            f"""SELECT COUNT(*) c, SUM(reviewed) r FROM (
+                  SELECT student_id,
+                         CASE WHEN COUNT(DISTINCT CASE WHEN adjusted_score IS NOT NULL THEN assignment_id END)=?
+                              THEN 1 ELSE 0 END reviewed
+                  FROM submissions WHERE assignment_id IN ({marks})
+                  GROUP BY student_id HAVING COUNT(DISTINCT assignment_id)=?)""",
+            (len(assignment_ids), *assignment_ids, len(assignment_ids)),
         ).fetchone()
     return {"submitted": int(row["c"] or 0), "reviewed": int(row["r"] or 0)}
 
@@ -305,12 +311,6 @@ def _answers_visible(task: dict[str, Any], who: dict[str, Any]) -> bool:
                         task["due_at"], bool(task["fully_submitted"]))
 
 
-def _can_submit(task: dict[str, Any], remaining: int) -> bool:
-    if task["state"] != "published":
-        return False
-    return remaining > 0
-
-
 # --------------------------------------------------------------------------- 视图
 
 
@@ -320,15 +320,18 @@ def _my_state(db, assignment_ids: list[str], student_id: str) -> dict[str, Any]:
     # 越靠前越需要学生动手；done 放最后，避免一份卷里只交了一题就显示已完成
     order = ["returned", "pending_review", "submitted", "in_progress", "not_started", "done"]
     picked = None
+    can_submit = False
     for assignment_id in assignment_ids:
-        state = training_submissions.state_of(db, assignment_id, student_id)
+        state = training_submissions.progress(db, assignment_id, student_id)
+        can_submit = can_submit or state["can_submit"]
         if picked is None or order.index(state["status"]) < order.index(picked["status"]):
             picked = state
     if picked is None:
         return {"my_status": "not_started", "my_return_reason": None,
-                "my_attempts": 0, "my_corrections": 0}
+                "my_attempts": 0, "my_corrections": 0, "can_submit": False}
     return {"my_status": picked["status"], "my_return_reason": picked["return_reason"],
-            "my_attempts": int(picked["attempts"]), "my_corrections": int(picked["corrections"])}
+            "my_attempts": int(picked["attempts"]), "my_corrections": int(picked["corrections"]),
+            "can_submit": can_submit}
 
 def _assignment_task(db, row, who) -> dict[str, Any]:
     sett = _settings(db, "assignment", row["id"])
@@ -354,7 +357,7 @@ def _assignment_task(db, row, who) -> dict[str, Any]:
         "course_id": course_id, "course_name": course_name,
         "class_id": row["class_id"], "class_name": class_name,
         "published": bool(row["published"]), "open_at": sett["open_at"], "due_at": due_at,
-        "state": _task_state(bool(row["published"]), bool(sett["archived_at"]), sett["open_at"], due_at),
+        "state": task_state(bool(row["published"]), bool(sett["archived_at"]), sett["open_at"], due_at),
         "submit_limit": int(sett["submit_limit"]),
         "correction_limit": int(sett["correction_limit"]),
         "retake_policy": sett["retake_policy"],
@@ -370,7 +373,7 @@ def _assignment_task(db, row, who) -> dict[str, Any]:
     if who["role"] == "student":
         task.update(_my_state(db, [row["id"]], who["id"]))
     task["answers_visible"] = _answers_visible(task, who)
-    task["can_submit"] = bool(who["role"] == "student" and _can_submit(task, task["submit_limit"] - task["submitted_mine"]))
+    task["can_submit"] = task["state"] == "published" and task.get("can_submit", False)
     return task
 
 
@@ -398,7 +401,7 @@ def _paper_task(db, row, who) -> dict[str, Any]:
         "course_id": course_id, "course_name": course_name,
         "class_id": row["class_id"], "class_name": class_name,
         "published": bool(row["published"]), "open_at": sett["open_at"], "due_at": due_at,
-        "state": _task_state(bool(row["published"]), bool(sett["archived_at"]), sett["open_at"], due_at),
+        "state": task_state(bool(row["published"]), bool(sett["archived_at"]), sett["open_at"], due_at),
         "submit_limit": int(sett["submit_limit"]),
         "correction_limit": int(sett["correction_limit"]),
         "retake_policy": sett["retake_policy"],
@@ -415,8 +418,7 @@ def _paper_task(db, row, who) -> dict[str, Any]:
     if who["role"] == "student":
         task.update(_my_state(db, ids, who["id"]))
     task["answers_visible"] = _answers_visible(task, who)
-    remaining = len(ids) - submitted_mine
-    task["can_submit"] = bool(who["role"] == "student" and _can_submit(task, remaining))
+    task["can_submit"] = task["state"] == "published" and task.get("can_submit", False)
     return task
 
 
@@ -551,6 +553,7 @@ def preview(db, who: dict[str, Any], kind: str, subject_id: str) -> dict[str, An
 
 
 def update_settings(db, who: dict[str, Any], kind: str, subject_id: str, body) -> dict[str, Any]:
+    from webapp import classroom
     task = detail(db, who, kind, subject_id)
     if who["role"] != "teacher":
         raise TaskError("只有任课教师可以调整任务设置。", 403)
@@ -560,11 +563,26 @@ def update_settings(db, who: dict[str, Any], kind: str, subject_id: str, body) -
         raise TaskError("多次提交需要提交版本记录，随订正流程一起开放；当前仅支持限交 1 次。", 409)
     if body.answer_release not in ANSWER_RELEASE:
         raise TaskError("答案开放方式不正确。")
-    if body.open_at and task["due_at"] and body.open_at >= task["due_at"]:
+    try:
+        open_at = classroom.deadline(body.open_at)
+    except classroom.ClassroomError as exc:
+        raise TaskError(str(exc)) from None
+    if open_at and task["due_at"] and open_at >= task["due_at"]:
         raise TaskError("开放时间必须早于截止时间。")
     previous = _settings(db, kind, subject_id)
-    has_submissions = bool(task["submitted_total"] or task["submitted_mine"])
-    if has_submissions and (body.open_at != previous["open_at"]
+    previous_open = previous["open_at"]
+    if previous_open:
+        try:
+            previous_open = classroom.deadline(previous_open)
+        except classroom.ClassroomError:
+            pass
+    if kind == "assignment":
+        has_submissions = db.execute("SELECT 1 FROM submissions WHERE assignment_id=? LIMIT 1", (subject_id,)).fetchone()
+    else:
+        has_submissions = db.execute("""SELECT 1 FROM submissions s
+            JOIN training_assignment_settings a ON a.assignment_id=s.assignment_id WHERE a.paper_id=? LIMIT 1""",
+            (subject_id,)).fetchone()
+    if has_submissions and (open_at != previous_open
                             or body.submit_limit != previous["submit_limit"]):
         raise TaskError("已有学生作答，排期和提交次数不能再改；需要调整请归档后新建任务，保留原记录。", 409)
     db.execute(
@@ -576,7 +594,7 @@ def update_settings(db, who: dict[str, Any], kind: str, subject_id: str, body) -
              correction_limit=excluded.correction_limit, retake_policy=excluded.retake_policy,
              answer_release=excluded.answer_release, updated_by=excluded.updated_by,
              updated_at=excluded.updated_at""",
-        (kind, subject_id, who["org_id"], body.open_at, body.submit_limit,
+        (kind, subject_id, who["org_id"], open_at, body.submit_limit,
          body.correction_limit, body.retake_policy, body.answer_release, who["id"], now()),
     )
     return detail(db, who, kind, subject_id)
@@ -605,13 +623,16 @@ def set_archived(db, who: dict[str, Any], kind: str, subject_id: str, archived: 
         raise TaskError("只有任课教师可以归档任务。", 403)
     if not archived and task["state"] != "archived":
         raise TaskError("该任务未归档。", 409)
+    archived_at = now() if archived else None
     db.execute(
         """INSERT INTO training_task_settings (subject_kind,subject_id,org_id,archived_at,updated_by,updated_at)
            VALUES (?,?,?,?,?,?)
            ON CONFLICT(subject_kind,subject_id) DO UPDATE SET
              archived_at=excluded.archived_at, updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
-        (kind, subject_id, who["org_id"], now() if archived else None, who["id"], now()),
+        (kind, subject_id, who["org_id"], archived_at, who["id"], now()),
     )
+    if kind == "assignment":
+        db.execute("UPDATE teaching_case_task SET archived_at=? WHERE assignment_id=?", (archived_at, subject_id))
     return detail(db, who, kind, subject_id)
 
 

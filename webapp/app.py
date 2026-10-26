@@ -67,11 +67,15 @@ async def lifespan(application):
     application.state.public_knowledge = await run_in_threadpool(bootstrap, store, RULES_DIR)
     worker = NotificationWorker(lambda: store)
     worker.start()
+    from webapp.retrieval_checks import Worker as RetrievalCheckWorker
+    retrieval_worker = RetrievalCheckWorker(lambda: store)
+    retrieval_worker.start()
     try:
         application.state.material_worker.start()
         yield
     finally:
         application.state.material_worker.stop()
+        retrieval_worker.stop()
         worker.stop()
 
 
@@ -1791,6 +1795,8 @@ from webapp.core_inputs import register as register_core_inputs
 register_core_inputs(app, lambda: store, _user, _allow, STATIC_DIR)
 from webapp.knowledge_evidence import register as register_knowledge_evidence
 register_knowledge_evidence(app, lambda: store, _user, _allow)
+from webapp.retrieval_checks import register as register_retrieval_checks
+register_retrieval_checks(app, lambda: store, _user, _allow)
 from webapp.core_reports import register as register_core_reports
 register_core_reports(app, lambda: store, _user, _allow)
 register_enterprise_materials(app, lambda: store, _user, _allow, RULES_DIR,
@@ -2045,6 +2051,34 @@ def delete_org_logo(session: str | None = Cookie(default=None, alias=COOKIE_NAME
     return saved
 
 
+@app.get("/api/knowledge/rule-catalog")
+def knowledge_rule_catalog(session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    """Current graph editions, with legacy controls explicitly scoped to compatibility."""
+    _user(session)
+    from src.rule_conversion import compile_rule
+    loaded = _effective_rules()
+    overrides, enabled = store.rule_overrides(), store.enabled_rule_ids()
+    definitions = {compile_rule(r)['rule_id']: r for r in loaded}
+    with store.connect() as db:
+        policy_graph.sync_rules(db, loaded)
+        native = [dict(row) for row in db.execute(
+            'SELECT * FROM TaxRule WHERE execution_json IS NULL AND conversion_json IS NULL')]
+        rows = native + [policy_graph.get(db, 'TaxRule', rid) for rid in definitions]
+        result = []
+        for row in rows:
+            rid = row['rule_id']
+            rule = definitions.get(rid)
+            result.append({
+                'rule_id': rid, 'rule_code': row['rule_code'], 'name': row['name'],
+                'version': row['version'], 'review_status': row['review_status'],
+                'reviewed_by': row['reviewed_by'], 'reviewed_at': row['reviewed_at'],
+                'source': 'converted' if rule else 'graph',
+                'legacy': _rule_payload(rule, enabled is None or rule.id in enabled,
+                                        overrides.get(rule.id)) if rule else None,
+            })
+    return sorted(result, key=lambda row: (row['rule_code'] or '', row['version'], row['rule_id']))
+
+
 @app.get("/api/rules")
 def rules(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
     _user(session)
@@ -2198,7 +2232,7 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
     if not assignment:
         raise HTTPException(status_code=404, detail="作业不存在。")
     if not assignment["can_submit"]:
-        raise HTTPException(409,"已到截止时间，不能提交或覆盖已有成绩。")
+        raise HTTPException(409,"任务尚未开放或已截止，不能提交或覆盖已有成绩。")
     entry = store.get_audit(assignment["audit_id"])
     if not entry or entry["org_id"] != user["org_id"]:
         raise HTTPException(404,"作业材料不存在。")
@@ -2219,7 +2253,7 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
         return {**result, "result_released": True, "result_note": ""}
     return {"result_released": False, "result_note": note, "score": None,
             "correct": [], "missed": [], "false_positives": [],
-            "false_positive_deduction": result.get("false_positive_deduction")}
+            "false_positive_deduction": None}
 
 
 @app.post("/api/assignments/{assignment_id}/feedback")
