@@ -35,12 +35,21 @@ function countdownBadge(cd) {
   return `<span class="badge">距考试 ${cd.days_left} 天</span>`;
 }
 
+function countdownPanel(cd) {
+  if (!cd || !Number.isInteger(cd.days_left)) return `<div class="goal-countdown is-empty"><strong>待定</strong><span>尚未设置考试日期</span></div>`;
+  if (cd.expired || cd.days_left < 0) return `<div class="goal-countdown is-past"><strong>已到期</strong><span>请核对下一场考试日期</span></div>`;
+  if (cd.days_left === 0) return `<div class="goal-countdown is-today"><strong>今天</strong><span>就是目标考试日</span></div>`;
+  return `<div class="goal-countdown" aria-label="距目标考试还有 ${cd.days_left} 天"><span>距离目标考试</span><div><strong>${cd.days_left}</strong><span>天</span></div></div>`;
+}
+
 const SOURCE_LABEL = { official: "官方考试日", expected: "预计考试日", planned: "个人计划日" };
 
 /* ---------- 渲染 ---------- */
 
 function renderGoals() {
   const box = document.getElementById("goals");
+  const manager = document.getElementById("goal-manager");
+  if(manager)manager.hidden=!state.goals.length;
   if (!state.goals.length) {
     box.innerHTML = `<p class="muted">还没有考证目标：到「找证书」里搜一个证书，设为目标并选定考试日后，这里会出现倒计时和每天该学什么。</p>
       <button class="small" data-act="workspace-catalog">去找证书</button>`;
@@ -257,7 +266,7 @@ function renderGuide(g) {
       <div class="focus-body">
         <div class="item-head">
           <div><strong>${esc(f.name)}</strong>
-            <span class="muted">${esc(f.code)} · ${esc(f.chapter_name)}</span></div>
+            <span class="muted">${esc(f.chapter_name)}</span></div>
           <div>
             ${f.high_freq.length ? `<span class="badge warn">常考</span>` : ""}
             ${f.required.master ? `<span class="badge">掌握 ${f.required.master}</span>` : ""}
@@ -285,13 +294,13 @@ function renderGuide(g) {
       <ol class="practical-steps">${item.steps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>
       <div class="muted">交付物：${esc(item.deliverable)}</div>
       ${item.focus.length ? `<div class="muted">对应知识点：${item.focus.map((f) =>
-        `${esc(f.code)} ${esc(f.name)}`).join("、")}</div>` : ""}
+        esc(f.name)).join("、")}</div>` : ""}
     </div>`).join("");
 
   const labRows = g.practical.rule_labs.map((lab) => `
     <div class="item">
       <div class="item-head">
-        <div><strong>${esc(lab.rule_code)} · ${esc(lab.title)}</strong>
+        <div><strong>${esc(lab.title)}</strong>
           <span class="muted">${esc(lab.chapter_name)} / ${esc(lab.knowledge_point_name)}</span></div>
         <button class="small primary" type="button" data-act="g-rule" data-cert="${esc(cert.id)}"
           data-kp="${esc(lab.knowledge_point_id)}" data-rule="${esc(lab.rule_id)}">生成仿真案例</button>
@@ -309,7 +318,7 @@ function renderGuide(g) {
       ${subject.chapters.map((chapter) => `
         <div class="detail">
           <div class="item-head">
-            <div><strong>${esc(chapter.code)} ${esc(chapter.name)}</strong></div>
+            <div><strong>${esc(chapter.name)}</strong></div>
             <span class="muted">掌握 ${chapter.requirement.master} · 熟悉 ${chapter.requirement.familiar}
               · 了解 ${chapter.requirement.know}</span>
           </div>
@@ -317,7 +326,7 @@ function renderGuide(g) {
             · 有仿真题 ${chapter.practice_kp_count}${chapter.focus_count
               ? ` · 进重点清单 ${chapter.focus_count} 个` : ""}</div>
           <ul class="kp-list">${chapter.kps.map((kp) => `<li>
-            ${kp.high_freq ? `<span class="badge warn">常考</span> ` : ""}${esc(kp.code)} ${esc(kp.name)}
+            ${kp.high_freq ? `<span class="badge warn">常考</span> ` : ""}${esc(kp.name)}
             <span class="muted">${kp.rule_links ? `仿真题 ${kp.rule_links}` : "暂无题目"} · 已练 ${kp.attempts}</span>
           </li>`).join("")}</ul>
         </div>`).join("")}
@@ -328,8 +337,7 @@ function renderGuide(g) {
       <button class="small" type="button" data-act="cert-back">← 返回搜索结果</button>
       <div>
         <h2 style="margin:0 0 4px;">${esc(cert.name)} <span class="muted">${esc(cert.code)}</span></h2>
-        <div>${(cert.subjects || []).map((s) => `<span class="chip">${esc(s)}</span>`).join("")}
-          ${g.content_version ? `<span class="chip">教学版本：${esc(g.content_version.label)}</span>` : ""}</div>
+        <div>${(cert.subjects || []).map((s) => `<span class="chip">${esc(s)}</span>`).join("")}</div>
         ${cert.description ? `<div class="muted">${esc(cert.description)}</div>` : ""}
       </div>
     </div>
@@ -344,7 +352,7 @@ function renderGuide(g) {
     ${focusRows || `<p class="muted">该证书还没有配置知识点，等教师上架后这里会给出重点清单。</p>`}
     <h3>要动手做的实操工作</h3>
     <p class="muted" style="margin:0 0 8px;">${esc(g.practical.source_note)}
-      （已覆盖 ${g.practical.chapters_with_items}/${g.practical.chapters_total} 章 · 版本 ${esc(g.practical.version)}）</p>
+      （已覆盖 ${g.practical.chapters_with_items}/${g.practical.chapters_total} 章）</p>
     <h4>① 章节实操清单：照着做，留下成果</h4>
     ${practicalRows || `<p class="muted">该证书的章节还没有对应实操建议。</p>`}
     <h4>② 合规核对实操：生成仿真案例，做完可判分</h4>
@@ -464,7 +472,7 @@ async function refreshPractice() {
   renderStats();
   const kpSel = document.getElementById("pr-kp");
   kpSel.innerHTML = `<option value="">（整证随机）</option>` + state.kps.map((k) =>
-    `<option value="${esc(k.id)}">${esc(k.code)} ${esc(k.name)}${k.rule_links ? "" : "（暂无题目）"}</option>`).join("");
+    `<option value="${esc(k.id)}">${esc(k.name)}${k.rule_links ? "" : "（暂无题目）"}</option>`).join("");
   document.getElementById("pr-hint").textContent = state.kps.length
     ? "题目来自教师关联的规则仿真题（仿真，非真题）；提交后自动判分并开放解析。"
     : "该证书下教师尚未配置知识点与题目，等待教师上架后即可练习。";
@@ -492,27 +500,25 @@ function renderKpRows() {
         const validity = s.current_validity_status || s.validity_status;
         const extraction = s.current_extraction_status || s.extraction_status;
         return `<li>${link}（${validity !== "in_force" || extraction !== "verified" ? "待适用复核" : "来源已复核，适用范围另核"}）
-          <div class="muted">地区：${esc(s.region_code || "未注明")} · 有效期：${esc(s.effective_from || "待核对")} 至 ${esc(s.effective_to || "终止日期未注明")}</div>
-          ${s.content ? `<details><summary>查看条款原文${s.snapshot_status === "published" ? "（教学版本留存）" : ""}</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere;">${esc(s.content)}</div>
+          <div class="muted">适用地区：${esc(s.region_code === "CN" ? "全国" : s.region_code || "未注明")} · 有效期：${esc(s.effective_from || "待核对")} 至 ${esc(s.effective_to || "终止日期未注明")}</div>
+          ${s.content ? `<details><summary>查看条款原文</summary><div style="white-space:pre-wrap;overflow-wrap:anywhere;">${esc(s.content)}</div>
             ${s.source_location ? `<div class="muted">原文位置：${esc(formatPolicySourceLocation(s.source_location))}</div>` : ""}</details>` : ""}</li>`;
       }).join("");
-      return `<div class="detail"><strong>${esc(r.rule_code)} · v${esc(r.rule_version)}</strong>
-        <div class="muted">规则仿真参考；政策适用仍须复核。</div>
+      return `<section class="detail student-rule-reference">${r.name && r.name !== k.name ? `<h4>${esc(r.name)}</h4>` : ""}
         <div class="muted">${esc(r.threshold_basis)}</div>
         ${r.inputs ? `<details><summary>查看取数口径</summary><ul>${Object.entries(r.inputs).map(([name, meaning]) => `<li>${esc(name)}：${esc(meaning)}</li>`).join("")}</ul></details>` : ""}
-        ${sources ? `<ul>${sources}</ul>` : `<p class="muted">尚未关联原文依据，待完善；不据此确认政策适用。</p>`}</div>`;
+        ${sources ? `<details><summary>政策原文与来源</summary><ul class="student-policy-list">${sources}</ul></details>` : `<p class="muted">尚未关联原文依据，待完善；不据此确认政策适用。</p>`}</section>`;
     }).join("");
     return `<div class="item"><div class="item-head">
-      <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
+      <div><strong>${esc(k.name)}</strong>
         ${k.high_freq.map((m) => `<span class="badge warn">常考${m.basis_ref ? " · " + esc(m.basis_ref) : ""}</span>`).join("")}
         ${k.rule_links ? "" : `<span class="badge gray">暂无题目</span>`}
       </div>
       <div class="muted">已练 ${k.attempts} 次 · 满分 ${k.perfect} 次</div>
-    </div>${k.subject ? `<div class="muted">${esc(k.subject)} · ${esc(k.outline_version || "未标注内容版本")}</div>` : ""}
-    ${k.content_version ? `<div class="muted">教学版本：${esc(k.content_version.label)}</div>` : ""}
-    ${k.knowledge_update?.pending ? `<p class="muted">公共知识已有更新，练习仍按当前教学版本进行，等待教师核对发布。</p>` : ""}
+    </div>${k.subject ? `<div class="muted">${esc(k.subject)}</div>` : ""}
+    ${k.knowledge_update?.pending ? `<p class="muted">相关依据已有更新，教师核对后会更新练习内容。</p>` : ""}
     ${relChips ? `<div style="margin-top:4px;">${relChips}</div>` : ""}
-    ${knowledge ? `<details><summary>规则与政策依据</summary>${knowledge}</details>` : ""}</div>`;
+    ${knowledge ? `<details><summary>规则与政策依据</summary><p class="muted">供仿真练习参考，具体政策适用请结合原文核对。</p>${knowledge}</details>` : ""}</div>`;
   }).join("");
 }
 
@@ -551,8 +557,7 @@ function renderWorkbench() {
   if (!dash) { box.innerHTML = ""; return; }
   if (!dash.goals.length) {
     const hosted = typeof window !== "undefined" && window.universityWorkspace;
-    const hint = hosted ? dash.hint.replace("下方证书目录", "侧栏的考证目标") : dash.hint;
-    box.innerHTML = `<p class="muted">${esc(hint)}</p>${hosted ? '<button class="btn pdf" data-act="workspace-goals">设置考证目标</button>' : ""}`;
+    box.innerHTML = `<div class="goal-empty"><p class="muted">还没有考证目标。先选择想考的证书，设置目标日期后，这里会展示倒计时和学习安排。</p>${hosted ? '<button class="btn pdf" data-act="workspace-catalog">去找证书</button>' : ""}</div>`;
     return;
   }
   box.innerHTML = dash.goals.map((g) => {
@@ -579,12 +584,13 @@ function renderWorkbench() {
       ? `<div class="muted" style="margin-top:6px;">节奏提示：${esc(g.pacing.note)}</div>` : "";
     const gapRow = g.gaps && g.gaps.kps_without_questions
       ? `<div class="muted" style="margin-top:4px;">题量缺口：${g.gaps.kps_without_questions} 个知识点暂无关联题目，等教师配置后即可练习。</div>` : "";
-    return `<div class="item">
-      <div class="item-head">
-        <div><strong>${esc(g.certificate_name)}</strong>
-          <span class="muted">目标日期 ${esc(targetDate)}（${source}）</span></div>
-        ${countdownBadge(g.countdown)}
+    return `<div class="item goal-workbench-item">
+      <div class="goal-workbench-top">
+        <div class="goal-workbench-title"><h3>${esc(g.certificate_name)}</h3>
+          <p class="muted">目标日期：${esc(targetDate)}</p><span class="badge">${source}</span></div>
+        ${countdownPanel(g.countdown)}
       </div>
+      <details class="goal-learning-details"><summary>学习进度与今日安排</summary>
       <div class="muted">覆盖进度：${g.coverage.covered}/${g.coverage.total} 个知识点已练 · 练习 ${g.coverage.attempts} 次 · 满分 ${g.coverage.perfect} 次${g.coverage.skipped ? ` · 跳过 ${g.coverage.skipped}（不计入）` : ""}</div>
       <div style="margin-top:6px;"><span class="muted">掌握程度：</span>${masteryChips}</div>
       <div style="margin-top:6px;">${hot || `<span class="muted">暂无常考标注</span>`}</div>
@@ -593,7 +599,7 @@ function renderWorkbench() {
         <div class="muted" style="margin-bottom:4px;">今日学习安排（按优先级排列，可自主选择）：</div>
         ${planRows || `<p class="muted" style="margin:4px 0;">暂无可安排的任务；教师配置知识点与题目后，这里会给出可解释的建议。</p>`}
       </div>
-      ${pacingRow}${gapRow}
+      ${pacingRow}${gapRow}</details>
     </div>`;
   }).join("");
 }
@@ -804,6 +810,7 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
   if (!btn) return;
   const { act, id } = btn.dataset;
   try {
+    if(act === "workspace-catalog" && !embedded){document.getElementById("cert-card").scrollIntoView({behavior:"smooth",block:"start"});document.getElementById("cert-q").focus();return;}
     if (act === "pause" || act === "resume" || act === "archive") {
       await api(`/api/training/my/goals/${id}/${act}`, { method: "POST" });
       flash(act === "archive" ? "目标已归档，历史记录保留。" : "已更新。");
@@ -1145,7 +1152,7 @@ function renderProfile() {
       : "";
     return `<div class="item" id="pf-${esc(k.id)}">
       <div class="item-head">
-        <div><strong>${esc(k.code)}</strong> ${esc(k.name)}
+        <div><strong>${esc(k.name)}</strong>
           ${k.subject ? `<span class="chip">${esc(k.subject)}</span>` : ""}</div>
         <span class="${MASTERY_BADGE[m.level]}" title="作答 ${m.attempts} 次 · 正确率 ${pct(m.accuracy)} · 最近${m.last_perfect === true ? "满分" : m.last_perfect === false ? "未满分" : "无作答"}">${esc(m.label)}</span>
       </div>
@@ -1302,8 +1309,7 @@ async function toggleKpHistory(btn, scope, kpId) {
         const mode = MODE[a.mode] || esc(a.mode || "new");
         return `<div class="detail" style="margin-top:6px;">
           <div class="item-head">
-            <div class="muted">${esc((a.created_at || "").slice(0, 16).replace("T", " "))} · ${mode}
-              ${a.rule_id ? ` · 规则 ${esc(a.rule_id)}` : ""}</div>
+            <div class="muted">${esc((a.created_at || "").slice(0, 16).replace("T", " "))} · ${mode}</div>
             <div><strong>${esc(score)}</strong></div>
           </div>
           <div class="actions">

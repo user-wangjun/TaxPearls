@@ -583,6 +583,9 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   vm.runInContext(fs.readFileSync("webapp/static/university-workspace.js","utf8"),ctx);
   const workspace=ctx.window.universityWorkspace;
   assert.ok(workspace.viewsFor("student","student").some(v=>v[0]==="tasks"));
+  assert.ok(!workspace.viewsFor("student","student").some(v=>v[0]==="qa"),"Public Q&A stays in the knowledge graph instead of a duplicate menu");
+  assert.ok(!workspace.viewsFor("student","student").some(v=>v[0]==="goals"),"Goals and countdown belong to the learning homepage");
+  assert.ok(!workspace.viewsFor("student","unlinked").some(v=>v[0]==="qa"));
   for(const workspaceValue of ["/training-staff","university",null]){
     const user=workspace.resolveIdentity({id:"campus",org_type:"university",workspace:workspaceValue,role:"org_admin",education_role:"admin"});
     assert.equal(user.workspace,"university");assert.equal(user.role,"admin");
@@ -603,6 +606,20 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   node("authForm").dataset.view="signup";workspace.updateLogin();
   assert.equal(node("loginCollege").disabled,true,"disambiguation must not block registration or reset");
   console.log("University navigation and conditional ownership disambiguation passed.");
+}
+
+// Student countdown distinguishes real remaining days, exam day, expired and missing dates.
+{
+  const source=fs.readFileSync("webapp/static/training-portal.js","utf8");
+  const start=source.indexOf("function countdownPanel("),end=source.indexOf("const SOURCE_LABEL",start);
+  const ctx={};vm.createContext(ctx);vm.runInContext(source.slice(start,end),ctx);
+  assert.match(ctx.countdownPanel({days_left:72,expired:false}),/72<\/strong>/);
+  assert.match(ctx.countdownPanel({days_left:0,expired:false}),/今天/);
+  assert.match(ctx.countdownPanel({days_left:-3,expired:true}),/已到期/);
+  for(const value of [null,{}, {days_left:"72"}]){
+    const html=ctx.countdownPanel(value);assert.match(html,/尚未设置考试日期/);assert.ok(!html.includes("NaN"));
+  }
+  console.log("Student countdown: remaining days, exam day, expired and unset states passed.");
 }
 
 // Selected-organization capacity must survive refreshes without leaking stale school data.

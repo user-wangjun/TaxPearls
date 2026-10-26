@@ -332,9 +332,9 @@ body.workspace-ready {
 
 #appMain .nav-heading { border-color: #d9e1e8;  min-height: 32px; padding-bottom: 8px; margin-bottom: 8px; flex-shrink: 0;}
 #appMain .nav-caption { color: var(--ink-2); letter-spacing: 1px; }
-#appMain .nav button[data-panel] { border: 1px solid transparent; border-radius: 999px; color: var(--ink-2);  min-height: 44px; padding: 10px; font-size: 16px; line-height: 20px;}
-#appMain .nav button[data-panel]:hover { background: #e9eef2; }
-#appMain .nav button[data-panel].active {
+#appMain .nav button:is([data-panel], [data-university-view]) { border: 1px solid transparent; border-radius: 999px; color: var(--ink-2);  min-height: 44px; padding: 10px; font-size: 16px; line-height: 20px;}
+#appMain .nav button:is([data-panel], [data-university-view]):hover { background: #e9eef2; }
+#appMain .nav button:is([data-panel], [data-university-view]).active {
   color: #ffffff;
   border-color: #a8bac8;
   border-top-color: #d0dce6;
@@ -342,7 +342,7 @@ body.workspace-ready {
   background: linear-gradient(155deg, #526c80, #3e586d 35%, #2c4254 78%, #365068);
   box-shadow: 0 1px 0 #dce7f04d inset, 0 -1px 0 #10253666 inset, 0 2px 3px #243b4e26;
 }
-#appMain .nav button[data-panel].active .nav-icon { color: #e7d4a7; }
+#appMain .nav button:is([data-panel], [data-university-view]).active .nav-icon { color: #e7d4a7; }
 #appMain .nav #navToggle { color: var(--ink-2); border-radius: 999px; }
 #appMain .nav #navToggle:hover { background: #e3eaf0; }
 #appMain #appHeader {
@@ -778,13 +778,13 @@ html[data-theme=dark] #appMain :is(.chart-label, .risk-center-label) { fill: var
 html[data-theme=dark] #appMain .chart line[stroke="#edf0f6"] { stroke: var(--line); }
 html[data-theme=dark] #appMain .risk-ring-track { stroke: #ffffff0d; }
 html[data-theme=dark] #appMain .nav-heading { border-color: var(--line); }
-html[data-theme=dark] #appMain .nav button[data-panel]:hover { background: #2a2c2e; }
+html[data-theme=dark] #appMain .nav button:is([data-panel], [data-university-view]):hover { background: #2a2c2e; }
 html[data-theme=dark] #appMain :is(.field input:not([type=checkbox]):not([type=radio]), .field select, .field textarea, .dropdown-toggle, .material-company input, .dropdown-menu, .dropdown-list, #graphQuestion) { background: var(--control-field-face); border-color: #696d72; color: var(--ink); box-shadow: 0 1px 2px #00000030 inset; }
 html[data-theme=dark] #appMain :is(input, textarea)::placeholder { color: var(--ink-3); }
 html[data-theme=dark] #appMain :is(.btn.re, .panel button:where(:not(.pdf, .re, .primary, .knowledge-rule, .dropdown-toggle, .dropdown-item, .fold-btn, .graph-node button, .graph-toolbar button, .inspector-tabs button)), .account-control, .account-icon, .risk-explanations, .fold-btn, :where(#uploadScope) summary, .dropdown-item:hover, .dropdown-item.selected) { background: var(--control-face) padding-box, var(--control-rim) border-box; color: var(--control-text); border-color: transparent; box-shadow: 0 1px 0 #ffffff0e inset, 0 2px 3px #00000025; }
 html[data-theme=dark] #appMain :is(.btn.re, .account-control):hover,
 html[data-theme=dark] #appMain .panel button:where(:not(.pdf, .re, .primary, .knowledge-rule, .dropdown-toggle, .dropdown-item, .fold-btn, .graph-node button, .graph-toolbar button, .inspector-tabs button)):hover:not(:disabled):not([aria-disabled=true]) { background: var(--control-face) padding-box, var(--control-active-rim) border-box; }
-html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, :where(.nav) button[data-panel].active) {
+html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, :where(.nav) button:is([data-panel], [data-university-view]).active) {
   background: var(--control-face) padding-box, var(--control-active-rim) border-box;
   color: #f0f3f6;
   border-color: #a0a3a6;
@@ -792,7 +792,7 @@ html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, :where(.nav) butto
   border-bottom-color: #74777a;
   box-shadow: 0 1px 0 #ffffff20 inset, 0 2px 3px #00000030;
 }
-html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, :where(.nav) button[data-panel].active):hover { background: var(--control-face) padding-box, var(--control-active-rim) border-box; }
+html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, :where(.nav) button:is([data-panel], [data-university-view]).active):hover { background: var(--control-face) padding-box, var(--control-active-rim) border-box; }
 html[data-theme=dark] #appMain :is(.risk-hover-card, .trend-tooltip, .rule-editor, .rule-trial-result, .knowledge-rule, .graph-node, .graph-toolbar, .graph-tools, .inspector-heading, .inspector-tabs, .table-wrap thead) { background: #232527; border-color: var(--line); color: var(--ink); }
 html[data-theme=dark] #appMain :is(.graph-node.rule, .knowledge-rule.active) { background: #303235; color: #eeefed; }
 html[data-theme=dark] #appMain :is(.graph-node.law, .graph-node.trade) { background: #35324b; color: #dfd9f6; }
@@ -1047,14 +1047,14 @@ html[data-theme=dark] #appMain #appHeader :is(.account-control, .account-icon) {
 }
 html[data-theme=dark] #appMain :is(.btn.pdf, .dropzone .pick, .material-review button.primary, .graph-toolbar button.selected, .inspector-tabs button.active),
 html[data-theme=dark] #appMain #appHeader .account-control.active,
-html[data-theme=dark] #appMain .nav button[data-panel].active {
+html[data-theme=dark] #appMain .nav button:is([data-panel], [data-university-view]).active {
   background: var(--control-face) padding-box, var(--control-active-rim) border-box;
   color: #fafaf8;
   border: 1px solid transparent;
   box-shadow: var(--control-shadow);
 }
-html[data-theme=dark] #appMain .nav button[data-panel].active .nav-icon { color: #f0f0ee; }
-html[data-theme=dark] #appMain .nav button[data-panel]:not(.active):hover { background: #ffffff0a; }
+html[data-theme=dark] #appMain .nav button:is([data-panel], [data-university-view]).active .nav-icon { color: #f0f0ee; }
+html[data-theme=dark] #appMain .nav button:is([data-panel], [data-university-view]):not(.active):hover { background: #ffffff0a; }
 html[data-theme=dark] #appMain #reportVerification input[type=file]::file-selector-button,
 html[data-theme=dark] #appMain input[type=file]::file-selector-button {
   background: var(--control-face) padding-box, var(--control-rim) border-box;
@@ -1086,7 +1086,7 @@ html[data-theme=dark] #appMain #appHeader .account-control:focus-visible {
   html[data-theme=dark] #appMain #trainingPanel button:not(.btn):not(:disabled):hover,
   html[data-theme=dark] #appMain #knowledgeDetail > .btn:hover,
   html[data-theme=dark] #appMain #appHeader .account-control:hover,
-  html[data-theme=dark] #appMain .nav button[data-panel].active:hover,
+  html[data-theme=dark] #appMain .nav button:is([data-panel], [data-university-view]).active:hover,
   html[data-theme=dark] #appMain input[type=file]::file-selector-button:hover,
   html[data-theme=dark] #appMain #reportVerification input[type=file]::file-selector-button:hover {
     background: var(--control-face) padding-box, var(--control-active-rim) border-box;
