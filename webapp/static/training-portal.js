@@ -32,13 +32,140 @@ function tutorBasis(bubble, message) {
   details.append(summary, list); bubble.append(details);
 }
 
+function tutorCurrent(view, ticket) {
+  return !disposed && tutorView === view && tutorRevision === ticket && state.attempt?.id === view.hostAttemptId;
+}
+
+function updateTutorArchiveState(view) {
+  const archived = Boolean(view.session?.archived_at);
+  view.archive.hidden = !(view.session?.message_count > 0);
+  view.archive.textContent = archived ? "恢复会话" : "归档会话";
+  view.archive.disabled = view.busy || view.loading || view.archiving;
+  view.input.disabled = archived;
+  view.send.disabled = archived || view.busy || view.loading || !view.historyReady;
+  if (view.session) view.context.textContent = `${view.session.attempt_id === view.hostAttemptId ? "本题" : "会话所属题目"} · ${view.session.context_label}${archived ? " · 已归档" : ""}`;
+  if (archived && view.historyReady) view.status.textContent = "会话已归档，可查看历史；恢复后可继续提问";
+}
+
+function renderTutorSessions(view) {
+  view.sessionList.replaceChildren();
+  view.activeSessions.setAttribute("aria-pressed", String(!view.showArchived));
+  view.archivedSessions.setAttribute("aria-pressed", String(view.showArchived));
+  for (const session of view.sessions) {
+    if (!(session.message_count > 0) || Boolean(session.archived_at) !== view.showArchived) continue;
+    const button = document.createElement("button"); button.type = "button";
+    button.className = "tutor-session"; button.dataset.sessionId = session.id;
+    if (view.session?.id === session.id) button.setAttribute("aria-current", "true");
+    const title = document.createElement("strong"), context = document.createElement("span"), meta = document.createElement("small");
+    title.textContent = session.title || "新对话";
+    context.textContent = (session.attempt_id === view.hostAttemptId ? "本题 · " : "") + session.context_label;
+    const date = new Date(session.updated_at);
+    meta.textContent = `${session.message_count} 次提问 · ${Number.isNaN(date.getTime()) ? "" : date.toLocaleString("zh-CN", {month:"numeric",day:"numeric",hour:"2-digit",minute:"2-digit"})}`;
+    button.append(title, context, meta); view.sessionList.append(button);
+  }
+  if (!view.sessionList.children.length) {
+    const empty = document.createElement("p"); empty.className = "tutor-empty";
+    empty.textContent = view.showArchived ? "暂无已归档会话" : "暂无对话，发送第一条问题后会显示在这里。";
+    view.sessionList.append(empty);
+  }
+}
+
+async function refreshTutorSessions(view, more = false) {
+  const revision = ++view.listRevision;
+  const offset = more ? view.sessionOffset : 0;
+  const data = await api(`/api/training/my/tutor/sessions?offset=${offset}&limit=30&archived=${view.showArchived}`);
+  if (disposed || tutorView !== view || revision !== view.listRevision) return;
+  view.sessionOffset = offset + data.sessions.length;
+  const rows = more ? [...view.sessions, ...data.sessions] : data.sessions;
+  view.sessions = [...new Map(rows.map(row => [row.id, row])).values()];
+  view.moreSessions.hidden = !data.has_more;
+  renderTutorSessions(view);
+}
+
+function appendTutorMessages(log, messages) {
+  for (const message of messages.slice().reverse()) {
+    tutorBubble(log, "user", message.question);
+    const reply = tutorBubble(log, "assistant", message.answer); tutorBasis(reply.bubble, message);
+  }
+}
+
+async function loadTutorSession(view, session) {
+  if (view.session) view.drafts.set(view.session.id, view.input.value);
+  const ticket = ++tutorRevision;
+  clearInterval(tutorTimer); tutorTimer = null;
+  view.loading = true; view.busy = false; view.historyReady = false; view.send.disabled = true;
+  view.session = session; view.log.replaceChildren(); view.error.textContent = "";
+  view.input.value = view.drafts.get(session.id) || "";
+  view.context.textContent = `${session.attempt_id === view.hostAttemptId ? "本题" : "会话所属题目"} · ${session.context_label}`;
+  view.status.textContent = "正在读取会话…"; view.older.hidden = true;
+  renderTutorSessions(view);
+  updateTutorArchiveState(view);
+  try {
+    const data = await api(`/api/training/my/tutor/history?session_id=${encodeURIComponent(session.id)}&limit=50`);
+    if (!tutorCurrent(view, ticket)) return;
+    appendTutorMessages(view.log, data.messages);
+    session.message_count = Math.max(session.message_count, data.messages.length);
+    view.messageOffset = data.messages.length; view.older.hidden = data.messages.length < 50;
+    view.status.textContent = data.messages.length ? "已恢复会话，可继续追问" : "新会话，输入问题开始答疑";
+    view.historyReady = true;
+  } catch (error) {
+    if (!tutorCurrent(view, ticket)) return;
+    view.error.textContent = error.message; view.status.textContent = "会话读取失败，请重新选择会话重试";
+  } finally {
+    if (tutorCurrent(view, ticket)) { view.loading = false; updateTutorArchiveState(view); view.log.scrollTop = view.log.scrollHeight; }
+  }
+}
+
+async function createTutorSession(view, fresh = false, host = false) {
+  if (view.creating) return;
+  const scope = host || !view.session ? {certificate_id:view.hostCertificateId, attempt_id:view.hostAttemptId} : view.session;
+  const ticket = tutorRevision;
+  view.creating = true; view.newSession.disabled = true; view.hostSession.disabled = true;
+  view.error.textContent = "";
+  try {
+    const data = await api("/api/training/my/tutor/sessions", {method:"POST", body:{
+      certificate_id:scope.certificate_id, attempt_id:scope.attempt_id || null,
+      knowledge_point_id:scope.knowledge_point_id || null, new_session:fresh}});
+    if (!tutorCurrent(view, ticket)) return;
+    view.showArchived = false;
+    if (!view.sessions.some(row => row.id === data.session.id)) view.sessions.unshift(data.session);
+    await loadTutorSession(view, data.session);
+    await refreshTutorSessions(view);
+  } catch (error) {
+    if (tutorView === view && !disposed) { view.error.textContent = error.message; view.loading = false; }
+  } finally {
+    if (tutorView === view) { view.creating = false; view.newSession.disabled = false; view.hostSession.disabled = false; }
+  }
+}
+
+async function archiveTutorSession(view) {
+  if (!view.session || view.archive.disabled || !(view.session.message_count > 0)) return;
+  const ticket = tutorRevision, id = view.session.id, archived = !view.session.archived_at;
+  view.archiving = true; view.error.textContent = ""; updateTutorArchiveState(view);
+  try {
+    const data = await api(`/api/training/my/tutor/sessions/${encodeURIComponent(id)}`, {method:"PATCH", body:{archived}});
+    if (!tutorCurrent(view, ticket)) return;
+    view.session = data.session;
+    if (!archived) view.showArchived = false;
+    view.sessions = [data.session, ...view.sessions.filter(row => row.id !== id)];
+    view.status.textContent = archived ? "会话已归档" : "会话已恢复，可继续提问";
+    renderTutorSessions(view); updateTutorArchiveState(view);
+    await refreshTutorSessions(view);
+  } catch(error) {
+    if (tutorCurrent(view, ticket)) view.error.textContent = error.message;
+  } finally {
+    if (tutorView === view) { view.archiving = false; updateTutorArchiveState(view); }
+  }
+}
+
 async function sendTutorQuestion(view) {
-  if (view.busy || view.loading || tutorView !== view) return;
+  if (view.busy || view.loading || !view.session || view.send.disabled || tutorView !== view) return;
   const question = view.input.value.trim();
   if (!question) { view.error.textContent = "请输入问题。"; view.input.focus(); return; }
   if ([...question].length > 500) { view.error.textContent = "问题不能超过 500 字。"; return; }
-  const ticket = tutorRevision, current = () => !disposed && tutorRevision === ticket && tutorView === view && state.attempt?.id === view.attemptId;
+  const ticket = tutorRevision, session = view.session, current = () => tutorCurrent(view, ticket);
   view.busy = true; view.send.disabled = true; view.error.textContent = ""; view.input.value = "";
+  updateTutorArchiveState(view);
   tutorBubble(view.log, "user", question);
   const reply = tutorBubble(view.log, "assistant", "");
   const progress = document.createElement("details"), summary = document.createElement("summary"), list = document.createElement("ul");
@@ -51,13 +178,18 @@ async function sendTutorQuestion(view) {
   tutorTimer = setInterval(() => { if (current()) view.status.textContent = "等待回答 · 已等待 " + Math.floor((Date.now() - started) / 1000) + " 秒"; }, 1000);
   view.log.scrollTop = view.log.scrollHeight;
   try {
-    const data = await api("/api/training/my/tutor", {method:"POST", body:{certificate_id:view.certificateId, attempt_id:view.attemptId, question}});
+    const data = await api("/api/training/my/tutor", {method:"POST", body:{certificate_id:session.certificate_id,
+      attempt_id:session.attempt_id, knowledge_point_id:session.knowledge_point_id, session_id:session.id, question}});
     if (!current()) return;
     const message = data.message;
     reply.content.textContent = message.answer;
     waiting.textContent = message.degraded ? "已返回可查看的依据说明。" : "已收到回答，引用已通过服务端校验。";
     progress.open = false; tutorBasis(reply.bubble, message);
     view.status.textContent = message.degraded ? "依据说明已返回，可继续提问" : "回答完成，可继续追问";
+    session.title ||= question.slice(0,36); session.message_count++; session.updated_at = new Date().toISOString();
+    view.messageOffset++;
+    view.sessions = [session, ...view.sessions.filter(row => row.id !== session.id)];
+    view.drafts.delete(session.id); renderTutorSessions(view);
   } catch (error) {
     if (!current()) return;
     reply.content.textContent = "本次回答未完成。";
@@ -69,6 +201,7 @@ async function sendTutorQuestion(view) {
     if (current()) {
       clearInterval(tutorTimer); tutorTimer = null;
       view.busy = false; view.send.disabled = false;
+      updateTutorArchiveState(view);
       view.log.scrollTop = view.log.scrollHeight;
     }
   }
@@ -77,20 +210,65 @@ async function sendTutorQuestion(view) {
 async function openTutorDialog(initialQuestion = "") {
   const attempt = state.attempt;
   if (!attempt || attempt.status !== "scored") return;
-  if (tutorView && tutorView.attemptId !== attempt.id) resetTutorDialog();
+  if (tutorView && tutorView.hostAttemptId !== attempt.id) resetTutorDialog();
   if (!tutorView) {
     const dialog = document.createElement("dialog"); dialog.className = "tutor-dialog"; dialog.setAttribute("aria-label", "本题 AI 答疑");
-    dialog.innerHTML = `<div class="tutor-heading"><div><h2>本题 AI 答疑</h2><p>围绕本题解析与知识点继续提问</p></div><button type="button" data-tutor="close" aria-label="关闭答疑对话框">关闭</button></div>
+    dialog.innerHTML = `<div class="tutor-heading"><div><h2>AI 答疑</h2><p>按题目保存会话，也可以新建对话继续提问</p></div><button type="button" data-tutor="close" aria-label="关闭答疑对话框">关闭</button></div>
+      <div class="tutor-layout" data-sessions-open="false">
+      <aside class="tutor-sidebar" aria-label="答疑会话列表"><div class="tutor-sidebar-heading"><h3>会话列表</h3><button type="button" data-tutor="toggle-sessions" aria-expanded="false" aria-controls="tutor-session-list">展开</button></div>
+        <div class="tutor-sidebar-body"><div class="tutor-session-actions"><button type="button" data-tutor="new">＋ 新建会话</button><button type="button" data-tutor="host">返回本题会话</button></div>
+        <div class="tutor-list-filters" role="group" aria-label="会话列表范围"><button type="button" data-tutor="active-sessions" aria-pressed="true">会话</button><button type="button" data-tutor="archived-sessions" aria-pressed="false">已归档</button></div>
+        <div id="tutor-session-list" class="tutor-session-list"></div><button type="button" data-tutor="more-sessions" hidden>加载更多会话</button><button type="button" data-tutor="refresh-sessions">刷新列表</button></div></aside>
+      <div class="tutor-conversation"><div class="tutor-context"><span></span><div class="tutor-context-actions"><button type="button" data-tutor="older" hidden>加载更早消息</button><button type="button" data-tutor="archive" hidden>归档会话</button></div></div>
       <div class="tutor-log" role="log" aria-label="答疑对话记录" aria-live="polite" aria-relevant="additions text"></div>
       <p class="tutor-status" role="status"></p>
       <form class="tutor-composer"><label>你的问题<textarea rows="2" maxlength="500" placeholder="例如：为什么这里要用这个分母？"></textarea></label>
-      <div class="tutor-error" role="alert"></div><div class="tutor-actions"><span>最多 500 字 · Ctrl / ⌘ + Enter 发送</span><button type="submit">发送</button></div></form>`;
-    const view = {dialog, attemptId:attempt.id, certificateId:attempt.certificate_id || state.prCert, loading:true, busy:false,
+      <div class="tutor-error" role="alert"></div><div class="tutor-actions"><span>最多 500 字 · Ctrl / ⌘ + Enter 发送</span><button type="submit">发送</button></div></form></div></div>`;
+    const view = {dialog, hostAttemptId:attempt.id, hostCertificateId:attempt.certificate_id || state.prCert, loading:true, busy:false,
+      session:null, sessions:[], sessionOffset:0, listRevision:0, drafts:new Map(), showArchived:false, historyReady:false,
+      archive:dialog.querySelector('[data-tutor="archive"]'),
+      activeSessions:dialog.querySelector('[data-tutor="active-sessions"]'), archivedSessions:dialog.querySelector('[data-tutor="archived-sessions"]'),
+      sessionList:dialog.querySelector(".tutor-session-list"), context:dialog.querySelector(".tutor-context span"),
+      newSession:dialog.querySelector('[data-tutor="new"]'), hostSession:dialog.querySelector('[data-tutor="host"]'),
+      moreSessions:dialog.querySelector('[data-tutor="more-sessions"]'), older:dialog.querySelector('[data-tutor="older"]'),
       log:dialog.querySelector(".tutor-log"), input:dialog.querySelector("textarea"), send:dialog.querySelector('[type="submit"]'),
       status:dialog.querySelector(".tutor-status"), error:dialog.querySelector(".tutor-error")};
     tutorView = view;
     (document.getElementById("answer-card") || document.getElementById("pr-card")).append(dialog);
     dialog.querySelector('[data-tutor="close"]').addEventListener("click", () => dialog.close());
+    view.sessionList.addEventListener("click", event => {
+      const button = event.target.closest("[data-session-id]");
+      const session = view.sessions.find(row => row.id === button?.dataset.sessionId);
+      if (session) loadTutorSession(view, session);
+    });
+    view.newSession.addEventListener("click", () => createTutorSession(view, true));
+    view.hostSession.addEventListener("click", () => createTutorSession(view, false, true));
+    view.archive.addEventListener("click", () => archiveTutorSession(view));
+    for (const [button, archived] of [[view.activeSessions,false],[view.archivedSessions,true]]) {
+      button.addEventListener("click", async () => {
+        view.showArchived = archived; view.sessions = []; renderTutorSessions(view);
+        try { await refreshTutorSessions(view); } catch(error) { if(tutorView===view)view.error.textContent=error.message; }
+      });
+    }
+    for (const [button, more] of [[view.moreSessions,true],[dialog.querySelector('[data-tutor="refresh-sessions"]'),false]]) {
+      button.addEventListener("click", async () => { button.disabled = true; try { await refreshTutorSessions(view, more); } catch(error) { view.error.textContent=error.message; } finally { button.disabled=false; } });
+    }
+    dialog.querySelector('[data-tutor="toggle-sessions"]').addEventListener("click", event => {
+      const layout = dialog.querySelector(".tutor-layout"), open = layout.dataset.sessionsOpen !== "true";
+      layout.dataset.sessionsOpen = String(open); event.currentTarget.setAttribute("aria-expanded",String(open)); event.currentTarget.textContent = open ? "收起" : "展开";
+    });
+    view.older.addEventListener("click", async () => {
+      const ticket = tutorRevision; view.older.disabled = true;
+      try {
+        const data = await api(`/api/training/my/tutor/history?session_id=${encodeURIComponent(view.session.id)}&limit=50&offset=${view.messageOffset}`);
+        if (!tutorCurrent(view,ticket)) return;
+        const holder = document.createElement("div"), height = view.log.scrollHeight, top = view.log.scrollTop;
+        appendTutorMessages(holder,data.messages); view.log.prepend(...holder.children);
+        view.messageOffset += data.messages.length; view.older.hidden = data.messages.length < 50;
+        view.log.scrollTop = top + view.log.scrollHeight - height;
+      } catch(error) { if(tutorCurrent(view,ticket))view.error.textContent=error.message; }
+      finally { view.older.disabled=false; }
+    });
     dialog.addEventListener("click", event => {
       if (event.target !== dialog) return;
       const b = dialog.getBoundingClientRect();
@@ -99,30 +277,71 @@ async function openTutorDialog(initialQuestion = "") {
     dialog.querySelector("form").addEventListener("submit", event => { event.preventDefault(); sendTutorQuestion(view); });
     view.input.addEventListener("input", () => { view.error.textContent = ""; });
     view.input.addEventListener("keydown", event => { if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); dialog.querySelector("form").requestSubmit(); } });
-    dialog.showModal(); view.input.value = initialQuestion; view.input.focus(); view.send.disabled = true;
-    view.status.textContent = "正在读取本题对话…";
-    const ticket = tutorRevision;
-    try {
-      const query = new URLSearchParams({certificate_id:view.certificateId, attempt_id:view.attemptId, limit:"20"});
-      const data = await api("/api/training/my/tutor/history?" + query);
-      if (disposed || ticket !== tutorRevision || tutorView !== view) return;
-      for (const message of data.messages.slice().reverse()) {
-        tutorBubble(view.log, "user", message.question);
-        const reply = tutorBubble(view.log, "assistant", message.answer); tutorBasis(reply.bubble, message);
-      }
-      view.status.textContent = data.messages.length ? "已恢复本题对话，可继续追问" : "本题尚无对话，输入问题开始答疑";
-    } catch (error) {
-      if (disposed || ticket !== tutorRevision || tutorView !== view) return;
-      view.status.textContent = "历史对话暂不可用，仍可提交新问题"; view.error.textContent = error.message;
-    } finally {
-      if (tutorView === view && ticket === tutorRevision) { view.loading = false; view.send.disabled = false; view.log.scrollTop = view.log.scrollHeight; }
-    }
+    dialog.showModal(); view.send.disabled = true; view.status.textContent = "正在读取会话…";
+    await createTutorSession(view, false, true);
+    if (tutorView !== view || disposed) return;
+    if (initialQuestion) view.input.value = initialQuestion;
+    view.input.focus();
   } else {
     if (!tutorView.dialog.open) tutorView.dialog.showModal();
     if (initialQuestion) tutorView.input.value = initialQuestion;
     tutorView.input.focus();
+    const view = tutorView;
+    refreshTutorSessions(view).catch(error => { if(tutorView===view&&!disposed)view.error.textContent=error.message; });
   }
-  if (initialQuestion && tutorView?.dialog.open) await sendTutorQuestion(tutorView);
+  if (initialQuestion && tutorView?.dialog.open && tutorView.session?.attempt_id === attempt.id) await sendTutorQuestion(tutorView);
+}
+
+const answerDrafts = new Map();
+let activeReport = "accounts";
+let practiceTab = "new";
+
+function selectPracticeTab(value, focus = false) {
+  const tabs = [...document.querySelectorAll("#pr-card [data-practice-tab]")];
+  const index = tabs.findIndex(tab => tab.dataset.practiceTab === value);
+  if (index < 0) return;
+  practiceTab = value;
+  tabs[0].parentElement.style.setProperty("--report-index", index);
+  tabs.forEach((tab, position) => {
+    const selected = position === index;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    document.getElementById(tab.getAttribute("aria-controls")).hidden = !selected;
+  });
+  if (focus) tabs[index].focus();
+}
+
+function selectReport(report, focus = false) {
+  const tabs = [...document.querySelectorAll("#pr-attempt [data-report-tab]")];
+  const index = tabs.findIndex(tab => tab.dataset.reportTab === report);
+  if (index < 0) return;
+  activeReport = report;
+  tabs[0].parentElement.style.setProperty("--report-index", index);
+  tabs.forEach((tab, position) => {
+    const selected = position === index;
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    document.getElementById(tab.getAttribute("aria-controls")).hidden = !selected;
+  });
+  if (focus) tabs[index].focus();
+}
+
+async function openAttempt(id) {
+  if (!state.attempt || String(state.attempt.id) !== String(id)) {
+    document.getElementById("pr-attempt").innerHTML = "";
+    document.getElementById("answer-status").textContent = "正在读取题目…";
+    state.attempt = (await api(`/api/training/my/practice/${encodeURIComponent(id)}`)).attempt;
+  }
+  state.prCert = state.attempt.certificate_id;
+  renderAttempt();
+}
+
+function showAnswer() {
+  renderAttempt();
+  if (embedded) return window.universityWorkspace.choose("answer", state.attempt.id);
+  document.getElementById("pr-card").hidden = true;
+  document.getElementById("answer-card").hidden = false;
+  document.getElementById("answer-title").focus();
 }
 
 function esc(value) {
@@ -683,11 +902,13 @@ function renderWrong() {
 
 function renderOpen() {
   const box = document.getElementById("pr-open");
-  box.innerHTML = state.open.length ? `<h2 style="margin-top:18px;">未完成的练习</h2>` + state.open.map((a) => `
+  document.getElementById("practice-open-count").textContent = state.open.length;
+  box.innerHTML = state.open.length ? state.open.map((a) => `
     <div class="item"><div class="item-head">
       <div class="muted">开始于 ${esc(a.created_at)}</div>
       <button class="small" data-act="practice-resume" data-id="${esc(a.id)}">继续作答</button>
-    </div></div>`).join("") : "";
+    </div></div>`).join("") : `<p class="muted">当前证书下暂无未完成的练习，可以切换到“开始新练习”创建题目。</p>`;
+  selectPracticeTab(practiceTab);
 }
 
 const MASTERY_ZH = { proficient: "较熟练", consolidating: "巩固中", acquainted: "初识", unstarted: "未开始" };
@@ -797,6 +1018,7 @@ function renderBankAttempt(box, a) {
       <div class="row" style="margin-top:6px;">
         <input id="tutor-q" placeholder="如：为什么我选的这项不对？依据是什么？">
         <button class="small primary" data-act="tutor-ask" style="flex:0 0 auto;">问 AI</button>
+        <button class="small" type="button" data-act="tutor-open">打开聊天框</button>
       </div>
       <p class="muted">在对话框中查看回答并继续追问。</p>
     </div>
@@ -806,7 +1028,7 @@ function renderBankAttempt(box, a) {
 function renderAttempt() {
   const box = document.getElementById("pr-attempt");
   const a = state.attempt;
-  if (tutorView && tutorView.attemptId !== a?.id) resetTutorDialog();
+  if (tutorView && tutorView.hostAttemptId !== a?.id) resetTutorDialog();
   if (!a) { box.innerHTML = ""; return; }
   if (a.bank) {
     renderBankAttempt(box, a);
@@ -823,17 +1045,23 @@ function renderAttempt() {
       `<label class="practice-choice">
         <input type="checkbox" class="risk-pick" value="${esc(r.id)}"><span>${esc(r.name)}</span></label>`).join("");
     box.innerHTML = `
-      <div class="item"><strong>仿真材料（纯仿真教学企业，非真题）</strong>
-        <div class="muted">${esc(m.company.name)} · 税号 ${esc(m.company.taxpayer_id)} · ${esc(m.company.industry)} · ${esc(m.company.period)}</div>
-        <div><strong style="font-size:13px;">科目余额表</strong>
-          <div class="table-scroll"><table><tr><th>编码</th><th>科目</th><th>期初</th><th>借方</th><th>贷方</th><th>期末</th></tr>${accounts}</table></div></div>
-        <div><strong style="font-size:13px;">申报数据</strong>
-          <div class="table-scroll"><table><tr><th>项目</th><th>金额</th></tr>${decls}</table></div></div>
-        <div><strong style="font-size:13px;">标准化指标</strong>
-          <div class="table-scroll"><table><tr><th>指标</th><th>数值</th><th>取数来源</th></tr>${metrics}</table></div></div>
+      <div class="item practice-materials">
+        <div class="practice-materials-heading"><strong>仿真材料（纯仿真教学企业，非真题）</strong>
+          <div class="muted">${esc(m.company.name)} · 税号 ${esc(m.company.taxpayer_id)} · ${esc(m.company.industry)} · ${esc(m.company.period)}</div></div>
+        <div class="practice-report-tabs" role="tablist" aria-label="选择报表">
+          <button type="button" role="tab" id="report-tab-accounts" aria-controls="report-accounts" aria-selected="true" data-act="report-tab" data-report-tab="accounts">科目余额表</button>
+          <button type="button" role="tab" id="report-tab-declarations" aria-controls="report-declarations" aria-selected="false" tabindex="-1" data-act="report-tab" data-report-tab="declarations">申报数据</button>
+          <button type="button" role="tab" id="report-tab-metrics" aria-controls="report-metrics" aria-selected="false" tabindex="-1" data-act="report-tab" data-report-tab="metrics">标准化指标</button>
+        </div>
+        <section class="practice-report" id="report-accounts" role="tabpanel" aria-labelledby="report-tab-accounts">
+          <div class="table-scroll" tabindex="0" role="region" aria-label="科目余额表，可滚动查阅"><table><thead><tr><th>编码</th><th>科目</th><th>期初</th><th>借方</th><th>贷方</th><th>期末</th></tr></thead><tbody>${accounts}</tbody></table></div></section>
+        <section class="practice-report" id="report-declarations" role="tabpanel" aria-labelledby="report-tab-declarations" hidden>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="申报数据，可滚动查阅"><table><thead><tr><th>项目</th><th>金额</th></tr></thead><tbody>${decls}</tbody></table></div></section>
+        <section class="practice-report" id="report-metrics" role="tabpanel" aria-labelledby="report-tab-metrics" hidden>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="标准化指标，可滚动查阅"><table><thead><tr><th>指标</th><th>数值</th><th>取数来源</th></tr></thead><tbody>${metrics}</tbody></table></div></section>
       </div>
-      <div class="item"><strong>训练任务：识别涉税风险</strong>
-        <div class="muted">先核对上方账务、申报数据与指标，再勾选需要进一步核查的涉税风险（可多选）。选错扣分，漏选不得分；提交后查看判定依据与逐项解析。风险线索不等同于税务违法结论。</div>
+      <div class="item practice-question"><strong>训练任务：识别涉税风险</strong>
+        <div class="muted">先核对材料中的账务、申报数据与指标，再勾选需要进一步核查的涉税风险（可多选）。选错扣分，漏选不得分；提交后查看判定依据与逐项解析。风险线索不等同于税务违法结论。</div>
         <div class="risk-choices">${catalog}</div>
         <div class="actions">
           <button class="primary" data-act="submit">提交判分</button>
@@ -865,6 +1093,7 @@ function renderAttempt() {
         <div class="row" style="margin-top:6px;">
           <input id="tutor-q" placeholder="如：为什么这项是漏检？判定依据是什么？">
           <button class="small primary" data-act="tutor-ask" style="flex:0 0 auto;">问 AI</button>
+          <button class="small" type="button" data-act="tutor-open">打开聊天框</button>
         </div>
         <p class="muted">在对话框中查看回答并继续追问。</p>
       </div>`;
@@ -872,13 +1101,19 @@ function renderAttempt() {
   if (a.applicability?.notice) {
     box.insertAdjacentHTML("afterbegin", `<div class="detail miss">${esc(a.applicability.notice)}</div>`);
   }
+  document.getElementById("answer-title").textContent = a.status === "open" ? "练习作答" : "作答结果与解析";
+  document.getElementById("answer-status").textContent = a.status === "open"
+    ? "完成作答后提交判分；返回列表可稍后继续。" : "查看判分依据，或继续练习巩固知识点。";
+  const draft = answerDrafts.get(String(a.id)) || [];
+  box.querySelectorAll(".risk-pick, .bank-pick").forEach(input => { input.checked = draft.includes(input.value); });
+  selectReport(activeReport);
 }
 
 async function startPractice(body) {
   const data = await api("/api/training/my/practice/start", { method: "POST", body });
   state.attempt = data.attempt;
-  renderAttempt();
-  document.getElementById("pr-attempt").scrollIntoView({ behavior: "smooth", block: "start" });
+  selectPracticeTab("new");
+  await showAnswer();
 }
 
 function showApp(loggedIn) {
@@ -1042,11 +1277,6 @@ async function runGuidePractice(btn) {
     knowledge_point_id: btn.dataset.kp || null,
     rule_id: btn.dataset.rule || null,
   });
-  if (embedded && window.universityWorkspace?.choose) {
-    window.universityWorkspace.choose("practice");
-    return;
-  }
-  document.getElementById("pr-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 document.getElementById("cert-guide").addEventListener("click", async (event) => {
@@ -1129,11 +1359,22 @@ function renderPracticeHint() {
   }
 }
 
-document.getElementById("pr-card").addEventListener("click", async (event) => {
+async function handlePracticeClick(event) {
   const btn = event.target.closest("button[data-act]");
   if (!btn) return;
   const act = btn.dataset.act;
-  if (act === "submit-bank") {
+  if (act === "practice-tab") {
+    selectPracticeTab(btn.dataset.practiceTab);
+  } else if (act === "report-tab") {
+    selectReport(btn.dataset.reportTab);
+  } else if (act === "answer-back") {
+    if (embedded) await window.universityWorkspace.choose("practice");
+    else {
+      document.getElementById("answer-card").hidden = true;
+      document.getElementById("pr-card").hidden = false;
+      await refreshPractice();
+    }
+  } else if (act === "submit-bank") {
     const picked = [...document.querySelectorAll("#pr-attempt .bank-pick:checked")].map((c) => c.value);
     if (!picked.length) {
       document.getElementById("pr-error").textContent = "请先勾选答案（多选题可选多项）。";
@@ -1168,14 +1409,18 @@ document.getElementById("pr-card").addEventListener("click", async (event) => {
     try {
       await api(`/api/training/my/practice/${state.attempt.id}/skip`, { method: "POST" });
       flash("已跳过：留痕统计，不计入正确率。");
-    } catch (err) { flash(err.message, true); }
+    } catch (err) { flash(err.message, true); return; }
     state.attempt = null;
     renderAttempt();
+    if (embedded) await window.universityWorkspace.choose("practice");
+    else document.querySelector('[data-act="answer-back"]').click();
     await refreshPractice().catch(() => {});
   } else if (act === "tutor-ask") {
     const input = btn.closest(".tutor-entry").querySelector("input");
     const question = input.value.trim(); input.value = "";
     await openTutorDialog(question);
+  } else if (act === "tutor-open") {
+    await openTutorDialog();
   } else if (act === "redo-new") {
     startPractice({ certificate_id: state.prCert, knowledge_point_id: btn.dataset.kp || null,
                     rule_id: btn.dataset.rule || null, mode: "new" }).catch((err) => flash(err.message, true));
@@ -1194,11 +1439,38 @@ document.getElementById("pr-card").addEventListener("click", async (event) => {
       .catch((err) => flash(err.message, true));
   } else if (act === "practice-resume") {
     try {
+      selectPracticeTab("unfinished");
       const data = await api(`/api/training/my/practice/${btn.dataset.id}`);
       state.attempt = data.attempt;
-      renderAttempt();
+      await showAnswer();
     } catch (err) { flash(err.message, true); }
   }
+}
+document.getElementById("pr-card").addEventListener("click", handlePracticeClick);
+document.getElementById("pr-card").addEventListener("keydown", event => {
+  const tab = event.target.closest("[data-practice-tab]");
+  if (!tab || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const tabs = [...tab.parentElement.querySelectorAll("[data-practice-tab]")];
+  const index = tabs.indexOf(tab);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+    : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  selectPracticeTab(tabs[next].dataset.practiceTab, true);
+});
+document.getElementById("answer-card").addEventListener("click", handlePracticeClick);
+document.getElementById("answer-card").addEventListener("keydown", event => {
+  const tab = event.target.closest("[data-report-tab]");
+  if (!tab || !["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+  event.preventDefault();
+  const tabs = [...tab.parentElement.querySelectorAll("[data-report-tab]")];
+  const index = tabs.indexOf(tab);
+  const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1
+    : (index + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+  selectReport(tabs[next].dataset.reportTab, true);
+});
+document.getElementById("pr-attempt").addEventListener("change", event => {
+  if (!state.attempt || !event.target.matches(".risk-pick, .bank-pick")) return;
+  answerDrafts.set(String(state.attempt.id), [...document.querySelectorAll("#pr-attempt input:checked")].map(input => input.value));
 });
 
 document.getElementById("wb-body").addEventListener("click", async (event) => {
@@ -1207,11 +1479,11 @@ document.getElementById("wb-body").addEventListener("click", async (event) => {
   const act = btn.dataset.act;
   if (act === "wb-resume") {
     try {
+      selectPracticeTab("unfinished");
       const data = await api(`/api/training/my/practice/${btn.dataset.id}`);
       state.attempt = data.attempt;
       state.prCert = state.attempt.certificate_id;
-      renderAttempt();
-      document.getElementById("pr-attempt").scrollIntoView({ behavior: "smooth" });
+      await showAnswer();
     } catch (err) { flash(err.message, true); }
   } else if (act === "wb-practice") {
     state.prCert = btn.dataset.cert;
@@ -1221,7 +1493,6 @@ document.getElementById("wb-body").addEventListener("click", async (event) => {
     startPractice({ certificate_id: btn.dataset.cert,
                     knowledge_point_id: btn.dataset.kp || null,
                     rule_id: btn.dataset.rule || null }).catch((err) => flash(err.message, true));
-    document.getElementById("pr-attempt").scrollIntoView({ behavior: "smooth" });
   }
 });
 
@@ -1410,13 +1681,11 @@ document.getElementById("pf-list").addEventListener("click", async (event) => {
       await startPractice({ certificate_id: state.pfCert, knowledge_point_id: btn.dataset.id,
                             rule_id: ruleId, seed, mode: "redo_same" });
       flash("已载入原题重做（错题订正），完成后回到本知识点可查看新结果。");
-      document.getElementById("pr-card")?.scrollIntoView({ behavior: "smooth" });
     } catch (err) { flash(err.message, true); }
   } else if (act === "history-new") {
     try {
       await startPractice({ certificate_id: state.pfCert, knowledge_point_id: btn.dataset.id, mode: "new" });
-      flash("已生成一道新题，去练习区作答。");
-      document.getElementById("pr-card")?.scrollIntoView({ behavior: "smooth" });
+      flash("已生成一道新题，请开始作答。");
     } catch (err) { flash(err.message, true); }
   }
 });
@@ -1461,5 +1730,5 @@ async function toggleKpHistory(btn, scope, kpId) {
 const ready=boot();
 
 /* controller end */
-return {ready,refresh,destroy(){disposed=true;resetTutorDialog();requests.abort();}};
+return {ready,refresh,openAttempt,destroy(){disposed=true;resetTutorDialog();requests.abort();}};
 };

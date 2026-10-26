@@ -23,7 +23,7 @@ window.universityWorkspace = (() => {
     settings:"M3 6h5m4 0h9M8 3v6M3 12h11m4 0h3m-7-3v6M3 18h4m4 0h10M7 15v6"
   };
   const viewsFor = (kind, role) => role === "unlinked" ? [["home", "教学工作台"]] : kind === "student" ? studentViews : staffViews.filter(([key]) => role !== "school_admin" || ["home", "students", "courses", "knowledge", "settings"].includes(key));
-  let overview = null, viewRevision = 0;
+  let overview = null, viewRevision = 0, answerId = null;
   function resolveIdentity(user) {
     if (!user || !(user.org_type === "university" || user.workspace === "university" || ["/training-staff", "/training-certificates"].includes(user.workspace))) return null;
     const role = user.education_role || (user.workspace === "university" ? user.role : null);
@@ -32,7 +32,7 @@ window.universityWorkspace = (() => {
   }
   const element = (tag, cls, text) => { const node = document.createElement(tag); if(cls)node.className=cls; if(text !== undefined)node.textContent=String(text); return node; };
   const classroomViews = new Set(["students", "tasks", "statistics", "wrongs", "profile"]);
-  const nativeViews = new Set(["students", "courses", "statistics", "content", "settings", "practice", "wrongs", "catalog", "profile"]);
+  const nativeViews = new Set(["students", "courses", "statistics", "content", "settings", "practice", "answer", "wrongs", "catalog", "profile"]);
   function usesNative(view=selected) { return nativeViews.has(view)||(view==="home"&&identity.universityKind==="student"); }
   function classroomCapable() { return !identity.legacy_teaching && ["admin", "teacher", "student"].includes(identity.role); }
   function setupPanels() {
@@ -134,29 +134,41 @@ window.universityWorkspace = (() => {
     $("universityStatus").className = error ? "university-status error" : "university-status muted";
     $("universityRetry").hidden = !error;
   }
-  function choose(view = "home") {
+  function choose(view = "home", attemptId = null, fromHistory = false) {
     if (!identity) return;
     const legacyQuestion = view === "qa";
     if(legacyQuestion)view="knowledge";
     if(view==="goals")view="home";
     const allowed = viewsFor(identity.universityKind, identity.role);
-    const next = allowed.some(([id]) => id === view) ? view : "home";
+    const answering = view === "answer" && identity.role === "student" && attemptId;
+    const next = answering ? "answer" : allowed.some(([id]) => id === view) ? view : "home";
+    const wasAnswering = selected === "answer";
+    answerId = answering ? String(attemptId) : null;
     if(next!==selected&&selected==="knowledge")invalidateGraph();
     selected = next;
-    $("universityTitle").textContent = selected === "settings" ? "个人信息" : allowed.find(([id]) => id === selected)[1];
+    if(window.matchMedia("(max-width:760px)").matches)setNavCollapsed(true);
+    $("universityTitle").textContent = selected === "answer" ? "练习作答" : selected === "settings" ? "个人信息" : allowed.find(([id]) => id === selected)[1];
     $("universitySubtitle").textContent=identity.display_name+" · "+labels[identity.role]+"｜"+(identity.universityKind==="student"?"围绕目标安排学习，在练习与复习中积累自己的记录。":"从班级、课程到教学内容，在同一工作空间开展教学。");
     const account = document.querySelector('#nav [data-panel="userSettingsPanel"]');
     account.classList.toggle("active", selected === "settings");
     if (selected === "settings") account.setAttribute("aria-current", "page"); else account.removeAttribute("aria-current");
     document.querySelectorAll("#universityNav button").forEach(b => {
-      b.classList.toggle("active", b.dataset.universityView === selected);
-      if (b.dataset.universityView === selected) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+      const active = b.dataset.universityView === (selected === "answer" ? "practice" : selected);
+      b.classList.toggle("active", active);
+      if (active) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
     });
     applyView();
-    history.replaceState(null, "", `/?workspace=${identity.universityKind}#panel=universityPanel&view=${selected}`);
+    const url = `/?workspace=${identity.universityKind}#panel=universityPanel&view=${selected}${answerId ? "&attempt="+encodeURIComponent(answerId) : ""}`;
+    if (!fromHistory && location.pathname+location.search+location.hash !== url) {
+      history[answering || wasAnswering ? "pushState" : "replaceState"](null, "", url);
+    }
     $("universityPanel").dataset.view = selected;
     window.scrollTo({top:0, behavior:"instant"});
-    return refresh().then(result=>{if(legacyQuestion&&result&&selected==="knowledge")graphTab(true);return result;});
+    return refresh().then(result=>{
+      if(legacyQuestion&&result&&selected==="knowledge")graphTab(true);
+      if(result&&selected==="answer")$("answer-title").focus({preventScroll:true});
+      return result;
+    });
   }
 
   function applyView() {
@@ -171,6 +183,7 @@ window.universityWorkspace = (() => {
       const views=card.dataset.universityView.split(" ");
       const visible=views.includes(group)||(group==="courses"&&views.includes("organization"));
       card.classList.toggle("university-view-hidden",!visible);
+      if(card.id==="answer-card")card.hidden=!visible;
     });
     document.querySelectorAll("#trainingPanel > [data-classroom-view]").forEach(card=>card.classList.toggle("university-view-hidden",!card.dataset.classroomView.split(" ").includes(selected)));
     const tools=$("universityContent").querySelector(".toolbar");if(tools)tools.hidden=selected!=="content";
@@ -246,7 +259,6 @@ window.universityWorkspace = (() => {
           const action = event.target.closest("button[data-act]")?.dataset.act;
           if (action === "workspace-goals") choose("home").then(()=>{const manager=scoped.getElementById("goal-manager");if(manager){manager.open=true;manager.scrollIntoView({behavior:"smooth",block:"start"});}});
           if (action === "workspace-catalog") choose("catalog");
-          if (["wb-resume", "wb-practice", "history-redo", "history-new", "redo-new", "redo-same"].includes(action)) choose("practice");
         });
       }
     }
@@ -293,6 +305,8 @@ window.universityWorkspace = (() => {
           await loadAssignments({throwOnError:true});
         } else if(view==="tasks"&&!classroomCapable())throw new Error("该教学档案尚未绑定课堂账号，请由管理员关联后使用课堂任务。已有考证练习仍可正常使用。");
       }
+      if(ticket!==viewRevision)return false;
+      if(view==="answer")await controller.openAttempt(answerId);
       if(ticket!==viewRevision)return false;applyView();
       status("数据已更新 · "+new Date().toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"}));
       return true;
@@ -331,7 +345,7 @@ window.universityWorkspace = (() => {
     }
     selected = new URLSearchParams(location.hash.slice(1)).get("view") || "home";
     new MutationObserver(decorate).observe($("universityPanel"), {childList:true, subtree:true});
-    choose(selected);
+    choose(selected, new URLSearchParams(location.hash.slice(1)).get("attempt"));
   }
   function register(kind, value) { if (identity?.universityKind === kind) controller = value; }
   function expired(message = "登录状态已失效，请重新登录。") {
@@ -348,6 +362,12 @@ window.universityWorkspace = (() => {
   });
   $("universityRefresh").addEventListener("click", refresh);
   $("universityRetry").addEventListener("click", refresh);
+  window.addEventListener("hashchange", () => {
+    if (!identity) return;
+    const params = new URLSearchParams(location.hash.slice(1));
+    if(params.get("email"))return;
+    choose(params.get("view") || "home", params.get("attempt"), true);
+  });
   function notify(message, error = false) {
     status(message, error);
     $("universityRetry").hidden = true;

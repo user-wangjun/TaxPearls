@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime
 from functools import wraps
 from typing import Any, Callable
 
@@ -209,8 +210,148 @@ def _basis_summary(nodes: list[dict[str, Any]], citations: list[str]) -> list[st
                               if n.get("id") in cited and n.get("label")))[:6]
 
 
+def _session_now():
+    return datetime.now(UTC).isoformat(timespec='microseconds')
+
+
+def _owned_session(db, student_id: str, session_id: str):
+    row = db.execute('SELECT * FROM training_tutor_sessions WHERE id=? AND student_id=?',
+                     (session_id, student_id)).fetchone()
+    if not row:
+        raise _portal_error('答疑会话不存在。', 404)
+    return row
+
+
+def _session_scope(db, student_id, certificate_id, knowledge_point_id, attempt_id):
+    if not db.execute('SELECT 1 FROM certificate WHERE id=?', (certificate_id,)).fetchone():
+        raise _portal_error('证书不存在。', 404)
+    if attempt_id:
+        row = db.execute('SELECT * FROM training_self_practice_attempts WHERE id=? AND student_id=?',
+                         (attempt_id, student_id)).fetchone()
+        if not row:
+            raise _portal_error('作答记录不存在。', 404)
+        if row['certificate_id'] != certificate_id:
+            raise _portal_error('作答与证书不匹配。')
+        if row['status'] != 'scored' or row['result_json'] is None:
+            raise _portal_error('请先提交判分：判分后解析与答疑才可用。', 409)
+        return row['knowledge_point_id']
+    if not knowledge_point_id or not db.execute(
+            'SELECT 1 FROM knowledge_point WHERE id=? AND certificate_id=?',
+            (knowledge_point_id, certificate_id)).fetchone():
+        raise _portal_error('请选择有效知识点或已判分的题目。')
+    return knowledge_point_id
+
+
+def _default_session(db, student_id, certificate_id, knowledge_point_id, attempt_id):
+    if attempt_id:
+        attempt = db.execute('SELECT knowledge_point_id FROM training_self_practice_attempts '
+                             'WHERE id=? AND student_id=? AND certificate_id=?',
+                             (attempt_id, student_id, certificate_id)).fetchone()
+        if attempt:
+            knowledge_point_id = attempt['knowledge_point_id']
+    key = json.dumps([student_id, certificate_id, knowledge_point_id, attempt_id])
+    session_id = str(uuid.uuid5(uuid.NAMESPACE_URL, 'taxpearls:tutor:' + key))
+    now = _session_now()
+    db.execute('INSERT OR IGNORE INTO training_tutor_sessions '
+               '(id,student_id,certificate_id,knowledge_point_id,attempt_id,created_at,updated_at) '
+               'VALUES (?,?,?,?,?,?,?)',
+               (session_id, student_id, certificate_id, knowledge_point_id, attempt_id, now, now))
+    # Upgrade only this student's old dialogue; preserve its original messages and evidence.
+    db.execute('UPDATE training_tutor_messages SET session_id=? WHERE student_id=? '
+               'AND certificate_id=? AND attempt_id IS ? AND (knowledge_point_id IS ? '
+               'OR (attempt_id IS NOT NULL AND knowledge_point_id IS NULL)) AND session_id IS NULL',
+               (session_id, student_id, certificate_id, attempt_id, knowledge_point_id))
+    first = db.execute('SELECT question,created_at FROM training_tutor_messages WHERE session_id=? '
+                       'ORDER BY created_at,rowid LIMIT 1', (session_id,)).fetchone()
+    if first:
+        db.execute("UPDATE training_tutor_sessions SET title=?,created_at=? WHERE id=? AND title=''",
+                   (first['question'][:36], first['created_at'], session_id))
+    return session_id
+
+
+def _session_brief(db, row):
+    item = dict(row)
+    kp = db.execute('SELECT name FROM knowledge_point WHERE id=?', (row['knowledge_point_id'],)).fetchone()
+    item['context_label'] = kp['name'] if kp else ('税务案例练习' if row['attempt_id'] else '知识点答疑')
+    item['message_count'] = db.execute('SELECT count(*) n FROM training_tutor_messages WHERE session_id=?',
+                                       (row['id'],)).fetchone()['n']
+    return item
+
+
+def _active_session(db, student_id, certificate_id, knowledge_point_id, attempt_id):
+    legacy = db.execute('SELECT 1 FROM training_tutor_messages WHERE student_id=? AND certificate_id=? '
+                        'AND attempt_id IS ? AND session_id IS NULL LIMIT 1',
+                        (student_id, certificate_id, attempt_id)).fetchone()
+    if legacy:
+        _default_session(db, student_id, certificate_id, knowledge_point_id, attempt_id)
+    latest_dialogue = db.execute(
+        'SELECT s.id FROM training_tutor_sessions s JOIN training_tutor_messages m ON m.session_id=s.id '
+        'WHERE s.student_id=? AND m.student_id=? AND s.certificate_id=? '
+        'AND s.knowledge_point_id IS ? AND s.attempt_id IS ? AND s.archived_at IS NULL '
+        'ORDER BY m.created_at DESC,m.rowid DESC LIMIT 1',
+        (student_id, student_id, certificate_id, knowledge_point_id, attempt_id)).fetchone()
+    if latest_dialogue:
+        return latest_dialogue['id']
+    latest = db.execute('SELECT id FROM training_tutor_sessions WHERE student_id=? AND certificate_id=? '
+                        'AND knowledge_point_id IS ? AND attempt_id IS ? AND archived_at IS NULL '
+                        'ORDER BY updated_at DESC,rowid DESC LIMIT 1',
+                        (student_id, certificate_id, knowledge_point_id, attempt_id)).fetchone()
+    if latest:
+        return latest['id']
+    session_id = _default_session(db, student_id, certificate_id, knowledge_point_id, attempt_id)
+    if _owned_session(db, student_id, session_id)['archived_at']:
+        session_id, now = str(uuid.uuid4()), _session_now()
+        db.execute('INSERT INTO training_tutor_sessions '
+                   '(id,student_id,certificate_id,knowledge_point_id,attempt_id,created_at,updated_at) '
+                   'VALUES (?,?,?,?,?,?,?)',
+                   (session_id, student_id, certificate_id, knowledge_point_id, attempt_id, now, now))
+    return session_id
+
+
+def create_tutor_session(store, student_id, *, certificate_id, attempt_id=None,
+                         knowledge_point_id=None, new_session=False):
+    with store.connect() as db:
+        knowledge_point_id = _session_scope(db, student_id, certificate_id, knowledge_point_id, attempt_id)
+        if new_session:
+            session_id, now = str(uuid.uuid4()), _session_now()
+            db.execute('INSERT INTO training_tutor_sessions '
+                       '(id,student_id,certificate_id,knowledge_point_id,attempt_id,created_at,updated_at) '
+                       'VALUES (?,?,?,?,?,?,?)',
+                       (session_id, student_id, certificate_id, knowledge_point_id, attempt_id, now, now))
+        else:
+            session_id = _active_session(db, student_id, certificate_id, knowledge_point_id, attempt_id)
+        return _session_brief(db, _owned_session(db, student_id, session_id))
+
+
+def archive_tutor_session(store, student_id, session_id, *, archived):
+    with store.connect() as db:
+        saved = _owned_session(db, student_id, session_id)
+        if bool(saved['archived_at']) != archived:
+            now = _session_now()
+            db.execute('UPDATE training_tutor_sessions SET archived_at=?,updated_at=? WHERE id=? AND student_id=?',
+                       (now if archived else None, now, session_id, student_id))
+        return _session_brief(db, _owned_session(db, student_id, session_id))
+
+
+def list_tutor_sessions(store, student_id, *, offset=0, limit=30, archived=False):
+    with store.connect() as db:
+        for scope in db.execute('SELECT DISTINCT certificate_id,knowledge_point_id,attempt_id '
+                                'FROM training_tutor_messages WHERE student_id=? AND session_id IS NULL',
+                                (student_id,)).fetchall():
+            _default_session(db, student_id, scope['certificate_id'], scope['knowledge_point_id'], scope['attempt_id'])
+        archived_clause = 'IS NOT NULL' if archived else 'IS NULL'
+        rows = db.execute('SELECT s.* FROM training_tutor_sessions s WHERE s.student_id=? '
+                          f'AND s.archived_at {archived_clause} AND EXISTS '
+                          '(SELECT 1 FROM training_tutor_messages m WHERE m.session_id=s.id AND m.student_id=?) '
+                          'ORDER BY s.updated_at DESC,s.rowid DESC LIMIT ? OFFSET ?',
+                          (student_id, student_id, max(1, min(limit, 100)) + 1, max(0, offset))).fetchall()
+        size = max(1, min(limit, 100))
+        return {'sessions': [_session_brief(db, row) for row in rows[:size]], 'has_more': len(rows) > size}
+
+
 def ask_tutor(store, student_id: str, *, certificate_id: str, question: str,
-              knowledge_point_id: str | None = None, attempt_id: str | None = None) -> dict[str, Any]:
+              knowledge_point_id: str | None = None, attempt_id: str | None = None,
+              session_id: str | None = None) -> dict[str, Any]:
     question = str(question).strip()
     if not question:
         raise _portal_error("请输入问题。")
@@ -226,12 +367,20 @@ def ask_tutor(store, student_id: str, *, certificate_id: str, question: str,
             knowledge_point_id = attempt_data['knowledge_point_id']
         if not nodes:
             raise _portal_error("请先选择知识点或题目，答疑需要依据上下文。")
+        if session_id:
+            saved = _owned_session(db, student_id, session_id)
+            if saved['archived_at']:
+                raise _portal_error('会话已归档，请恢复后继续提问。', 409)
+            if (saved['certificate_id'], saved['knowledge_point_id'], saved['attempt_id']) != (
+                    certificate_id, knowledge_point_id, attempt_id):
+                raise _portal_error('会话与当前题目或知识点不匹配。')
+        else:
+            session_id = _active_session(db, student_id, certificate_id, knowledge_point_id, attempt_id)
         allowed = {n["id"] for n in nodes}
         previous = db.execute(
             "SELECT question, answer FROM training_tutor_messages"
-            " WHERE student_id=? AND certificate_id=? AND attempt_id IS ?"
-            " AND knowledge_point_id IS ? AND degraded='' ORDER BY rowid DESC LIMIT ?",
-            (student_id, certificate_id, attempt_id, knowledge_point_id, MAX_DIALOGUE_TURNS)).fetchall()
+            " WHERE student_id=? AND session_id=? AND degraded='' ORDER BY rowid DESC LIMIT ?",
+            (student_id, session_id, MAX_DIALOGUE_TURNS)).fetchall()
         dialogue = [{"question": r["question"][:MAX_QUESTION], "answer": r["answer"][:1500]}
                     for r in reversed(previous)]
     settings = ai_keys.apply(AISettings.from_env(), store, usage='tutor')
@@ -266,14 +415,19 @@ def ask_tutor(store, student_id: str, *, certificate_id: str, question: str,
     message_id = str(uuid.uuid4())
     now = _now()
     with store.connect() as db:
+        if _owned_session(db, student_id, session_id)['archived_at']:
+            raise _portal_error('会话已归档，本次回答未写入；请恢复后重试。', 409)
         db.execute(
             """INSERT INTO training_tutor_messages (id, student_id, certificate_id, knowledge_point_id,
-               attempt_id, question, answer, citations_json, grounding_json, model, degraded, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+               attempt_id, question, answer, citations_json, grounding_json, model, degraded, created_at, session_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (message_id, student_id, certificate_id, knowledge_point_id, attempt_id,
              question, answer_text, json.dumps(citations, ensure_ascii=False),
-             json.dumps({"nodes": nodes}, ensure_ascii=False), model_name, degraded, now))
+             json.dumps({"nodes": nodes}, ensure_ascii=False), model_name, degraded, now, session_id))
+        db.execute("UPDATE training_tutor_sessions SET updated_at=?,title=CASE WHEN title='' THEN ? ELSE title END WHERE id=?",
+                   (_session_now(), question[:36], session_id))
         return {"message": {"id": message_id, "question": question, "answer": answer_text,
+                            "session_id": session_id,
                             "citations": citations, "model": model_name, "degraded": degraded,
                             "basis_summary": _basis_summary(nodes, citations),
                             "standard_answer": (attempt_data or {}).get("standard_answer"),
@@ -282,7 +436,7 @@ def ask_tutor(store, student_id: str, *, certificate_id: str, question: str,
 
 def tutor_history(store, student_id: str, *, certificate_id: str | None = None,
                   knowledge_point_id: str | None = None, attempt_id: str | None = None,
-                  limit: int = 20) -> list[dict[str, Any]]:
+                  session_id: str | None = None, limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
     clauses, params = ["WHERE student_id=?"], [student_id]
     if certificate_id:
         clauses.append("AND certificate_id=?"); params.append(certificate_id)
@@ -290,12 +444,17 @@ def tutor_history(store, student_id: str, *, certificate_id: str | None = None,
         clauses.append("AND knowledge_point_id=?"); params.append(knowledge_point_id)
     if attempt_id:
         clauses.append("AND attempt_id=?"); params.append(attempt_id)
+    if session_id:
+        clauses.append('AND session_id=?'); params.append(session_id)
     params.append(max(1, min(int(limit), MAX_HISTORY)))
+    params.append(max(0, offset))
     with store.connect() as db:
+        if session_id:
+            _owned_session(db, student_id, session_id)
         rows = db.execute(
             f"SELECT id, certificate_id, knowledge_point_id, attempt_id, question, answer,"
-            f" citations_json, grounding_json, model, degraded, created_at FROM training_tutor_messages"
-            f" {' '.join(clauses)} ORDER BY created_at DESC, rowid DESC LIMIT ?", params).fetchall()
+            f" citations_json, grounding_json, model, degraded, created_at, session_id FROM training_tutor_messages"
+            f" {' '.join(clauses)} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?", params).fetchall()
         result = []
         for row in rows:
             item = dict(row)
@@ -316,6 +475,20 @@ class TutorAsk(BaseModel):
     question: str = Field(min_length=1)
     knowledge_point_id: str | None = None
     attempt_id: str | None = None
+    session_id: str | None = None
+
+
+class TutorSessionCreate(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    certificate_id: str = Field(min_length=1)
+    knowledge_point_id: str | None = None
+    attempt_id: str | None = None
+    new_session: bool = False
+
+
+class TutorSessionArchive(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    archived: bool
 
 
 def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
@@ -344,17 +517,45 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return response(ask_tutor(
             store_provider(), who["id"], certificate_id=body.certificate_id,
             question=body.question, knowledge_point_id=body.knowledge_point_id,
-            attempt_id=body.attempt_id))
+            attempt_id=body.attempt_id, session_id=body.session_id))
+
+    @app.get('/api/training/my/tutor/sessions')
+    @guarded
+    def tutor_sessions(offset: int = 0, limit: int = 30, archived: bool = False,
+                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student_for_token(store_provider(), session)
+        if not who:
+            raise HTTPException(status_code=401, detail='请先使用学号登录。')
+        return response(list_tutor_sessions(store_provider(), who['id'], offset=offset, limit=limit, archived=archived))
+
+    @app.post('/api/training/my/tutor/sessions')
+    @guarded
+    def tutor_session_create(body: TutorSessionCreate,
+                             session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student_for_token(store_provider(), session)
+        if not who:
+            raise HTTPException(status_code=401, detail='请先使用学号登录。')
+        return response({'session': create_tutor_session(store_provider(), who['id'], **body.model_dump())})
+
+    @app.patch('/api/training/my/tutor/sessions/{session_id}')
+    @guarded
+    def tutor_session_archive(session_id: str, body: TutorSessionArchive,
+                              session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student_for_token(store_provider(), session)
+        if not who:
+            raise HTTPException(status_code=401, detail='请先使用学号登录。')
+        return response({'session': archive_tutor_session(store_provider(), who['id'], session_id, archived=body.archived)})
 
     @app.get("/api/training/my/tutor/history")
     @guarded
     def tutor_history_route(certificate_id: str | None = None,
                             knowledge_point_id: str | None = None, attempt_id: str | None = None,
-                            limit: int = 20,
+                            session_id: str | None = None, limit: int = 20, offset: int = 0,
                             session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student_for_token(store_provider(), session)
         if not who:
             raise HTTPException(status_code=401, detail="请先使用学号登录。")
         return response({"messages": tutor_history(
             store_provider(), who["id"], certificate_id=certificate_id,
-            knowledge_point_id=knowledge_point_id, attempt_id=attempt_id, limit=limit)})
+            knowledge_point_id=knowledge_point_id, attempt_id=attempt_id,
+            session_id=session_id, limit=limit, offset=offset)})

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>考证备考 · 税海拾珠</title>
 <link rel="stylesheet" href="/training-dark.css?v=student-practice-20261026-8">
-<link rel="stylesheet" href="/training-tutor.css?v=student-tutor-dialog-20261026-2">
+<link rel="stylesheet" href="/training-tutor.css?v=student-tutor-archive-20261026-5">
 </head>
 <body>
 <header>
@@ -30,8 +30,15 @@
     <div class="card" id="pr-card" data-university-view="practice">
       <h2>税务案例训练与刷题</h2>
       <p class="muted">仿真题为规则生成的企业案例（识别涉税风险）；真题/回忆题/模拟题为教师在授权下导入并审核上线的客观题（选项作答，判分后开放解析）。两类都不冒充真题，题源在题目标签上明示。</p>
+      <div class="practice-report-tabs practice-mode-tabs" role="tablist" aria-label="选择练习方式" style="--report-count:2;">
+        <button type="button" role="tab" id="practice-new-tab" aria-controls="practice-new-panel" aria-selected="true" data-act="practice-tab" data-practice-tab="new">开始新练习</button>
+        <button type="button" role="tab" id="practice-open-tab" aria-controls="pr-open" aria-selected="false" tabindex="-1" data-act="practice-tab" data-practice-tab="unfinished">未完成的练习 <span id="practice-open-count">0</span></button>
+      </div>
       <div class="row">
         <div><label>证书范围</label><select id="pr-cert"></select></div>
+      </div>
+      <section id="practice-new-panel" role="tabpanel" aria-labelledby="practice-new-tab">
+      <div class="row">
         <div><label>题源</label>
           <select id="pr-source">
             <option value="simulated">规则仿真题</option>
@@ -45,12 +52,20 @@
       <div class="muted" id="pr-hint" style="margin-top:6px;"></div>
       <div class="muted" id="pr-stats" style="margin-top:4px;"></div>
       <div id="pr-kps"></div>
-      <div id="pr-open"></div>
-      <div id="pr-attempt" style="margin-top:14px;"></div>
+      </section>
+      <div id="pr-open" role="tabpanel" aria-labelledby="practice-open-tab" hidden></div>
       <section id="pr-wrong-section">
         <h2 style="margin-top:18px;">考证错题重练</h2>
         <div id="pr-wrong"></div>
       </section>
+    </div>
+
+    <div class="card" id="answer-card" data-university-view="answer" hidden>
+      <div class="answer-heading">
+        <button type="button" data-act="answer-back">← 返回练习列表</button>
+        <div><h2 id="answer-title" tabindex="-1">练习作答</h2><p class="muted" id="answer-status"></p></div>
+      </div>
+      <div id="pr-attempt"></div>
     </div>
 
     <div class="card" id="feedback-card" data-university-view="practice settings">
@@ -119,6 +134,6 @@
   </div>
 </div>
 <script src="/policy-source.js?v=public-policy-1"></script>
-<script src="/training-portal.js?v=student-tutor-dialog-20261026-2"></script>
+<script src="/training-portal.js?v=student-tutor-archive-20261026-5"></script>
 </body>
 </html>

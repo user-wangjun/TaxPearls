@@ -712,6 +712,7 @@ let pendingEmailToken="",emailRegistrationProof=null,authResetProof="",authViewV
 window.addEventListener("hashchange", () => {
   const params = new URLSearchParams(location.hash.slice(1));
   if (params.get("email")) { location.reload(); return; }
+  if (currentUser?.workspace === "university") return;
   if (currentUser && params.get("panel")) switchPanel(params.get("panel"));
 });
 async function bootstrap() {
