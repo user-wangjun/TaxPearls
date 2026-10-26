@@ -825,6 +825,11 @@ def training_dark_theme() -> FileResponse:
     return FileResponse(STATIC_DIR / "training-dark.css", media_type="text/css")
 
 
+@app.get("/training-tutor.css")
+def training_tutor_styles() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-tutor.css", media_type="text/css")
+
+
 @app.get("/classroom.js")
 def classroom_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "classroom.js", media_type="text/javascript")

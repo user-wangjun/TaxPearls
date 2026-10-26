@@ -4514,6 +4514,10 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def training_dark_theme() -> FileResponse:
         return FileResponse(STATIC_DIR / "training-dark.css", media_type="text/css")
 
+    @app.get("/training-tutor.css")
+    def training_tutor_styles() -> FileResponse:
+        return FileResponse(STATIC_DIR / "training-tutor.css", media_type="text/css")
+
     @app.get("/training-staff")
     def training_staff_page(request: Request) -> FileResponse:
         return university_members.teaching_page(store_provider(),request,staff=True)

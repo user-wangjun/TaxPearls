@@ -435,6 +435,18 @@ def initialize(store) -> None:
                 ON knowledge_point_relation(from_kp_id, relation_type);
             CREATE INDEX IF NOT EXISTS idx_kp_relation_to
                 ON knowledge_point_relation(to_kp_id, relation_type);
+            CREATE TABLE IF NOT EXISTS training_tutor_sessions (
+                id TEXT PRIMARY KEY,
+                student_id TEXT NOT NULL REFERENCES student_info(id),
+                certificate_id TEXT NOT NULL REFERENCES certificate(id),
+                knowledge_point_id TEXT REFERENCES knowledge_point(id),
+                attempt_id TEXT REFERENCES training_self_practice_attempts(id),
+                title TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tutor_sessions_student
+                ON training_tutor_sessions(student_id, updated_at DESC);
             CREATE TABLE IF NOT EXISTS training_tutor_messages (
                 id TEXT PRIMARY KEY,                      -- 主键：UUID 文本
                 student_id TEXT NOT NULL REFERENCES student_info(id),  -- 学生（外键；本人隔离）
@@ -539,6 +551,13 @@ def initialize(store) -> None:
                 ON training_content_version(certificate_id, status);
         """)
         # 既有库的作答表补挂内容版本列（additive 迁移；旧行为 NULL=未版本化，按材料指纹回溯）。
+        tutor_columns = {row['name'] for row in db.execute('PRAGMA table_info(training_tutor_messages)')}
+        if 'session_id' not in tutor_columns:
+            db.execute('ALTER TABLE training_tutor_messages ADD COLUMN session_id TEXT REFERENCES training_tutor_sessions(id)')
+        db.execute('CREATE INDEX IF NOT EXISTS idx_tutor_message_session ON training_tutor_messages(session_id, created_at)')
+        tutor_session_columns = {row['name'] for row in db.execute('PRAGMA table_info(training_tutor_sessions)')}
+        if 'archived_at' not in tutor_session_columns:
+            db.execute('ALTER TABLE training_tutor_sessions ADD COLUMN archived_at TEXT')
         content_columns = {row['name'] for row in db.execute('PRAGMA table_info(training_content_version)')}
         if 'rules_snapshot_json' not in content_columns:
             db.execute("ALTER TABLE training_content_version ADD COLUMN rules_snapshot_json TEXT")

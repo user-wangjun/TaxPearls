@@ -968,21 +968,21 @@ html[data-theme=dark] body.workspace-ready { --button-bevel: #ffffff20; --button
 }
 
 /* Appearance controls share the workspace material and keep their selection highlight. */
-#appMain :is(#themePicker, #inviteOrgTypeOptions) {
+#appMain :is(#themePicker, #inviteOrgTypeOptions, .practice-report-tabs) {
   --metal-face: var(--glass-face);
   --metal-border: #97a8bb99;
   --metal-shadow: var(--glass-shadow);
   --metal-selected: linear-gradient(165deg, #ffffffeb 0%, #bdcddbba 47%, #f5f8fbe6 78%, #9eb4c699 100%);
   --metal-fallback: var(--glass-fallback);
 }
-#appMain :is(#themeOptions, #inviteOrgTypeOptions) { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); -webkit-backdrop-filter: blur(10px) saturate(105%); backdrop-filter: blur(10px) saturate(105%); }
-#appMain :is(#themeOptions, #inviteOrgTypeOptions)::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #ffffff80, inset 0 -1px 0 #65798d24, 0 2px 4px #152b421a; }
-html[data-theme=dark] #appMain :is(#themeOptions, #inviteOrgTypeOptions) { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); }
-html[data-theme=dark] #appMain :is(#themeOptions, #inviteOrgTypeOptions)::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #eaf3ff4d, inset 0 -1px 0 #05080d66, 0 2px 4px #00000033; }
+#appMain :is(#themeOptions, #inviteOrgTypeOptions, .practice-report-tabs) { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); -webkit-backdrop-filter: blur(10px) saturate(105%); backdrop-filter: blur(10px) saturate(105%); }
+#appMain :is(#themeOptions, #inviteOrgTypeOptions, .practice-report-tabs)::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #ffffff80, inset 0 -1px 0 #65798d24, 0 2px 4px #152b421a; }
+html[data-theme=dark] #appMain :is(#themeOptions, #inviteOrgTypeOptions, .practice-report-tabs) { background: var(--metal-face); border-color: var(--metal-border); box-shadow: var(--metal-shadow); }
+html[data-theme=dark] #appMain :is(#themeOptions, #inviteOrgTypeOptions, .practice-report-tabs)::before { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: inset 0 1px 0 #eaf3ff4d, inset 0 -1px 0 #05080d66, 0 2px 4px #00000033; }
 html[data-theme] #appMain #appHeader #themeCycle, html[data-theme] #appMain #appHeader #themeCycle .account-icon { background: var(--metal-selected); border-color: var(--metal-border); box-shadow: var(--metal-shadow); }
 #appMain #appHeader #themeOptions button:is(:hover, :focus-visible, :active) { transform: none; box-shadow: none; }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  html[data-theme] #appMain :is(#themeOptions, #inviteOrgTypeOptions) { background: var(--metal-fallback); }
+  html[data-theme] #appMain :is(#themeOptions, #inviteOrgTypeOptions, .practice-report-tabs) { background: var(--metal-fallback); }
 }
 
 
@@ -1047,14 +1047,14 @@ html[data-theme=dark] #appMain input[type=file]::file-selector-button {
   border: 1px solid transparent;
   box-shadow: var(--control-shadow);
 }
-html[data-theme=dark] #appMain :is(#themePicker, #inviteOrgTypeOptions) {
+html[data-theme=dark] #appMain :is(#themePicker, #inviteOrgTypeOptions, .practice-report-tabs) {
   --metal-face: linear-gradient(145deg, #212223, #18191a);
   --metal-border: #84878966;
   --metal-selected: var(--control-face) padding-box, var(--control-active-rim) border-box;
   --metal-shadow: var(--control-shadow);
   --metal-fallback: #18191a;
 }
-html[data-theme=dark] #appMain :is(#themeOptions, #inviteOrgTypeOptions)::before,
+html[data-theme=dark] #appMain :is(#themeOptions, #inviteOrgTypeOptions, .practice-report-tabs)::before,
 html[data-theme=dark] #appMain #appHeader #themeCycle,
 html[data-theme=dark] #appMain #appHeader #themeCycle .account-icon {
   border-color: transparent;

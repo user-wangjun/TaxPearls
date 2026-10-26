@@ -768,7 +768,7 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
     if (!nodes.has(id)) nodes.set(id,{value:"",dataset:{view:"login",setup:"0"},hidden:false,disabled:false,addEventListener(){}});
     return nodes.get(id);
   };
-  const ctx={window:{},document:{getElementById:node}};vm.createContext(ctx);
+  const ctx={window:{addEventListener(){}},document:{getElementById:node}};vm.createContext(ctx);
   vm.runInContext(fs.readFileSync("webapp/static/university-workspace.js","utf8"),ctx);
   const workspace=ctx.window.universityWorkspace;
   assert.ok(workspace.viewsFor("student","student").some(v=>v[0]==="tasks"));
