@@ -120,10 +120,11 @@ class TrainingStaffTests(unittest.TestCase):
         page = (Path(main_app.STATIC_DIR) / "index.html").read_text(encoding="utf-8")
         self.assertNotIn('id="loginAccountType"', page)
         self.assertIn('id="universityPanel"', page)
+        startup = (Path(main_app.STATIC_DIR) / "auth.js").read_text(encoding="utf-8")
         for asset in ("university-workspace.js", "university.css"):
             response = self.client.get("/" + asset)
             self.assertEqual(response.status_code, 200, asset)
-            self.assertIn(asset, page)
+            self.assertIn(asset, page + startup)
 
     def test_main_login_routes_by_stored_identity_and_replaces_browser_session(self):
         from webapp import app as main

@@ -116,19 +116,7 @@ window.universityWorkspace = (() => {
     if (!response.ok) { const error = new Error(data.detail || `请求失败（${response.status}）`); error.status = response.status; throw error; }
     return data;
   }
-  function updateLogin() {
-    const setup = $("authForm").dataset.setup === "1";
-    const login = $("authForm").dataset.view === "login" && !setup;
-    const needsCollege = login && $("loginCollege").dataset.needed === "1";
-    $("loginCollegeField").hidden = !needsCollege;
-    $("loginCollege").required = needsCollege;
-    $("loginCollege").disabled = !needsCollege;
-    if (login) {
-      $("loginUserLabel").textContent = "邮箱、用户名或学号";
-      $("loginUser").placeholder = "请输入邮箱、用户名或学号";
-      $("loginUser").inputMode = "text";
-    }
-  }
+  function updateLogin() { updateAuthCollege(); }
   function status(message, error = false) {
     $("universityStatus").textContent = message;
     $("universityStatus").className = error ? "university-status error" : "university-status muted";
@@ -219,6 +207,11 @@ window.universityWorkspace = (() => {
   }
   async function mount() {
     const kind = identity.universityKind;
+    await Promise.all([
+      loadClientScript("/member-links.js?v=20261027-login-first-1"),
+      loadClientScript("/policy-source.js?v=20261027-login-first-1"),
+      loadClientScript("/training-"+(kind === "student" ? "portal" : "staff")+".js?v=20261027-login-first-1")
+    ]);
     const initial = !controller;
     if (!controller) {
       const path = "/api/training/workspace/template/" + (kind === "student" ? "student" : "staff");
@@ -288,7 +281,7 @@ window.universityWorkspace = (() => {
         const data=await request("/api/training/workspace/dashboard");if(ticket!==viewRevision)return false;renderOverview(data,view==="archives");
         if(view==="home"&&usesNative(view))await ensureNative();
       }
-      else if(view==="knowledge"){await loadKnowledge({throwOnError:true});}
+      else if(view==="knowledge"){await prepareWorkspacePanel("knowledgePanel");if(ticket!==viewRevision)return false;await loadKnowledge({throwOnError:true});}
       else {
         if(nativeViews.has(view)){
           if(view === "settings") {
@@ -302,6 +295,7 @@ window.universityWorkspace = (() => {
         }
         if(classroomViews.has(view)&&classroomCapable()){
           $("teacherBox").style.display=identity.role==="student"?"none":"block";
+          await prepareWorkspacePanel("trainingPanel");if(ticket!==viewRevision)return false;
           await loadAssignments({throwOnError:true});
         } else if(view==="tasks"&&!classroomCapable())throw new Error("该教学档案尚未绑定课堂账号，请由管理员关联后使用课堂任务。已有考证练习仍可正常使用。");
       }
@@ -355,11 +349,6 @@ window.universityWorkspace = (() => {
     await request("/api/logout", {method:"POST"});
     location.replace(`/?workspace=${identity.universityKind}`);
   }
-  $("loginUser").addEventListener("input", () => {
-    delete $("loginCollege").dataset.needed;
-    $("loginCollege").value = "";
-    updateLogin();
-  });
   $("universityRefresh").addEventListener("click", refresh);
   $("universityRetry").addEventListener("click", refresh);
   window.addEventListener("hashchange", () => {

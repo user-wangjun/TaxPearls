@@ -540,7 +540,8 @@ class ClassroomTests(unittest.TestCase):
         self.assertIn('text/javascript',script.headers['content-type'])
         self.assertIn('createTrainingClassroom',script.text)
         page=self.client.get('/').text
-        self.assertIn('src="/classroom.js?',page)
+        self.assertNotIn('src="/classroom.js?',page)
+        self.assertIn('load("classroom.js")',self.client.get('/console.js').text)
         for control in ['classRoster','paperDraft','paperDetail','paperClass','assignmentDeadline','exerciseDeadlineStatus']:
             self.assertIn('id="'+control+'"',page)
 

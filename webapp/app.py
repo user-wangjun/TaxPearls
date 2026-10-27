@@ -43,6 +43,7 @@ from webapp.sensitive_storage import SensitiveStorageError
 from webapp.notifications import NotificationWorker, email_delivery_enabled
 from webapp.storage import SetupAlreadyInitialized, Store, session_max_age
 from webapp.login_guard import LoginGuard, RateLimiter
+from webapp.static_compression import StaticCompressionMiddleware, encoding_quality
 from webapp.knowledge import (
     ai_config, ask_graph, audit_narrative_hash, build_graph,
     finding_evidence_hash, generate_audit_narrative, interpret_finding, extract_policy_candidates,
@@ -80,6 +81,7 @@ async def lifespan(application):
 
 
 app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+app.add_middleware(StaticCompressionMiddleware)
 
 
 @app.exception_handler(AccessDenied)
@@ -779,6 +781,7 @@ def auth_signup_ticket() -> FileResponse:
 
 # Explicit public asset allowlist; no arbitrary static path or directory access.
 @app.get("/auth-glass.css")
+@app.get("/auth.js")
 @app.get("/auth-glass.js")
 @app.get("/auth-ocean.mjs")
 @app.get("/auth-wordmark.png")
@@ -788,14 +791,24 @@ def auth_signup_ticket() -> FileResponse:
 def auth_glass_asset(request: Request) -> FileResponse:
     assets = {
         "/auth-glass.css": ("auth-glass.css", "text/css"),
+        "/auth.js": ("auth.js", "text/javascript"),
         "/auth-glass.js": ("auth-glass.js", "text/javascript"),
-        "/auth-ocean.mjs": ("auth-ocean.mjs", "text/javascript"),
+        "/auth-ocean.mjs": ("auth-ocean.bundle.mjs", "text/javascript"),
         "/auth-wordmark.png": ("auth-wordmark.png", "image/png"),
         "/auth-ocean-poster-desktop.webp": ("auth-ocean-poster-desktop.webp", "image/webp"),
         "/auth-ocean-poster-mobile.webp": ("auth-ocean-poster-mobile.webp", "image/webp"),
         "/vendor/three.module.mjs": ("vendor/three.module.mjs", "text/javascript"),
     }
     name, media_type = assets[request.url.path]
+    # Build-time compression avoids both runtime Brotli work and another early
+    # download competing with the login form. Ranges retain identity bytes.
+    if request.url.path == '/auth-ocean.mjs' and not request.headers.get('range'):
+        accepted = request.headers.get('accept-encoding', '')
+        quality = encoding_quality(accepted, 'br')
+        compressed = STATIC_DIR / (name + '.br')
+        if quality > 0 and quality >= encoding_quality(accepted, 'gzip') and compressed.is_file():
+            return FileResponse(compressed, media_type=media_type,
+                                headers={'Content-Encoding': 'br', 'Vary': 'Accept-Encoding'})
     return FileResponse(STATIC_DIR / name, media_type=media_type)
 
 
