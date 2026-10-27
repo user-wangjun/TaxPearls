@@ -1,4 +1,4 @@
-/* The real authentication flow lives in console.js. This file owns only
+/* The real authentication flow lives in auth.js. This file owns only
  * glass interactions and the lazily mounted, local WebGL background. */
 (() => {
   const screen = document.getElementById('authScreen');
@@ -6,7 +6,37 @@
   const canvas = document.getElementById('sceneCanvas');
   const status = document.getElementById('oceanStatus');
   let ocean, loading = false, failed = false, pending = false, lastView = '', revealId = 0, revealComplete = false;
+  let startTimer = null, idleId = null, lastInteraction = 0;
   const visible = () => screen.style.display !== 'none' && !document.hidden;
+  const canPrepare = () => visible() && form.dataset.ready === '1' && !form.dataset.entering && !form.dataset.busy;
+  function cancelPreparation() {
+    clearTimeout(startTimer); startTimer = null;
+    if (idleId !== null) window.cancelIdleCallback?.(idleId);
+    idleId = null;
+  }
+  function prepareWhenIdle() {
+    if (ocean || loading || failed || startTimer !== null || idleId !== null || !canPrepare()) return;
+    // The session check and form paint have already finished. Start promptly
+    // unless recent input needs a longer quiet interval.
+    const delay = lastInteraction ? Math.max(0, 1200 - (performance.now() - lastInteraction)) : 0;
+    const queueStart = () => {
+      startTimer = null;
+      const start = () => {
+        idleId = null;
+        if (!canPrepare()) return;
+        if (lastInteraction && performance.now() - lastInteraction < 1200) { prepareWhenIdle(); return; }
+        mountWhenReady();
+      };
+      if (window.requestIdleCallback) idleId = window.requestIdleCallback(start, {timeout:2000});
+      else start();
+    };
+    // Register before this frame's idle slot. An extra zero-delay timer can
+    // miss that slot and add another refresh of waiting on fast devices.
+    // The timer fallback still gives browsers without idle callbacks a task
+    // boundary before starting the module download.
+    if (delay === 0 && window.requestIdleCallback) queueStart();
+    else startTimer = setTimeout(queueStart, delay);
+  }
   function unavailable() {
     revealId++;
     revealComplete = false;
@@ -23,8 +53,9 @@
     canvas.style.visibility = '';
     status.hidden = true;
     update();
-    // Keep the t=0 reflections still throughout the crossfade. Motion starts
-    // only once the poster is fully covered by the matching live frame.
+    // The live frame starts at the poster's exact pose. Begin the gentle
+    // motion ramp during the crossfade instead of adding a second still wait.
+    if (visible()) ocean?.releaseOpening();
     const duration = parseFloat(getComputedStyle(canvas).transitionDuration) * 1000;
     if (duration > 0) await new Promise(resolve => {
       let timer;
@@ -50,15 +81,27 @@
         document.getElementById(viewId).animate([{opacity:0, transform:'translateY(6px)'}, {opacity:1, transform:'none'}], {duration:220, easing:'cubic-bezier(.2,.7,.2,1)'});
       }
     }
-    if (!ocean && !loading && !failed && visible() && form.dataset.setup !== undefined) {
+    if (!canPrepare()) cancelPreparation();
+    else prepareWhenIdle();
+    if (!ocean) return;
+    ocean.setActive(visible());
+    if (visible()) ocean.setGlassPanel(form.getBoundingClientRect(), parseFloat(getComputedStyle(form).borderTopLeftRadius));
+    if (visible() && revealComplete) {
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) screen.classList.add('liquid-live');
+      ocean.releaseOpening();
+    }
+  }
+  async function mountWhenReady() {
+    if (!ocean && !loading && !failed && canPrepare()) {
       loading = true;
       try {
-        // Let the form paint before creating the WebGL context.
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-        if (!visible()) return;
-        const {mountOcean} = await import('/auth-ocean.mjs?v=20261006-shape-1');
+        // Download while the form paints; create WebGL only after both finish.
+        const [{mountOcean}] = await Promise.all([
+          import('/auth-ocean.mjs?v=20261027-ocean-start-9'),
+          new Promise(resolve => requestAnimationFrame(resolve)),
+        ]);
         // A remembered session may have entered the app during the download.
-        if (!visible()) return;
+        if (!canPrepare()) return;
         ocean = await mountOcean(canvas, {holdOpening:true});
         window.taxPearlsOcean = ocean;
         ocean.setActive(visible());
@@ -71,14 +114,7 @@
         failed = true;
         unavailable();
         console.warn('Ocean background unavailable:', error);
-      } finally { loading = false; }
-    }
-    if (!ocean) return;
-    ocean.setActive(visible());
-    if (visible()) ocean.setGlassPanel(form.getBoundingClientRect(), parseFloat(getComputedStyle(form).borderTopLeftRadius));
-    if (visible() && revealComplete) {
-      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) screen.classList.add('liquid-live');
-      ocean.releaseOpening();
+      } finally { loading = false; if (!ocean && !failed) prepareWhenIdle(); }
     }
   }
   function schedule() {
@@ -86,13 +122,16 @@
     pending = true;
     requestAnimationFrame(() => { pending = false; update(); });
   }
-  new MutationObserver(schedule).observe(screen, {attributes:true, subtree:true, attributeFilter:['style','data-view','data-setup','hidden']});
+  new MutationObserver(schedule).observe(screen, {attributes:true, subtree:true, attributeFilter:['style','data-view','data-setup','data-ready','data-entering','data-busy','hidden']});
   new ResizeObserver(schedule).observe(form);
   window.addEventListener('resize', schedule);
   window.addEventListener('scroll', schedule, {passive:true});
-  document.addEventListener('visibilitychange', () => { if (!visible()) ocean?.setActive(false); else schedule(); });
-  window.addEventListener('pagehide', () => ocean?.setActive(false));
+  document.addEventListener('visibilitychange', () => { if (!visible()) { cancelPreparation(); ocean?.setActive(false); } else schedule(); });
+  window.addEventListener('pagehide', () => { cancelPreparation(); ocean?.setActive(false); });
   window.addEventListener('pageshow', schedule);
+  for (const event of ['pointerdown', 'keydown', 'input']) form.addEventListener(event, () => {
+    lastInteraction = performance.now(); cancelPreparation(); prepareWhenIdle();
+  }, {passive:true});
   canvas.addEventListener('ocean-unavailable', unavailable);
   canvas.addEventListener('ocean-restored', () => ocean?.whenSkyReady().then(restored, unavailable));
   form.querySelectorAll('[data-password]').forEach(button => button.addEventListener('click', () => {

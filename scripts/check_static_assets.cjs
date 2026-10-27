@@ -37,6 +37,11 @@ for (const match of html.matchAll(/<(?:script|link)[^>]+(?:src|href)="\/([^"]+?)
   if (!/\.[a-z0-9]+$/i.test(name)) continue;    // 无扩展名的是动态接口（如 /logo），不算静态资源
   refs.add(name);
 }
+// Include the explicit lazy module names; removing a script tag must not hide a missing route.
+for (const entry of ['auth.js', 'console.js', 'university-workspace.js']) {
+  const source = fs.readFileSync(path.join(root, 'webapp', 'static', entry), 'utf8');
+  for (const match of source.matchAll(/["']\/?([\w-]+\.js)(?:\?[^"']*)?["']/g)) refs.add(match[1]);
+}
 
 const missingRoute = [];
 const missingFile = [];
@@ -51,6 +56,11 @@ if (missingRoute.length) {
 }
 if (missingFile.length) {
   fail('index.html 引用了 static 目录下不存在的资源：' + missingFile.join('、'));
+}
+
+if (!process.exitCode) {
+  try { require('./build_auth_ocean.cjs').assertCurrent(); }
+  catch (error) { fail(error.message); }
 }
 
 if (!process.exitCode) {

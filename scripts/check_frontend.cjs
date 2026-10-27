@@ -2,6 +2,7 @@
 const fs = require("node:fs");
 const vm = require("node:vm");
 const assert = require("node:assert/strict");
+const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n" + fs.readFileSync("webapp/static/console.js", "utf8");
 
 // The task board uses the signed-in identity and refreshes progress without polling /api/me.
 (async()=>{
@@ -45,7 +46,7 @@ const assert = require("node:assert/strict");
   assert.match(text(),/读取失败：任务暂不可用/);
   board.setUser(null);assert.ok(!all(root).some(item=>item.id==="task-board-card"));
   assert.ok(calls.every(path=>path==="/api/training/tasks"));
-  const consoleSource=fs.readFileSync("webapp/static/console.js","utf8");
+  const consoleSource=readConsole();
   assert.ok(consoleSource.includes("window.tpTrainingTasks?.setUser(currentUser)"));
   const load=consoleSource.slice(consoleSource.indexOf("async function loadAssignments("),consoleSource.indexOf('$("btnAssignment").addEventListener'));
   assert.ok(load.includes("window.tpTrainingTasks?.refresh({throwOnError})"),"Classroom refresh must include the task board");
@@ -128,11 +129,12 @@ for(const file of ["training-ai-coach.js","teaching-case-ui.js"]){
   assert.equal(format('原件第2页'), '原件第2页');
   assert.equal(format('{bad-json'), '{bad-json');
   assert.equal(format('[]'), '原文位置待核对');
-  for(const file of ['index.html','training-portal.html','training-staff.html'])assert.ok(fs.readFileSync('webapp/static/'+file,'utf8').includes('/policy-source.js?'));
+  assert.ok(readConsole().includes('load("policy-source.js")'));
+  for(const file of ['training-portal.html','training-staff.html'])assert.ok(fs.readFileSync('webapp/static/'+file,'utf8').includes('/policy-source.js?'));
 }
 // Registration gives feedback before submission and rechecks both fields after edits.
 {
-  const source = fs.readFileSync('webapp/static/console.js', 'utf8');
+  const source = readConsole();
   const start = source.indexOf('function updateSignupPasswordValidation(');
   assert.ok(start >= 0, 'Registration needs live password validation');
   const nodes = Object.fromEntries(['signupPass', 'signupPass2', 'signupPasswordHint', 'signupPasswordMatch', 'authForm'].map(id => [id, {
@@ -308,8 +310,8 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
 
 // Refresh restores the actual selected workspace view, while role-hidden views stay unavailable.
 {
-  const source = fs.readFileSync("webapp/static/console.js", "utf8");
-  const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("/* ---------- 多材料上传"));
+  const source = readConsole();
+  const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("// Module preparation"));
   const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel", "retrievalChecksPanel"];
   const permitted = {
     org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
@@ -332,11 +334,12 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
       $:id=>views.find(view=>view.id===id),
       document:{querySelectorAll:selector=>selector===".panel"?views:buttons},
       noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0, ruleCatalogRequest:0,
+      panelLoadRequest:0,pendingPanelMessage:null,workspacePanelReady:()=>true,
       aiKeyProbes:{load(){calls.push("loadAIKeys");},reset(){}},
       retrievalChecks:{load(){calls.push("loadRetrievalChecks");},reset(){}},
       refreshAIStatus(){calls.push("ai");},refreshAuditClients(){calls.push("clients");},enterpriseMaterials:{refresh(){calls.push("materials");}},coreInputs:{refresh(){return Promise.resolve();}}};
     for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge","loadGraphRules"])ctx[name]=()=>calls.push(name);
-    vm.createContext(ctx);vm.runInContext(code,ctx);
+    vm.createContext(ctx);vm.runInContext(code+source.slice(source.indexOf("function switchPanel("),source.indexOf("/* ---------- 多材料上传")),ctx);
     return {ctx,calls,location,views,buttons};
   }
   for (const [role, ids] of Object.entries(permitted)) {
@@ -390,7 +393,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
 (async () => {
   // Empty/hidden founder results must never overwrite the clipboard or claim success.
   {
-    const source = fs.readFileSync("webapp/static/console.js", "utf8");
+    const source = readConsole();
     const code = source.slice(source.indexOf("function inviteOrgTypeLabel("), source.indexOf('$("btnCreateClient").addEventListener'));
     const nodes = new Map(), handlers = new Map(), writes = [], errors = [], toasts = [];
     const node = id => {
@@ -442,7 +445,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   // Exercise the actual notification functions, including out-of-order reads
   // and navigation while a write is in flight. No browser globals are replaced
   // in application code; this tiny boundary provides only the needed DOM/API.
-  const source = fs.readFileSync("webapp/static/console.js", "utf8");
+  const source = readConsole();
   // One graph catalog replaces the old admin list; compatibility never implies approval.
   {
     const nodes=new Map(),calls=[],errors=[],editors=[];let active=true;
@@ -726,13 +729,15 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   console.log("Frontend syntax, role, evidence and notification/rule/material/mistake race and trend area contracts passed.");
 })().catch(error => {console.error(error); process.exitCode = 1;});
 
-// Core inputs must be loaded before the shared console creates its controller.
-assert.ok(indexMarkup.indexOf('/core-inputs.js') < indexMarkup.indexOf('/console.js'));
+// Business controllers are prepared on demand, outside the authentication entry.
+assert.ok(indexMarkup.includes('/auth.js?'));
+assert.ok(!indexMarkup.includes('/console.js?'));
+assert.ok(!indexMarkup.includes('/core-inputs.js?'));
 assert.ok(indexMarkup.includes('id="coreInputs"'));
 
 // Material history stays in management and is fetched only after an explicit query.
 (async()=>{
-  const source=fs.readFileSync("webapp/static/console.js","utf8"),start=source.indexOf("function renderAdminLogs("),end=source.indexOf("\nasync function loadAdmin()",start);
+  const source=readConsole(),start=source.indexOf("function renderAdminLogs("),end=source.indexOf("\nasync function loadAdmin()",start);
   const node=(tag,cls="",text="")=>({tag,className:cls,textContent:text,children:[],hidden:false,disabled:false,append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
   const root=node("div"),calls=[];let pending=null,fail=false,current=true;
   const ctx={$:()=>root,el:node,currentUser:{id:"admin",role:"org_admin"},Intl,Date,
@@ -768,7 +773,9 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
     if (!nodes.has(id)) nodes.set(id,{value:"",dataset:{view:"login",setup:"0"},hidden:false,disabled:false,addEventListener(){}});
     return nodes.get(id);
   };
-  const ctx={window:{addEventListener(){}},document:{getElementById:node}};vm.createContext(ctx);
+  const ctx={$:node,window:{addEventListener(){}},document:{getElementById:node}};vm.createContext(ctx);
+  const auth=fs.readFileSync("webapp/static/auth.js","utf8");
+  vm.runInContext(auth.slice(auth.indexOf("function updateAuthCollege("),auth.indexOf('$("loginUser").addEventListener')),ctx);
   vm.runInContext(fs.readFileSync("webapp/static/university-workspace.js","utf8"),ctx);
   const workspace=ctx.window.universityWorkspace;
   assert.ok(workspace.viewsFor("student","student").some(v=>v[0]==="tasks"));
@@ -813,7 +820,7 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
 
 // Selected-organization capacity must survive refreshes without leaking stale school data.
 (async()=>{
-  const source=fs.readFileSync("webapp/static/console.js","utf8"),nodes=new Map(),calls=[];
+  const source=readConsole(),nodes=new Map(),calls=[];
   const node=(tag,cls,text="")=>({tag,value:"",textContent:text,hidden:true,disabled:true,children:[],style:{},open:false,
     append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},reportValidity(){return this.valid!==false;},focus(){},
     showModal(){this.open=true;},close(){this.open=false;this.onclose?.();},
@@ -903,4 +910,204 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   assert.equal(fresh[0].textarea.value,"unsaved draft");assert.equal(fresh[0].editor.hidden,false);
   assert.equal(fresh[1].textarea.value,"other point");assert.equal(fresh[1].editor.hidden,true);
   console.log("Profile refresh preserves open drafts and does not transfer drafts across knowledge points.");
+}
+
+// Startup must coalesce downloads, retry failed assets, and ignore superseded navigation.
+(async()=>{
+  const auth=fs.readFileSync('webapp/static/auth.js','utf8');
+  const appended=[];
+  const ctx={document:{createElement:()=>({remove(){this.removed=true;}}),head:{append:node=>appended.push(node)}}};
+  vm.createContext(ctx);
+  vm.runInContext(auth.slice(auth.indexOf('const clientScriptLoads'),auth.indexOf('let workspaceScripts')),ctx);
+  const first=ctx.loadClientScript('/one.js'),same=ctx.loadClientScript('/one.js');
+  assert.equal(first,same);assert.equal(appended.length,1);
+  appended[0].onload();await first;
+  assert.equal(ctx.loadClientScript('/one.js'),first,'Successful scripts must not bind their handlers twice');
+  const failed=ctx.loadClientScript('/retry.js');
+  const rejected=assert.rejects(failed,/加载失败/);
+  appended[1].onerror();await rejected;assert.equal(appended[1].removed,true);
+  const retry=ctx.loadClientScript('/retry.js');assert.notEqual(retry,failed);
+  appended[2].onload();await retry;
+
+  const source=fs.readFileSync('webapp/static/console.js','utf8');
+  const pending=[],switched=[],messages=[],errors=[],panel={inert:false,attrs:{},before(node){messages.push(node);},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];}};
+  const navigation={currentUser:{id:'owner'},panelLoadRequest:1,pendingPanelMessage:null,panelLoadTickets:new WeakMap(),preparedPanels:new Set(),
+    $:()=>panel,el:()=>({setAttribute(){},remove(){this.removed=true;},replaceChildren(...nodes){this.children=nodes;}}),
+    document:{createTextNode:text=>text},prepareWorkspacePanel:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),
+    switchPanel:id=>switched.push(id),showError:message=>errors.push(message)};
+  vm.createContext(navigation);
+  vm.runInContext(source.slice(source.indexOf('function deferWorkspacePanel('),source.indexOf('function switchPanel(')),navigation);
+  navigation.deferWorkspacePanel('knowledgePanel',1,'owner');
+  navigation.panelLoadRequest=2;navigation.deferWorkspacePanel('knowledgePanel',2,'owner');
+  pending[0].resolve();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(switched.length,0);assert.equal(panel.inert,true,'Older loads cannot unlock the newer loading view');
+  navigation.preparedPanels.add('knowledgePanel');pending[1].resolve();await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(switched,['knowledgePanel']);assert.equal(panel.inert,false);
+  navigation.panelLoadRequest=3;navigation.deferWorkspacePanel('historyPanel',3,'owner');
+  navigation.currentUser={id:'other'};pending[2].reject(new Error('private failure'));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(errors.length,0);assert.equal(switched.length,1,'Previous identities cannot reopen a page');
+
+  const nodes=new Map(),node=id=>{if(!nodes.has(id))nodes.set(id,{dataset:{},value:''});return nodes.get(id);};
+  const entries=[],views=[],calls=[];
+  const bootstrap={URLSearchParams,location:{search:'',hash:'',pathname:'/'},history:{replaceState(){}},$:node,
+    api:async path=>{calls.push(path);return {needs_setup:false,user:null};},enterApp:user=>entries.push(user),
+    showAuthView:view=>views.push(view),showToast(){}};
+  vm.createContext(bootstrap);
+  vm.runInContext('let pendingEmailToken="";'+auth.slice(auth.indexOf('async function bootstrap('),auth.indexOf('const authViews')),bootstrap);
+  await bootstrap.bootstrap();assert.deepEqual(calls,['/api/status']);assert.deepEqual(views,['login']);assert.equal(entries.length,0);
+  bootstrap.api=async()=>({needs_setup:false,user:{id:'remembered'}});
+  await bootstrap.bootstrap();assert.equal(entries[0].id,'remembered');
+  console.log('Startup: anonymous authentication stays independent, remembered sessions enter directly, script downloads coalesce/retry, stale loads and identities cannot override navigation.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Switching authentication views while workspace assets download cancels that entry.
+(async()=>{
+ const auth=fs.readFileSync('webapp/static/auth.js','utf8');
+ const form={dataset:{ready:'1'}},submit={},entered=[];let release;
+ const ctx={authViewVersion:1,workspaceScripts:new Promise(resolve=>{release=resolve;}),
+   $:id=>id==='authForm'?form:submit,enterWorkspace:user=>entered.push(user),showAuthView(){throw new Error('Unexpected view reset');}};
+ vm.createContext(ctx);
+ vm.runInContext(auth.slice(auth.indexOf('async function enterApp('),auth.indexOf('async function startAuthentication(')),ctx);
+ const pending=ctx.enterApp({id:'old-entry'});ctx.authViewVersion++;release();await pending;
+ assert.equal(entered.length,0);assert.equal(form.dataset.entering,undefined);
+ await ctx.enterApp({id:'current-entry'});assert.equal(entered[0].id,'current-entry');
+ console.log('Authentication view changes cancel pending workspace entry.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// The faster cellular-noise traversal must preserve every source texel.
+(async()=>{
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const block=source.slice(source.indexOf('const noiseVoxels='),source.indexOf('const cloudNoise='));
+  let yields=0,clock=0;
+  const create=new Function('state','yieldTask','performance',block+'return {run:prepareNoiseSource,bytes:noiseVoxels};');
+  const noise=create({startup:{}},async()=>{yields++;},{now:()=>clock++});
+  await noise.run();
+  assert.equal(require('node:crypto').createHash('sha256').update(noise.bytes).digest('hex'),
+    '06a67de706898665af771e7aae163df91b3a7606d690907a17f5384231112ac3',
+    'Cloud noise must match the original voxel traversal byte for byte');
+  assert.ok(yields>0,'Noise generation must yield periodically for input');
+  console.log('Ocean noise: original texture checksum and cooperative CPU slices passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// A lean position-only grid retains PlaneGeometry's exact drawing topology.
+(async()=>{
+  const {pathToFileURL}=require('node:url');
+  const THREE=await import(pathToFileURL(require('node:path').resolve('webapp/static/vendor/three.module.mjs')).href);
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const block=source.slice(source.indexOf('const gridX='),source.indexOf('const water=new THREE.Mesh'));
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const create=new AsyncFunction('THREE','camera','yieldTask',block+'updateOceanGrid();return waterGeometry;');
+  for(const aspect of [16/9,390/844]){
+    const camera=new THREE.PerspectiveCamera(44,aspect,.1,500);
+    camera.position.set(0,3.4,12.8);camera.lookAt(0,4.65,-6.5);
+    const actual=await create(THREE,camera,async()=>{}),reference=new THREE.PlaneGeometry(2,2,360,240);
+    assert.equal(actual.attributes.position.count,reference.attributes.position.count);
+    assert.deepEqual(actual.index.array,reference.index.array,'Water triangle order must remain identical');
+    assert.ok(actual.attributes.position.array.every(Number.isFinite));
+    actual.dispose();reference.dispose();
+  }
+  console.log('Ocean mesh: original vertex count, triangle order and finite desktop/mobile projection passed.');
+  const {oceanVendor}=require('./build_auth_ocean.cjs');
+  const vendor=fs.readFileSync('webapp/static/vendor/three.module.mjs','utf8');
+  const scoped=oceanVendor(vendor,source);
+  const slim=await import('data:text/javascript;base64,'+Buffer.from(scoped).toString('base64'));
+  const retained=['colorspace_fragment','colorspace_pars_fragment','common','tonemapping_pars_fragment'];
+  assert.deepEqual(Object.keys(slim.ShaderChunk).sort(),retained);
+  for(const chunk of retained)assert.equal(slim.ShaderChunk[chunk],THREE.ShaderChunk[chunk],`Retained ${chunk} GLSL must remain exact`);
+  assert.equal(Object.keys(slim.ShaderLib).length,0);
+  assert.ok(THREE.ShaderLib.basic.vertexShader,'The public vendored module must retain standard shaders');
+  for(const unsupported of [source.replace('new THREE.ShaderMaterial','new THREE.MeshStandardMaterial'),
+    source.replace('THREE.NoToneMapping','THREE.ACESFilmicToneMapping'),
+    source+'\nscene.background = texture;',source+'\n#include <fog_fragment>']){
+    assert.throws(()=>oceanVendor(vendor,unsupported),/shader features changed/);
+  }
+  assert.throws(()=>oceanVendor(vendor.replace('const ShaderLib = {','const ChangedShaderLib = {'),source),/Unexpected vendored/);
+  console.log('Ocean bundle: exact retained GLSL, intact public Three module and unsupported-feature build guards passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Hidden sky preparation must not redraw the entire ocean for every strip.
+{
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const animate=source.slice(source.indexOf('function prepareOpeningSky()'),source.indexOf('function resume()'));
+  let strips=0,draws=0,scheduled=0;
+  const ctx={frameId:0,previous:0,fpsTime:0,fpsFrames:0,motionRampStart:NaN,holdOpening:true,
+    state:{active:true,lost:false,ready:true,paused:false,openingHeld:true,skyReady:false,time:0,speed:1,startup:{}},
+    document:{hidden:false},performance:{now:()=>0},shared:{uTime:{value:0}},composite:{uniforms:{uGlassStrength:{value:0}}},
+    updateSkyCache(){strips++;if(strips===48){ctx.state.skyReady=true;ctx.state.startup.skyReadyMs=1;}},
+    draw(){draws++;},requestAnimationFrame(){return ++scheduled;}};
+  vm.createContext(ctx);vm.runInContext(animate,ctx);
+  ctx.animate(100);assert.equal(strips,32);assert.equal(draws,0);
+  ctx.animate(120);assert.equal(strips,48);assert.equal(draws,1,'Full-quality sky must be drawn before reveal');
+  assert.equal(ctx.state.time,0,'Preparing the sky must preserve the poster opening pose');
+  ctx.animate(140);assert.equal(scheduled,2,'Held ready scenes must stop scheduling frames');
+  ctx.state.openingHeld=false;ctx.animate(160);assert.equal(draws,2);assert.ok(ctx.state.time>0);
+  ctx.state.lost=true;ctx.animate(180);assert.equal(draws,2);assert.equal(strips,48);
+  ctx.state.lost=false;ctx.document.hidden=true;ctx.animate(200);assert.equal(draws,2);
+  let clock=0;ctx.performance.now=()=>++clock;ctx.document.hidden=false;
+  ctx.state.skyReady=false;ctx.state.openingHeld=true;strips=0;
+  ctx.animate(220);assert.equal(strips,4,'Slow sky submissions must stop at the CPU time budget');assert.equal(draws,2);
+  console.log('Ocean startup: bounded sky-only preparation, full-quality first draw, held pose, active motion, context-loss and hidden-page guards passed.');
+}
+
+// Start a bounded sky slice before waiting for a display refresh, with the
+// same hidden-page and context-loss boundaries as the later animation loop.
+(async()=>{
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const code=source.slice(source.indexOf('async function prepareFirstFrame()'),source.indexOf('function coverFrame()'));
+  let events=[];
+  const ctx={state:{lost:false,openingHeld:true,skyReady:false,active:true},document:{hidden:false},
+    updateMaterialFlow(){},updateWaveCache(){},updateSheetPose(){},updateSkyCache(){},
+    async yieldTask(){events.push('yield');},draw(){events.push('draw');},prepareOpeningSky(){events.push('sky');}};
+  vm.createContext(ctx);vm.runInContext(code,ctx);
+  await ctx.prepareFirstFrame();assert.deepEqual(events.slice(-3),['draw','yield','sky']);
+  for(const suppressed of ['hidden','inactive','unheld']){
+    events=[];ctx.document.hidden=suppressed==='hidden';ctx.state.active=suppressed!=='inactive';ctx.state.openingHeld=suppressed!=='unheld';
+    await ctx.prepareFirstFrame();assert.ok(!events.includes('sky'),suppressed+' scenes must not run opening work');
+  }
+  ctx.document.hidden=false;ctx.state.active=true;ctx.state.openingHeld=true;events=[];
+  ctx.prepareOpeningSky=()=>{events.push('sky');ctx.state.skyReady=true;};
+  await ctx.prepareFirstFrame();assert.deepEqual(events.slice(-2),['sky','draw'],'An early completed sky must be drawn before the API resolves');
+  events=[];ctx.state.skyReady=false;
+  ctx.yieldTask=async()=>{events.push('yield');if(events.filter(e=>e==='yield').length===4)ctx.state.lost=true;};
+  await assert.rejects(()=>ctx.prepareFirstFrame(),/context lost/);assert.ok(!events.includes('sky'));
+  console.log('Ocean first-frame task: early bounded work, hidden/inactive/unheld guards, full draw and context-loss cancellation passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Prefer real task yields while retaining a working fallback on older browsers.
+(async()=>{
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const code=source.slice(source.indexOf('const yieldTask='),source.indexOf('const startupStart='));
+  let yields=0,timers=0;
+  const modern={scheduler:{yield(){yields++;return Promise.resolve();}},setTimeout(){throw new Error('Modern browsers must not accumulate timer delays');}};
+  vm.createContext(modern);vm.runInContext(code+'globalThis.yieldForTest=yieldTask;',modern);
+  await modern.yieldForTest();assert.equal(yields,1);
+  const legacy={setTimeout(resolve,delay){timers++;assert.equal(delay,0);resolve();}};
+  vm.createContext(legacy);vm.runInContext(code+'globalThis.yieldForTest=yieldTask;',legacy);
+  await legacy.yieldForTest();assert.equal(timers,1);
+  console.log('Ocean task yielding: scheduler API and older-browser timer fallback passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Anonymous idle pages start promptly; typing and navigation still cancel preparation.
+{
+  const source=fs.readFileSync('webapp/static/auth-glass.js','utf8');
+  const code=source.slice(source.indexOf('  function prepareWhenIdle()'),source.indexOf('  function unavailable()'));
+  let now=100,mounts=0,eligible=true;const timers=[],idle=[];
+  const ctx={ocean:null,loading:false,failed:false,startTimer:null,idleId:null,lastInteraction:0,
+    performance:{now:()=>now},canPrepare:()=>eligible,
+    setTimeout(fn,delay){timers.push({fn,delay});return timers.length;},
+    window:{requestIdleCallback(fn){idle.push(fn);return idle.length;}},
+    mountWhenReady(){mounts++;}};
+  vm.createContext(ctx);vm.runInContext(code,ctx);
+  ctx.prepareWhenIdle();assert.equal(timers.length,0);assert.equal(idle.length,1,'Register the current idle slot without an intervening timer');
+  now=100;idle[0]();assert.equal(mounts,1,'Eligible painted forms must not wait for an arbitrary startup timer');
+  now=300;ctx.lastInteraction=300;ctx.prepareWhenIdle();assert.equal(timers[0].delay,1200);
+  now=1500;timers[0].fn();eligible=false;idle[1]();assert.equal(mounts,1,'Entering the workspace cancels queued GPU preparation');
+  const before=timers.length;ctx.prepareWhenIdle();assert.equal(timers.length,before,'Remembered sessions must not schedule a background');
+  eligible=true;ctx.lastInteraction=0;ctx.prepareWhenIdle();ctx.prepareWhenIdle();
+  assert.equal(idle.length,3,'Repeated updates must share the pending idle callback');eligible=false;idle[2]();
+  assert.equal(mounts,1,'Entering the workspace also cancels a directly queued idle start');
+  eligible=true;ctx.lastInteraction=0;ctx.window.requestIdleCallback=undefined;
+  ctx.prepareWhenIdle();assert.equal(timers.at(-1).delay,0,'Older browsers retain a task boundary');timers.at(-1).fn();assert.equal(mounts,2);
+  console.log('Ocean scheduling: prompt first idle start, input quiet interval and workspace-entry cancellation passed.');
 }
