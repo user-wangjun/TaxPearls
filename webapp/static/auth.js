@@ -114,7 +114,7 @@ async function enterApp(user) {
     if (!workspaceScripts) {
       workspaceScripts = Promise.all([
         loadClientScript("/university-workspace.js?v=20261027-login-first-1"),
-        loadClientScript("/console.js?v=20261027-login-first-1")
+        loadClientScript("/console.js?v=20261028-review-status-2")
       ]).then(() => loadClientScript("/workspace.js?v=mobile-navigation-20261026-2"))
         .catch(error => { workspaceScripts = null; throw error; });
     }

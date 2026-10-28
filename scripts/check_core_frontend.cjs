@@ -316,8 +316,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="检查结果"));
   assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="需补充或核实：原始申报表"));
   assert.equal($("coreTaskForm").disabled,false);
-  assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="分析批次：已完成 1/1 批"));
-  assert.ok(all($("coreCheckResult")).some(n=>n.textContent?.includes("申报资料 · 本期申报 · 已完成")));
+  assert.ok(!all($("coreCheckResult")).some(n=>n.textContent==="处理详情"),"completed analysis does not show technical processing records");
   assert.equal(calls.filter(c=>c.url.endsWith("/reports")&&c.options?.method==="POST").length,2,"each completed check run freezes its report without navigating away");
   assert.ok(all($("coreCheckResult")).some(n=>n.tag==="a"&&n.textContent==="查看报告"&&n.href.endsWith("/reports/2?format=html")));
   assert.ok(all($("coreCheckResult")).some(n=>n.tag==="a"&&n.textContent==="下载 PDF"&&n.href.endsWith("/reports/2?format=pdf")));
@@ -367,8 +366,44 @@ function all(root){return [root,...root.children.flatMap(all)];}
     {part_number:"1.1",category_name:"政策依据",status:"completed"},
     {part_number:"1.2",category_name:"政策依据",status:"completed"}];
   sample.tax_checks={"R-001":recovered};await controller.openTask("task");
-  assert.ok(reviewNodes().some(n=>n.textContent==="分析批次：已完成 2/2 批"));
-  assert.ok(reviewNodes().some(n=>/容量不足，已自动细分/.test(n.textContent||"")));
+  assert.ok(!reviewNodes().some(n=>/分析批次：|容量不足，已自动细分/.test(n.textContent||"")),"successful recovery keeps its batch history out of the business result");
+  assert.ok(reviewNodes().some(n=>n.textContent==="R-001 · 分批分析已完成，需综合核实"));
+  // Saved statuses must explain the actual blocker without issuing new analysis requests.
+  const statusSlot=structuredClone(savedChecks["R-001"]);
+  sample.tax_checks={"R-001":statusSlot};
+  const expectStatus=async label=>{await controller.openTask("task");assert.ok(reviewNodes().some(n=>n.tag==="summary"&&n.textContent===`R-001 · ${label}`),label);assert.ok(!reviewNodes().some(n=>n.tag==="summary"&&n.textContent==="R-001 · 待复核"));};
+  await expectStatus("分析已完成，需人工核实");
+  statusSlot.bundle.gaps=[{code:"policy_review",message:"政策效力尚未复核。"}];
+  await expectStatus("依据待核实");
+  assert.ok(reviewNodes().some(n=>n.textContent==="请核实下方政策依据和适用条件。"));
+  statusSlot.bundle.gaps=[{code:"metric_missing",message:"缺少销售额。"}];
+  await expectStatus("资料待核实");
+  statusSlot.bundle.gaps.push({code:"policy_review",message:"政策效力尚未复核。"});
+  await expectStatus("资料与依据待核实");
+  statusSlot.ai.validated=false;
+  statusSlot.ai.batches=[{part_number:1,category_name:"申报资料",status:"invalid",reason:"缺少必要条款引用。"},
+    {part_number:2,category_name:"政策依据",status:"pending"}];
+  await expectStatus("AI 结果校验未通过");
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 1 · 申报资料 · 结果校验未通过"));
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 1 · 申报资料：缺少必要条款引用。"));
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 2 · 政策依据 · 尚未分析"));
+  const processingDetails=reviewNodes().find(n=>n.tag==="details"&&n.children[0]?.textContent==="处理详情");
+  assert.ok(processingDetails&&!processingDetails.open,"technical diagnostics are collapsed by default");
+  assert.ok(all(processingDetails).some(n=>n.textContent==="批次 1 · 申报资料：缺少必要条款引用。"));
+  const statusCard=$('coreCheckResult').children.find(n=>n.tag==="details"&&n.className.includes("material-card"));
+  assert.ok(statusCard.children.some(n=>n.textContent==="请重新开始检查；如仍失败，请联系管理员。"));
+  assert.ok(!statusCard.children.some(n=>n.tag==="p"&&/批次|第.*批|Token|复用|缓存|输出预留|下一步：/.test(n.textContent||"")),"business results contain no batch diagnostics or capacity parameters");
+  assert.ok(!reviewNodes().some(n=>/模型上下文：|单批输入估算上限|含缓存输入|输出预留/.test(n.textContent||"")),"capacity estimates are not displayed as actual input");
+  statusSlot.ai.batches[0]={part_number:1,category_name:"申报资料",status:"failed",reason:"连接超时。"};
+  await expectStatus("AI 分析未完成");
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 1 · 申报资料 · 分析失败"));
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 1 · 申报资料：连接超时。"));
+  statusSlot.ai.batches=[];await expectStatus("AI 结果尚未通过校验");
+  assert.ok(reviewNodes().some(n=>n.textContent==="本次结果未记录具体失败原因。"));
+  statusSlot.stale=true;await expectStatus("资料有变化，待重检");
+  statusSlot.stale=false;statusSlot.ai.validated=true;statusSlot.ai.status="reviewed_clues";statusSlot.bundle.gaps=[];
+  await expectStatus("AI 分析已完成");
+  statusSlot.ai=null;await expectStatus("尚未完成 AI 分析");
   sample.tax_checks=savedChecks;await controller.openTask("task");
   assert.equal(analyzedRules.length,noRequests,"viewing and grouping saved results never triggers AI or rewrites history");
   sample.tax_checks=Object.fromEntries(Array.from({length:25},(_,i)=>{const slot=structuredClone(savedChecks["R-001"]);slot.bundle.check={rule_id:`page-rule-${i+1}`,topic:`分页检查${i+1}`};return [slot.bundle.check.rule_id,slot];}));
