@@ -935,7 +935,8 @@
       <div class="sheet" id="teacherBox" style="display:none">
         <h2>按规则生成仿真账套</h2><p class="muted">只使用内置仿真数据与本年度已启用规则，不调用模型或复制真实客户材料。目标规则须命中，标准答案以整套材料的全部实际命中为准；可能同时触发关联规则。参考区间保持原值。</p>
         <div class="row"><div class="field"><label for="exerciseYear">教学年度</label><input id="exerciseYear" type="number" min="2000" max="2099" value="2026"></div><div class="field"><label for="exerciseTargetRule">目标规则</label><select id="exerciseTargetRule"></select></div><button id="btnRefreshExerciseRules" type="button">刷新本期规则</button></div>
-        <div class="row"><div class="field"><label for="exerciseLevel">偏离幅度</label><select id="exerciseLevel"><option value="near">接近阈值</option><option value="normal" selected>普通偏离</option><option value="obvious">明显偏离</option></select></div><div class="field"><label for="exerciseSeed">生成种子</label><input id="exerciseSeed" type="number" min="0" max="2147483647" value="1"></div><button class="btn pdf" id="btnGenerateExercise" type="button">生成并保存案例</button></div>
+        <div class="row"><div class="field"><label for="exerciseLevel">偏离幅度</label><select id="exerciseLevel" aria-describedby="exerciseLevelHelp"><option value="near">接近阈值</option><option value="normal" selected>普通偏离</option><option value="obvious">明显偏离</option></select></div><button class="btn pdf" id="btnGenerateExercise" type="button">生成并保存案例</button></div>
+        <p class="muted" id="exerciseLevelHelp">通过偏离幅度调整案例；每次生成会自动更换一组仿真数据。</p>
         <p id="exerciseGenerationStatus" class="muted" role="status"></p><div id="exerciseGenerationResult" hidden></div>
         <h2>发布实训作业</h2><p class="muted">只允许使用明确标记的仿真案例。标准答案直接来自同一规则引擎。</p>
         <div class="row"><div class="field"><label for="assignmentTitle">作业标题</label><input id="assignmentTitle" maxlength="200" value="税务风险识别实训"></div><div class="field"><label for="assignmentAudit">选择审计案例</label><select id="assignmentAudit"></select></div><div class="field"><label for="assignmentPenalty">每项误报扣分</label><input id="assignmentPenalty" type="number" min="0" max="100" value="5"></div></div>
@@ -1042,7 +1043,7 @@
   </div>
 </footer>
 
-<script defer src="/auth.js?v=20261028-invitation-review-1"></script>
+<script defer src="/auth.js?v=20261028-coach-buttons-3"></script>
 <script defer src="/auth-glass.js?v=20261027-ocean-start-10"></script>
 <div id="toastStack" aria-live="polite"></div>
 </body>

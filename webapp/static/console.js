@@ -82,7 +82,7 @@ function prepareWorkspacePanel(id) {
   if (preparedPanels.has(id)) return Promise.resolve();
   if (panelPreparations.has(id)) return panelPreparations.get(id);
   const preparation = (async () => {
-    const load = name => loadClientScript("/" + name + "?v=" + (name==="core-inputs.js"?"20261028-review-status-2":"20261027-login-first-1"));
+    const load = name => loadClientScript("/" + name + "?v=" + (name==="core-inputs.js"?"20261028-review-status-2":name==="training-ai-coach.js"?"20261028-coach-buttons-3":"20261027-login-first-1"));
     if (["uploadPanel", "auditPanel", "historyPanel", "trainingPanel", "knowledgePanel"].includes(id)) {
       await Promise.all([load("core-inputs.js"), load("enterprise.js")]);
       if (!enterpriseMaterials) {
@@ -1260,7 +1260,7 @@ function exerciseDownloadButton(url) {
 }
 function showGeneratedExercise(data) {
   const box=$("exerciseGenerationResult"),meta=data.metadata;box.hidden=false;box.textContent="";
-  box.append(el("p",null,data.company_name+" · "+meta.year+" 年 · 目标 "+meta.requested_rule_id+" · v"+meta.rule_versions[meta.requested_rule_id]+" · 种子 "+meta.seed+" · 生成器 "+meta.generator_version));
+  box.append(el("p",null,data.company_name+" · "+meta.year+" 年 · 目标 "+meta.requested_rule_id+" · v"+meta.rule_versions[meta.requested_rule_id]+" · 偏离幅度："+({near:"接近阈值",normal:"普通偏离",obvious:"明显偏离"}[meta.level]||"未记录")));
   box.append(el("p","muted",meta.notice));
   box.append(exerciseDownloadButton("/api/exercises/"+encodeURIComponent(data.audit_id)+"/materials"));
   box.append(el("p",null,"完整标准答案："+meta.standard_answer.join("、")));
@@ -1274,10 +1274,9 @@ $("btnGenerateExercise").onclick=async()=>{
   const button=$("btnGenerateExercise"),option=$("exerciseTargetRule").selectedOptions[0];button.disabled=true;
   $("exerciseGenerationResult").hidden=true;$("exerciseGenerationStatus").textContent="正在生成并由审计引擎复核……";
   try{
-    const year=Number($("exerciseYear").value),seed=Number($("exerciseSeed").value);
+    const year=Number($("exerciseYear").value);
     if(!option||exerciseRulesYear!==year)throw new Error("请先刷新本期规则。");
-    if(!Number.isInteger(seed)||seed<0||seed>2147483647)throw new Error("种子须为 0–2147483647 的整数。");
-    const data=await api("/api/exercises",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rule_id:option.value,expected_version:option.dataset.version,year,seed,level:$("exerciseLevel").value})});
+    const data=await api("/api/exercises",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({rule_id:option.value,expected_version:option.dataset.version,year,level:$("exerciseLevel").value})});
     await loadAssignments();$("assignmentAudit").value=data.audit_id;showGeneratedExercise(data);
     $("exerciseGenerationStatus").textContent="案例已保存并选入发布栏；尚未发布给学生。";
   }catch(e){$("exerciseGenerationStatus").textContent="生成失败："+e.message;}

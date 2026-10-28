@@ -177,6 +177,21 @@ class ExerciseWebTests(unittest.TestCase):
     def generate(self,rule="R-020",**options):
         return self.client.post("/api/exercises",json={"rule_id":rule,"expected_version":"2.0","seed":17,**options})
 
+    def test_generation_without_seed_varies_materials_and_preserves_selected_level(self):
+        body = {"rule_id": "R-020", "expected_version": "2.0", "level": "near", "year": 2026}
+        cases = []
+        with patch("secrets.randbelow", side_effect=[0, 77, 2147483647]):
+            for _ in range(3):
+                response = self.client.post("/api/exercises", json=body)
+                self.assertEqual(response.status_code, 200, response.text)
+                case = response.json()
+                self.assertEqual(case["metadata"]["level"], "near")
+                self.assertIn("R-020", case["metadata"]["standard_answer"])
+                self.assertEqual(self.client.get("/api/exercises/" + case["audit_id"]).json(), case)
+                cases.append(case)
+        self.assertEqual(len({case["metadata"]["seed"] for case in cases}), 3)
+        self.assertGreater(len({case["metadata"]["metric_sha256"] for case in cases}), 1)
+
     def test_download_missing_frozen_history_period_returns_conflict_not_inferred_data(self):
         audit_id = self.generate('R-022').json()['audit_id']
         dataset = self.store.get_generated_material(audit_id, self.teacher)

@@ -9,7 +9,9 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from webapp import app as module
+from webapp import ai_coach
 from webapp.storage import Store
+from src.settings import AISettings
 
 GENERATED = {
     "knowledge_points": [
@@ -27,6 +29,28 @@ GENERATED = {
 }
 
 BRIEF = "这节课讲增值税一般计税方法，重点是销项税额与进项税额的确定，学生常把不得抵扣的进项税记错。"
+
+
+class AiCoachGenerationTests(unittest.TestCase):
+    def test_generation_uses_full_configured_output_budget_for_complete_papers(self):
+        settings = AISettings(enabled=True, api_key="test-key", max_tokens=8192, timeout=90)
+        for count in (5, 20):
+            with self.subTest(count=count):
+                generated = {**GENERATED, "questions": [GENERATED["questions"][i % 2] for i in range(count)]}
+                with patch("webapp.ai_keys.apply", return_value=settings), patch(
+                        "src.ai_transport.chat_content", return_value=json.dumps(generated, ensure_ascii=False)) as chat:
+                    draft = ai_coach.generate_draft(None, {}, ai_coach.DraftBody(
+                        brief=BRIEF, question_count=count, kinds=["single", "multiple"]))
+                self.assertEqual(len(draft["questions"]), count)
+                self.assertEqual(chat.call_args.kwargs["max_tokens"], settings.max_tokens)
+                self.assertEqual(chat.call_args.args[2], settings.timeout)
+
+    def test_generation_rejects_incomplete_question_count(self):
+        settings = AISettings(enabled=True, api_key="test-key")
+        with patch("webapp.ai_keys.apply", return_value=settings), patch(
+                "src.ai_transport.chat_content", return_value=json.dumps(GENERATED, ensure_ascii=False)):
+            with self.assertRaisesRegex(ai_coach.CoachError, "题"):
+                ai_coach.generate_draft(None, {}, ai_coach.DraftBody(brief=BRIEF, question_count=5))
 
 
 class AiCoachTests(unittest.TestCase):
@@ -88,15 +112,16 @@ class AiCoachTests(unittest.TestCase):
         self.assertIn("AI", response.json()["detail"])
 
     def test_generation_normalizes_model_output(self):
+        generated = {**GENERATED, "questions": [*GENERATED["questions"], GENERATED["questions"][0]]}
         with patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED": "1", "TAXPEARLS_AI_API_KEY": "test-key"}), \
-                patch("webapp.training_tutor.chat_fn", return_value=json.dumps(GENERATED, ensure_ascii=False)):
+                patch("src.ai_transport.chat_content", return_value=json.dumps(generated, ensure_ascii=False)):
             response = self.client.post("/api/teaching/ai-tasks/draft",
-                                        json={"brief": BRIEF, "question_count": 5,
+                                        json={"brief": BRIEF, "question_count": 3,
                                               "kinds": ["single", "multiple"]})
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertEqual(len(data["knowledge_points"]), 1)
-        self.assertEqual([q["kind"] for q in data["questions"]], ["single", "multiple"])
+        self.assertEqual([q["kind"] for q in data["questions"]], ["single", "multiple", "single"])
         self.assertEqual(data["questions"][1]["answers"], ["A", "B"])
         self.assertTrue(data["title"])
 
@@ -104,12 +129,12 @@ class AiCoachTests(unittest.TestCase):
         broken = dict(GENERATED)
         broken["questions"] = [{**GENERATED["questions"][0], "answers": ["Z"]}]
         with patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED": "1", "TAXPEARLS_AI_API_KEY": "test-key"}), \
-                patch("webapp.training_tutor.chat_fn", return_value=json.dumps(broken, ensure_ascii=False)):
+                patch("src.ai_transport.chat_content", return_value=json.dumps(broken, ensure_ascii=False)):
             response = self.client.post("/api/teaching/ai-tasks/draft",
                                         json={"brief": BRIEF, "question_count": 3, "kinds": ["single"]})
         self.assertEqual(response.status_code, 422, response.text)
         with patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED": "1", "TAXPEARLS_AI_API_KEY": "test-key"}), \
-                patch("webapp.training_tutor.chat_fn", return_value="这不是 JSON"):
+                patch("src.ai_transport.chat_content", return_value="这不是 JSON"):
             response = self.client.post("/api/teaching/ai-tasks/draft",
                                         json={"brief": BRIEF, "question_count": 3, "kinds": ["single"]})
         self.assertEqual(response.status_code, 502, response.text)
@@ -160,6 +185,25 @@ class AiCoachTests(unittest.TestCase):
         response = self.client.post(f"/api/teaching/ai-tasks/{task['id']}/submit",
                                     json={"answers": {q["id"]: ["A", "B"]}})
         self.assertEqual(response.status_code, 422, response.text)
+
+    def test_scores_round_only_after_counting_correct_answers(self):
+        for count, correct_count, expected in ((3, 3, 100), (6, 6, 100), (7, 7, 100),
+                                               (3, 1, 33.3), (7, 5, 71.4), (3, 0, 0)):
+            with self.subTest(count=count, correct_count=correct_count):
+                self.login(self.teacher)
+                questions = [self.task_body()["questions"][0] for _ in range(count)]
+                task = self.client.post("/api/teaching/ai-tasks", json=self.task_body(
+                    publish=True, questions=questions)).json()
+                self.login(self.student)
+                answers = {q["id"]: q["answers"] for q in task["questions"][:correct_count]}
+                response = self.client.post(f"/api/teaching/ai-tasks/{task['id']}/submit", json={"answers": answers})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["score"], expected)
+                saved = self.client.get(f"/api/teaching/ai-tasks/{task['id']}").json()
+                self.assertEqual(saved["submission"]["score"], expected)
+                self.login(self.teacher)
+                stats = self.client.get(f"/api/teaching/ai-tasks/{task['id']}").json()["stats"]
+                self.assertEqual(stats["mean_score"], expected)
 
     def test_cross_teacher_and_foreign_student_are_rejected(self):
         task = self.create()

@@ -10,10 +10,17 @@
     return node;
   };
   const button = (label, act, cls = "", key = "ac") => {
-    const node = el("button", cls, label);
+    const classes = new Set(["btn", "ac-button", ...cls.split(/\s+/).filter(Boolean)]);
+    if (!classes.has("pdf")) classes.add("re");
+    const node = el("button", [...classes].join(" "), label);
     node.type = "button";
     if (act) node.dataset[key] = act;
     return node;
+  };
+  const controlField = (control) => {
+    const wrapper = el("div", "field");
+    wrapper.append(control);
+    return wrapper;
   };
 
   function injectStyle() {
@@ -33,7 +40,38 @@
       + "#ai-coach-card .data-item>input,#ai-coach-card .data-item>textarea,#ai-coach-card .data-item>div>textarea{width:100%;box-sizing:border-box;margin-bottom:6px}"
       + ".ac-block{display:block;padding:10px 0;border-top:1px solid rgba(127,127,127,.18)}"
       + ".ac-block>.row{display:flex;gap:10px;align-items:flex-end}"
-      + "#ai-coach-card textarea,#ai-student-card textarea{width:100%;box-sizing:border-box}";
+      + "#ai-coach-card textarea,#ai-student-card textarea{width:100%;box-sizing:border-box}"
+      + "#ai-coach-card{padding:24px;min-width:0;box-sizing:border-box}"
+      + "#ai-coach-card .ac-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}"
+      + "#ai-coach-card .ac-heading h2{margin:0;min-width:0}"
+      + "#ai-coach-card .ac-source{margin:16px 0}"
+      + "#ai-coach-card .ac-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:end}"
+      + "#ai-coach-card .ac-controls>.field{min-width:0;margin:0}"
+      + "#ai-coach-card .ac-controls :is(input,select){height:48px;min-width:0}"
+      + "#appMain #ai-coach-card #ac-file{display:block;min-width:0;min-height:44px;height:auto;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;font:inherit;color:var(--ink-2)}"
+      + "#appMain #ai-coach-card #ac-file::file-selector-button{min-height:44px;padding:9px 16px;margin-right:12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font:inherit;cursor:pointer}"
+      + "#ai-coach-card .ac-source-hint{display:block;margin:6px 0 0;font-size:13px;color:var(--ink-2)}"
+      + "#ai-coach-card .ac-generate-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:20px 0 12px}"
+      + "#ai-coach-card .ac-generate-actions p{flex:1 1 220px;margin:0}"
+      + "#appMain #ai-coach-card .ac-generate{min-height:48px;padding:12px 24px;font-size:17px;font-weight:600;white-space:nowrap}"
+      + "#ai-coach-card .ac-generate:disabled{opacity:.65;cursor:wait}"
+      + "#ai-coach-card .ac-button,#ai-student-card .ac-button{min-height:44px;box-sizing:border-box;padding:10px 18px;font-size:14px;font-weight:500;line-height:22px;white-space:normal}"
+      + "#ai-coach-card .ac-draft-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line)}"
+      + "#ai-coach-card .ac-draft-actions .ac-discard{margin-left:auto}"
+      + "#ai-coach-card .ac-draft-actions .pdf{font-weight:600}"
+      + "#ai-coach-card .ac-item-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:10px 0 4px}"
+      + "#ai-coach-card .ac-item-actions .muted{flex:1 1 240px;min-width:0;margin:0;overflow-wrap:anywhere}"
+      + "#ai-coach-card .ac-item-actions .ac-button{flex:0 0 auto}"
+      + "#ai-coach-card .ac-block>.field{margin:8px 0}"
+      + "#ai-coach-card .ac-opt>.field{flex:1;min-width:160px;margin:0}"
+      + "@media(max-width:760px){#ai-coach-card{padding:18px}#ai-coach-card .ac-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}"
+      + "#ai-coach-card .ac-class-field{grid-column:1/-1}"
+      + "#ai-coach-card .ac-generate-actions{align-items:stretch}"
+      + "#ai-coach-card .ac-generate-actions p{flex-basis:100%}"
+      + "#appMain #ai-coach-card .ac-generate{width:100%;white-space:normal}"
+      + "#ai-coach-card .ac-draft-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}"
+      + "#ai-coach-card .ac-draft-actions .ac-button{width:100%;min-width:0}"
+      + "#ai-coach-card .ac-draft-actions .ac-discard{grid-column:1/-1;justify-self:start;width:auto;margin-left:0}}";
     document.head.append(style);
   }
   let booted = false;
@@ -83,15 +121,15 @@
   function staffCard() {
     const card = el("section", "card");
     card.id = "ai-coach-card";
-    const heading = el("h2", null, "AI 备课助手：把教学想法变成学生任务 ");
-    heading.append(button("刷新任务", "refresh", "small"));
+    const heading = el("div", "ac-heading");
+    heading.append(el("h2", null, "AI 备课助手：把教学想法变成学生任务"), button("刷新任务", "refresh", "small"));
     card.append(
       heading,
       el("p", "muted", "把备课时写的想法或讲义贴进来（也可载入 .md / .txt），AI 会拆成知识点和客观题。"
         + "生成后必须由你逐题核对、修改，点“发布给学生”之后学生才能看到；AI 内容不会写入考纲知识点库。"),
     );
     const briefRow = el("div", "row");
-    const briefCell = el("div");
+    const briefCell = el("div", "field");
     briefCell.style.flex = "1";
     const label = el("label", null, "教学想法 / 备课材料");
     label.htmlFor = "ac-brief";
@@ -103,17 +141,20 @@
     briefRow.append(briefCell);
     card.append(briefRow);
 
-    const controls = el("div", "row");
-    const fileCell = el("div");
-    const fileLabel = el("label", null, "载入本地文档");
+    const controls = el("div", "ac-controls");
+    const fileCell = el("div", "ac-source");
+    const fileLabel = el("label", null, "或载入本地讲义");
     fileLabel.htmlFor = "ac-file";
     const file = el("input");
     file.type = "file";
     file.id = "ac-file";
     file.accept = ".txt,.md,.markdown,text/plain,text/markdown";
-    fileCell.append(fileLabel, file);
+    file.setAttribute("aria-describedby", "ac-file-hint");
+    const fileHint = el("span", "ac-source-hint", "支持 .txt、.md 文档，最大 200KB；载入的文字会添加到上方材料中。");
+    fileHint.id = "ac-file-hint";
+    fileCell.append(fileLabel, file, fileHint);
 
-    const classCell = el("div");
+    const classCell = el("div", "field ac-class-field");
     const classLabel = el("label", null, "发布到班级");
     classLabel.htmlFor = "ac-class";
     const classes = el("select");
@@ -121,7 +162,7 @@
     classes.append(new Option("全机构学生", ""));
     classCell.append(classLabel, classes);
 
-    const countCell = el("div");
+    const countCell = el("div", "field");
     const countLabel = el("label", null, "题目数量");
     countLabel.htmlFor = "ac-count";
     const count = el("input");
@@ -132,7 +173,7 @@
     count.value = "5";
     countCell.append(countLabel, count);
 
-    const kindCell = el("div");
+    const kindCell = el("div", "field");
     const kindLabel = el("label", null, "题型");
     kindLabel.htmlFor = "ac-kinds";
     const kinds = el("select");
@@ -140,11 +181,10 @@
     kinds.append(new Option("单选", "single"), new Option("单选 + 多选", "single,multiple"), new Option("多选", "multiple"));
     kindCell.append(kindLabel, kinds);
 
-    const goCell = el("div");
-    goCell.style.flex = "0 0 auto";
-    goCell.append(button("生成草稿", "generate", "primary"));
-    controls.append(fileCell, classCell, countCell, kindCell, goCell);
-    card.append(controls);
+    const goCell = el("div", "ac-generate-actions");
+    goCell.append(el("p", "muted", "先生成练习题，核对后再发布给学生。"), button("AI 生成练习题", "generate", "btn pdf primary ac-generate"));
+    controls.append(classCell, countCell, kindCell);
+    card.append(fileCell, controls, goCell);
 
     const status = el("div", "muted");
     status.id = "ac-status";
@@ -248,7 +288,7 @@
     if (!staff?.draft) return;
     const draft = staff.draft;
     const head = el("div", "row");
-    const titleCell = el("div");
+    const titleCell = el("div", "field");
     titleCell.style.flex = "1";
     const titleLabel = el("label", null, "任务标题（学生看到的）");
     titleLabel.htmlFor = "ac-title";
@@ -273,7 +313,7 @@
       summary.dataset.kpField = "summary";
       summary.setAttribute("aria-label", `知识点 ${index + 1} 要点`);
       const line = el("div", "row");
-      const diffCell = el("div");
+      const diffCell = el("div", "field");
       const diff = el("select");
       diff.dataset.kp = index;
       diff.dataset.kpField = "difficulty";
@@ -284,15 +324,15 @@
       const remove = button("删除这条知识点", "remove-kp");
       remove.dataset.kp = index;
       line.append(diffCell, remove);
-      item.append(name, summary, line);
+      item.append(controlField(name), controlField(summary), line);
       if (kp.source_quote) item.append(el("p", "muted", `材料原句：${kp.source_quote}`));
       box.append(item);
     });
     box.append(el("h3", null, `题目（${draft.questions.length} 道）`));
     draft.questions.forEach((q, index) => box.append(questionEditor(q, index)));
-    const actions = el("div", "row");
-    actions.append(button("保存草稿", "save", "primary"), button("发布给学生", "publish", "primary"),
-                   button("丢弃这份草稿", "discard"));
+    const actions = el("div", "ac-draft-actions");
+    actions.append(button("保存草稿", "save"), button("发布给学生", "publish", "pdf primary"),
+                   button("丢弃这份草稿", "discard", "ac-discard"));
     box.append(actions);
   }
 
@@ -306,7 +346,7 @@
     stem.dataset.q = index;
     stem.dataset.qField = "stem";
     stem.setAttribute("aria-label", `第 ${index + 1} 题题干`);
-    item.append(meta, stem);
+    item.append(meta, controlField(stem));
     q.options.forEach((option, optIndex) => {
       const line = el("div", "ac-opt");
       const pick = el("input");
@@ -324,7 +364,7 @@
       text.dataset.qField = "option";
       text.setAttribute("aria-label", `第 ${index + 1} 题选项 ${option.key}`);
       const key = el("strong", null, `${option.key}. `);
-      line.append(pick, key, text);
+      line.append(pick, key, controlField(text));
       item.append(line);
     });
     const why = el("textarea");
@@ -334,11 +374,13 @@
     why.dataset.q = index;
     why.dataset.qField = "explanation";
     why.setAttribute("aria-label", `第 ${index + 1} 题解析`);
-    item.append(why);
-    if (q.source_quote) item.append(el("p", "muted", `材料原句：${q.source_quote}`));
+    item.append(controlField(why));
+    const footer = el("div", "ac-item-actions");
+    if (q.source_quote) footer.append(el("p", "muted", `材料原句：${q.source_quote}`));
     const remove = button("删除这道题", "remove-q");
     remove.dataset.q = index;
-    item.append(remove);
+    footer.append(remove);
+    item.append(footer);
     return item;
   }
 
@@ -395,6 +437,8 @@
     if (brief.length < 20) return setStatus("教学想法至少写 20 字，AI 才有材料可以拆解。", true);
     const kindValue = $("ac-kinds")?.value || "single";
     node.disabled = true;
+    node.textContent = "正在生成练习题…";
+    node.setAttribute("aria-busy", "true");
     setStatus("AI 正在拆解知识点与题目，通常需要十几秒…");
     try {
       const draft = await post("/api/teaching/ai-tasks/draft", {
@@ -412,6 +456,8 @@
       setStatus(error.message, true);
     } finally {
       node.disabled = false;
+      node.textContent = "AI 生成练习题";
+      node.removeAttribute("aria-busy");
     }
   }
 
