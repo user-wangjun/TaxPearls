@@ -2,6 +2,122 @@
 const fs = require("node:fs");
 const vm = require("node:vm");
 const assert = require("node:assert/strict");
+const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n" + fs.readFileSync("webapp/static/console.js", "utf8");
+
+// The task board uses the signed-in identity and refreshes progress without polling /api/me.
+(async()=>{
+  const all = node => [node, ...node.children.flatMap(all)];
+  function node(tag, cls="", text="") {
+    return {tag,className:cls,textContent:text,children:[],dataset:{},
+      classList:{add(){},toggle(){}},
+      append(...items){for(const item of items){item.parent=this;this.children.push(item);}},
+      prepend(item){item.parent=this;this.children.unshift(item);},
+      replaceChildren(...items){this.children=[];this.append(...items);},
+      remove(){if(this.parent)this.parent.children=this.parent.children.filter(item=>item!==this);},
+      querySelector(selector){return this.querySelectorAll(selector)[0];},
+      querySelectorAll(selector){return all(this).slice(1).filter(item=>selector==="button"?item.tag==="button":item.className.split(" ").includes(selector.slice(1)));}};
+  }
+  const root=node("body"),head=node("head"),panel=node("section");panel.id="trainingPanel";root.append(head,panel);
+  const calls=[];let pending=null,fail=false;
+  const task={id:"task-1",kind:"assignment",title:"实测作业",state:"published",expected:1,
+    submitted_total:1,reviewed_total:0,answer_release:"after_due",my_status:"not_started",submit_limit:1};
+  const ctx={window:{},document:{head,createElement:tag=>node(tag),getElementById:id=>all(root).find(item=>item.id===id)},
+    fetch:async path=>{calls.push(path);if(pending)return await pending;return {ok:!fail,status:503,json:async()=>fail?{detail:"任务暂不可用"}:{items:[{...task}]}};}};
+  vm.createContext(ctx);vm.runInContext(fs.readFileSync("webapp/static/training-tasks.js","utf8"),ctx);
+  const board=ctx.window.tpTrainingTasks,text=()=>all(root).map(item=>item.textContent).join("\n");
+  assert.equal(calls.length,0,"Loading the login page must not request identity or task data");
+  board.setUser(null);await board.refresh();assert.equal(calls.length,0);
+  board.setUser({id:"enterprise",role:"org_admin"});await board.refresh();assert.equal(calls.length,0);
+  board.setUser({id:"teacher",role:"teacher"});await board.refresh();
+  assert.match(text(),/已交 1\/1 人 · 已复核 0 人/);
+  task.reviewed_total=1;await board.refresh();assert.match(text(),/已复核 1 人/);
+  // A superseded refresh cannot undo a newer review count.
+  let resolve;pending=new Promise(done=>{resolve=done;});const old=board.refresh();pending=null;
+  task.reviewed_total=2;await board.refresh();
+  resolve({ok:true,json:async()=>({items:[{...task,reviewed_total:0}]})});await old;
+  assert.match(text(),/已复核 2 人/);
+  // Account switching must not paint a previous teacher's delayed response.
+  pending=new Promise(done=>{resolve=done;});const previousUser=board.refresh();pending=null;
+  board.setUser({id:"student",role:"student"});await board.refresh();
+  resolve({ok:true,json:async()=>({items:[{...task,title:"private teacher task"}]})});await previousUser;
+  assert.ok(!text().includes("private teacher task"));assert.ok(!text().includes("已复核 2 人"));
+  assert.equal(all(root).filter(item=>item.id==="task-board-card").length,1);
+  fail=true;await assert.rejects(board.refresh({throwOnError:true}),/任务暂不可用/);
+  assert.match(text(),/读取失败：任务暂不可用/);
+  board.setUser(null);assert.ok(!all(root).some(item=>item.id==="task-board-card"));
+  assert.ok(calls.every(path=>path==="/api/training/tasks"));
+  const consoleSource=readConsole();
+  assert.ok(consoleSource.includes("window.tpTrainingTasks?.setUser(currentUser)"));
+  const load=consoleSource.slice(consoleSource.indexOf("async function loadAssignments("),consoleSource.indexOf('$("btnAssignment").addEventListener'));
+  assert.ok(load.includes("window.tpTrainingTasks?.refresh({throwOnError})"),"Classroom refresh must include the task board");
+  console.log("Task board: no anonymous identity polling, current review counts, failure and stale-response guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Auxiliary teaching cards must also stay idle while the shared login screen is visible.
+for(const file of ["training-ai-coach.js","teaching-case-ui.js"]){
+  const observers=[],timers=[],calls=[];
+  const nodes=new Map(),node=id=>{
+    if(!nodes.has(id))nodes.set(id,{id,children:[],append(...items){this.children.push(...items);}});
+    return nodes.get(id);
+  };
+  const ctx={currentUser:null,CSS:{escape:value=>value},window:{setTimeout:fn=>timers.push(fn)},
+    document:{head:node("head"),documentElement:node("html"),readyState:"complete",
+      createElement:()=>({}),getElementById:node,querySelector:selector=>node(selector.slice(1))},
+    MutationObserver:class{constructor(callback){observers.push(callback);}observe(){}},
+    fetch:async path=>{calls.push(path);throw Error("anonymous request");}};
+  vm.createContext(ctx);vm.runInContext(fs.readFileSync("webapp/static/"+file,"utf8"),ctx);
+  for(let n=0;n<10;n++)for(const callback of observers)callback([]);
+  assert.equal(calls.length,0,file+" must not request identity or teaching data before login");
+  assert.equal(timers.length,0,file+" must not schedule anonymous login retries");
+}
+
+// The submission button follows pending, reviewed and returned states, including zero scores.
+(async()=>{
+  const nodes=new Map();
+  const node=(tag="div")=>({tag,children:[],dataset:{},textContent:"",append(...items){this.children.push(...items);},
+    before(item){nodes.set(item.id,item);},remove(){nodes.delete(this.id);}});
+  const button=node("button"),host=node();host.dataset.assignment="task";
+  nodes.set("btnSubmitExercise",button);nodes.set("exerciseBox",host);
+  let progress={status:"pending_review",attempts:1,corrections:0,correction_limit:1,can_submit:false},delayed=null;
+  const ctx={currentUser:{id:"student",role:"student"},window:{addEventListener(){}},document:{head:node(),createElement:node,createTextNode:text=>({textContent:text}),
+    getElementById:id=>nodes.get(id),addEventListener(){}},
+    fetch:async()=>delayed?await delayed:({ok:true,json:async()=>({...progress})})};
+  vm.createContext(ctx);vm.runInContext(fs.readFileSync("webapp/static/training-submission-ui.js","utf8"),ctx);
+  const ui=ctx.window.tpSubmissionUI;
+  await ui.refresh("task");assert.equal(button.textContent,"已提交，等待教师复核");assert.equal(button.disabled,true);
+  progress.status="done";await ui.refresh("task");assert.equal(button.textContent,"已完成（已复核）");assert.equal(button.disabled,true);
+  progress.status="returned";progress.can_submit=true;await ui.refresh("task");assert.equal(button.textContent,"提交答案并评分");assert.equal(button.disabled,false);
+  progress.corrections=1;progress.can_submit=false;await ui.refresh("task");assert.equal(button.textContent,"订正次数已用尽");assert.equal(button.disabled,true);
+  progress={...progress,status:"returned",corrections:0,can_submit:false};
+  await ui.refresh("task");assert.equal(button.disabled,true,"Progress refresh cannot reopen a closed task");
+  progress={...progress,status:"pending_review",can_submit:true,retake_policy:"free"};
+  await ui.refresh("task");assert.equal(button.disabled,false,"Explicit free retakes must remain usable");
+  let resolve;delayed=new Promise(done=>{resolve=done;});const old=ui.refresh("task");delayed=null;
+  host.dataset.assignment="next";progress.status="done";progress.retake_policy="teacher_return";progress.can_submit=false;await ui.refresh("next");
+  resolve({ok:true,json:async()=>({status:"returned",can_submit:true,corrections:0,correction_limit:1})});await old;
+  assert.equal(button.textContent,"已完成（已复核）","A previous exercise response cannot overwrite current controls");
+  delayed=new Promise(done=>{resolve=done;});const previousUser=ui.refresh("next");delayed=null;
+  ctx.currentUser={id:"other-student",role:"student"};ui.reset();
+  resolve({ok:true,json:async()=>({status:"returned",return_reason:"previous student private feedback"})});await previousUser;
+  assert.equal(nodes.get("tp-submission-panel"),undefined,"A switched account cannot receive previous private progress");
+  ctx.currentUser.role="teacher";await ui.refresh("next");assert.equal(nodes.get("tp-submission-panel"),undefined);
+  console.log("Submission controls: pending review, completed review and correction states passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Late case materials and rubric results cannot attach to a different exercise.
+(async()=>{
+  const source=fs.readFileSync("webapp/static/teaching-case-ui.js","utf8");
+  const host={dataset:{assignment:"first"}},panels=[];let resolve;
+  const delayed=new Promise(done=>{resolve=done;});
+  const ctx={currentUser:{id:"student",role:"student"},studentRefreshRevision:0,
+    document:{getElementById:id=>id==="exerciseBox"?host:id==="btnSubmitExercise"?{before:panel=>panels.push(panel)}:null},
+    api:async path=>path.includes("/first/")?await delayed:{case_id:"second"},studentPanel:data=>data};
+  vm.createContext(ctx);vm.runInContext(source.slice(source.indexOf("  async function refreshStudent("),source.indexOf("  // ---------------------------------------------------------------- 启动")),ctx);
+  const first=ctx.refreshStudent("first");host.dataset.assignment="second";await ctx.refreshStudent("second");
+  resolve({case_id:"first-private-case"});await first;
+  assert.deepEqual(panels,[{case_id:"second"}]);
+  console.log("Case materials: late responses stay within the active exercise.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
 // Raw JSON coordinates are kept for evidence, while all teaching views show readable locations.
 {
   const ctx={};vm.createContext(ctx);
@@ -13,11 +129,12 @@ const assert = require("node:assert/strict");
   assert.equal(format('原件第2页'), '原件第2页');
   assert.equal(format('{bad-json'), '{bad-json');
   assert.equal(format('[]'), '原文位置待核对');
-  for(const file of ['index.html','training-portal.html','training-staff.html'])assert.ok(fs.readFileSync('webapp/static/'+file,'utf8').includes('/policy-source.js?'));
+  assert.ok(readConsole().includes('load("policy-source.js")'));
+  for(const file of ['training-portal.html','training-staff.html'])assert.ok(fs.readFileSync('webapp/static/'+file,'utf8').includes('/policy-source.js?'));
 }
 // Registration gives feedback before submission and rechecks both fields after edits.
 {
-  const source = fs.readFileSync('webapp/static/console.js', 'utf8');
+  const source = readConsole();
   const start = source.indexOf('function updateSignupPasswordValidation(');
   assert.ok(start >= 0, 'Registration needs live password validation');
   const nodes = Object.fromEntries(['signupPass', 'signupPass2', 'signupPasswordHint', 'signupPasswordMatch', 'authForm'].map(id => [id, {
@@ -162,17 +279,46 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
   assert.equal(appearanceBoundary(light.dataset.themePreference).initial.theme,"light");
 }
 
+// Retrieval checks preserve drafts and discard stale responses across sessions.
+(async()=>{
+  const nodes=new Map(),timers=new Map();let next=0,actor={id:"platform",role:"platform_admin"},visible=true;
+  const node=()=>({children:[],value:"",checked:false,disabled:false,hidden:false,textContent:"",append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
+  const $=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
+  const el=(tag,className,text)=>Object.assign(node(),{tag,className,textContent:text||""});
+  const calls=[];let hold=null;
+  let state={schedule:{enabled:false,interval_hours:24,revision:0,next_due:null},gate:{passed:false,reason:"尚未检测"},current_version:"current-version",model:"synthetic-model",history:[],active:null};
+  const api=async(url,options)=>{calls.push({url,options});if(hold)return await hold;if(options?.method==="PUT"){const body=JSON.parse(options.body);assert.equal(body.revision,0,"polls must not silently rebase a dirty schedule draft");state={...state,schedule:{...state.schedule,...body,revision:2}};return {saved:true};}if(options?.method==="POST")return {status:"queued"};return structuredClone(state);};
+  const ctx={setTimeout(fn){const id=++next;timers.set(id,fn);return id;},clearTimeout(id){timers.delete(id);}};vm.createContext(ctx);
+  vm.runInContext(fs.readFileSync("webapp/static/retrieval-checks.js","utf8"),ctx);
+  const ui=ctx.createRetrievalChecks({api,el,$,user:()=>actor,active:()=>visible});
+  await ui.load();assert.equal($("retrievalChecksAdmin").hidden,false);assert.equal($("retrievalCheckHours").value,"24");
+  $("retrievalCheckHours").value="12";$("retrievalCheckHours").oninput();state.schedule.revision=1;
+  await ui.load();assert.equal($("retrievalCheckHours").value,"12","polling retains unsaved input");
+  await $("retrievalCheckSave").onclick();assert.equal(JSON.parse(calls.find(c=>c.options?.method==="PUT").options.body).interval_hours,12);
+  let release;hold=new Promise(resolve=>{release=resolve;});
+  const pending=$("retrievalCheckRun").onclick();$("retrievalCheckRun").onclick();
+  assert.equal(calls.filter(c=>c.options?.method==="POST").length,1,"double clicks do not enqueue duplicate jobs");
+  ui.reset();actor={id:"business",role:"org_admin"};release({status:"queued"});await pending;hold=null;
+  assert.equal($("retrievalChecksAdmin").hidden,true);assert.equal(timers.size,0);
+  const before=calls.length;await ui.load();assert.equal(calls.length,before,"non-platform users do not read check history");
+  actor={id:"platform",role:"platform_admin"};let resolveStatus;hold=new Promise(resolve=>{resolveStatus=resolve;});
+  const loading=ui.load();actor={id:"new-platform",role:"platform_admin"};resolveStatus(state);await loading;hold=null;
+  assert.equal(timers.size,0,"old-session responses do not start polling for a new session");
+  visible=false;ui.reset();
+  console.log("Retrieval checks: platform scope, dirty schedule revisions, single submission, timers and stale-session guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
 // Refresh restores the actual selected workspace view, while role-hidden views stay unavailable.
 {
-  const source = fs.readFileSync("webapp/static/console.js", "utf8");
-  const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("/* ---------- 多材料上传"));
-  const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel"];
+  const source = readConsole();
+  const code = source.slice(source.indexOf("function isCampusUser("), source.indexOf("// Module preparation"));
+  const panels = ["dashboardPanel", "uploadPanel", "auditPanel", "historyPanel", "knowledgePanel", "trainingPanel", "adminPanel", "notificationPanel", "orgReportPanel", "userSettingsPanel", "aiKeysPanel", "retrievalChecksPanel"];
   const permitted = {
-    org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel"].includes(id)),
-    accountant: panels.filter(id => !["trainingPanel", "orgReportPanel", "aiKeysPanel"].includes(id)),
-    teacher: panels.filter(id => !["orgReportPanel", "aiKeysPanel"].includes(id)),
+    org_admin: panels.filter(id => !["trainingPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
+    accountant: panels.filter(id => !["trainingPanel", "orgReportPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
+    teacher: panels.filter(id => !["orgReportPanel", "aiKeysPanel", "retrievalChecksPanel"].includes(id)),
     student: ["trainingPanel", "knowledgePanel", "userSettingsPanel"],
-    platform_admin: ["adminPanel", "knowledgePanel", "userSettingsPanel", "aiKeysPanel"],
+    platform_admin: ["adminPanel", "knowledgePanel", "userSettingsPanel", "aiKeysPanel", "retrievalChecksPanel"],
   };
   function navigation(role, href = "http://localhost/?view=test") {
     const calls = [], url = new URL(href);
@@ -187,11 +333,13 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
       history:{state:{retained:true}, replaceState(_state,_title,path){const next=new URL(path,location.href);Object.assign(location,{href:next.href,pathname:next.pathname,search:next.search,hash:next.hash});}},
       $:id=>views.find(view=>view.id===id),
       document:{querySelectorAll:selector=>selector===".panel"?views:buttons},
-      noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0,
+      noticeRequest:0, settingsRequest:0, ruleEditorRequest:0, adminRequest:0, ruleCatalogRequest:0,
+      panelLoadRequest:0,pendingPanelMessage:null,workspacePanelReady:()=>true,
       aiKeyProbes:{load(){calls.push("loadAIKeys");},reset(){}},
+      retrievalChecks:{load(){calls.push("loadRetrievalChecks");},reset(){}},
       refreshAIStatus(){calls.push("ai");},refreshAuditClients(){calls.push("clients");},enterpriseMaterials:{refresh(){calls.push("materials");}},coreInputs:{refresh(){return Promise.resolve();}}};
-    for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge"])ctx[name]=()=>calls.push(name);
-    vm.createContext(ctx);vm.runInContext(code,ctx);
+    for(const name of ["loadHistory","loadNotifications","loadUserSettings","loadAssignments","loadAdmin","loadDashboard","loadOrgOverview","loadKnowledge","loadGraphRules"])ctx[name]=()=>calls.push(name);
+    vm.createContext(ctx);vm.runInContext(code+source.slice(source.indexOf("function switchPanel("),source.indexOf("/* ---------- 多材料上传")),ctx);
     return {ctx,calls,location,views,buttons};
   }
   for (const [role, ids] of Object.entries(permitted)) {
@@ -211,6 +359,10 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
     ["accountant","orgReportPanel","dashboardPanel"],
     ["org_admin","aiKeysPanel","dashboardPanel"],
     ["student","aiKeysPanel","trainingPanel"],
+    ["org_admin","retrievalChecksPanel","dashboardPanel"],
+    ["accountant","retrievalChecksPanel","dashboardPanel"],
+    ["teacher","retrievalChecksPanel","dashboardPanel"],
+    ["student","retrievalChecksPanel","trainingPanel"],
     ["org_admin","unknownPanel","dashboardPanel"],
   ]) {
     const view=navigation(role,"http://localhost/#panel="+requested);
@@ -219,7 +371,10 @@ for (const match of fs.readFileSync("webapp/static/index.html", "utf8").matchAll
     assert.equal(view.location.hash,"#panel="+expected);
   }
   const graph=navigation("org_admin","http://localhost/#panel=knowledgePanel");
-  graph.ctx.switchPanel(graph.ctx.initialWorkspacePanel());assert.deepEqual(graph.calls,["loadKnowledge"]);
+  graph.ctx.switchPanel(graph.ctx.initialWorkspacePanel());assert.deepEqual(graph.calls,["loadKnowledge","loadGraphRules"]);
+  const retrieval=navigation("platform_admin","http://localhost/#panel=retrievalChecksPanel");
+  retrieval.ctx.switchPanel(retrieval.ctx.initialWorkspacePanel());assert.deepEqual(retrieval.calls,["loadRetrievalChecks"]);
+  const admin=navigation("platform_admin");admin.ctx.switchPanel("adminPanel");assert.deepEqual(admin.calls,["loadAdmin"]);
   const guest=navigation("org_admin");guest.ctx.currentUser=null;guest.ctx.switchPanel("adminPanel");
   assert.equal(guest.calls.length,0);assert.equal(guest.location.hash,"");
   const hashStart=source.indexOf('window.addEventListener("hashchange"');
@@ -238,7 +393,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
 (async () => {
   // Empty/hidden founder results must never overwrite the clipboard or claim success.
   {
-    const source = fs.readFileSync("webapp/static/console.js", "utf8");
+    const source = readConsole();
     const code = source.slice(source.indexOf("function inviteOrgTypeLabel("), source.indexOf('$("btnCreateClient").addEventListener'));
     const nodes = new Map(), handlers = new Map(), writes = [], errors = [], toasts = [];
     const node = id => {
@@ -290,7 +445,44 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   // Exercise the actual notification functions, including out-of-order reads
   // and navigation while a write is in flight. No browser globals are replaced
   // in application code; this tiny boundary provides only the needed DOM/API.
-  const source = fs.readFileSync("webapp/static/console.js", "utf8");
+  const source = readConsole();
+  // One graph catalog replaces the old admin list; compatibility never implies approval.
+  {
+    const nodes=new Map(),calls=[],errors=[],editors=[];let active=true;
+    function element(tag,cls,text){return {tag,textContent:text||"",value:"",hidden:false,open:true,children:[],handlers:{},
+      classList:{contains:()=>active},append(...items){this.children.push(...items);},
+      replaceChildren(...items){this.children=items;},addEventListener(name,fn){this.handlers[name]=fn;}};}
+    const ctx={currentUser:{id:"admin",role:"platform_admin"},editingRule:null,
+      $:id=>{if(!nodes.has(id))nodes.set(id,element());return nodes.get(id);},el:element,
+      api:(url,options)=>new Promise((resolve,reject)=>calls.push({url,options,resolve,reject})),
+      showError:error=>errors.push(error),openRuleEditor:rule=>editors.push(rule),loadRuleVersionHistory(){}};
+    vm.createContext(ctx);
+    vm.runInContext('let graphRuleCatalog=[],ruleCatalogRequest=0;'+source.slice(source.indexOf('async function loadGraphRules('),source.indexOf('function setRuleDraft(')),ctx);
+    const row={rule_id:'R-001@2.0:converted:test',rule_code:'R-001',version:'2.0',name:'收入差异',source:'converted',review_status:'candidate',legacy:{id:'R-001',enabled:true}};
+    ctx.$('ruleAdmin').open=false;await ctx.loadGraphRules();assert.equal(calls.length,0,'Closed maintenance does not fetch a second catalog');
+    ctx.$('ruleAdmin').open=true;
+    const stale=ctx.loadGraphRules(),first=calls.shift(),latest=ctx.loadGraphRules();
+    assert.equal(calls[0].url,'/api/knowledge/rule-catalog');calls.shift().resolve([row]);await latest;
+    first.resolve([{...row,name:'stale'}]);await stale;
+    const text=node=>[node.textContent,...node.children.map(text)].join(' ');
+    assert.ok(text(ctx.$('ruleList')).includes('候选 · 待审核'));assert.ok(!text(ctx.$('ruleList')).includes('已启用'));
+    const buttons=[];function walk(node){if(node.tag==='button')buttons.push(node);node.children.forEach(walk);}walk(ctx.$('ruleList'));
+    buttons.find(b=>b.textContent==='配置参数版本').handlers.click();assert.equal(editors[0].id,'R-001');
+    const toggle=buttons.find(b=>b.textContent==='关闭历史审计筛查'),writing=toggle.handlers.click();
+    assert.equal(calls[0].url,'/api/rules/R-001/state');assert.deepEqual(JSON.parse(calls[0].options.body),{enabled:false});
+    active=false;calls.shift().resolve({enabled:false});await writing;assert.equal(calls.length,0,'Leaving while a write finishes must not reload another panel');
+    active=true;ctx.$('ruleCatalogSearch').value='not-found';ctx.renderGraphRules();assert.ok(text(ctx.$('ruleList')).includes('没有匹配'));
+    ctx.$('ruleCatalogSearch').value='';const changedUser=ctx.loadGraphRules();ctx.currentUser={id:'other',role:'accountant'};
+    calls.shift().reject(new Error('old-user failure'));await changedUser;assert.equal(errors.length,0);
+    ctx.currentUser={id:'admin',role:'platform_admin'};
+    const failed=ctx.loadGraphRules();calls.shift().reject(new Error('catalog unavailable'));await failed;
+    assert.ok(ctx.$('ruleCatalogStatus').textContent.includes('catalog unavailable'));
+    assert.equal(ctx.$('ruleList').children.length,0,'Failed refresh must not leave stale enabled controls');
+    const markup=fs.readFileSync('webapp/static/index.html','utf8');
+    assert.ok(markup.indexOf('id="ruleAdmin"')>markup.indexOf('id="knowledgePanel"'));
+    assert.ok(markup.indexOf('id="ruleAdmin"')<markup.indexOf('id="uploadPanel"'));
+    assert.ok(!source.slice(source.indexOf('async function loadAdmin()')).includes('api("/api/rules")'));
+  }
   // Settings reuses self-only preferences; stale reads/writes may not alter another view/account.
   const settingsCode = source.slice(source.indexOf("function isCampusUser("), source.indexOf("async function teachingRequest("))+source.slice(source.indexOf("let settingsRequest ="), source.indexOf("function noticeCurrent("));
   function settingsBoundary(role = "accountant") {
@@ -451,7 +643,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
     $:id=>{if(!ruleNodes.has(id))ruleNodes.set(id,{...node(),value:"audit-1",querySelectorAll:()=>[]});return ruleNodes.get(id);},
     el:node,api:url=>new Promise((resolve,reject)=>ruleCalls.push({url,resolve,reject})),
     ruleDraftBody:()=>({new_version:"2.1"}),showRuleTrial:r=>shown.push(r),showError:e=>ruleErrors.push(e),
-    openRuleEditor:r=>shown.push(r),loadAdmin:async()=>{}};
+    openRuleEditor:r=>shown.push(r),loadGraphRules:async()=>{}};
   vm.createContext(ruleCtx);
   vm.runInContext('let ruleEditorRequest=0,ruleHistoryRequest=0,ruleBusy=false;'+
     source.slice(source.indexOf("async function loadRuleVersionHistory("),source.indexOf("function ruleDraftBody(")),ruleCtx);
@@ -537,13 +729,15 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   console.log("Frontend syntax, role, evidence and notification/rule/material/mistake race and trend area contracts passed.");
 })().catch(error => {console.error(error); process.exitCode = 1;});
 
-// Core inputs must be loaded before the shared console creates its controller.
-assert.ok(indexMarkup.indexOf('/core-inputs.js') < indexMarkup.indexOf('/console.js'));
+// Business controllers are prepared on demand, outside the authentication entry.
+assert.ok(indexMarkup.includes('/auth.js?'));
+assert.ok(!indexMarkup.includes('/console.js?'));
+assert.ok(!indexMarkup.includes('/core-inputs.js?'));
 assert.ok(indexMarkup.includes('id="coreInputs"'));
 
 // Material history stays in management and is fetched only after an explicit query.
 (async()=>{
-  const source=fs.readFileSync("webapp/static/console.js","utf8"),start=source.indexOf("function renderAdminLogs("),end=source.indexOf("\nasync function loadAdmin()",start);
+  const source=readConsole(),start=source.indexOf("function renderAdminLogs("),end=source.indexOf("\nasync function loadAdmin()",start);
   const node=(tag,cls="",text="")=>({tag,className:cls,textContent:text,children:[],hidden:false,disabled:false,append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
   const root=node("div"),calls=[];let pending=null,fail=false,current=true;
   const ctx={$:()=>root,el:node,currentUser:{id:"admin",role:"org_admin"},Intl,Date,
@@ -579,10 +773,15 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
     if (!nodes.has(id)) nodes.set(id,{value:"",dataset:{view:"login",setup:"0"},hidden:false,disabled:false,addEventListener(){}});
     return nodes.get(id);
   };
-  const ctx={window:{},document:{getElementById:node}};vm.createContext(ctx);
+  const ctx={$:node,window:{addEventListener(){}},document:{getElementById:node}};vm.createContext(ctx);
+  const auth=fs.readFileSync("webapp/static/auth.js","utf8");
+  vm.runInContext(auth.slice(auth.indexOf("function updateAuthCollege("),auth.indexOf('$("loginUser").addEventListener')),ctx);
   vm.runInContext(fs.readFileSync("webapp/static/university-workspace.js","utf8"),ctx);
   const workspace=ctx.window.universityWorkspace;
   assert.ok(workspace.viewsFor("student","student").some(v=>v[0]==="tasks"));
+  assert.ok(!workspace.viewsFor("student","student").some(v=>v[0]==="qa"),"Public Q&A stays in the knowledge graph instead of a duplicate menu");
+  assert.ok(!workspace.viewsFor("student","student").some(v=>v[0]==="goals"),"Goals and countdown belong to the learning homepage");
+  assert.ok(!workspace.viewsFor("student","unlinked").some(v=>v[0]==="qa"));
   for(const workspaceValue of ["/training-staff","university",null]){
     const user=workspace.resolveIdentity({id:"campus",org_type:"university",workspace:workspaceValue,role:"org_admin",education_role:"admin"});
     assert.equal(user.workspace,"university");assert.equal(user.role,"admin");
@@ -605,9 +804,23 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   console.log("University navigation and conditional ownership disambiguation passed.");
 }
 
+// Student countdown distinguishes real remaining days, exam day, expired and missing dates.
+{
+  const source=fs.readFileSync("webapp/static/training-portal.js","utf8");
+  const start=source.indexOf("function countdownPanel("),end=source.indexOf("const SOURCE_LABEL",start);
+  const ctx={};vm.createContext(ctx);vm.runInContext(source.slice(start,end),ctx);
+  assert.match(ctx.countdownPanel({days_left:72,expired:false}),/72<\/strong>/);
+  assert.match(ctx.countdownPanel({days_left:0,expired:false}),/今天/);
+  assert.match(ctx.countdownPanel({days_left:-3,expired:true}),/已到期/);
+  for(const value of [null,{}, {days_left:"72"}]){
+    const html=ctx.countdownPanel(value);assert.match(html,/尚未设置考试日期/);assert.ok(!html.includes("NaN"));
+  }
+  console.log("Student countdown: remaining days, exam day, expired and unset states passed.");
+}
+
 // Selected-organization capacity must survive refreshes without leaking stale school data.
 (async()=>{
-  const source=fs.readFileSync("webapp/static/console.js","utf8"),nodes=new Map(),calls=[];
+  const source=readConsole(),nodes=new Map(),calls=[];
   const node=(tag,cls,text="")=>({tag,value:"",textContent:text,hidden:true,disabled:true,children:[],style:{},open:false,
     append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;},reportValidity(){return this.valid!==false;},focus(){},
     showModal(){this.open=true;},close(){this.open=false;this.onclose?.();},
@@ -697,4 +910,204 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   assert.equal(fresh[0].textarea.value,"unsaved draft");assert.equal(fresh[0].editor.hidden,false);
   assert.equal(fresh[1].textarea.value,"other point");assert.equal(fresh[1].editor.hidden,true);
   console.log("Profile refresh preserves open drafts and does not transfer drafts across knowledge points.");
+}
+
+// Startup must coalesce downloads, retry failed assets, and ignore superseded navigation.
+(async()=>{
+  const auth=fs.readFileSync('webapp/static/auth.js','utf8');
+  const appended=[];
+  const ctx={document:{createElement:()=>({remove(){this.removed=true;}}),head:{append:node=>appended.push(node)}}};
+  vm.createContext(ctx);
+  vm.runInContext(auth.slice(auth.indexOf('const clientScriptLoads'),auth.indexOf('let workspaceScripts')),ctx);
+  const first=ctx.loadClientScript('/one.js'),same=ctx.loadClientScript('/one.js');
+  assert.equal(first,same);assert.equal(appended.length,1);
+  appended[0].onload();await first;
+  assert.equal(ctx.loadClientScript('/one.js'),first,'Successful scripts must not bind their handlers twice');
+  const failed=ctx.loadClientScript('/retry.js');
+  const rejected=assert.rejects(failed,/加载失败/);
+  appended[1].onerror();await rejected;assert.equal(appended[1].removed,true);
+  const retry=ctx.loadClientScript('/retry.js');assert.notEqual(retry,failed);
+  appended[2].onload();await retry;
+
+  const source=fs.readFileSync('webapp/static/console.js','utf8');
+  const pending=[],switched=[],messages=[],errors=[],panel={inert:false,attrs:{},before(node){messages.push(node);},setAttribute(k,v){this.attrs[k]=v;},removeAttribute(k){delete this.attrs[k];}};
+  const navigation={currentUser:{id:'owner'},panelLoadRequest:1,pendingPanelMessage:null,panelLoadTickets:new WeakMap(),preparedPanels:new Set(),
+    $:()=>panel,el:()=>({setAttribute(){},remove(){this.removed=true;},replaceChildren(...nodes){this.children=nodes;}}),
+    document:{createTextNode:text=>text},prepareWorkspacePanel:()=>new Promise((resolve,reject)=>pending.push({resolve,reject})),
+    switchPanel:id=>switched.push(id),showError:message=>errors.push(message)};
+  vm.createContext(navigation);
+  vm.runInContext(source.slice(source.indexOf('function deferWorkspacePanel('),source.indexOf('function switchPanel(')),navigation);
+  navigation.deferWorkspacePanel('knowledgePanel',1,'owner');
+  navigation.panelLoadRequest=2;navigation.deferWorkspacePanel('knowledgePanel',2,'owner');
+  pending[0].resolve();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(switched.length,0);assert.equal(panel.inert,true,'Older loads cannot unlock the newer loading view');
+  navigation.preparedPanels.add('knowledgePanel');pending[1].resolve();await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(switched,['knowledgePanel']);assert.equal(panel.inert,false);
+  navigation.panelLoadRequest=3;navigation.deferWorkspacePanel('historyPanel',3,'owner');
+  navigation.currentUser={id:'other'};pending[2].reject(new Error('private failure'));
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(errors.length,0);assert.equal(switched.length,1,'Previous identities cannot reopen a page');
+
+  const nodes=new Map(),node=id=>{if(!nodes.has(id))nodes.set(id,{dataset:{},value:''});return nodes.get(id);};
+  const entries=[],views=[],calls=[];
+  const bootstrap={URLSearchParams,location:{search:'',hash:'',pathname:'/'},history:{replaceState(){}},$:node,
+    api:async path=>{calls.push(path);return {needs_setup:false,user:null};},enterApp:user=>entries.push(user),
+    showAuthView:view=>views.push(view),showToast(){}};
+  vm.createContext(bootstrap);
+  vm.runInContext('let pendingEmailToken="";'+auth.slice(auth.indexOf('async function bootstrap('),auth.indexOf('const authViews')),bootstrap);
+  await bootstrap.bootstrap();assert.deepEqual(calls,['/api/status']);assert.deepEqual(views,['login']);assert.equal(entries.length,0);
+  bootstrap.api=async()=>({needs_setup:false,user:{id:'remembered'}});
+  await bootstrap.bootstrap();assert.equal(entries[0].id,'remembered');
+  console.log('Startup: anonymous authentication stays independent, remembered sessions enter directly, script downloads coalesce/retry, stale loads and identities cannot override navigation.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Switching authentication views while workspace assets download cancels that entry.
+(async()=>{
+ const auth=fs.readFileSync('webapp/static/auth.js','utf8');
+ const form={dataset:{ready:'1'}},submit={},entered=[];let release;
+ const ctx={authViewVersion:1,workspaceScripts:new Promise(resolve=>{release=resolve;}),
+   $:id=>id==='authForm'?form:submit,enterWorkspace:user=>entered.push(user),showAuthView(){throw new Error('Unexpected view reset');}};
+ vm.createContext(ctx);
+ vm.runInContext(auth.slice(auth.indexOf('async function enterApp('),auth.indexOf('async function startAuthentication(')),ctx);
+ const pending=ctx.enterApp({id:'old-entry'});ctx.authViewVersion++;release();await pending;
+ assert.equal(entered.length,0);assert.equal(form.dataset.entering,undefined);
+ await ctx.enterApp({id:'current-entry'});assert.equal(entered[0].id,'current-entry');
+ console.log('Authentication view changes cancel pending workspace entry.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// The faster cellular-noise traversal must preserve every source texel.
+(async()=>{
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const block=source.slice(source.indexOf('const noiseVoxels='),source.indexOf('const cloudNoise='));
+  let yields=0,clock=0;
+  const create=new Function('state','yieldTask','performance',block+'return {run:prepareNoiseSource,bytes:noiseVoxels};');
+  const noise=create({startup:{}},async()=>{yields++;},{now:()=>clock++});
+  await noise.run();
+  assert.equal(require('node:crypto').createHash('sha256').update(noise.bytes).digest('hex'),
+    '06a67de706898665af771e7aae163df91b3a7606d690907a17f5384231112ac3',
+    'Cloud noise must match the original voxel traversal byte for byte');
+  assert.ok(yields>0,'Noise generation must yield periodically for input');
+  console.log('Ocean noise: original texture checksum and cooperative CPU slices passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// A lean position-only grid retains PlaneGeometry's exact drawing topology.
+(async()=>{
+  const {pathToFileURL}=require('node:url');
+  const THREE=await import(pathToFileURL(require('node:path').resolve('webapp/static/vendor/three.module.mjs')).href);
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const block=source.slice(source.indexOf('const gridX='),source.indexOf('const water=new THREE.Mesh'));
+  const AsyncFunction=Object.getPrototypeOf(async function(){}).constructor;
+  const create=new AsyncFunction('THREE','camera','yieldTask',block+'updateOceanGrid();return waterGeometry;');
+  for(const aspect of [16/9,390/844]){
+    const camera=new THREE.PerspectiveCamera(44,aspect,.1,500);
+    camera.position.set(0,3.4,12.8);camera.lookAt(0,4.65,-6.5);
+    const actual=await create(THREE,camera,async()=>{}),reference=new THREE.PlaneGeometry(2,2,360,240);
+    assert.equal(actual.attributes.position.count,reference.attributes.position.count);
+    assert.deepEqual(actual.index.array,reference.index.array,'Water triangle order must remain identical');
+    assert.ok(actual.attributes.position.array.every(Number.isFinite));
+    actual.dispose();reference.dispose();
+  }
+  console.log('Ocean mesh: original vertex count, triangle order and finite desktop/mobile projection passed.');
+  const {oceanVendor}=require('./build_auth_ocean.cjs');
+  const vendor=fs.readFileSync('webapp/static/vendor/three.module.mjs','utf8');
+  const scoped=oceanVendor(vendor,source);
+  const slim=await import('data:text/javascript;base64,'+Buffer.from(scoped).toString('base64'));
+  const retained=['colorspace_fragment','colorspace_pars_fragment','common','tonemapping_pars_fragment'];
+  assert.deepEqual(Object.keys(slim.ShaderChunk).sort(),retained);
+  for(const chunk of retained)assert.equal(slim.ShaderChunk[chunk],THREE.ShaderChunk[chunk],`Retained ${chunk} GLSL must remain exact`);
+  assert.equal(Object.keys(slim.ShaderLib).length,0);
+  assert.ok(THREE.ShaderLib.basic.vertexShader,'The public vendored module must retain standard shaders');
+  for(const unsupported of [source.replace('new THREE.ShaderMaterial','new THREE.MeshStandardMaterial'),
+    source.replace('THREE.NoToneMapping','THREE.ACESFilmicToneMapping'),
+    source+'\nscene.background = texture;',source+'\n#include <fog_fragment>']){
+    assert.throws(()=>oceanVendor(vendor,unsupported),/shader features changed/);
+  }
+  assert.throws(()=>oceanVendor(vendor.replace('const ShaderLib = {','const ChangedShaderLib = {'),source),/Unexpected vendored/);
+  console.log('Ocean bundle: exact retained GLSL, intact public Three module and unsupported-feature build guards passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Hidden sky preparation must not redraw the entire ocean for every strip.
+{
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const animate=source.slice(source.indexOf('function prepareOpeningSky()'),source.indexOf('function resume()'));
+  let strips=0,draws=0,scheduled=0;
+  const ctx={frameId:0,previous:0,fpsTime:0,fpsFrames:0,motionRampStart:NaN,holdOpening:true,
+    state:{active:true,lost:false,ready:true,paused:false,openingHeld:true,skyReady:false,time:0,speed:1,startup:{}},
+    document:{hidden:false},performance:{now:()=>0},shared:{uTime:{value:0}},composite:{uniforms:{uGlassStrength:{value:0}}},
+    updateSkyCache(){strips++;if(strips===48){ctx.state.skyReady=true;ctx.state.startup.skyReadyMs=1;}},
+    draw(){draws++;},requestAnimationFrame(){return ++scheduled;}};
+  vm.createContext(ctx);vm.runInContext(animate,ctx);
+  ctx.animate(100);assert.equal(strips,32);assert.equal(draws,0);
+  ctx.animate(120);assert.equal(strips,48);assert.equal(draws,1,'Full-quality sky must be drawn before reveal');
+  assert.equal(ctx.state.time,0,'Preparing the sky must preserve the poster opening pose');
+  ctx.animate(140);assert.equal(scheduled,2,'Held ready scenes must stop scheduling frames');
+  ctx.state.openingHeld=false;ctx.animate(160);assert.equal(draws,2);assert.ok(ctx.state.time>0);
+  ctx.state.lost=true;ctx.animate(180);assert.equal(draws,2);assert.equal(strips,48);
+  ctx.state.lost=false;ctx.document.hidden=true;ctx.animate(200);assert.equal(draws,2);
+  let clock=0;ctx.performance.now=()=>++clock;ctx.document.hidden=false;
+  ctx.state.skyReady=false;ctx.state.openingHeld=true;strips=0;
+  ctx.animate(220);assert.equal(strips,4,'Slow sky submissions must stop at the CPU time budget');assert.equal(draws,2);
+  console.log('Ocean startup: bounded sky-only preparation, full-quality first draw, held pose, active motion, context-loss and hidden-page guards passed.');
+}
+
+// Start a bounded sky slice before waiting for a display refresh, with the
+// same hidden-page and context-loss boundaries as the later animation loop.
+(async()=>{
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const code=source.slice(source.indexOf('async function prepareFirstFrame()'),source.indexOf('function coverFrame()'));
+  let events=[];
+  const ctx={state:{lost:false,openingHeld:true,skyReady:false,active:true},document:{hidden:false},
+    updateMaterialFlow(){},updateWaveCache(){},updateSheetPose(){},updateSkyCache(){},
+    async yieldTask(){events.push('yield');},draw(){events.push('draw');},prepareOpeningSky(){events.push('sky');}};
+  vm.createContext(ctx);vm.runInContext(code,ctx);
+  await ctx.prepareFirstFrame();assert.deepEqual(events.slice(-3),['draw','yield','sky']);
+  for(const suppressed of ['hidden','inactive','unheld']){
+    events=[];ctx.document.hidden=suppressed==='hidden';ctx.state.active=suppressed!=='inactive';ctx.state.openingHeld=suppressed!=='unheld';
+    await ctx.prepareFirstFrame();assert.ok(!events.includes('sky'),suppressed+' scenes must not run opening work');
+  }
+  ctx.document.hidden=false;ctx.state.active=true;ctx.state.openingHeld=true;events=[];
+  ctx.prepareOpeningSky=()=>{events.push('sky');ctx.state.skyReady=true;};
+  await ctx.prepareFirstFrame();assert.deepEqual(events.slice(-2),['sky','draw'],'An early completed sky must be drawn before the API resolves');
+  events=[];ctx.state.skyReady=false;
+  ctx.yieldTask=async()=>{events.push('yield');if(events.filter(e=>e==='yield').length===4)ctx.state.lost=true;};
+  await assert.rejects(()=>ctx.prepareFirstFrame(),/context lost/);assert.ok(!events.includes('sky'));
+  console.log('Ocean first-frame task: early bounded work, hidden/inactive/unheld guards, full draw and context-loss cancellation passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Prefer real task yields while retaining a working fallback on older browsers.
+(async()=>{
+  const source=fs.readFileSync('webapp/static/auth-ocean.mjs','utf8');
+  const code=source.slice(source.indexOf('const yieldTask='),source.indexOf('const startupStart='));
+  let yields=0,timers=0;
+  const modern={scheduler:{yield(){yields++;return Promise.resolve();}},setTimeout(){throw new Error('Modern browsers must not accumulate timer delays');}};
+  vm.createContext(modern);vm.runInContext(code+'globalThis.yieldForTest=yieldTask;',modern);
+  await modern.yieldForTest();assert.equal(yields,1);
+  const legacy={setTimeout(resolve,delay){timers++;assert.equal(delay,0);resolve();}};
+  vm.createContext(legacy);vm.runInContext(code+'globalThis.yieldForTest=yieldTask;',legacy);
+  await legacy.yieldForTest();assert.equal(timers,1);
+  console.log('Ocean task yielding: scheduler API and older-browser timer fallback passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Anonymous idle pages start promptly; typing and navigation still cancel preparation.
+{
+  const source=fs.readFileSync('webapp/static/auth-glass.js','utf8');
+  const code=source.slice(source.indexOf('  function prepareWhenIdle()'),source.indexOf('  function unavailable()'));
+  let now=100,mounts=0,eligible=true;const timers=[],idle=[];
+  const ctx={ocean:null,loading:false,failed:false,startTimer:null,idleId:null,lastInteraction:0,
+    performance:{now:()=>now},canPrepare:()=>eligible,
+    setTimeout(fn,delay){timers.push({fn,delay});return timers.length;},
+    window:{requestIdleCallback(fn){idle.push(fn);return idle.length;}},
+    mountWhenReady(){mounts++;}};
+  vm.createContext(ctx);vm.runInContext(code,ctx);
+  ctx.prepareWhenIdle();assert.equal(timers.length,0);assert.equal(idle.length,1,'Register the current idle slot without an intervening timer');
+  now=100;idle[0]();assert.equal(mounts,1,'Eligible painted forms must not wait for an arbitrary startup timer');
+  now=300;ctx.lastInteraction=300;ctx.prepareWhenIdle();assert.equal(timers[0].delay,1200);
+  now=1500;timers[0].fn();eligible=false;idle[1]();assert.equal(mounts,1,'Entering the workspace cancels queued GPU preparation');
+  const before=timers.length;ctx.prepareWhenIdle();assert.equal(timers.length,before,'Remembered sessions must not schedule a background');
+  eligible=true;ctx.lastInteraction=0;ctx.prepareWhenIdle();ctx.prepareWhenIdle();
+  assert.equal(idle.length,3,'Repeated updates must share the pending idle callback');eligible=false;idle[2]();
+  assert.equal(mounts,1,'Entering the workspace also cancels a directly queued idle start');
+  eligible=true;ctx.lastInteraction=0;ctx.window.requestIdleCallback=undefined;
+  ctx.prepareWhenIdle();assert.equal(timers.at(-1).delay,0,'Older browsers retain a task boundary');timers.at(-1).fn();assert.equal(mounts,2);
+  console.log('Ocean scheduling: prompt first idle start, input quiet interval and workspace-entry cancellation passed.');
 }

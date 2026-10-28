@@ -439,7 +439,7 @@ def summary(checks):
 
 def archive(store, actor, task_id, expected_revision, *, complete_report_version=None):
     # Frozen task read and final CAS both use the existing tenant/client authorization.
-    view = batches.read(store, actor, task_id)
+    view = batches.read_current(store, actor, task_id)
     if view["revision"] != expected_revision:
         raise AccessDenied("任务版本已变化，请重新读取后生成报告。", 409)
     payload = core_inputs.latest(view)
@@ -464,9 +464,9 @@ def archive(store, actor, task_id, expected_revision, *, complete_report_version
             if slot.get("stale") or bundle.content_hash(fresh) != bundle.content_hash(old):
                 raise AccessDenied("资料或政策依据已变化，请重新核查后生成报告。", 409)
             if (slot.get("ai") or {}).get("validated"):
-                from webapp.knowledge_evidence import validate_answer
+                from webapp.knowledge_evidence import validate_saved_analysis
                 try:
-                    validate_answer({"assessments": slot["ai"]["assessments"]}, old)
+                    validate_saved_analysis(slot["ai"], old)
                 except (ValueError, KeyError, TypeError):
                     slot["ai"] = {"status": "needs_review", "validated": False, "assessments": [],
                                   "reason": "历史 AI 说明未通过当前校验，请重新分析。"}
@@ -479,6 +479,14 @@ def archive(store, actor, task_id, expected_revision, *, complete_report_version
                    for row in payload["processing"].get("records", []) if row["id"] in
                    {sid for slot in checks.values() for fact in slot["bundle"]["facts"] for sid in fact["source_ids"]}]
         template = (ROOT / "templates/core_check_report.html").read_text(encoding="utf-8")
+        source_ids = {source["record_id"] for source in sources}
+        for slot in checks.values():
+            for row in slot["bundle"].get("supporting_materials", []):
+                if row["source_id"] not in source_ids:
+                    source_ids.add(row["source_id"])
+                    sources.append({"record_id": row["source_id"], "file_id": row["file_id"],
+                                    "file_name": file_names.get(row["file_id"]), "source_position": row["source_position"],
+                                    "field_sources": {}, "source_reviewed": row["source_reviewed"]})
         snapshot = {"schema": 1, "task": deepcopy(payload["task"]), "checks": checks,
                     'policy_assessment': policy_assessment,
                     "processing": {key: deepcopy(payload["processing"].get(key)) for key in ("status", "issues", "notices")},
@@ -561,12 +569,12 @@ def register(app, get_store, get_user, allow):
     def complete(task_id: str, body: CompleteBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         store, user = get_store(), actor(session)
         archive(store, user, task_id, body.expected_revision, complete_report_version=body.report_version)
-        return core_inputs.project(batches.read(store, user, task_id))
+        return core_inputs.project(batches.read_current(store, user, task_id))
 
     @app.post("/api/enterprise/input-tasks/{task_id}/reopen")
     def reopen(task_id: str, body: ArchiveBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         store, user = get_store(), actor(session)
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         payload = deepcopy(core_inputs.latest(view))
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -577,7 +585,7 @@ def register(app, get_store, get_user, allow):
                 raise AccessDenied('任务尚未归档，无需重新打开。', 409)
             payload.pop('completion')
             batches._append(db, batch, user, 'edit', payload, lifecycle='reopen')
-        return core_inputs.project(batches.read(store, user, task_id))
+        return core_inputs.project(batches.read_current(store, user, task_id))
 
     @app.get("/api/enterprise/input-tasks/{task_id}/reports")
     def listing(task_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):

@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+from functools import lru_cache
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
@@ -13,6 +14,57 @@ from webapp import policy_graph as pg
 
 FORMAT = 'taxpearls-public-policy-v1'
 MAX_BYTES = 64 * 1024 * 1024
+
+
+@lru_cache(maxsize=1)
+def _citation_delivery(package_path, manifest_bytes):
+    # Cache is keyed by the actual manifest bytes, so a package update is visible.
+    return load_package(Path(package_path), Path(package_path).parents[2]).get('citation_resolutions', [])
+
+
+def citation_view(clause, policy, *, resolutions=None):
+    """Correct reviewed references for use, keeping the source transcription intact."""
+    original = clause['content']
+    location = clause.get('source_location') or {}
+    if isinstance(location, str):
+        try:
+            location = json.loads(location)
+        except json.JSONDecodeError:
+            return {'text': original}
+    if not isinstance(location, dict):
+        return {'text': original}
+    if not location.get('text_sha256'):
+        return {'text': original}
+    if resolutions is None:
+        package = Path(__file__).resolve().parents[1] / 'data/public-policy/snapshot.json.gz'
+        resolutions = _citation_delivery(str(package), package.with_name('manifest.json').read_bytes())
+    changes = []
+    for row in resolutions:
+        if (row['source_url'] != policy['source_url']
+                or row['source_text_sha256'] != location['text_sha256']):
+            continue
+        start = row['start_char'] - location.get('start_char', 0)
+        end = row['end_char_exclusive'] - location.get('start_char', 0)
+        if start < 0 or end > len(original):
+            continue
+        if original[start:end] != row['quote']:
+            raise ValueError('已核对引用与条款原文位置不符，停止生成引用。')
+        corrected = row['quote'].replace(row['document_no_quoted'], row['canonical_document_no'])
+        if row.get('canonical_title'):
+            corrected = corrected.replace('《' + row['title'] + '》', '《' + row['canonical_title'] + '》', 1)
+        if corrected == row['quote']:
+            continue
+        changes.append({'start': start, 'end': end, 'original_quote': row['quote'], 'corrected_quote': corrected,
+                        'document_no': row['canonical_document_no'], 'target_policy_ids': row['matched_policy_ids']})
+    text = original
+    previous = len(original)
+    for change in sorted(changes, key=lambda item: item['start'], reverse=True):
+        if change['end'] > previous:
+            raise ValueError('已核对引用位置重叠，停止生成引用。')
+        text = text[:change['start']] + change['corrected_quote'] + text[change['end']:]
+        previous = change['start']
+    return ({'text': text, 'original_text': original, 'citation_corrections': changes}
+            if changes else {'text': original})
 
 
 def bootstrap(store, rules_dir, *, repository=None):

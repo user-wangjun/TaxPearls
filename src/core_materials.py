@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 from io import BytesIO
 import json
+from itertools import islice
 from pathlib import Path
 import re
 import unicodedata
@@ -27,8 +28,9 @@ ALLOWED_FORMATS = {
     "account_balance": {"xlsx", "xls", "pdf"},
     "vat_declaration": {"xlsx", "xls", "pdf"},
     "invoice_detail": {"xlsx", "xls", "xml", "pdf"},
+    "supporting_material": {"xlsx", "xls", "csv", "tsv", "pdf", "png", "jpg", "jpeg", "tif", "tiff"},
 }
-PARSER_VERSION = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+PARSER_VERSION = hashlib.sha256(Path(__file__).read_bytes() + Path(__file__).with_name("supporting_materials.py").read_bytes()).hexdigest()
 REQUIRED = {
     "account_balance": ["account_name", "opening_balance", "current_debit", "current_credit", "closing_balance"],
     "vat_declaration": ["item_label", "declared_value"],
@@ -76,6 +78,76 @@ def invoice_direction(record, tax_no):
 
 def text(value):
     return value.isoformat() if isinstance(value, (date, datetime)) else "" if value is None else str(value)
+
+
+def validate_upload_content(raw, name, kind):
+    """Check source headings/columns, independently of the chosen slot or filename.
+
+    Unreadable scans remain pending OCR; a contract's reference to an invoice
+    number or amount never establishes that it is an invoice.
+    """
+    if kind not in KINDS:
+        return
+    extension = name.rsplit(".", 1)[-1].lower()
+    sections = []
+    if extension in {"xlsx", "xls"}:
+        book = open_workbook(raw, read_only=True)
+        try:
+            for sheet in book:
+                rows = [list(row) for row in islice(sheet.iter_rows(values_only=True), 60)]
+                sections.append((sheet.title, [[sheet.title], *rows]))
+        finally:
+            book.close()
+    elif extension == "pdf":
+        with pdfplumber.open(BytesIO(raw)) as pdf:
+            for index, page in enumerate(pdf.pages, 1):
+                lines = (page.extract_text() or "").splitlines()
+                sections.append((f"PDF第{index}页", [[line] for line in lines[:60]]))
+    elif extension == "xml":
+        root = material_formats.xml_root(raw)
+        sections.append(("XML字段", [[node.tag.split("}")[-1] for node in root.iter()]]))
+    recognized, readable = False, False
+    for position, rows in sections:
+        lines = [" ".join(text(value) for value in row if text(value).strip()) for row in rows]
+        lines = [line for line in lines if line.strip()]
+        readable |= bool(lines)
+        detected = None
+        for line in lines[:8]:
+            heading = re.sub(r"\s+", "", unicodedata.normalize("NFKC", line))
+            if re.match(r"^(?:模拟|测试)?[^:：]{0,10}(?:合同|协议|收款凭证|付款凭证|记账凭证|业务说明|业务对照)(?:[（(].*|表?$)", heading):
+                detected = "supporting_material"
+                break
+            if re.match(r"^[^:：]{0,30}科目余额表", heading):
+                detected = "account_balance"
+                break
+            if re.match(r"^[^:：]{0,30}增值税.*申报表", heading):
+                detected = "vat_declaration"
+                break
+            if re.match(r"^[^:：]{0,16}(?:发票明细|发票清单|发票列表|电子发票|数电发票|增值税.*发票)", heading):
+                detected = "invoice_detail"
+                break
+        if detected and detected != kind:
+            title = KINDS.get(detected, "合同、凭证或业务说明等额外材料")
+            target = KINDS.get(detected, "额外材料（选传）")
+            raise InputError(f"{name}（{position}）内容识别为{title}，与所选{KINDS[kind]}不符；请上传到“{target}”。")
+        if detected == kind:
+            recognized = True
+        anchors = {field: {label(field), *map(label, aliases)} for field, aliases in ALIASES[kind].items()}
+        for row in rows:
+            # PDFs expose a text line rather than cells. Match whole field labels
+            # on that line, not arbitrary mentions elsewhere in the document.
+            values = {label(value) for value in row}
+            if extension == "pdf":
+                values |= {label(value) for value in text(row[0]).split()}
+            fields = {field for field, aliases in anchors.items() if values & aliases}
+            if kind == "invoice_detail" and {"invoice_no", "issue_date"} <= fields:
+                recognized = True
+            elif kind == "account_balance" and "account_name" in fields and len(fields & NUMBERS) >= 2:
+                recognized = True
+            elif kind == "vat_declaration" and {"item_label", "declared_value"} <= fields:
+                recognized = True
+    if readable and not recognized:
+        raise InputError(f"{name}未识别到{KINDS[kind]}的标题或必要字段，不能按所选必传类别接收；请核对材料，合同、说明等请传到“额外材料（选传）”。")
 
 
 def iso_date(value):
@@ -453,6 +525,9 @@ def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_c
 
 
 def parse(raw, name, kind, file_id, mapper, *, ocr=False):
+    if kind == "supporting_material":
+        from . import supporting_materials
+        return supporting_materials.parse(raw, name, file_id, mapper, ocr=ocr)
     extension = name.rsplit(".", 1)[-1].lower()
     if kind not in KINDS or extension not in ALLOWED_FORMATS[kind]:
         raise InputError("材料类型或上传格式不符合三类基础资料要求。")
@@ -1303,6 +1378,9 @@ def prepare(task, documents):
     period_files = {}
     for doc in documents:
         file_id, kind = doc["id"], doc["material_type"]
+        if kind == "supporting_material":
+            notices.extend(doc["issues"])
+            continue
         if (kind, doc["sha256"]) in source_hashes:
             notices.append(issue("duplicate_file", "同类型相同原件重复上传，保留来源但不重复纳入整理结果。", file_id))
         identical_file = source_hashes.get((kind, doc["sha256"]))

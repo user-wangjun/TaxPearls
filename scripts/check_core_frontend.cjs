@@ -16,8 +16,22 @@ class Node {
 }
 function all(root){return [root,...root.children.flatMap(all)];}
 (async()=>{
+  // Exercise actual stream parsing, including split UTF-8 and truncated responses.
+  {
+    const source=fs.readFileSync("webapp/static/core-inputs.js","utf8"),ctx={TextDecoder};vm.createContext(ctx);
+    vm.runInContext(source.slice(0,source.indexOf("function createCoreInputs")),ctx);
+    const events=[{type:"started",concurrency:3},{type:"result",rule_id:"R2",result:{text:"中文证据"}},{type:"complete",revision:3}];
+    const bytes=new TextEncoder().encode(events.map(e=>JSON.stringify(e)).join("\n")+"\n");
+    const response=(data)=>new Response(new ReadableStream({start(c){for(let i=0;i<data.length;i+=7)c.enqueue(data.slice(i,i+7));c.close();}}));
+    const received=[];const result=await ctx.readCoreCheckStream(response(bytes),event=>received.push(event));
+    assert.equal(result.revision,3);assert.equal(received[1].result.text,"中文证据");
+    await assert.rejects(()=>ctx.readCoreCheckStream(response(new TextEncoder().encode('{"type":"started"}\n')),()=>{}),/连接中断/);
+    await assert.rejects(()=>ctx.readCoreCheckStream(response(new TextEncoder().encode('{"type":"error","status":409,"message":"资料已变化"}\n')),()=>{}),e=>e.status===409);
+    await assert.rejects(()=>ctx.readCoreCheckStream(response(new TextEncoder().encode('{bad json}\n')),()=>{}));
+    let seen=0;await ctx.readCoreCheckStream(response(bytes),()=>{seen++;return false;});assert.equal(seen,1);
+  }
   const ids=new Map(),$=id=>{if(!ids.has(id))ids.set(id,new Node("div"));return ids.get(id);};
-  const errors=[],calls=[],continued=[];let actor={id:"one",role:"org_admin"},fail=false,failScope=false,delay=null,failDelete=false,identityFailure=null,failAI=false,failedBatch=false,aiReady=true,acceptance=true,holdHistory=null,aiDelay=null,failAIRule=null,timeoutAI=false,expectedRegion="CN-33";
+  const errors=[],calls=[],continued=[],analyzedRules=[];let actor={id:"one",role:"org_admin"},fail=false,failScope=false,delay=null,failDelete=false,identityFailure=null,failAI=false,failedBatch=false,aiReady=true,acceptance=true,holdHistory=null,aiDelay=null,failAIRule=null,timeoutAI=false,expectedRegion="CN-33";
   let checkRules=[{rule_id:"VAT-R01",name:"销项与申报核对"},{rule_id:"R-001",name:"收入核对"}];
   const sample={id:"task",revision:1,scope_period_candidates:[{start_date:"2026-01-01",end_date:"2026-01-31",sources:[{file_id:"f",position:"Sheet1"}]}],task:{company_name:"企业",tax_no:"91310000123456789A",start_date:"2026-01-01",end_date:"2026-01-31",range_kind:"month",
       scope_origins:{},scope_candidates:{start_date:[{value:"2026-01-01",sources:[{file_id:"f",position:"Sheet1"}]}],end_date:[{value:"2026-01-31",sources:[{file_id:"f",position:"Sheet1"}]}]},applicable_forms:null},
@@ -39,15 +53,25 @@ function all(root){return [root,...root.children.flatMap(all)];}
     if(url.endsWith("/identity-validation")){if(identityFailure instanceof Error)throw identityFailure;return identityFailure||{valid:true,errors:{}};}
     if(url==="/api/knowledge/checks?enterprise=true")return checkRules;
     if(url==="/api/knowledge/retrieval/status")return {ai_configured:aiReady,acceptance:{passed:acceptance}};
-    if(url==="/api/knowledge/retrieve"){
+    if(url==="/api/knowledge/check-runs"){
       if(failAI)throw new Error("测试AI连接失败");
+      const body=JSON.parse(options.body);assert.equal(body.expected_revision,sample.revision);assert.equal(body.use_ai,true);assert.equal(body.region_code,expectedRegion);
+      assert.equal(body.token_budget,undefined,"enterprise checks use selected model capacity");
+      options.onEvent({type:"started",concurrency:3});
       if(timeoutAI)return await new Promise((resolve,reject)=>options.signal.addEventListener("abort",()=>reject(new Error("aborted"))));
-      const body=JSON.parse(options.body);if(aiDelay)await aiDelay;if(failAIRule===body.rule_id)throw Object.assign(new Error("测试任务版本已变化，请重新读取"),{status:409});assert.equal(body.expected_revision,sample.revision);assert.equal(body.use_ai,true);assert.equal(body.region_code,expectedRegion);
-      assert.equal(body.token_budget,undefined,"enterprise checks use the server's selected model capacity");
+      for(const rule_id of body.rule_ids){
+        if(options.signal.aborted)return;analyzedRules.push(rule_id);if(aiDelay)await aiDelay;if(options.signal.aborted)return;
+        if(failAIRule===rule_id)throw Object.assign(new Error("测试任务版本已变化，请重新读取"),{status:409});
+        body.rule_id=rule_id;
       const slot={revision:++sample.revision,bundle:{batching:{strategy:"category_and_source_v1",part_count:1,model_context:{context_window:1048576,input_budget:128000,output_reserve:8192}},task:{region_code:body.region_code},check:{rule_id:body.rule_id,topic:body.rule_id},facts:[],policy_evidence:[],policy_leads:[],gaps:[]},ai:{validated:true,status:"needs_review",batches:[{part_number:1,category_name:"申报资料",group:"本期申报",status:"completed"}],assessments:[{text:"证据待核实",required_materials:["原始申报表"]}]}};
       if(failedBatch){slot.ai.validated=false;slot.ai.reason="测试分类批次失败";slot.ai.batches[0].status="failed";}
-      (sample.tax_checks??={})[body.rule_id]=slot;return structuredClone(slot);
+        (sample.tax_checks??={})[rule_id]=slot;
+        if(options.onEvent({type:"result",rule_id,completed:!failedBatch,result:structuredClone(slot)})===false)return;
+        if(failedBatch)throw new Error(slot.ai.reason);
+      }
+      return {type:"complete",revision:sample.revision};
     }
+    if(options?.method==="DELETE"&&url.includes("/files/")){if(failDelete)throw new Error("测试删除失败");const id=decodeURIComponent(url.split("/").at(-1));sample.files=sample.files.map(file=>file.id===id?{...file,deleted_at:"2026-10-20"}:file);sample.documents=sample.documents.filter(doc=>doc.id!==id);delete sample.source_options[id];sample.revision++;return structuredClone(sample);}
     if(options?.method==="DELETE"){if(failDelete)throw new Error("测试删除失败");return {id:"task",deleted:true};}
     if(failScope&&url.endsWith("/scope"))throw new Error("测试范围保存失败");
     if(fail&&url.endsWith("/prepare"))throw new Error("测试保存失败");return url==="/api/clients"?[{id:"existing",name:"历史企业",taxpayer_id:"91310000123456789A"}]:url==="/api/enterprise/input-tasks"&&!options?(sample.completion?[{id:sample.id,task:sample.task,status:"archived",completion:sample.completion}]:[]):structuredClone(sample);};
@@ -103,11 +127,25 @@ function all(root){return [root,...root.children.flatMap(all)];}
   $("coreDateRange").onclick();$("coreCalendarClear").onclick();
   assert.equal($("coreStart").value,"");assert.equal($("coreEnd").value,"");
   for(const [id,value] of [["coreCompanyName","企业"],["coreTaxNo","91310000123456789A"],["coreStart","2026-01-01"],["coreEnd","2026-01-31"]])$(id).value=value;
+  $("coreRegion").value="CN-44";$("coreRegion").listeners.change();
   await $("coreCreateTask").onclick();
+  assert.equal($("coreRegion").value,"CN-44","creating a draft keeps the region explicitly selected for it");
   assert.equal($("coreRangeMonth").value,"2026-01");
   assert.match($("coreDateRangeText").textContent,/2026-01-01.*2026-01-31/);
   const find=text=>all($("coreTaskResult")).find(n=>n.textContent===text);
   const field=label=>all($("coreTaskResult")).find(n=>n["aria-label"]===label);
+  const beforeVATEditor=structuredClone(sample.processing);
+  sample.processing.records=[{id:"vat-declared-row",material_type:"vat_declaration",form_name:"合成申报主表",item_key:"1",item_label:"应税销售额",declared_value:"100.0123",source_position:"主表!C6",column_scope:"本期数",field_sources:{declared_value:{source_label:"本期数"}}}];
+  await controller.openTask("task");
+  const vatMapping=field("申报销售额原表记录");assert.ok(vatMapping,"the current upload page exposes explicit VAT source mapping");
+  assert.equal(vatMapping.value,"","a lone declaration row is not silently adopted");
+  vatMapping.value="vat-declared-row";vatMapping.listeners.change();
+  field("申报表版本（已核实）").value="DEMO-2026-A";field("纳税人类型（已核实）").value="合成一般纳税人";
+  field("口径核对依据").value="合成同期不含税口径，调整事项已核对。";field("两侧统计口径已核对可比").checked=true;
+  await find("保存核对并重新整理资料").onclick();
+  const vatSaved=JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).vat_review;
+  assert.equal(vatSaved.mapping_record_id,"vat-declared-row");assert.equal(vatSaved.comparable,true);assert.equal(vatSaved.form_revision,"DEMO-2026-A");
+  sample.processing=beforeVATEditor;await controller.openTask("task");
   const beforeDedup=structuredClone(sample.processing),beforeDedupRevision=sample.revision;
   sample.processing.records=[{id:"dedup-row",material_type:"invoice_detail",source_file_id:"review-pdf",amount_excluding_tax:"120",tax_amount:"13",unit:"元"}];
   sample.processing.deduplication={counts:{total:1,new:0,historical_duplicate:0,task_duplicate:0,conflict:1,unverified:0},records:[{
@@ -130,13 +168,47 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.equal(find("版本与操作记录"),undefined,"upload workflow does not display administrative history");
   assert.ok(!all($("coreTaskResult")).some(n=>/版本 \d|analysis|2026-10-17T10:50/.test(n.textContent||"")),"internal versions and raw operations are absent even for an old response");
   assert.equal(find("采用此期间"),undefined);assert.ok(all($("corePeriodCandidates")).find(n=>n.textContent==="查看期间候选"));assert.equal($("coreStart").value,"2026-01-01");assert.equal($("coreEnd").value,"2026-01-31");
-  for(const [kind,label] of [["account_balance","科目余额表"],["vat_declaration","增值税申报表"],["invoice_detail","发票明细"]]){
+  for(const [kind,label] of [["account_balance","科目余额表"],["vat_declaration","增值税申报表"],["invoice_detail","发票明细"],["supporting_material","额外材料"]]){
     const pick=field(label+"上传");pick.files=[new Blob(["synthetic material"])];await pick.onchange();
     const upload=calls.findLast(c=>c.url.endsWith("/files")).options.body;
     assert.equal(upload.get("material_type"),kind);assert.equal(upload.get("mapping_mode"),"ai");
     assert.ok(pick.accept.split(",").includes(".pdf"));assert.equal(upload.get("ocr"),"1");
     assert.equal(field(label+"文件传输进度").value,100);
   }
+  const supporting={id:"extra",name:"合同.pdf",material_type:"supporting_material",sha256:"synthetic-extra",records:[],parts:[],issues:[],
+    excerpts:[{source_id:"supporting:extra:1",source_position:"PDF第1页",text:"<script>document instructions remain source text</script>",origin:"source_text"}]};
+  sample.documents.push(supporting);sample.source_options.extra={original_name:"合同.pdf",source_reviewed:false};await controller.openTask("task");
+  assert.ok(find("额外材料（选传）"));assert.ok(find(supporting.excerpts[0].text),"extra text is rendered through textContent");
+  const extraReview=field("合同.pdf 已对照原件核实额外材料内容与本次任务的关联");extraReview.checked=true;extraReview.listeners.change();
+  all($("coreTaskResult")).find(n=>n.tag==="fieldset").listeners.change();
+  await find("保存核对并重新整理资料").onclick();
+  const extraOptions=JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).source_options.extra;
+  assert.equal(extraOptions.source_reviewed,true);assert.equal(extraOptions.confirmed_metadata,undefined,"extra documents do not receive financial metadata");
+  sample.documents.pop();delete sample.source_options.extra;await controller.openTask("task");
+  sample.documents.push({id:"balance-sides",name:"借贷余额.pdf",material_type:"account_balance",sha256:"synthetic-sides",parts:[],issues:[],records:[
+    {id:"balance-row",account_name:"现金",source_position:"PDF第1页",opening_balance:{debit:"12345.0123",credit:"0"},current_debit:"100",current_credit:"20",closing_balance:{debit:null,credit:"80.0123"},field_sources:{}}
+  ]});sample.source_options["balance-sides"]={};await controller.openTask("task");
+  assert.ok(find("借方 12,345.0123 / 贷方 0"),"debit and credit balances retain exact decimal strings and zero");
+  assert.ok(find("借方 待识别 / 贷方 80.0123"),"unknown side is not displayed as zero");
+  assert.ok(!all($("coreTaskResult")).some(n=>n.textContent==="[object Object]"));
+  sample.documents.pop();delete sample.source_options["balance-sides"];await controller.openTask("task");
+  sample.upload_review={pending_files:["扫描.pdf"]};
+  const pendingPick=field("发票明细上传");pendingPick.files=[new Blob(["unreadable scan"])];await pendingPick.onchange();
+  assert.ok(find("原件已保存；扫描.pdf 尚待识别或类别、来源核对，不能视为该类资料已确认。"));
+  assert.equal(field("发票明细文件传输进度").hidden,true,"review state must not animate as if parsing is still running");
+  assert.equal(pendingPick.disabled,false);delete sample.upload_review;
+  const savedUploadView=structuredClone({files:sample.files,documents:sample.documents,source_options:sample.source_options,revision:sample.revision});
+  sample.files.push({id:"review-pdf",size:4096,deleted_at:null});await controller.openTask("task");
+  assert.ok(all($("coreTaskResult")).some(n=>n.className==="core-uploaded-name"&&n.textContent==="进项.pdf"),"the upload slot shows its file names");
+  field("查看解析：进项.pdf").onclick();
+  assert.equal(all($("coreTaskResult")).find(n=>n.className==="core-document"&&all(n.children[0]).some(child=>child.textContent==="进项.pdf")).open,true);
+  const beforeFileCancel=calls.length,fileCancel=field("删除材料：进项.pdf").onclick();assert.equal($("coreDeleteTitle").textContent,"删除上传材料");assert.match($("coreDeleteDescription").textContent,/原件.*删除/);
+  $("coreDeleteCancel").onclick();await fileCancel;assert.equal(calls.length,beforeFileCancel,"file deletion cancellation sends no request");
+  failDelete=true;const failedFile=field("删除材料：进项.pdf").onclick();$("coreDeleteConfirm").onclick();await failedFile;
+  assert.ok(field("删除材料：进项.pdf"),"a failed delete leaves the file visible");failDelete=false;
+  const successfulFile=field("删除材料：进项.pdf").onclick();$("coreDeleteConfirm").onclick();await successfulFile;
+  const fileDeleteCall=calls.findLast(call=>call.options?.method==="DELETE");assert.match(fileDeleteCall.url,/\/files\/review-pdf$/);assert.deepEqual(JSON.parse(fileDeleteCall.options.body),{expected_revision:savedUploadView.revision,confirm:true});
+  assert.equal(field("删除材料：进项.pdf"),undefined);Object.assign(sample,savedUploadView);await controller.openTask("task");
   // Real transfer events drive the percentage; parsing never pretends to have a percentage.
   holdUploads=true;
   const uploadPick=field("科目余额表上传");uploadPick.files=[new Blob(["progress fixture"])];
@@ -145,14 +217,15 @@ function all(root){return [root,...root.children.flatMap(all)];}
   request.upload.onload();assert.equal(Object.hasOwn(progress,"value"),false);assert.ok(find("文件已传输，正在保存和解析，请稍候……"));
   assert.equal(uploadPick.disabled,false,"file selection stays available during parsing");
   assert.equal(field("增值税申报表上传").disabled,false);assert.equal($("coreTaskForm").disabled,true);
-  const requestCount=uploadRequests.length,queuedPick=field("增值税申报表上传");queuedPick.files=[new Blob(["next batch"])];
+  assert.equal(field("额外材料上传").disabled,false);
+  const requestCount=uploadRequests.length,queuedPick=field("额外材料上传");queuedPick.files=[new Blob(["next batch"])];
   const queued=queuedPick.onchange();uploadPick.files=[new Blob(["another balance"])];const sameKind=uploadPick.onchange();
   assert.equal(uploadRequests.length,requestCount,"new selections wait without concurrent revision writes");
   assert.ok(find("等待上传 1 份（尚未发送）"));
   const unloadEvent={preventDefault(){this.prevented=true;}};pageEvents.beforeunload(unloadEvent);assert.equal(unloadEvent.prevented,true);
   request.succeed(2);await uploading;
   const secondRequest=uploadRequests.at(-1);assert.notEqual(secondRequest,request);
-  assert.equal(calls.at(-1).options.body.get("expected_revision"),"2");assert.equal(calls.at(-1).options.body.get("material_type"),"vat_declaration");
+  assert.equal(calls.at(-1).options.body.get("expected_revision"),"2");assert.equal(calls.at(-1).options.body.get("material_type"),"supporting_material");
   secondRequest.succeed(3);await queued;
   assert.equal(calls.at(-1).options.body.get("expected_revision"),"3");assert.equal(calls.at(-1).options.body.get("material_type"),"account_balance");
   uploadRequests.at(-1).succeed(4);await sameKind;
@@ -232,26 +305,25 @@ function all(root){return [root,...root.children.flatMap(all)];}
   $("coreTaxNo").value="91310000123456789a";$("coreTaxNo").listeners.input();
   assert.equal($("coreCompanyName")["aria-invalid"],"false");assert.equal($("coreTaxNo")["aria-invalid"],"false");
   $("coreRegion").value="";expectedRegion="CN";await find("开始检查").onclick();
-  assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,2,"no region defaults to national checks");
+  assert.equal(analyzedRules.length,2,"no region defaults to national checks");assert.equal(calls.filter(c=>c.url==="/api/knowledge/check-runs").length,1,"one streamed request coordinates both rules");
   assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="检查结果"));
   assert.equal($("coreRegion").value,"","default national scope does not invent an enterprise province");
   expectedRegion="CN-33";
   $("coreRegion").value="CN-33";$("coreRegion").listeners.change();assert.equal($("coreRegion")["aria-invalid"],"false");
   failScope=true;await find("开始检查").onclick();assert.equal(continued.length,0);assert.match(errors.at(-1),/范围保存失败/);
   failScope=false;await find("开始检查").onclick();assert.deepEqual(continued,[],"start check must not navigate to the graph");
-  assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,4);
+  assert.equal(analyzedRules.length,4);
   assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="检查结果"));
   assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="需补充或核实：原始申报表"));
   assert.equal($("coreTaskForm").disabled,false);
-  assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="分析批次：已完成 1/1 批"));
-  assert.ok(all($("coreCheckResult")).some(n=>n.textContent?.includes("申报资料 · 本期申报 · 已完成")));
+  assert.ok(!all($("coreCheckResult")).some(n=>n.textContent==="处理详情"),"completed analysis does not show technical processing records");
   assert.equal(calls.filter(c=>c.url.endsWith("/reports")&&c.options?.method==="POST").length,2,"each completed check run freezes its report without navigating away");
   assert.ok(all($("coreCheckResult")).some(n=>n.tag==="a"&&n.textContent==="查看报告"&&n.href.endsWith("/reports/2?format=html")));
   assert.ok(all($("coreCheckResult")).some(n=>n.tag==="a"&&n.textContent==="下载 PDF"&&n.href.endsWith("/reports/2?format=pdf")));
   const reportedRevision=sample.revision;sample.revision++;await controller.openTask("task");await Promise.resolve();
   assert.ok(all($("coreCheckResult")).some(n=>n.tag==="a"&&n.textContent==="查看上次报告"),"an older report must not be presented as current");
   sample.revision=reportedRevision;await controller.openTask("task");
-  const savedChecks=structuredClone(sample.tax_checks),noRequests=calls.filter(c=>c.url==="/api/knowledge/retrieve").length;
+  const savedChecks=structuredClone(sample.tax_checks),noRequests=analyzedRules.length;
   const oldSlot=sample.tax_checks["R-001"],oldPack=oldSlot.bundle;
   oldPack.check.topic="收入核对";oldPack.batching={unsplittable:true};oldSlot.ai.reason="完整必要上下文超出预算，保留原文并转人工复核。";
   oldPack.facts=[{metric_id:"revenue",name:"账面收入",state:"unknown",source_ids:[]},{metric_id:"vat_sales",name:"增值税销售额",state:"unknown",source_ids:[]}];
@@ -288,8 +360,52 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.ok(!reviewNodes().some(n=>n.textContent==="收入核对 · 旧版结果，需重新检查"));
   assert.ok(reviewNodes().some(n=>n.textContent==="系统处理：1 类问题 · 1 项"),"current budget failures remain visible");
   assert.ok(reviewNodes().some(n=>n.textContent==="当前结构化记录仍超出容量。"));
+  const recovered=structuredClone(savedChecks["R-001"]);
+  recovered.bundle.batching.part_count=1;
+  recovered.ai.batches=[{part_number:1,category_name:"政策依据",status:"split"},
+    {part_number:"1.1",category_name:"政策依据",status:"completed"},
+    {part_number:"1.2",category_name:"政策依据",status:"completed"}];
+  sample.tax_checks={"R-001":recovered};await controller.openTask("task");
+  assert.ok(!reviewNodes().some(n=>/分析批次：|容量不足，已自动细分/.test(n.textContent||"")),"successful recovery keeps its batch history out of the business result");
+  assert.ok(reviewNodes().some(n=>n.textContent==="R-001 · 分批分析已完成，需综合核实"));
+  // Saved statuses must explain the actual blocker without issuing new analysis requests.
+  const statusSlot=structuredClone(savedChecks["R-001"]);
+  sample.tax_checks={"R-001":statusSlot};
+  const expectStatus=async label=>{await controller.openTask("task");assert.ok(reviewNodes().some(n=>n.tag==="summary"&&n.textContent===`R-001 · ${label}`),label);assert.ok(!reviewNodes().some(n=>n.tag==="summary"&&n.textContent==="R-001 · 待复核"));};
+  await expectStatus("分析已完成，需人工核实");
+  statusSlot.bundle.gaps=[{code:"policy_review",message:"政策效力尚未复核。"}];
+  await expectStatus("依据待核实");
+  assert.ok(reviewNodes().some(n=>n.textContent==="请核实下方政策依据和适用条件。"));
+  statusSlot.bundle.gaps=[{code:"metric_missing",message:"缺少销售额。"}];
+  await expectStatus("资料待核实");
+  statusSlot.bundle.gaps.push({code:"policy_review",message:"政策效力尚未复核。"});
+  await expectStatus("资料与依据待核实");
+  statusSlot.ai.validated=false;
+  statusSlot.ai.batches=[{part_number:1,category_name:"申报资料",status:"invalid",reason:"缺少必要条款引用。"},
+    {part_number:2,category_name:"政策依据",status:"pending"}];
+  await expectStatus("AI 结果校验未通过");
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 1 · 申报资料 · 结果校验未通过"));
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 1 · 申报资料：缺少必要条款引用。"));
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 2 · 政策依据 · 尚未分析"));
+  const processingDetails=reviewNodes().find(n=>n.tag==="details"&&n.children[0]?.textContent==="处理详情");
+  assert.ok(processingDetails&&!processingDetails.open,"technical diagnostics are collapsed by default");
+  assert.ok(all(processingDetails).some(n=>n.textContent==="批次 1 · 申报资料：缺少必要条款引用。"));
+  const statusCard=$('coreCheckResult').children.find(n=>n.tag==="details"&&n.className.includes("material-card"));
+  assert.ok(statusCard.children.some(n=>n.textContent==="请重新开始检查；如仍失败，请联系管理员。"));
+  assert.ok(!statusCard.children.some(n=>n.tag==="p"&&/批次|第.*批|Token|复用|缓存|输出预留|下一步：/.test(n.textContent||"")),"business results contain no batch diagnostics or capacity parameters");
+  assert.ok(!reviewNodes().some(n=>/模型上下文：|单批输入估算上限|含缓存输入|输出预留/.test(n.textContent||"")),"capacity estimates are not displayed as actual input");
+  statusSlot.ai.batches[0]={part_number:1,category_name:"申报资料",status:"failed",reason:"连接超时。"};
+  await expectStatus("AI 分析未完成");
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 1 · 申报资料 · 分析失败"));
+  assert.ok(reviewNodes().some(n=>n.textContent==="批次 1 · 申报资料：连接超时。"));
+  statusSlot.ai.batches=[];await expectStatus("AI 结果尚未通过校验");
+  assert.ok(reviewNodes().some(n=>n.textContent==="本次结果未记录具体失败原因。"));
+  statusSlot.stale=true;await expectStatus("资料有变化，待重检");
+  statusSlot.stale=false;statusSlot.ai.validated=true;statusSlot.ai.status="reviewed_clues";statusSlot.bundle.gaps=[];
+  await expectStatus("AI 分析已完成");
+  statusSlot.ai=null;await expectStatus("尚未完成 AI 分析");
   sample.tax_checks=savedChecks;await controller.openTask("task");
-  assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,noRequests,"viewing and grouping saved results never triggers AI or rewrites history");
+  assert.equal(analyzedRules.length,noRequests,"viewing and grouping saved results never triggers AI or rewrites history");
   sample.tax_checks=Object.fromEntries(Array.from({length:25},(_,i)=>{const slot=structuredClone(savedChecks["R-001"]);slot.bundle.check={rule_id:`page-rule-${i+1}`,topic:`分页检查${i+1}`};return [slot.bundle.check.rule_id,slot];}));
   const checkCards=()=>$("coreCheckResult").children.filter(n=>n.tag==="details"&&n.className.includes("material-card"));
   const checkPager=()=>$("coreCheckResult").children.find(n=>n.tag==="nav"),pageButton=label=>checkPager().children.find(n=>n.tag==="button"&&n.textContent===label);
@@ -303,16 +419,16 @@ function all(root){return [root,...root.children.flatMap(all)];}
   sample.id="another-page-task";await controller.openTask(sample.id);assert.match(checkCards()[0].children[0].textContent,/分页检查1 ·/,"changing task resets the page");
   sample.id="task";await controller.openTask("task");for(let i=0;i<4;i++)pageButton("下一页").onclick();
   sample.tax_checks=savedChecks;await controller.openTask("task");assert.equal(checkCards().length,2);assert.equal(checkPager(),undefined,"shrinking results clamps the page and hides unnecessary controls");
-  assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,noRequests,"pagination is local and does not run AI");
+  assert.equal(analyzedRules.length,noRequests,"pagination is local and does not run AI");
   reportFailure=true;await find("开始检查").onclick();
   assert.ok(reviewNodes().some(n=>n.textContent?.includes("报告生成失败：测试报告生成失败")),"a report failure preserves the completed checks and has a local retry");
   assert.ok(reviewNodes().some(n=>n.textContent==="本次报告更新失败，以下为上次保存的报告。"));
   assert.ok(!reviewNodes().some(n=>n.textContent==="报告已就绪，包含已保存的检查结果与待复核事项。"));
   assert.ok(reviewNodes().some(n=>n.tag==="a"&&n.textContent==="查看上次报告"));
-  const beforeReportRetry=calls.filter(c=>c.url==="/api/knowledge/retrieve").length;reportFailure=false;
+  const beforeReportRetry=analyzedRules.length;reportFailure=false;
   await reviewNodes().find(n=>n.tag==="button"&&n.textContent==="更新检查报告").onclick();
   assert.ok(reviewNodes().some(n=>n.tag==="a"&&n.textContent==="查看报告"));
-  assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,beforeReportRetry,"retrying report generation does not run AI again");
+  assert.equal(analyzedRules.length,beforeReportRetry,"retrying report generation does not run AI again");
   sample.id="report-load-error";reportListFailure=true;await controller.openTask(sample.id);await Promise.resolve();
   assert.ok(reviewNodes().some(n=>n.textContent==="报告读取失败：测试报告读取失败"));
   reportListFailure=false;reviewNodes().find(n=>n.textContent==="重试读取报告").onclick();await Promise.resolve();
@@ -320,12 +436,12 @@ function all(root){return [root,...root.children.flatMap(all)];}
   let releaseReports;reportHold=new Promise(resolve=>releaseReports=resolve);sample.id="pending-report-task";await controller.openTask(sample.id);
   reportHold=null;sample.id="task";await controller.openTask("task");releaseReports([{version:999,input_revision:sample.revision}]);await Promise.resolve();
   assert.ok(!reviewNodes().some(n=>n.tag==="a"&&n.href.includes("/reports/999?")),"late report lists cannot cross task boundaries");
-  failedBatch=true;const beforeFailedBatch=calls.filter(c=>c.url==="/api/knowledge/retrieve").length;await find("开始检查").onclick();
-  assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,beforeFailedBatch+1,"stop before sending other rules after a batch request failed");
+  failedBatch=true;const beforeFailedBatch=analyzedRules.length;await find("开始检查").onclick();
+  assert.equal(analyzedRules.length,beforeFailedBatch+1,"stop before sending other rules after a batch request failed");
   assert.match(errors.at(-1),/分类批次失败/);failedBatch=false;
-  const aiCount=calls.filter(c=>c.url==="/api/knowledge/retrieve").length;
-  aiReady=false;await find("开始检查").onclick();assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,aiCount);assert.match(errors.at(-1),/尚未配置/);assert.equal($("coreTaskForm").disabled,false);
-  aiReady=true;acceptance=false;await find("开始检查").onclick();assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,aiCount);assert.match(errors.at(-1),/检索校验/);
+  const aiCount=analyzedRules.length;
+  aiReady=false;await find("开始检查").onclick();assert.equal(analyzedRules.length,aiCount);assert.match(errors.at(-1),/尚未配置/);assert.equal($("coreTaskForm").disabled,false);
+  aiReady=true;acceptance=false;await find("开始检查").onclick();assert.equal(analyzedRules.length,aiCount);assert.match(errors.at(-1),/检索校验/);
   acceptance=true;failAI=true;await find("开始检查").onclick();assert.match(errors.at(-1),/AI连接失败/);assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="检查未完成"));assert.equal($("coreTaskForm").disabled,false);
   assert.ok(reviewNodes().some(n=>n.textContent==="本次检查未完成，以下为上次保存的报告。"));
   assert.ok(!reviewNodes().some(n=>n.textContent==="报告已就绪，包含已保存的检查结果与待复核事项。"));
@@ -470,16 +586,16 @@ function all(root){return [root,...root.children.flatMap(all)];}
   const savedRegionChecks=sample.tax_checks;sample.id="other-task";sample.tax_checks={};await controller.openTask("other-task");
   assert.equal($("coreRegion").value,"","a new task must not inherit the previous enterprise's region");
   sample.id="task";sample.tax_checks=savedRegionChecks;await controller.openTask("task");assert.equal($("coreRegion").value,"CN-33");
-  failAIRule="R-001";const beforePartial=calls.filter(c=>c.url==="/api/knowledge/retrieve").length;
-  await find("开始检查").onclick();assert.equal(calls.filter(c=>c.url==="/api/knowledge/retrieve").length,beforePartial+2);
+  failAIRule="R-001";const beforePartial=analyzedRules.length;
+  await find("开始检查").onclick();assert.equal(analyzedRules.length,beforePartial+2);
   assert.ok(all($("coreCheckResult")).some(n=>n.textContent==="本轮已完成 1/2 项。未完成不等于通过。"));
   assert.ok(all($("coreCheckResult")).some(n=>n.tag==="summary"&&n.textContent==="尚未完成 1 项（展开查看）"));
   assert.ok(all($("coreCheckResult")).some(n=>n.tag==="li"&&n.textContent==="收入核对"));
   assert.match($("coreActionStatus").textContent,/版本已变化/);assert.equal($("coreTaskForm").disabled,false);failAIRule=null;
   let releaseAI;aiDelay=new Promise(resolve=>releaseAI=resolve);const aiPending=find("开始检查").onclick();
   // Wait until scope and configuration have resolved and the first paid request is in flight.
-  for(let i=0;i<12&&!calls.at(-1).url.endsWith("/retrieve");i++)await Promise.resolve();
-  assert.ok(calls.at(-1).url.endsWith("/retrieve"));const beforeSessionChange=calls.length;
+  for(let i=0;i<12&&!calls.at(-1).url.endsWith("/check-runs");i++)await Promise.resolve();
+  assert.ok(calls.at(-1).url.endsWith("/check-runs"));const beforeSessionChange=calls.length;
   actor={id:"changed-during-ai",role:"org_admin"};controller.reset();releaseAI();await aiPending;aiDelay=null;
   assert.equal(calls.length,beforeSessionChange,"a changed identity stops the remaining AI requests");
   assert.equal($("coreCheckResult").children.length,0);assert.equal($("coreTaskResult").children.length,0);assert.equal($("coreRegion").value,"");

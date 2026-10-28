@@ -43,6 +43,7 @@ from webapp.sensitive_storage import SensitiveStorageError
 from webapp.notifications import NotificationWorker, email_delivery_enabled
 from webapp.storage import SetupAlreadyInitialized, Store, session_max_age
 from webapp.login_guard import LoginGuard, RateLimiter
+from webapp.static_compression import StaticCompressionMiddleware, encoding_quality
 from webapp.knowledge import (
     ai_config, ask_graph, audit_narrative_hash, build_graph,
     finding_evidence_hash, generate_audit_narrative, interpret_finding, extract_policy_candidates,
@@ -67,24 +68,20 @@ async def lifespan(application):
     application.state.public_knowledge = await run_in_threadpool(bootstrap, store, RULES_DIR)
     worker = NotificationWorker(lambda: store)
     worker.start()
-    judge_worker = None
-    from webapp import code_judge_queue
-    if code_judge_queue.queue_enabled():
-        # FR-J05 判题队列 worker：默认关（同步判题契约不变）；
-        # TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1 时随应用启动后台判题线程。
-        judge_worker = code_judge_queue.JudgeWorker(lambda: store)
-        judge_worker.start()
+    from webapp.retrieval_checks import Worker as RetrievalCheckWorker
+    retrieval_worker = RetrievalCheckWorker(lambda: store)
+    retrieval_worker.start()
     try:
         application.state.material_worker.start()
         yield
     finally:
         application.state.material_worker.stop()
+        retrieval_worker.stop()
         worker.stop()
-        if judge_worker:
-            judge_worker.stop()
 
 
 app = FastAPI(title="税海拾珠 · 税务风险审计", version="1.0.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+app.add_middleware(StaticCompressionMiddleware)
 
 
 @app.exception_handler(AccessDenied)
@@ -99,7 +96,7 @@ async def sensitive_storage_failure(_request: Request, exc: SensitiveStorageErro
 
 @app.middleware("http")
 async def private_api_responses(request: Request, call_next):
-    if request.url.path in {'/api/knowledge/node-ask', '/api/knowledge/ask',
+    if request.url.path in {'/api/knowledge/node-ask', '/api/knowledge/rag-ask', '/api/knowledge/ask',
                             '/api/training/knowledge/ask'} and request.method == 'POST':
         parts, size = [], 0
         async for part in request.stream():
@@ -784,6 +781,7 @@ def auth_signup_ticket() -> FileResponse:
 
 # Explicit public asset allowlist; no arbitrary static path or directory access.
 @app.get("/auth-glass.css")
+@app.get("/auth.js")
 @app.get("/auth-glass.js")
 @app.get("/auth-ocean.mjs")
 @app.get("/auth-wordmark.png")
@@ -793,14 +791,24 @@ def auth_signup_ticket() -> FileResponse:
 def auth_glass_asset(request: Request) -> FileResponse:
     assets = {
         "/auth-glass.css": ("auth-glass.css", "text/css"),
+        "/auth.js": ("auth.js", "text/javascript"),
         "/auth-glass.js": ("auth-glass.js", "text/javascript"),
-        "/auth-ocean.mjs": ("auth-ocean.mjs", "text/javascript"),
+        "/auth-ocean.mjs": ("auth-ocean.bundle.mjs", "text/javascript"),
         "/auth-wordmark.png": ("auth-wordmark.png", "image/png"),
         "/auth-ocean-poster-desktop.webp": ("auth-ocean-poster-desktop.webp", "image/webp"),
         "/auth-ocean-poster-mobile.webp": ("auth-ocean-poster-mobile.webp", "image/webp"),
         "/vendor/three.module.mjs": ("vendor/three.module.mjs", "text/javascript"),
     }
     name, media_type = assets[request.url.path]
+    # Build-time compression avoids both runtime Brotli work and another early
+    # download competing with the login form. Ranges retain identity bytes.
+    if request.url.path == '/auth-ocean.mjs' and not request.headers.get('range'):
+        accepted = request.headers.get('accept-encoding', '')
+        quality = encoding_quality(accepted, 'br')
+        compressed = STATIC_DIR / (name + '.br')
+        if quality > 0 and quality >= encoding_quality(accepted, 'gzip') and compressed.is_file():
+            return FileResponse(compressed, media_type=media_type,
+                                headers={'Content-Encoding': 'br', 'Vary': 'Accept-Encoding'})
     return FileResponse(STATIC_DIR / name, media_type=media_type)
 
 
@@ -830,9 +838,34 @@ def training_dark_theme() -> FileResponse:
     return FileResponse(STATIC_DIR / "training-dark.css", media_type="text/css")
 
 
+@app.get("/training-tutor.css")
+def training_tutor_styles() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-tutor.css", media_type="text/css")
+
+
 @app.get("/classroom.js")
 def classroom_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "classroom.js", media_type="text/javascript")
+
+
+@app.get("/training-ai-coach.js")
+def ai_coach_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-ai-coach.js", media_type="text/javascript")
+
+
+@app.get("/training-tasks.js")
+def training_tasks_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-tasks.js", media_type="text/javascript")
+
+
+@app.get("/training-submission-ui.js")
+def training_submission_ui_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "training-submission-ui.js", media_type="text/javascript")
+
+
+@app.get("/teaching-case-ui.js")
+def teaching_case_ui_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "teaching-case-ui.js", media_type="text/javascript")
 
 
 
@@ -901,17 +934,32 @@ class GraphQuestion(BaseModel):
     taxpayer_id: str | None = Field(default=None, min_length=1, max_length=200)
 
 
-class NodeQuestion(BaseModel):
+class PublicQuestion(BaseModel):
     model_config = ConfigDict(extra='forbid', str_strip_whitespace=True)
-    node_id: str = Field(min_length=1, max_length=200)
     question: str = Field(min_length=1, max_length=2000)
     previous_questions: list[Annotated[str, Field(min_length=1, max_length=500)]] = Field(default_factory=list, max_length=3)
 
     @model_validator(mode='after')
     def valid_text(self):
-        for value in [self.node_id, self.question, *self.previous_questions]:
+        for value in [getattr(self, 'node_id', ''), self.question, *self.previous_questions]:
             if any((ord(c) < 32 and c not in '\n\r\t') or 0xD800 <= ord(c) <= 0xDFFF for c in value):
                 raise ValueError('输入包含无效控制字符。')
+        return self
+
+
+class NodeQuestion(PublicQuestion):
+    node_id: str = Field(min_length=1, max_length=200)
+
+
+class RAGQuestion(PublicQuestion):
+    as_of: date | None = None
+    region: str = Field(default='', max_length=30, pattern=r'^(?:CN(?:-[A-Za-z0-9]+)*)?$')
+
+    @model_validator(mode='after')
+    def valid_region(self):
+        from webapp.public_rag import normalize_region
+        if normalize_region(self.region) is None:
+            raise ValueError('检索地区无效。')
         return self
 
 
@@ -919,11 +967,11 @@ node_question_limiter = RateLimiter({'actor': (12, 60)})
 _node_question_active = set()
 
 
-async def public_node_answer(body, session, *, stream=True, identity_reader=None):
+async def public_node_answer(body, session, *, stream=True, identity_reader=None, rag=False):
     """One shared harness for public and university node questions, including old JSON callers."""
     import asyncio
     from contextlib import aclosing
-    from webapp import node_qa
+    from webapp import node_qa, public_rag
     from src.settings import AISettings
     reader = identity_reader or (lambda: _user(session))
     user = await run_in_threadpool(reader)
@@ -937,19 +985,28 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
         def prepare():
             from webapp.knowledge import public_graph
             settings = ai_keys.apply(AISettings.from_env(), usage='knowledge')
-            if settings.problem():
+            if settings.problem() and not rag:
                 raise HTTPException(503, 'AI 尚未连接，请检查模型配置。')
             with store.connect() as db:
-                graph = public_graph(db, _effective_rules(), teaching=user.get('org_type') == 'university')
+                graph = public_graph(db, _effective_rules(), teaching=user.get('org_type') == 'university') if not rag else None
                 info = ai_keys.capability(db, settings)
             limits = ai_probes.context_capability(info)
             capacity = limits.get('context_window', 32768)
             output = min(settings.max_tokens, limits.get('max_output_tokens', settings.max_tokens))
+            if rag:
+                settings, output = public_rag.generation_plan(settings, limits)
             budget = min(48000, capacity * 3 // 5, capacity - output - 4096 - max(4096, capacity // 20))
             if budget < 1024:
                 raise HTTPException(413, '模型可用上下文不足，请调整模型或输出额度。')
-            payload, manifest = node_qa.build_context(graph, body.node_id, body.question,
-                                                    body.previous_questions, budget=budget)
+            if rag:
+                with store.connect() as db:
+                    payload, manifest = public_rag.retrieve(db, body.question, body.previous_questions,
+                                                           region=body.region, as_of=body.as_of, budget=budget)
+                if payload['nodes'] and settings.problem():
+                    raise HTTPException(503, 'AI 尚未连接，请检查模型配置；检索已找到原文。')
+            else:
+                payload, manifest = node_qa.build_context(graph, body.node_id, body.question,
+                                                        body.previous_questions, budget=budget)
             manifest['capacity_source'] = 'provider_models' if limits.get('context_window') else 'conservative_fallback'
             manifest['output_reserve'] = output
             return settings, payload, manifest, output
@@ -962,7 +1019,8 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
         try:
             # Re-check authentication after context assembly and before the paid request.
             await run_in_threadpool(reader)
-            async with aclosing(node_qa.answer_events(settings, payload, manifest, max_tokens=output)) as source:
+            handler = public_rag.answer_events if rag else node_qa.answer_events
+            async with aclosing(handler(settings, payload, manifest, max_tokens=output)) as source:
                 async for event in source:
                     # Never release deltas after a session has been revoked.
                     current = await run_in_threadpool(reader)
@@ -1023,6 +1081,17 @@ async def knowledge_node_ask(body: NodeQuestion, request: Request,
     return await public_node_answer(body, session, identity_reader=reader)
 
 
+@app.post('/api/knowledge/rag-ask')
+async def knowledge_rag_ask(body: RAGQuestion, request: Request):
+    def reader():
+        from webapp.university_members import session_identity
+        user = session_identity(store, request)
+        if not user:
+            raise HTTPException(401, '请先登录。')
+        return user
+    return await public_node_answer(body, None, identity_reader=reader, rag=True)
+
+
 def _graph_for_user(user, audit_id, taxpayer_id=None):
     if taxpayer_id is not None:
         _allow(user, "org_admin", "accountant", "teacher")
@@ -1061,6 +1130,10 @@ class PolicySourceReviewBody(BaseModel):
     effective_from: date
     effective_to: date | None = None
     clause_ids: list[str] = Field(min_length=1, max_length=200)
+    end_kind: Literal['unknown', 'fixed', 'unfixed'] = 'unknown'
+    coverage_start: date | None = None
+    coverage_end: date | None = None
+    evidence: dict[str, str] = Field(default_factory=dict, max_length=10)
 
 
 @app.get("/api/knowledge/schema")
@@ -1117,7 +1190,10 @@ def knowledge_verify_source(policy_id: str, body: PolicySourceReviewBody,
             result = policy_graph.verify_source(db, policy_id, issuer=body.issuer, validity_status=body.validity_status,
                                                 effective_from=body.effective_from.isoformat(),
                                                 effective_to=body.effective_to.isoformat() if body.effective_to else None,
-                                                clause_ids=body.clause_ids)
+                                                clause_ids=body.clause_ids, reviewer=user['id'], end_kind=body.end_kind,
+                                                coverage_start=body.coverage_start.isoformat() if body.coverage_start else None,
+                                                coverage_end=body.coverage_end.isoformat() if body.coverage_end else None,
+                                                evidence=body.evidence)
             store._log(db, user, "verify_policy_source", "knowledge", policy_id, json.dumps(result, ensure_ascii=False))
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from None
@@ -1737,6 +1813,8 @@ from webapp.core_inputs import register as register_core_inputs
 register_core_inputs(app, lambda: store, _user, _allow, STATIC_DIR)
 from webapp.knowledge_evidence import register as register_knowledge_evidence
 register_knowledge_evidence(app, lambda: store, _user, _allow)
+from webapp.retrieval_checks import register as register_retrieval_checks
+register_retrieval_checks(app, lambda: store, _user, _allow)
 from webapp.core_reports import register as register_core_reports
 register_core_reports(app, lambda: store, _user, _allow)
 register_enterprise_materials(app, lambda: store, _user, _allow, RULES_DIR,
@@ -1747,6 +1825,16 @@ from webapp.exercises import register as register_exercises
 register_exercises(app, lambda: store, _teaching_user, _allow, _audit_or_404, lambda data, enabled: _audit_rules(data,enabled),
                    _save_audit, _trial_payload, COOKIE_NAME)
 classroom.register(app,lambda: store,_teaching_user,_allow,_is_synthetic_dataset,COOKIE_NAME)
+from webapp import ai_coach as ai_coach_routes
+ai_coach_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import training_tasks as training_task_routes
+training_task_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import training_submissions as training_submission_routes
+training_submission_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import teaching_case_tasks as case_task_routes
+case_task_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
+from webapp import teaching_rubric as rubric_routes
+rubric_routes.register(app, lambda: store, _teaching_user, COOKIE_NAME)
 from webapp.mistake_book import register as register_mistake_book
 register_mistake_book(app,lambda: store,_user,_allow,COOKIE_NAME)
 members.register(app,lambda: store,_user,COOKIE_NAME)
@@ -1765,6 +1853,14 @@ from webapp.training_graph import register as register_training_graph
 register_training_graph(app, lambda: store)
 from webapp.training_tutor import register as register_training_tutor
 register_training_tutor(app, lambda: store, "taxpearls_training_session")
+from webapp.training_source_auth import register as register_training_source_auth
+register_training_source_auth(app, lambda: store)
+from webapp.training_outline import register as register_training_outline
+register_training_outline(app, lambda: store)
+from webapp.training_trial import register as register_training_trial
+register_training_trial(app, lambda: store, "taxpearls_training_session")
+from webapp.teaching_units import register as register_teaching_units
+register_teaching_units(app, lambda: store)
 
 
 @app.get("/api/audits")
@@ -1973,6 +2069,34 @@ def delete_org_logo(session: str | None = Cookie(default=None, alias=COOKIE_NAME
     return saved
 
 
+@app.get("/api/knowledge/rule-catalog")
+def knowledge_rule_catalog(session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
+    """Current graph editions, with legacy controls explicitly scoped to compatibility."""
+    _user(session)
+    from src.rule_conversion import compile_rule
+    loaded = _effective_rules()
+    overrides, enabled = store.rule_overrides(), store.enabled_rule_ids()
+    definitions = {compile_rule(r)['rule_id']: r for r in loaded}
+    with store.connect() as db:
+        policy_graph.sync_rules(db, loaded)
+        native = [dict(row) for row in db.execute(
+            'SELECT * FROM TaxRule WHERE execution_json IS NULL AND conversion_json IS NULL')]
+        rows = native + [policy_graph.get(db, 'TaxRule', rid) for rid in definitions]
+        result = []
+        for row in rows:
+            rid = row['rule_id']
+            rule = definitions.get(rid)
+            result.append({
+                'rule_id': rid, 'rule_code': row['rule_code'], 'name': row['name'],
+                'version': row['version'], 'review_status': row['review_status'],
+                'reviewed_by': row['reviewed_by'], 'reviewed_at': row['reviewed_at'],
+                'source': 'converted' if rule else 'graph',
+                'legacy': _rule_payload(rule, enabled is None or rule.id in enabled,
+                                        overrides.get(rule.id)) if rule else None,
+            })
+    return sorted(result, key=lambda row: (row['rule_code'] or '', row['version'], row['rule_id']))
+
+
 @app.get("/api/rules")
 def rules(session: str | None = Cookie(default=None, alias=COOKIE_NAME)) -> list[dict[str, Any]]:
     _user(session)
@@ -2111,7 +2235,9 @@ def assignment_detail(assignment_id: str,
         # Answer options must not inherit the audit's hit-first ordering.
         "rules": [{"id": f.rule.id, "name": f.rule.name, "category": f.rule.category}
                   for f in sorted(entry["findings"], key=lambda finding: finding.rule.id)],
-        "submission": store.get_submission(assignment_id, user["id"]) if user["role"] == "student" else None,
+        # 学生端结果按任务策略下发：未开放时只回执已提交，不给分数与逐项解析
+        "submission": (training_submission_routes.result_for_student(store, assignment_id, user["id"])
+                       if user["role"] == "student" else None),
     }
 
 
@@ -2124,7 +2250,7 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
     if not assignment:
         raise HTTPException(status_code=404, detail="作业不存在。")
     if not assignment["can_submit"]:
-        raise HTTPException(409,"已到截止时间，不能提交或覆盖已有成绩。")
+        raise HTTPException(409,"任务尚未开放或已截止，不能提交或覆盖已有成绩。")
     entry = store.get_audit(assignment["audit_id"])
     if not entry or entry["org_id"] != user["org_id"]:
         raise HTTPException(404,"作业材料不存在。")
@@ -2139,7 +2265,13 @@ def submit_assignment(assignment_id: str, body: SubmissionBody,
         store.save_submission(assignment_id, user["id"], body.selected_rule_ids, result["score"], result,user=user)
     except classroom.ClassroomError as exc:
         raise HTTPException(exc.status,str(exc)) from None
-    return result
+    # 答案与解析按任务策略下发：after_due / manual 未到时点，回执里只确认已提交
+    visible, note = training_submission_routes.result_gate(store, assignment_id, user["id"])
+    if visible:
+        return {**result, "result_released": True, "result_note": ""}
+    return {"result_released": False, "result_note": note, "score": None,
+            "correct": [], "missed": [], "false_positives": [],
+            "false_positive_deduction": None}
 
 
 @app.post("/api/assignments/{assignment_id}/feedback")

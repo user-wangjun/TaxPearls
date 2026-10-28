@@ -4,11 +4,26 @@
 window.universityWorkspace = (() => {
   const $ = id => document.getElementById(id);
   let identity = null, controller = null, selected = "home", loading = null;
-  const studentViews = [["home", "学习总览"], ["tasks", "课程任务"], ["practice", "练习与考证"], ["wrongs", "错题复习"], ["goals", "考证目标"], ["catalog", "学习资源"], ["knowledge", "政策与学习图谱"], ["profile", "学习档案"], ["settings", "账号设置"]];
+  const studentViews = [["home", "学习总览"], ["tasks", "课程任务"], ["practice", "练习与考证"], ["wrongs", "错题复习"], ["catalog", "找证书"], ["knowledge", "政策与学习图谱"], ["profile", "学习档案"], ["settings", "账号设置"]];
   const staffViews = [["home", "教学总览"], ["students", "师生与班级"], ["courses", "课程管理"], ["tasks", "课程与作业"], ["statistics", "学情统计"], ["knowledge", "政策与学习图谱"], ["content", "教学资源"], ["archives", "教学档案"], ["settings", "账号设置"]];
   const labels = {student:"学生", teacher:"教师", admin:"高校管理员 / 教师", school_admin:"校级管理员", unlinked:"待关联教学身份"};
+  const navigationIcons = {
+    home:"m3 10 9-7 9 7M5 9v11h5v-6h4v6h5V9",
+    tasks:"M9 4H6a2 2 0 0 0-2 2v14h16V6a2 2 0 0 0-2-2h-3M9 3h6v4H9zM8 12h8M8 16h5",
+    practice:"M12 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-7M16 3l5 5-9 9-6 1 1-6zM14 5l5 5",
+    wrongs:"M4 3h12a2 2 0 0 1 2 2v16H6a2 2 0 0 1-2-2zm0 14h14M8 7l6 6m0-6-6 6",
+    catalog:"M16 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0M9 12l-2 9 5-3 5 3-2-9",
+    knowledge:"M14 5a2 2 0 1 0-4 0 2 2 0 0 0 4 0M7 19a2 2 0 1 0-4 0 2 2 0 0 0 4 0M21 19a2 2 0 1 0-4 0 2 2 0 0 0 4 0M12 7v5M5 17v-5h14v5",
+    profile:"M5 3h12l3 3v15H5zM16 3v5h4M8 17v-3m4 3V11m4 6v-4",
+    students:"M15 7a3 3 0 1 0-6 0 3 3 0 0 0 6 0M5 21v-2a7 5 0 0 1 14 0v2M18 4a3 3 0 0 1 0 6m3 11v-2a5 5 0 0 0-3-4",
+    courses:"M12 5C8 2 4 3 2 4v16c3-2 7-2 10 0 3-2 7-2 10 0V4c-2-1-6-2-10 1zm0 0v15",
+    statistics:"M4 20h17M7 16v-4m5 4V7m5 9v-6M4 4l5 3 5-4 6 2",
+    content:"M3 6h6l2 3h10v11H3zm0 0V3h7l2 3h7v3M7 13h10m-10 3h7",
+    archives:"M3 3h18v5H3zm2 5v13h14V8M9 12h6m-6 4h6",
+    settings:"M3 6h5m4 0h9M8 3v6M3 12h11m4 0h3m-7-3v6M3 18h4m4 0h10M7 15v6"
+  };
   const viewsFor = (kind, role) => role === "unlinked" ? [["home", "教学工作台"]] : kind === "student" ? studentViews : staffViews.filter(([key]) => role !== "school_admin" || ["home", "students", "courses", "knowledge", "settings"].includes(key));
-  let overview = null, viewRevision = 0;
+  let overview = null, viewRevision = 0, answerId = null;
   function resolveIdentity(user) {
     if (!user || !(user.org_type === "university" || user.workspace === "university" || ["/training-staff", "/training-certificates"].includes(user.workspace))) return null;
     const role = user.education_role || (user.workspace === "university" ? user.role : null);
@@ -17,7 +32,7 @@ window.universityWorkspace = (() => {
   }
   const element = (tag, cls, text) => { const node = document.createElement(tag); if(cls)node.className=cls; if(text !== undefined)node.textContent=String(text); return node; };
   const classroomViews = new Set(["students", "tasks", "statistics", "wrongs", "profile"]);
-  const nativeViews = new Set(["students", "courses", "content", "settings", "goals", "practice", "wrongs", "catalog", "profile"]);
+  const nativeViews = new Set(["students", "courses", "statistics", "content", "settings", "practice", "answer", "wrongs", "catalog", "profile"]);
   function usesNative(view=selected) { return nativeViews.has(view)||(view==="home"&&identity.universityKind==="student"); }
   function classroomCapable() { return !identity.legacy_teaching && ["admin", "teacher", "student"].includes(identity.role); }
   function setupPanels() {
@@ -51,7 +66,7 @@ window.universityWorkspace = (() => {
     if(archive) {
       const card=element("section","sheet");card.append(element("h2",null,identity.role==="student"?"课程学习记录":"教学作答与复核记录"));
       if(!data.records.length)card.append(element("p","muted","暂无课程作答记录。完成课堂任务后，在这里查看成绩与复核记录。"));
-      for(const row of data.records){const item=element("div","data-item");item.append(element("strong",null,row.title),element("p","muted",(row.student?row.student+" · ":"")+row.score+" 分 · "+(row.reviewed?"已人工复核":"自动评分")+" · "+new Date(row.submitted_at).toLocaleString()));card.append(item);}
+      for(const row of data.records){const item=element("div","data-item");const score=row.result_released===false?"成绩尚未开放":row.score+" 分";item.append(element("strong",null,row.title),element("p","muted",(row.student?row.student+" · ":"")+score+" · "+(row.reviewed?"已人工复核":"自动评分")+" · "+new Date(row.submitted_at).toLocaleString()));card.append(item);}
       overview.append(card);return;
     }
     const c=data.counts, grid=element("div","kpi-grid");
@@ -59,7 +74,7 @@ window.universityWorkspace = (() => {
     for(const [label,value,unit]of metrics){const card=element("div","kpi");card.append(element("div",null,label));const number=element("div","value",value);number.append(element("span","unit",unit));card.append(number);grid.append(card);}overview.append(grid);
     const actions=element("section","sheet university-home-shortcuts");actions.append(element("h2",null,identity.role==="student"?"继续学习":"继续教学"),element("p","muted",data.school+" · "+(identity.role==="student"?"查看课程任务，安排考证练习，积累学习记录。":"查看教学安排和课程进度，继续备课与复核。")));
     const row=element("div","university-home-actions");
-    for(const [view,label]of (identity.role==="student"?[["tasks","查看课程任务"],["practice","开始练习"],["knowledge","查阅政策与图谱"]]:[["students","管理师生与班级"],["tasks","备课与发布作业"],["statistics","查看学情"],["knowledge","查阅政策与图谱"]])){
+    for (const [view,label] of (identity.role==="student" ? [["catalog","找证书"],["tasks","查看课程任务"],["practice","开始练习"],["knowledge","查阅政策与图谱"]] : [["students","管理师生与班级"],["tasks","备课与发布作业"],["statistics","查看学情"],["knowledge","查阅政策与图谱"]])){
       if(!viewsFor(identity.universityKind,identity.role).some(v=>v[0]===view))continue;
       const button=element("button","btn re",label);button.onclick=()=>choose(view);row.append(button);
     }actions.append(row);overview.append(actions);
@@ -101,41 +116,47 @@ window.universityWorkspace = (() => {
     if (!response.ok) { const error = new Error(data.detail || `请求失败（${response.status}）`); error.status = response.status; throw error; }
     return data;
   }
-  function updateLogin() {
-    const setup = $("authForm").dataset.setup === "1";
-    const login = $("authForm").dataset.view === "login" && !setup;
-    const needsCollege = login && $("loginCollege").dataset.needed === "1";
-    $("loginCollegeField").hidden = !needsCollege;
-    $("loginCollege").required = needsCollege;
-    $("loginCollege").disabled = !needsCollege;
-    if (login) {
-      $("loginUserLabel").textContent = "邮箱、用户名或学号";
-      $("loginUser").placeholder = "请输入邮箱、用户名或学号";
-      $("loginUser").inputMode = "text";
-    }
-  }
+  function updateLogin() { updateAuthCollege(); }
   function status(message, error = false) {
     $("universityStatus").textContent = message;
     $("universityStatus").className = error ? "university-status error" : "university-status muted";
     $("universityRetry").hidden = !error;
   }
-  function choose(view = "home") {
+  function choose(view = "home", attemptId = null, fromHistory = false) {
     if (!identity) return;
+    const legacyQuestion = view === "qa";
+    if(legacyQuestion)view="knowledge";
+    if(view==="goals")view="home";
     const allowed = viewsFor(identity.universityKind, identity.role);
-    selected = allowed.some(([id]) => id === view) ? view : "home";
-    $("universityTitle").textContent = selected === "settings" ? "个人信息" : allowed.find(([id]) => id === selected)[1];
+    const answering = view === "answer" && identity.role === "student" && attemptId;
+    const next = answering ? "answer" : allowed.some(([id]) => id === view) ? view : "home";
+    const wasAnswering = selected === "answer";
+    answerId = answering ? String(attemptId) : null;
+    if(next!==selected&&selected==="knowledge")invalidateGraph();
+    selected = next;
+    if(window.matchMedia("(max-width:760px)").matches)setNavCollapsed(true);
+    $("universityTitle").textContent = selected === "answer" ? "练习作答" : selected === "settings" ? "个人信息" : allowed.find(([id]) => id === selected)[1];
+    $("universitySubtitle").textContent=identity.display_name+" · "+labels[identity.role]+"｜"+(identity.universityKind==="student"?"围绕目标安排学习，在练习与复习中积累自己的记录。":"从班级、课程到教学内容，在同一工作空间开展教学。");
     const account = document.querySelector('#nav [data-panel="userSettingsPanel"]');
     account.classList.toggle("active", selected === "settings");
     if (selected === "settings") account.setAttribute("aria-current", "page"); else account.removeAttribute("aria-current");
     document.querySelectorAll("#universityNav button").forEach(b => {
-      b.classList.toggle("active", b.dataset.universityView === selected);
-      if (b.dataset.universityView === selected) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+      const active = b.dataset.universityView === (selected === "answer" ? "practice" : selected);
+      b.classList.toggle("active", active);
+      if (active) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
     });
     applyView();
-    history.replaceState(null, "", `/?workspace=${identity.universityKind}#panel=universityPanel&view=${selected}`);
+    const url = `/?workspace=${identity.universityKind}#panel=universityPanel&view=${selected}${answerId ? "&attempt="+encodeURIComponent(answerId) : ""}`;
+    if (!fromHistory && location.pathname+location.search+location.hash !== url) {
+      history[answering || wasAnswering ? "pushState" : "replaceState"](null, "", url);
+    }
     $("universityPanel").dataset.view = selected;
     window.scrollTo({top:0, behavior:"instant"});
-    return refresh();
+    return refresh().then(result=>{
+      if(legacyQuestion&&result&&selected==="knowledge")graphTab(true);
+      if(result&&selected==="answer")$("answer-title").focus({preventScroll:true});
+      return result;
+    });
   }
 
   function applyView() {
@@ -148,8 +169,9 @@ window.universityWorkspace = (() => {
     const group=selected==="wrongs"?"practice":selected;
     document.querySelectorAll("#universityContent [data-university-view]").forEach(card=>{
       const views=card.dataset.universityView.split(" ");
-      const visible=views.includes(group)||(group==="courses"&&views.includes("organization"))||(group==="content"&&views.includes("judge"));
+      const visible=views.includes(group)||(group==="courses"&&views.includes("organization"));
       card.classList.toggle("university-view-hidden",!visible);
+      if(card.id==="answer-card")card.hidden=!visible;
     });
     document.querySelectorAll("#trainingPanel > [data-classroom-view]").forEach(card=>card.classList.toggle("university-view-hidden",!card.dataset.classroomView.split(" ").includes(selected)));
     const tools=$("universityContent").querySelector(".toolbar");if(tools)tools.hidden=selected!=="content";
@@ -159,7 +181,7 @@ window.universityWorkspace = (() => {
   }
   function decorate() {
     applyView();
-    $("universityContent").querySelectorAll(".card").forEach(card => card.classList.add("sheet"));
+    $("universityPanel").querySelectorAll(".card").forEach(card => card.classList.add("sheet"));
     $("universityContent").querySelectorAll("button.primary").forEach(b => b.classList.add("btn", "pdf"));
     $("universityContent").querySelectorAll("label:not([for])").forEach(label=>{
       const field=label.nextElementSibling;
@@ -185,6 +207,11 @@ window.universityWorkspace = (() => {
   }
   async function mount() {
     const kind = identity.universityKind;
+    await Promise.all([
+      loadClientScript("/member-links.js?v=20261027-login-first-1"),
+      loadClientScript("/policy-source.js?v=20261027-login-first-1"),
+      loadClientScript("/training-"+(kind === "student" ? "portal" : "staff")+".js?v=20261027-login-first-1")
+    ]);
     const initial = !controller;
     if (!controller) {
       const path = "/api/training/workspace/template/" + (kind === "student" ? "student" : "staff");
@@ -221,10 +248,10 @@ window.universityWorkspace = (() => {
       controller = (kind === "student" ? window.createTrainingStudent : window.createTrainingStaff)(scoped, {embedded:true});
       if (kind === "student") {
         $("workspace-change-password")?.addEventListener("click", () => scoped.getElementById("change-pass-btn").click());
-        for (const id of ["wb-body", "pf-list", "pr-wrong"]) scoped.getElementById(id)?.addEventListener("click", event => {
+        for (const id of ["workbench-card", "pf-list", "pr-wrong"]) scoped.getElementById(id)?.addEventListener("click", event => {
           const action = event.target.closest("button[data-act]")?.dataset.act;
-          if (action === "workspace-goals") choose("goals");
-          if (["wb-resume", "wb-practice", "history-redo", "history-new", "redo-new", "redo-same"].includes(action)) choose("practice");
+          if (action === "workspace-goals") choose("home").then(()=>{const manager=scoped.getElementById("goal-manager");if(manager){manager.open=true;manager.scrollIntoView({behavior:"smooth",block:"start"});}});
+          if (action === "workspace-catalog") choose("catalog");
         });
       }
     }
@@ -254,7 +281,7 @@ window.universityWorkspace = (() => {
         const data=await request("/api/training/workspace/dashboard");if(ticket!==viewRevision)return false;renderOverview(data,view==="archives");
         if(view==="home"&&usesNative(view))await ensureNative();
       }
-      else if(view==="knowledge"){await loadKnowledge({throwOnError:true});}
+      else if(view==="knowledge"){await prepareWorkspacePanel("knowledgePanel");if(ticket!==viewRevision)return false;await loadKnowledge({throwOnError:true});}
       else {
         if(nativeViews.has(view)){
           if(view === "settings") {
@@ -268,9 +295,12 @@ window.universityWorkspace = (() => {
         }
         if(classroomViews.has(view)&&classroomCapable()){
           $("teacherBox").style.display=identity.role==="student"?"none":"block";
+          await prepareWorkspacePanel("trainingPanel");if(ticket!==viewRevision)return false;
           await loadAssignments({throwOnError:true});
         } else if(view==="tasks"&&!classroomCapable())throw new Error("该教学档案尚未绑定课堂账号，请由管理员关联后使用课堂任务。已有考证练习仍可正常使用。");
       }
+      if(ticket!==viewRevision)return false;
+      if(view==="answer")await controller.openAttempt(answerId);
       if(ticket!==viewRevision)return false;applyView();
       status("数据已更新 · "+new Date().toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"}));
       return true;
@@ -296,7 +326,6 @@ window.universityWorkspace = (() => {
     $("currentUser").textContent = user.display_name + " · " + labels[user.role];
     $("appFooter").querySelector(".wrap").textContent = "教学内容仅供学习与训练，仿真案例不含真实企业材料。学习建议与 AI 解读不替代标准答案和教师复核。";
     $("universityEyebrow").textContent = user.college || "高校工作空间";
-    $("universitySubtitle").textContent = user.display_name + " · " + labels[user.role] + "｜" + (user.universityKind === "student" ? "围绕目标安排学习，在练习与复习中积累自己的记录。" : "从班级、课程到教学内容，在同一工作空间开展教学。");
     const nav = $("universityNav"); nav.hidden = false; nav.replaceChildren();
     for (const [key, title] of viewsFor(user.universityKind, user.role).filter(([key]) => key !== "settings")) {
       const b = document.createElement("button"); b.type = "button"; b.dataset.universityView = key; b.title = title; b.setAttribute("aria-label", title);
@@ -304,14 +333,13 @@ window.universityWorkspace = (() => {
       const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
       icon.setAttribute("class", "nav-icon"); icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("aria-hidden", "true");
       const path = document.createElementNS(icon.namespaceURI, "path");
-      const shapes = {home:"M3 11 12 3l9 8v10h-7v-7h-4v7H3z", goals:"M4 3h2v2h14l-3 5 3 5H6v7H4z", practice:"M4 3h16v19H4zm4 4v2h8V7zm0 5v2h8v-2zm0 5v2h5v-2z", profile:"M3 3h18v18H3zm4 13v2h2v-2zm4-5v7h2v-7zm4-5v12h2V6z", students:"M12 3a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 21v-2a8 6 0 0 1 16 0v2z", courses:"M3 3h8v18H3zm10 0h8v18h-8zM5 6v2h4V6zm10 0v2h4V6z", tasks:"M5 3h14v19H5zm3 4v2h8V7zm0 5v2h8v-2zm0 5v2h5v-2z", statistics:"M3 20h18v2H3zm2-9h3v7H5zm5-5h3v12h-3zm5-4h3v16h-3z", knowledge:"M11 2h2v5h-2zM2 16h5v2H2zm15 0h5v2h-5zM8 7h8v8H8zM4 19h4v4H4zm12 0h4v4h-4z", content:"M2 4h8l2 2 2-2h8v17h-8l-2 2-2-2H2zm3 3v2h4V7zm10 0v2h4V7z", catalog:"M2 4h8l2 2 2-2h8v17h-8l-2 2-2-2H2zm3 3v2h4V7zm10 0v2h4V7z", archives:"M2 3h20v5H2zm2 7h16v11H4zm5 3v2h6v-2z", wrongs:"M5 3h14v19H5zm3 5 3 3-3 3 2 2 3-3 3 3 2-2-3-3 3-3-2-2-3 3-3-3z", settings:"M3 5h18v2H3zm0 6h18v2H3zm0 6h18v2H3zM7 3h3v6H7zm7 6h3v6h-3zm-7 6h3v6H7z"};
-      path.setAttribute("d", shapes[key] || "M3 4h8v7H3zm10 0h8v7h-8zM3 13h8v7H3zm10 0h8v7h-8z"); icon.append(path);
+      path.setAttribute("d", navigationIcons[key] || navigationIcons.home); icon.append(path);
       const label = document.createElement("span"); label.className = "nav-label"; label.textContent = title;
       b.append(icon, label); b.addEventListener("click", () => choose(key)); nav.append(b);
     }
     selected = new URLSearchParams(location.hash.slice(1)).get("view") || "home";
     new MutationObserver(decorate).observe($("universityPanel"), {childList:true, subtree:true});
-    choose(selected);
+    choose(selected, new URLSearchParams(location.hash.slice(1)).get("attempt"));
   }
   function register(kind, value) { if (identity?.universityKind === kind) controller = value; }
   function expired(message = "登录状态已失效，请重新登录。") {
@@ -321,13 +349,14 @@ window.universityWorkspace = (() => {
     await request("/api/logout", {method:"POST"});
     location.replace(`/?workspace=${identity.universityKind}`);
   }
-  $("loginUser").addEventListener("input", () => {
-    delete $("loginCollege").dataset.needed;
-    $("loginCollege").value = "";
-    updateLogin();
-  });
   $("universityRefresh").addEventListener("click", refresh);
   $("universityRetry").addEventListener("click", refresh);
+  window.addEventListener("hashchange", () => {
+    if (!identity) return;
+    const params = new URLSearchParams(location.hash.slice(1));
+    if(params.get("email"))return;
+    choose(params.get("view") || "home", params.get("attempt"), true);
+  });
   function notify(message, error = false) {
     status(message, error);
     $("universityRetry").hidden = true;

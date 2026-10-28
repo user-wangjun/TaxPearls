@@ -35,6 +35,43 @@ class ClassroomTests(unittest.TestCase):
         self.class_id=self.client.post('/api/classes',json={'name':'审计一班','student_ids':[self.student['id']]}).json()['id']
         self.future=datetime(2032,1,1,tzinfo=UTC)
 
+
+    def allow_free_retake(self, aid):
+        """本套件验证的是提交/复核/日志的回滚与计数，不是订正闸门口径。
+
+        2026-10-22 起默认「必须教师退回才能订正」，这里显式保留自由重交，
+        避免把两种语义混在同一个用例里。
+        """
+        with self.store.connect() as db:
+            # 组卷题目按试卷的策略走，命中的任务对象可能是 paper 而不是 assignment
+            row = db.execute("SELECT paper_id FROM training_assignment_settings WHERE assignment_id=?",
+                             (aid,)).fetchone()
+            subjects = [('assignment', aid)]
+            if row and row['paper_id']:
+                subjects.append(('paper', row['paper_id']))
+            for kind, subject in subjects:
+                db.execute("""INSERT INTO training_task_settings
+                                (subject_kind,subject_id,org_id,retake_policy,updated_at)
+                              VALUES (?,?,?,'free','2026-01-01T00:00:00+00:00')
+                              ON CONFLICT(subject_kind,subject_id)
+                              DO UPDATE SET retake_policy='free'""",
+                           (kind, subject, self.teacher['org_id']))
+        return aid
+
+    def open_answers_after_submit(self, kind, subject_id):
+        """本套件断言的是提交回执里的机器分，显式选「交后即可看」。
+
+        2026-10-22 起默认 after_due（截止后才开放答案与解析），而这里的作业截止
+        在 2032 年；不显式放开，提交回执里的分数会被策略挡掉。
+        """
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO training_task_settings
+                            (subject_kind,subject_id,org_id,answer_release,updated_at)
+                          VALUES (?,?,?,'after_submit','2026-01-01T00:00:00+00:00')
+                          ON CONFLICT(subject_kind,subject_id)
+                          DO UPDATE SET answer_release='after_submit'""",
+                       (kind, subject_id, self.teacher['org_id']))
+
     def tearDown(self):
         self.client.__exit__(None,None,None);module.store=self.old;self.tmp.cleanup();self.env.stop()
 
@@ -71,6 +108,7 @@ class ClassroomTests(unittest.TestCase):
         single = self.client.post('/api/assignments', json=single_body).json()['id']
         self.login(self.student)
         self.assertEqual(self.submit(aid, []).status_code, 200)
+        self.allow_free_retake(aid)
         submission = self.store.get_submission(aid, self.student['id'])['id']
         operations = [
             (self.teacher, 'post', '/api/classes', {'name': '新班', 'student_ids': [self.other['id']]}, 'create_class'),
@@ -158,7 +196,9 @@ class ClassroomTests(unittest.TestCase):
         self.assertEqual([self.store.get_audit(c['audit_id']) for c in self.cases],snapshots)
 
     def test_weighted_paper_progress_scores_and_reviewed_scores(self):
-        pid=self.paper(True);items=self.paper_cases(pid);self.login(self.student)
+        pid=self.paper(True);items=self.paper_cases(pid)
+        self.open_answers_after_submit('paper',pid)
+        self.login(self.student)
         self.assertIsNone(self.client.get('/api/papers/'+pid).json()['progress']['score'])
         first=self.submit(items[0]['id'],self.cases[0]['metadata']['standard_answer'])
         self.assertEqual(first.json()['score'],100)
@@ -500,7 +540,8 @@ class ClassroomTests(unittest.TestCase):
         self.assertIn('text/javascript',script.headers['content-type'])
         self.assertIn('createTrainingClassroom',script.text)
         page=self.client.get('/').text
-        self.assertIn('src="/classroom.js?',page)
+        self.assertNotIn('src="/classroom.js?',page)
+        self.assertIn('load("classroom.js")',self.client.get('/console.js').text)
         for control in ['classRoster','paperDraft','paperDetail','paperClass','assignmentDeadline','exerciseDeadlineStatus']:
             self.assertIn('id="'+control+'"',page)
 

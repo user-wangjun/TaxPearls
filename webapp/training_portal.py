@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import os
@@ -32,7 +33,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from webapp.login_guard import LoginGuard
-from webapp import code_sandbox, university_members
+from webapp import university_members
 from webapp.storage import _hash_token, _now, _validate_password, session_max_age
 from webapp.training_content import (applicability, ensure_active_version,
                                      resolve_active_version, version_brief, teaching_rules, update_status)
@@ -386,164 +387,6 @@ def set_student_active(store, student_id: str, active: bool, *, college: str, ac
     return dict(row)
 
 
-# ---- 编程题库（FR-J01 v1：数据模型与管理；判题引擎/沙箱待专项） ----
-
-def list_code_problems(store, college: str, *, include_inactive: bool = True) -> list[dict[str, Any]]:
-    with store.connect() as db:
-        where = "" if include_inactive else " AND p.active=1"
-        rows = db.execute(
-            f"""SELECT p.id, p.college, p.title, p.language, p.time_limit_ms,
-                       p.memory_limit_kb, p.knowledge_point_id, p.active, p.created_at,
-                       (SELECT count(*) FROM code_test_case t WHERE t.problem_id=p.id) AS case_count,
-                       kp.name AS knowledge_point_name
-                FROM code_problem p LEFT JOIN knowledge_point kp ON kp.id=p.knowledge_point_id
-                WHERE p.college=?{where} ORDER BY p.created_at DESC""", (college,)).fetchall()
-    return [dict(r) for r in rows]
-
-
-def create_code_problem(store, operator_id: str, college: str, title: str, *,
-                        statement: str = "", language: str = "python",
-                        time_limit_ms: int = 5000, memory_limit_kb: int = 65536,
-                        knowledge_point_id: str | None = None,
-                        cases: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    title = (title or "").strip()
-    language = (language or "python").strip().lower()
-    if not title:
-        raise TrainingPortalError("题目标题必填。")
-    if not college:
-        raise TrainingPortalError("院校必填。")
-    if language != "python":
-        raise TrainingPortalError("v1 仅支持 python 语言判题环境。")
-    if time_limit_ms not in range(500, 60001):
-        raise TrainingPortalError("时间限制须在 500~60000 毫秒。")
-    if memory_limit_kb not in range(1024, 1048577):
-        raise TrainingPortalError("内存限制须在 1024~1048576 KB。")
-    cleaned_cases = _clean_test_cases(cases)
-    with store.connect() as db:
-        db.execute("BEGIN IMMEDIATE")
-        if knowledge_point_id and not db.execute(
-                "SELECT 1 FROM knowledge_point WHERE id=?", (knowledge_point_id,)).fetchone():
-            raise TrainingPortalError("关联知识点不存在。", 404)
-        pid = str(uuid.uuid4())
-        db.execute(
-            """INSERT INTO code_problem (id, college, title, statement, language,
-                                         time_limit_ms, memory_limit_kb, knowledge_point_id,
-                                         active, created_by, created_at)
-               VALUES (?,?,?,?,?,?,?, ?,1,?,?)""",
-            (pid, college, title, statement or "", language,
-             time_limit_ms, memory_limit_kb, knowledge_point_id, operator_id, _now()))
-        _insert_test_cases(db, pid, cleaned_cases)
-        row = db.execute("SELECT * FROM code_problem WHERE id=?", (pid,)).fetchone()
-        payload = dict(row)
-        payload["case_count"] = len(cleaned_cases)
-        payload["cases"] = cleaned_cases
-    return payload
-
-
-def update_code_problem(store, problem_id: str, fields: dict[str, Any],
-                        cases: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    allowed = {"title", "statement", "language", "time_limit_ms", "memory_limit_kb",
-               "knowledge_point_id", "active"}
-    with store.connect() as db:
-        db.execute("BEGIN IMMEDIATE")
-        if not db.execute("SELECT 1 FROM code_problem WHERE id=?", (problem_id,)).fetchone():
-            raise TrainingPortalError("题目不存在。", 404)
-        if fields.get("language") and fields["language"] != "python":
-            raise TrainingPortalError("v1 仅支持 python 语言判题环境。")
-        sets, params = [], []
-        for key in sorted(allowed & set(fields)):
-            value = fields[key]
-            if key == "title":
-                value = (value or "").strip()
-                if not value:
-                    raise TrainingPortalError("题目标题必填。")
-            sets.append(f"{key}=?")
-            params.append(value)
-        if sets:
-            params.append(problem_id)
-            db.execute(f"UPDATE code_problem SET {', '.join(sets)} WHERE id=?", params)
-        if cases is not None:
-            cleaned = _clean_test_cases(cases)
-            db.execute("DELETE FROM code_test_case WHERE problem_id=?", (problem_id,))
-            _insert_test_cases(db, problem_id, cleaned)
-        row = db.execute("SELECT * FROM code_problem WHERE id=?", (problem_id,)).fetchone()
-        payload = dict(row)
-        payload["case_count"] = db.execute(
-            "SELECT count(*) n FROM code_test_case WHERE problem_id=?",
-            (problem_id,)).fetchone()["n"]
-        payload["cases"] = [dict(r) for r in db.execute(
-            "SELECT seq, input_text, expected_output, weight, sample, match_mode,"
-            " float_tolerance, alternatives_json FROM code_test_case"
-            " WHERE problem_id=? ORDER BY seq", (problem_id,)).fetchall()]
-    return payload
-
-
-def _clean_test_cases(cases: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """用例清洗（v3.1）：match_mode/float_tolerance/alternatives 校验。
-
-    - match_mode: exact|float|any_of（缺省 exact）；
-    - float_tolerance: (0, 0.5] 开区间内（缺省 None → 引擎用 1e-6），
-      仅 float/any_of 模式允许给；exact 模式给了也忽略并存原值；
-    - alternatives: 仅 any_of 使用，非空字符串列表（≤20 条，单条 ≤4096 字符）；
-      exact 模式给 alternatives 视为配置错误（避免教师误配静默失效）。"""
-    cleaned = []
-    for i, c in enumerate(cases or [], start=1):
-        input_text = str(c.get("input_text") or "")
-        expected = str(c.get("expected_output") or "")
-        raw_weight = c.get("weight")
-        weight = 1.0 if raw_weight is None else float(raw_weight)
-        if weight <= 0:
-            raise TrainingPortalError(f"第 {i} 个用例权重必须为正数。")
-        mode = str(c.get("match_mode") or "exact").strip().lower()
-        if mode not in code_sandbox.MATCH_MODES:
-            raise TrainingPortalError(
-                f"第 {i} 个用例 match_mode 须为 {'/'.join(code_sandbox.MATCH_MODES)}。")
-        raw_tol = c.get("float_tolerance")
-        tolerance = None if raw_tol in (None, "") else float(raw_tol)
-        if tolerance is not None and not (0 < tolerance <= 0.5):
-            raise TrainingPortalError(f"第 {i} 个用例容差须在 (0, 0.5] 之间。")
-        alternatives = c.get("alternatives")
-        if alternatives is not None and mode != "any_of":
-            raise TrainingPortalError(
-                f"第 {i} 个用例只有 any_of 模式可配置多解候选。")
-        alt_list: list[str] = []
-        if mode == "any_of":
-            for alt in (alternatives or []):
-                text = str(alt)
-                if not text.strip():
-                    raise TrainingPortalError(f"第 {i} 个用例多解候选不能为空串。")
-                if len(text) > 4096:
-                    raise TrainingPortalError(f"第 {i} 个用例多解候选超长（≤4096 字符）。")
-                alt_list.append(text)
-            if len(alt_list) > 20:
-                raise TrainingPortalError(f"第 {i} 个用例多解候选最多 20 条。")
-            if not alt_list:
-                raise TrainingPortalError(
-                    f"第 {i} 个用例 any_of 模式须至少给 1 条多解候选。")
-        cleaned.append({"seq": i, "input_text": input_text, "expected_output": expected,
-                        "weight": weight, "sample": 1 if c.get("sample") else 0,
-                        "match_mode": mode, "float_tolerance": tolerance,
-                        "alternatives": alt_list})
-    return cleaned
-
-
-def _insert_test_cases(db, problem_id: str, cases: list[dict[str, Any]]) -> None:
-    for c in cases:
-        db.execute(
-            """INSERT INTO code_test_case (id, problem_id, seq, input_text,
-                                           expected_output, weight, sample,
-                                           match_mode, float_tolerance, alternatives_json,
-                                           created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (str(uuid.uuid4()), problem_id, c["seq"], c["input_text"],
-             c["expected_output"], c["weight"], c["sample"],
-             c["match_mode"], c["float_tolerance"],
-             json.dumps(c["alternatives"], ensure_ascii=False) if c["alternatives"] else None,
-             _now()))
-
-
-
-
 _COURSE_SELECT = """
     SELECT c.id, c.college, c.name, c.semester, c.teacher_id, c.description,
            c.active, c.created_at,
@@ -568,278 +411,6 @@ def list_courses(store, college: str, *, include_inactive: bool = True) -> list[
         where = "" if include_inactive else " AND c.active=1"
         rows = db.execute(f"{_COURSE_SELECT} WHERE c.college=?{where} ORDER BY c.created_at DESC", (college,)).fetchall()
         return [_course_payload(db, r) for r in rows]
-
-
-# ---- 编程提交与判题（FR-J02 v1 提交加密存储 + J04 教学级引擎） ----
-
-_CODE_SUBMISSION_RATE_SECONDS = 30  # 同学生同题两次提交最小间隔（防刷沙箱）
-
-
-def submit_code(store, problem_id: str, student_id: str, code_text: str) -> dict[str, Any]:
-    code_text = (code_text or "").replace("\r\n", "\n")
-    if not (1 <= len(code_text) <= 65536):
-        raise TrainingPortalError("代码长度须在 1~65536 字符。")
-    with store.connect() as db:
-        db.execute("BEGIN IMMEDIATE")
-        problem = db.execute(
-            """SELECT id, language, time_limit_ms, active FROM code_problem WHERE id=?
-               AND college=(SELECT college FROM student_info WHERE id=? AND active=1)""",
-            (problem_id, student_id)).fetchone()
-        if not problem or not problem["active"]:
-            raise TrainingPortalError("题目不存在或已停用。", 404)
-        if problem["language"] != "python":
-            raise TrainingPortalError("v1 仅支持 python 判题。")
-        recent = db.execute(
-            """SELECT submitted_at FROM code_submission
-               WHERE problem_id=? AND student_id=? ORDER BY submitted_at DESC LIMIT 1""",
-            (problem_id, student_id)).fetchone()
-        if recent:
-            elapsed = (datetime.fromisoformat(_now())
-                       - datetime.fromisoformat(recent["submitted_at"])).total_seconds()
-            if elapsed < _CODE_SUBMISSION_RATE_SECONDS:
-                raise TrainingPortalError(
-                    f"提交过于频繁，同题每 {_CODE_SUBMISSION_RATE_SECONDS} 秒限一次，请稍候。")
-        sid = str(uuid.uuid4())
-        db.execute(
-            """INSERT INTO code_submission (id, problem_id, student_id, language,
-                                            code_text, status, submitted_at)
-               VALUES (?,?,?,?,?, 'pending', ?)""",
-            (sid, problem_id, student_id, problem["language"],
-             db.field_codec.seal(code_text, "code_submission", "code_text", sid),
-             _now()))
-    # FR-J05：队列模式（TAXPEARLS_CODE_JUDGE_QUEUE_ENABLED=1）提交入队，
-    # 由 worker 后台判题；默认仍同步判题（契约不变，测试与单机课堂直接出分）。
-    from webapp import code_judge_queue
-    if code_judge_queue.queue_enabled():
-        task_id = code_judge_queue.enqueue(store, sid)
-        return {"submission_id": sid, "task_id": task_id, "status": "pending",
-                "queued": True, "sandbox_notice": code_sandbox_notice()}
-    return judge_submission(store, sid)
-
-
-def code_sandbox_notice() -> str:
-    from webapp import code_sandbox
-    return code_sandbox.SANDBOX_NOTICE
-
-
-def code_judge_queue_retry(store, task_id: str) -> dict[str, Any]:
-    from webapp import code_judge_queue
-    return code_judge_queue.retry_task(store, task_id)
-
-
-def judge_submission(store, submission_id: str) -> dict[str, Any]:
-    """教学级判题（J04 v3.1）：逐用例受限运行并加权计分。
-
-    边界：单进程同步执行（J05 队列可选异步）；比对按用例 match_mode
-    （exact/float 浮点容差/any_of 多解判定，见 code_sandbox.compare_output）；
-    判题器边界见 code_sandbox.SANDBOX_NOTICE。"""
-    from webapp import code_sandbox
-    with store.connect() as db:
-        submission = db.execute(
-            "SELECT * FROM code_submission WHERE id=?", (submission_id,)).fetchone()
-        if not submission:
-            raise TrainingPortalError("提交不存在。", 404)
-        problem = db.execute(
-            "SELECT time_limit_ms FROM code_problem WHERE id=?",
-            (submission["problem_id"],)).fetchone()
-        code = submission["code_text"]  # 行工厂（attach row handler）已按身份校验并解密
-        cases = [dict(r) for r in db.execute(
-            "SELECT seq, input_text, expected_output, weight, match_mode,"
-            " float_tolerance, alternatives_json FROM code_test_case"
-            " WHERE problem_id=? ORDER BY seq", (submission["problem_id"],)).fetchall()]
-        detail: list[dict[str, Any]] = []
-        passed_weight = 0.0
-        total_weight = 0.0
-        passed_count = 0
-        worst = "accepted"
-        severity = {"accepted": 0, "wrong_answer": 1, "runtime_error": 2, "timeout": 3}
-        for case in cases:
-            run = code_sandbox.run_case(code, case["input_text"],
-                                        time_limit_ms=problem["time_limit_ms"])
-            try:
-                alternatives = json.loads(case["alternatives_json"] or "[]")
-            except (TypeError, ValueError):
-                alternatives = []
-            ok = run["status"] == "ok" and code_sandbox.compare_output(
-                run["output"], case["expected_output"],
-                mode=case["match_mode"] or "exact",
-                tolerance=case["float_tolerance"],
-                alternatives=alternatives)
-            total_weight += float(case["weight"])
-            if ok:
-                passed_weight += float(case["weight"])
-                passed_count += 1
-            else:
-                status = run["status"] if run["status"] in (
-                    code_sandbox.STATUS_RUNTIME_ERROR, code_sandbox.STATUS_TIMEOUT) \
-                    else code_sandbox.STATUS_WRONG
-                if severity[status] > severity[worst]:
-                    worst = status
-            detail.append({
-                "seq": case["seq"], "passed": ok,
-                "runtime_ms": run["runtime_ms"],
-                "run_status": run["status"],
-                "output_excerpt": run["output"][:512],
-            })
-        total_score = round(passed_weight / total_weight * 100, 2) if total_weight else 0.0
-        final_status = worst if passed_count < len(cases) else "accepted"
-        if not cases:
-            final_status = "judgement_failed"
-            detail = [{"error": "题目没有配置测试用例，无法判题。"}]
-        rid = str(uuid.uuid4())
-        db.execute("BEGIN IMMEDIATE")
-        # 队列重试（J05）会对同一提交重判：替换旧判题结果与评分记录
-        # （正常流一次性，历史提交行不被覆盖的惯例只针对提交本身）。
-        db.execute("DELETE FROM code_score_record WHERE submission_id=?", (submission_id,))
-        db.execute("DELETE FROM code_judge_result WHERE submission_id=?", (submission_id,))
-        db.execute(
-            """INSERT INTO code_judge_result (id, submission_id, status, total_score,
-                                              passed_count, case_count, detail_json, judged_at)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (rid, submission_id, final_status, total_score, passed_count,
-             len(cases), json.dumps(detail, ensure_ascii=False), _now()))
-        db.execute("UPDATE code_submission SET status='judged' WHERE id=?", (submission_id,))
-        row = db.execute("SELECT * FROM code_judge_result WHERE id=?", (rid,)).fetchone()
-        # FR-J07/J08：质量分与评分桥接与判题同事务落库。质量分是辅助维度
-        # （不改判对错）；code_score_record 把判题客观分作为评分体系的事实
-        # 来源，教师可后续调分（adjust_code_score）。
-        # 质量评估用纯函数 assess（不开新连接），插入走本事务，避免嵌套写锁。
-        from webapp import code_quality
-        quality = None
-        if submission["language"] == "python":
-            quality = code_quality.assess(code)
-            db.execute("DELETE FROM code_quality_result WHERE submission_id=?", (submission_id,))
-            db.execute(
-                """INSERT INTO code_quality_result (id, submission_id, score, detail_json, checked_at)
-                   VALUES (?,?,?,?,?)""",
-                (str(uuid.uuid4()), submission_id, quality["score"],
-                 json.dumps(quality["checks"], ensure_ascii=False), _now()))
-        if final_status != "judgement_failed":
-            db.execute("DELETE FROM code_score_record WHERE submission_id=?", (submission_id,))
-            db.execute(
-                """INSERT INTO code_score_record (id, submission_id, judge_result_id,
-                                                  auto_score, adjusted_score, adjust_reason,
-                                                  adjust_log_json, adjusted_by, updated_at)
-                   VALUES (?,?,?,?,NULL,'','[]',NULL,?)""",
-                (str(uuid.uuid4()), submission_id, rid, total_score, _now()))
-    return {**dict(row), "detail": json.loads(row["detail_json"]),
-            "quality": quality,
-            "sandbox_notice": code_sandbox.SANDBOX_NOTICE}
-
-
-# ---- J08 判题分接入评分体系：教师调分与明细查看 ----
-
-def code_submission_college(store, submission_id: str) -> str | None:
-    """提交所属院校（经题目归属；code_submission 本身无 college 列）。"""
-    with store.connect() as db:
-        row = db.execute(
-            """SELECT p.college FROM code_submission s
-               JOIN code_problem p ON p.id=s.problem_id WHERE s.id=?""",
-            (submission_id,)).fetchone()
-    return row["college"] if row else None
-
-def get_code_score(store, submission_id: str) -> dict[str, Any]:
-    """一份提交的评分记录：判题客观分 + 教师调分 + 生效分 + 质量分。"""
-    from webapp import code_quality
-    with store.connect() as db:
-        row = db.execute(
-            """SELECT r.id AS record_id, r.auto_score, r.adjusted_score, r.adjust_reason,
-                      r.adjust_log_json, r.adjusted_by, r.updated_at,
-                      j.status AS judge_status, j.total_score, j.passed_count, j.case_count,
-                      j.judged_at
-               FROM code_score_record r
-               JOIN code_judge_result j ON j.id=r.judge_result_id
-               WHERE r.submission_id=?""", (submission_id,)).fetchone()
-        if not row:
-            raise TrainingPortalError("该提交尚未完成判题，暂无评分记录。", 404)
-    payload = dict(row)
-    payload["adjust_log"] = json.loads(row["adjust_log_json"] or "[]")
-    payload["effective_score"] = (row["adjusted_score"]
-                                  if row["adjusted_score"] is not None else row["auto_score"])
-    payload["quality"] = code_quality.get_quality(store, submission_id)
-    payload.pop("adjust_log_json", None)
-    return payload
-
-
-def adjust_code_score(store, submission_id: str, new_score: float, reason: str,
-                      operator_id: str) -> dict[str, Any]:
-    """教师调分（J08）：沿用评分框架的留痕惯例，全部调整入 adjust_log。"""
-    new_score = round(float(new_score), 2)
-    if not (0.0 <= new_score <= 100.0):
-        raise TrainingPortalError("调分须在 0~100 之间。")
-    reason = (reason or "").strip()
-    if not reason:
-        raise TrainingPortalError("调分必须填写理由（留痕要求）。")
-    now = _now()
-    with store.connect() as db:
-        db.execute("BEGIN IMMEDIATE")
-        row = db.execute(
-            "SELECT auto_score, adjusted_score, adjust_log_json FROM code_score_record"
-            " WHERE submission_id=?", (submission_id,)).fetchone()
-        if not row:
-            raise TrainingPortalError("该提交尚未完成判题，暂无评分记录。", 404)
-        previous = (row["adjusted_score"] if row["adjusted_score"] is not None
-                    else row["auto_score"])
-        log = json.loads(row["adjust_log_json"] or "[]")
-        log.append({"at": now, "operator_id": operator_id, "from": previous,
-                    "to": new_score, "reason": reason})
-        db.execute(
-            """UPDATE code_score_record SET adjusted_score=?, adjust_reason=?,
-                   adjust_log_json=?, adjusted_by=?, updated_at=? WHERE submission_id=?""",
-            (new_score, reason, json.dumps(log, ensure_ascii=False), operator_id, now,
-             submission_id))
-    return get_code_score(store, submission_id)
-
-
-def _submission_view(row: sqlite3.Row, include_code: bool = False) -> dict[str, Any]:
-    payload = {key: row[key] for key in
-               ("id", "problem_id", "student_id", "language", "status", "submitted_at")}
-    if include_code:
-        payload["code_text"] = row["code_text"]  # 行工厂已解密（codec row handler）
-    return payload
-
-
-def list_code_submissions(store, *, problem_id: str | None = None,
-                          student_id: str | None = None,
-                          include_code: bool = False,
-                          limit: int = 50) -> list[dict[str, Any]]:
-    clauses, params = [], []
-    if problem_id:
-        clauses.append("s.problem_id=?"); params.append(problem_id)
-    if student_id:
-        clauses.append("s.student_id=?"); params.append(student_id)
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    params.append(max(1, min(int(limit), 200)))
-    out = []
-    with store.connect() as db:
-        rows = db.execute(
-            f"""SELECT s.*, r.status AS judge_status, r.total_score,
-                       r.passed_count, r.case_count, r.judged_at,
-                       sc.adjusted_score, sc.auto_score
-                FROM code_submission s
-                LEFT JOIN code_judge_result r ON r.submission_id = s.id
-                LEFT JOIN code_score_record sc ON sc.submission_id = s.id
-                {where} ORDER BY s.submitted_at DESC LIMIT ?""", params).fetchall()
-        for row in rows:
-            view = {key: row[key] for key in
-                    ("id", "problem_id", "student_id", "language", "status", "submitted_at")}
-            view["judge"] = None if row["judge_status"] is None else {
-                "status": row["judge_status"], "total_score": row["total_score"],
-                "passed_count": row["passed_count"], "case_count": row["case_count"],
-                "judged_at": row["judged_at"]}
-            # J08：生效分 = 教师调分（未调 = 判题客观分）；未判题无评分。
-            if row["judge_status"] is None:
-                view["effective_score"] = None
-            else:
-                view["effective_score"] = (row["adjusted_score"]
-                                           if row["adjusted_score"] is not None
-                                           else row["auto_score"])
-            if include_code:
-                view["code_text"] = row["code_text"]  # 行工厂（attach row handler）已解密
-            out.append(view)
-    return out
-
-
 
 
 # ---- 课程管理（FR-U04 v1：课程绑定教师与班级，支持同课多班） ----
@@ -1102,6 +673,7 @@ class OrgClassCreate(BaseModel):
     college: str
     name: str
     department_id: str | None = None
+    major_id: str | None = None
     term_id: str | None = None
 
 
@@ -1109,7 +681,22 @@ class OrgClassPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str | None = None
     department_id: str | None = None
+    major_id: str | None = None
     term_id: str | None = None
+    archived: bool | None = None
+
+
+class OrgMajorCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    college: str
+    name: str
+    department_id: str | None = None
+
+
+class OrgMajorPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    department_id: str | None = None
     archived: bool | None = None
 
 
@@ -1206,6 +793,88 @@ def delete_department(store, department_id: str) -> dict[str, Any]:
             raise TrainingPortalError(f"该院系仍被 {used} 个班级引用，请先调整班级归属或归档院系。", 409)
         db.execute("DELETE FROM college_department WHERE id=?", (department_id,))
     return {"deleted": True, "id": department_id}
+
+
+# ---- 专业层级（FR-U01 待补）：院系 → 专业 → 班级 ----
+#
+# 专业挂院系（可空、同院校引用校验），班级可选挂专业；同院校专业名唯一，
+# 被班级引用禁删 409（可归档保留）。层级变更不改写既有学生名册归属。
+
+def list_majors(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
+    """专业列表，附引用班级数（删除保护提示用）。"""
+    where = "" if include_archived else "AND m.archived=0"
+    with store.connect() as db:
+        rows = db.execute(
+            f"""SELECT m.id, m.college, m.name, m.department_id, m.archived, m.created_at,
+                      d.name AS department_name, count(c.id) AS classes
+               FROM college_major m
+               LEFT JOIN college_department d ON d.id = m.department_id
+               LEFT JOIN college_class c ON c.major_id = m.id
+               WHERE m.college=? {where}
+               GROUP BY m.id
+               ORDER BY m.archived, m.name""", (college,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def create_major(store, college: str, name: str, *,
+                 department_id: str | None = None) -> dict[str, Any]:
+    college = (college or "").strip()
+    name = _org_name(name, "专业")
+    if not college:
+        raise TrainingPortalError("院校必填。")
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        department_id, _ = _org_ref_check(db, college,
+                                          (department_id or "").strip() or None, None)
+        dup = db.execute("SELECT id FROM college_major WHERE college=? AND name=?",
+                         (college, name)).fetchone()
+        if dup:
+            raise TrainingPortalError(f"已存在专业「{name}」。", 409)
+        mid = str(uuid.uuid4())
+        db.execute("INSERT INTO college_major (id, college, name, department_id, archived, created_at)"
+                   " VALUES (?,?,?,?,0,?)", (mid, college, name, department_id, _now()))
+        row = db.execute("SELECT * FROM college_major WHERE id=?", (mid,)).fetchone()
+    return dict(row)
+
+
+def update_major(store, major_id: str, *, name: str | None = None,
+                 department_id: str | None = None,
+                 archived: bool | None = None) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_major WHERE id=?", (major_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("专业不存在。", 404)
+        new_name = row["name"]
+        if name is not None:
+            new_name = _org_name(name, "专业")
+            dup = db.execute("SELECT id FROM college_major WHERE college=? AND name=? AND id!=?",
+                             (row["college"], new_name, major_id)).fetchone()
+            if dup:
+                raise TrainingPortalError(f"已存在专业「{new_name}」。", 409)
+        new_department = row["department_id"]
+        if department_id is not None:
+            new_department = department_id.strip() or None
+            _org_ref_check(db, row["college"], new_department, None)
+        db.execute("UPDATE college_major SET name=?, department_id=? WHERE id=?",
+                   (new_name, new_department, major_id))
+        _update_archived(db, "college_major", major_id, archived)
+        row = db.execute("SELECT * FROM college_major WHERE id=?", (major_id,)).fetchone()
+    return dict(row)
+
+
+def delete_major(store, major_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+        row = db.execute("SELECT * FROM college_major WHERE id=?", (major_id,)).fetchone()
+        if not row:
+            raise TrainingPortalError("专业不存在。", 404)
+        used = db.execute("SELECT count(*) n FROM college_class WHERE major_id=?",
+                          (major_id,)).fetchone()["n"]
+        if used:
+            raise TrainingPortalError(f"该专业仍被 {used} 个班级引用，请先调整班级归属或归档专业。", 409)
+        db.execute("DELETE FROM college_major WHERE id=?", (major_id,))
+    return {"deleted": True, "id": major_id}
 
 
 def list_terms(store, college: str, *, include_archived: bool = True) -> list[dict[str, Any]]:
@@ -1313,8 +982,9 @@ def _class_unique_check(db, college: str, name: str, term_id: str | None,
 
 
 def _org_ref_check(db, college: str, department_id: str | None,
-                   term_id: str | None) -> tuple[str | None, str | None]:
-    """引用的院系/学期必须存在且属于同院校（跨院校引用拒绝）。"""
+                   term_id: str | None,
+                   major_id: str | None = None) -> tuple[str | None, str | None]:
+    """引用的院系/学期/专业必须存在且属于同院校（跨院校引用拒绝）。"""
     if department_id:
         row = db.execute("SELECT id FROM college_department WHERE id=?", (department_id,)).fetchone()
         if not row:
@@ -1328,6 +998,12 @@ def _org_ref_check(db, college: str, department_id: str | None,
             raise TrainingPortalError("学期不存在。", 404)
         if own["college"] != college:
             raise TrainingPortalError("学期属于其他院校。", 422)
+    if major_id:
+        own = db.execute("SELECT college FROM college_major WHERE id=?", (major_id,)).fetchone()
+        if not own:
+            raise TrainingPortalError("专业不存在。", 404)
+        if own["college"] != college:
+            raise TrainingPortalError("专业属于其他院校。", 422)
     return department_id, term_id
 
 
@@ -1336,13 +1012,15 @@ def list_org_classes(store, college: str, *, include_archived: bool = True) -> l
     where = "" if include_archived else "AND c.archived=0"
     with store.connect() as db:
         rows = db.execute(
-            f"""SELECT c.id, c.college, c.name, c.department_id, c.term_id, c.archived,
-                       c.created_at, d.name AS department_name, t.name AS term_name,
+            f"""SELECT c.id, c.college, c.name, c.department_id, c.major_id, c.term_id,
+                       c.archived, c.created_at, d.name AS department_name,
+                       mj.name AS major_name, t.name AS term_name,
                        (SELECT count(*) FROM student_info s
                         WHERE s.college=c.college AND s.class_name=c.name AND s.active=1)
                        AS active_students
                 FROM college_class c
                 LEFT JOIN college_department d ON d.id=c.department_id
+                LEFT JOIN college_major mj ON mj.id=c.major_id
                 LEFT JOIN college_term t ON t.id=c.term_id
                 WHERE c.college=? {where}
                 ORDER BY c.archived, c.name""", (college,)).fetchall()
@@ -1350,6 +1028,7 @@ def list_org_classes(store, college: str, *, include_archived: bool = True) -> l
 
 
 def create_org_class(store, college: str, name: str, *, department_id: str | None = None,
+                 major_id: str | None = None,
                  term_id: str | None = None) -> dict[str, Any]:
     college = (college or "").strip()
     name = _org_name(name, "班级")
@@ -1358,18 +1037,21 @@ def create_org_class(store, college: str, name: str, *, department_id: str | Non
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
         department_id, term_id = _org_ref_check(db, college, (department_id or "").strip() or None,
-                                                (term_id or "").strip() or None)
+                                                (term_id or "").strip() or None,
+                                                (major_id or "").strip() or None)
         _class_unique_check(db, college, name, term_id)
         cid = str(uuid.uuid4())
-        db.execute("INSERT INTO college_class (id, college, name, department_id, term_id,"
-                   " archived, created_at) VALUES (?,?,?,?,?,0,?)",
-                   (cid, college, name, department_id, term_id, _now()))
+        db.execute("INSERT INTO college_class (id, college, name, department_id, major_id,"
+                   " term_id, archived, created_at) VALUES (?,?,?,?,?,?,0,?)",
+                   (cid, college, name, department_id, (major_id or "").strip() or None,
+                    term_id, _now()))
         row = db.execute("SELECT * FROM college_class WHERE id=?", (cid,)).fetchone()
     return dict(row)
 
 
 def update_org_class(store, class_id: str, *, name: str | None = None,
-                 department_id: str | None = None, term_id: str | None = None,
+                 department_id: str | None = None, major_id: str | None = None,
+                 term_id: str | None = None,
                  archived: bool | None = None) -> dict[str, Any]:
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -1378,16 +1060,20 @@ def update_org_class(store, class_id: str, *, name: str | None = None,
             raise TrainingPortalError("班级不存在。", 404)
         new_name = _org_name(name, "班级") if name is not None else row["name"]
         new_department = row["department_id"]
+        new_major = row["major_id"]
         new_term = row["term_id"]
-        if department_id is not None or term_id is not None:
+        if department_id is not None or term_id is not None or major_id is not None:
             if department_id is not None:
                 new_department = department_id.strip() or None
+            if major_id is not None:
+                new_major = major_id.strip() or None
             if term_id is not None:
                 new_term = term_id.strip() or None
-            new_department, new_term = _org_ref_check(db, row["college"], new_department, new_term)
+            new_department, new_term = _org_ref_check(db, row["college"], new_department,
+                                                      new_term, new_major)
         _class_unique_check(db, row["college"], new_name, new_term, exclude_id=class_id)
-        db.execute("UPDATE college_class SET name=?, department_id=?, term_id=? WHERE id=?",
-                   (new_name, new_department, new_term, class_id))
+        db.execute("UPDATE college_class SET name=?, department_id=?, major_id=?, term_id=?"
+                   " WHERE id=?", (new_name, new_department, new_major, new_term, class_id))
         _update_archived(db, "college_class", class_id, archived)
         row = db.execute("SELECT * FROM college_class WHERE id=?", (class_id,)).fetchone()
     return dict(row)
@@ -1419,9 +1105,10 @@ def clone_org_class(store, class_id: str, *, term_id: str, name: str | None = No
         new_name = _org_name(name, "班级") if name is not None else row["name"]
         _class_unique_check(db, row["college"], new_name, term_id)
         cid = str(uuid.uuid4())
-        db.execute("INSERT INTO college_class (id, college, name, department_id, term_id,"
-                   " archived, created_at) VALUES (?,?,?,?,?,0,?)",
-                   (cid, row["college"], new_name, row["department_id"], term_id, _now()))
+        db.execute("INSERT INTO college_class (id, college, name, department_id, major_id,"
+                   " term_id, archived, created_at) VALUES (?,?,?,?,?,?,0,?)",
+                   (cid, row["college"], new_name, row["department_id"], row["major_id"],
+                    term_id, _now()))
         new_row = db.execute("SELECT * FROM college_class WHERE id=?", (cid,)).fetchone()
     return {"class": dict(new_row), "cloned_from": class_id, "term_name": term["name"]}
 
@@ -2049,14 +1736,24 @@ def create_knowledge_point(store, staff: dict, cert_id: str, code: str, name: st
             raise TrainingPortalError(f"知识点编码 {code} 在该证书下已存在。", 409)
         if parent_id:
             _assert_same_certificate(db, parent_id, cert_id, "上级知识点")
+        # 考纲升版核对期内新增的知识点：记 added 并对学生隐藏，激活时统一上线。
+        from webapp.training_outline import working_upgrade
+        upgrade = working_upgrade(db, cert_id)
+        if upgrade:
+            review_status = "added"
+            if not outline_version.strip():
+                outline_version = upgrade["to_version"]
+        else:
+            review_status = ""
+        active = 0 if upgrade else 1
         kp_id = str(uuid.uuid4())
         now = _now()
         db.execute(
             """INSERT INTO knowledge_point (id, certificate_id, code, name, subject, parent_id,
-               description, source_ref, outline_version, active, created_at, updated_at)
-               VALUES (?,?,?,?,?,?,?,?,?,1,?,?)""",
+               description, source_ref, outline_version, active, review_status, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?, ?,?)""",
             (kp_id, cert_id, code, name, subject.strip(), parent_id, description.strip(),
-             source_ref.strip(), outline_version.strip(), now, now))
+             source_ref.strip(), outline_version.strip(), active, review_status, now, now))
         row = db.execute("SELECT * FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
         return _kp_payload(db, row)
 
@@ -2096,7 +1793,8 @@ def list_knowledge_points(store, staff: dict, cert_id: str, *,
 
 def update_knowledge_point(store, staff: dict, kp_id: str, *, fields: dict[str, Any]) -> dict[str, Any]:
     allowed = {"name": None, "subject": None, "description": None, "source_ref": None,
-               "outline_version": None, "active": None, "parent_id": None}
+               "outline_version": None, "active": None, "parent_id": None,
+               "review_status": None}
     updates: dict[str, Any] = {}
     for key, value in fields.items():
         if key not in allowed:
@@ -2109,6 +1807,9 @@ def update_knowledge_point(store, staff: dict, kp_id: str, *, fields: dict[str, 
             updates[key] = str(value).strip()
         elif key == "active":
             updates["active"] = 1 if value else 0
+        elif key == "review_status":
+            from webapp.training_outline import assert_consistent_review_status
+            updates["review_status"] = assert_consistent_review_status(value)
         else:
             updates["parent_id"] = value
     if not updates:
@@ -2607,6 +2308,353 @@ def student_knowledge_points(store, student_id: str, cert_id: str) -> list[dict[
 
 
 # ---------------------------------------------------------------------------
+# 证书检索与备考指引（学生端「找证书」）：搜索 → 详情（倒计时/重点知识点/实操）
+#
+# 口径说明（验收：不夸大、可解释）：
+# - 搜索命中原因逐条返回（名称/编码/科目/说明/知识点），多个检索词为"且"关系；
+# - "重点知识点"是确定性排序：常考标注 > 考纲能力要求（掌握/熟悉/了解）条目数
+#   > 已关联仿真规则数，不预测命题，也不承诺通过率；
+# - "实操工作"分两层：教研整理的章节实操清单（静态、标注来源）+ 由
+#   knowledge_point_link 关联出来的规则仿真案例（可点开直接练、可判分）。
+# ---------------------------------------------------------------------------
+
+FOCUS_LIMIT = 12
+RULE_LAB_LIMIT = 12
+REQUIREMENT_LABELS = (("master", "掌握"), ("familiar", "熟悉"), ("know", "了解"))
+CHAPTER_REQUIREMENT_RE = re.compile(r"掌握\s*(\d+)\s*项.*?熟悉\s*(\d+)\s*项.*?了解\s*(\d+)\s*项")
+SEARCH_FIELD_WEIGHT = {"name": 4, "code": 3, "subjects": 2, "knowledge_point": 2, "description": 1}
+
+
+def _requirement_counts(description: str | None) -> dict[str, int]:
+    """从知识点说明里数出考纲能力要求条目（形如「（掌握）」）；未标注时全为 0。"""
+    text = description or ""
+    return {key: text.count(f"（{label}）") for key, label in REQUIREMENT_LABELS}
+
+
+def _chapter_requirement(description: str | None) -> dict[str, int]:
+    """章节说明形如「官方能力要求——掌握 5 项、熟悉 2 项、了解 0 项」。"""
+    match = CHAPTER_REQUIREMENT_RE.search(description or "")
+    if not match:
+        return {"master": 0, "familiar": 0, "know": 0}
+    master, familiar, know = match.groups()
+    return {"master": int(master), "familiar": int(familiar), "know": int(know)}
+
+
+def _snippet(text: str, token: str, width: int = 24) -> str:
+    """命中词前后截一小段，用于说明"为什么搜到它"；不改写原文。"""
+    index = (text or "").lower().find((token or "").lower())
+    if index < 0:
+        return (text or "")[:width]
+    start = max(0, index - width // 2)
+    end = start + width
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+def search_certificates(store, student_id: str, query: str = "", *, limit: int = 20) -> dict[str, Any]:
+    """按证书名称/编码/科目/说明/知识点检索在架证书；空查询返回全部（充当目录）。
+
+    只返回 active 证书与 active 知识点；命中原因随结果返回，供界面写明"搜到它是因为…"。
+    """
+    tokens = [t for t in re.split(r"\s+", (query or "").strip().lower()) if t]
+    limit = max(1, min(int(limit or 20), 50))
+    with store.connect() as db:
+        certs = [dict(r) for r in db.execute(
+            "SELECT * FROM certificate WHERE active=1 ORDER BY created_at").fetchall()]
+        kp_index: dict[str, list[dict[str, Any]]] = {}
+        for r in db.execute("SELECT certificate_id, code, name FROM knowledge_point"
+                            " WHERE active=1 ORDER BY code"):
+            kp_index.setdefault(r["certificate_id"], []).append(dict(r))
+        stats: dict[str, dict[str, int]] = {}
+        for r in db.execute("SELECT certificate_id, count(*) n FROM knowledge_point"
+                            " WHERE active=1 GROUP BY certificate_id"):
+            stats.setdefault(r["certificate_id"], {})["knowledge_points"] = r["n"]
+        for r in db.execute(
+                "SELECT k.certificate_id, count(*) n FROM knowledge_point_mark m"
+                " JOIN knowledge_point k ON k.id=m.knowledge_point_id"
+                " WHERE m.mark_type='high_freq' AND k.active=1 GROUP BY k.certificate_id"):
+            stats.setdefault(r["certificate_id"], {})["high_freq"] = r["n"]
+        for r in db.execute(
+                "SELECT k.certificate_id, count(DISTINCT k.id) n FROM knowledge_point_link l"
+                " JOIN knowledge_point k ON k.id=l.knowledge_point_id"
+                " WHERE l.target_type='rule' AND l.active=1 AND k.active=1 GROUP BY k.certificate_id"):
+            stats.setdefault(r["certificate_id"], {})["practice_kps"] = r["n"]
+        dates: dict[str, list[dict[str, Any]]] = {}
+        for r in db.execute(
+                "SELECT certificate_id, id, round_label, date_type, exam_date FROM exam_date"
+                " WHERE date_type IN ('official','expected') ORDER BY exam_date"):
+            dates.setdefault(r["certificate_id"], []).append({
+                "id": r["id"], "round_label": r["round_label"], "date_type": r["date_type"],
+                "exam_date": r["exam_date"], "countdown": countdown(r["exam_date"])})
+        goals = {r["certificate_id"]: _goal_payload(db, r) for r in db.execute(
+            "SELECT * FROM student_goal WHERE student_id=? AND status='active'", (student_id,))}
+
+    results: list[dict[str, Any]] = []
+    for cert in certs:
+        subjects = json.loads(cert.get("subjects_json") or "[]")
+        fields = (("name", "证书名称", cert["name"]), ("code", "证书编码", cert["code"]),
+                  ("subjects", "科目", "、".join(subjects)),
+                  ("description", "说明", cert.get("description") or ""))
+        reasons: list[dict[str, str]] = []
+        matched = 0
+        for token in tokens:
+            hit = next(({"field": key, "label": label, "text": _snippet(text, token)}
+                        for key, label, text in fields if token in (text or "").lower()), None)
+            if hit is None:
+                hit = next(({"field": "knowledge_point", "label": "知识点",
+                             "text": f"{k['code']} {k['name']}"}
+                            for k in kp_index.get(cert["id"], [])
+                            if token in k["name"].lower() or token in k["code"].lower()), None)
+            if hit is None:
+                break  # 每个检索词都要有落点，才算匹配
+            matched += 1
+            if hit not in reasons:
+                reasons.append(hit)
+        if tokens and matched < len(tokens):
+            continue
+        upcoming = [d for d in dates.get(cert["id"], []) if not d["countdown"]["expired"]]
+        goal = goals.get(cert["id"])
+        results.append({
+            "id": cert["id"], "code": cert["code"], "name": cert["name"],
+            "description": cert.get("description") or "", "subjects": subjects,
+            "next_exam": upcoming[0] if upcoming else None,
+            "exam_dates": upcoming,
+            "counts": {"knowledge_points": 0, "high_freq": 0, "practice_kps": 0,
+                       **stats.get(cert["id"], {})},
+            "my_goal": ({"countdown": goal["countdown"], "countdown_source": goal["countdown_source"],
+                         "planned_date": goal["planned_date"],
+                         "official_date": (goal["official_date"] or {}).get("exam_date")}
+                        if goal else None),
+            "match": reasons,
+            "score": max((SEARCH_FIELD_WEIGHT.get(r["field"], 1) for r in reasons), default=0),
+        })
+    results.sort(key=lambda x: (-x["score"],
+                                (x["next_exam"] or {}).get("exam_date", "9999-12-31"),
+                                x["name"]))
+    suggestions: list[str] = []
+    for cert in certs:
+        for subject in json.loads(cert["subjects_json"] or "[]"):
+            if subject not in suggestions:
+                suggestions.append(subject)
+    with store.connect() as db:
+        for r in db.execute(
+                "SELECT DISTINCT k.name FROM knowledge_point_mark m"
+                " JOIN knowledge_point k ON k.id=m.knowledge_point_id"
+                " WHERE m.mark_type='high_freq' AND k.active=1 ORDER BY k.code LIMIT 6"):
+            if r["name"] not in suggestions:
+                suggestions.append(r["name"])
+    return {"query": (query or "").strip(), "tokens": tokens, "total": len(results),
+            "results": results[:limit], "suggestions": suggestions[:8]}
+
+
+def certificate_guide(store, student_id: str, cert_id: str) -> dict[str, Any]:
+    """证书备考指引：倒计时、重点知识点（可解释排序）、实操工作（教研清单 + 规则案例）。"""
+    from webapp.training_practical import coverage as practical_coverage
+    from webapp.training_practical import items_for as practical_items_for
+
+    rule_by_id = {rule.id: rule for rule in _load_rules(store)}
+    with store.connect() as db:
+        cert_row = db.execute("SELECT * FROM certificate WHERE id=?", (cert_id,)).fetchone()
+        if not cert_row or not cert_row["active"]:
+            raise TrainingPortalError("证书不存在或已下架。", 404)
+        cert = dict(cert_row)
+        subjects = json.loads(cert["subjects_json"] or "[]")
+        rows = [dict(r) for r in db.execute(
+            "SELECT * FROM knowledge_point WHERE certificate_id=? AND active=1 ORDER BY code", (cert_id,))]
+        date_rows = [dict(r) | {"countdown": countdown(r["exam_date"])} for r in db.execute(
+            "SELECT id, round_label, date_type, exam_date FROM exam_date"
+            " WHERE certificate_id=? AND date_type IN ('official','expected') ORDER BY exam_date", (cert_id,))]
+        marks: dict[str, list[dict[str, Any]]] = {}
+        for m in db.execute(
+                "SELECT knowledge_point_id, level, basis_ref, basis_version FROM knowledge_point_mark"
+                " WHERE mark_type='high_freq' AND knowledge_point_id IN"
+                " (SELECT id FROM knowledge_point WHERE certificate_id=? AND active=1)", (cert_id,)):
+            marks.setdefault(m["knowledge_point_id"], []).append(dict(m))
+        links: dict[str, list[str]] = {}
+        for link in db.execute(
+                "SELECT knowledge_point_id, target_id FROM knowledge_point_link"
+                " WHERE target_type='rule' AND active=1 AND knowledge_point_id IN"
+                " (SELECT id FROM knowledge_point WHERE certificate_id=? AND active=1)", (cert_id,)):
+            links.setdefault(link["knowledge_point_id"], []).append(link["target_id"])
+        progress: dict[str, dict[str, int]] = {}
+        totals = {"attempts": 0, "perfect": 0}
+        for r in db.execute(
+                "SELECT id, knowledge_point_id, result_json FROM training_self_practice_attempts"
+                " WHERE student_id=? AND certificate_id=? AND status='scored'"
+                " AND knowledge_point_id IS NOT NULL", (student_id, cert_id)).fetchall():
+            entry = progress.setdefault(r["knowledge_point_id"], {"attempts": 0, "perfect": 0})
+            entry["attempts"] += 1
+            totals["attempts"] += 1
+            try:
+                if json.loads(r["result_json"] or "{}").get("perfect"):
+                    entry["perfect"] += 1
+                    totals["perfect"] += 1
+            except ValueError:
+                continue
+        goal_row = db.execute(
+            "SELECT * FROM student_goal WHERE student_id=? AND certificate_id=? AND status='active'",
+            (student_id, cert_id)).fetchone()
+        goal = _goal_payload(db, goal_row) if goal_row else None
+        version = resolve_active_version(db, cert_id)
+
+    # 章节树：一级为章，二级为实际学习单元；没有层级数据的证书把每个知识点当一章。
+    children: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if row["parent_id"]:
+            children.setdefault(row["parent_id"], []).append(row)
+    chapters = [row for row in rows if not row["parent_id"]]
+    if not chapters:
+        chapters = [row for row in rows if not children.get(row["id"])]
+
+    def unit_payload(chapter: dict[str, Any], unit: dict[str, Any]) -> dict[str, Any]:
+        hot = marks.get(unit["id"], [])
+        rule_ids = links.get(unit["id"], [])
+        stat = progress.get(unit["id"], {"attempts": 0, "perfect": 0})
+        required = _requirement_counts(unit.get("description"))
+        return {"id": unit["id"], "code": unit["code"], "name": unit["name"],
+                "chapter_code": chapter["code"], "chapter_name": chapter["name"],
+                "high_freq": hot, "rule_links": len(rule_ids), "rule_ids": rule_ids,
+                "required": required, "attempts": stat["attempts"], "perfect": stat["perfect"],
+                "score": (100 if hot else 0) + required["master"] * 10
+                         + required["familiar"] * 3 + min(len(rule_ids), 9)}
+
+    units: list[dict[str, Any]] = []
+    for chapter in chapters:
+        children_rows = children.get(chapter["id"]) or [chapter]
+        for unit in children_rows:
+            units.append(unit_payload(chapter, unit))
+
+    focus_sorted = sorted(units, key=lambda u: (-u["score"], u["code"]))
+    focus_items: list[dict[str, Any]] = []
+    for unit in focus_sorted[:FOCUS_LIMIT]:
+        reasons = []
+        if unit["high_freq"]:
+            basis = "、".join(sorted({m["basis_ref"] for m in unit["high_freq"] if m["basis_ref"]}))
+            reasons.append(f"大纲标注常考{f'（{basis}）' if basis else ''}")
+        if unit["required"]["master"]:
+            reasons.append(f"含 {unit['required']['master']} 项「掌握」要求")
+        if unit["rule_links"]:
+            reasons.append(f"已关联 {unit['rule_links']} 条仿真规则，可直接上手练")
+        if unit["attempts"]:
+            reasons.append(f"我已练 {unit['attempts']} 次，满分 {unit['perfect']} 次")
+        focus_items.append({
+            "kind": "knowledge_point", "id": unit["id"], "code": unit["code"], "name": unit["name"],
+            "chapter_code": unit["chapter_code"], "chapter_name": unit["chapter_name"],
+            "required": unit["required"], "high_freq": unit["high_freq"],
+            "rule_links": unit["rule_links"], "attempts": unit["attempts"], "perfect": unit["perfect"],
+            "reason": "；".join(reasons) if reasons else "该章基础知识点，按考纲要求通读并配套练习",
+        })
+
+    chapter_codes = [chapter["code"] for chapter in chapters]
+    kp_name_by_code = {unit["code"]: unit["name"] for unit in units}
+    practical = practical_items_for(chapter_codes)
+    for item in practical:
+        item["focus"] = [{"code": code, "name": kp_name_by_code.get(code, code)}
+                         for code in item["focus_codes"]]
+    rule_labs: list[dict[str, Any]] = []
+    seen_rules: set[str] = set()
+    for chapter in chapters:
+        for unit in (children.get(chapter["id"]) or [chapter]):
+            for rule_id in links.get(unit["id"], []):
+                rule = rule_by_id.get(rule_id)
+                if not rule or rule_id in seen_rules:
+                    continue
+                seen_rules.add(rule_id)
+                rule_labs.append({
+                    "rule_id": rule_id, "rule_code": rule.id, "title": rule.name,
+                    "tax_type": getattr(rule, "tax_type", ""), "severity": getattr(rule, "severity", ""),
+                    "threshold_basis": getattr(rule, "threshold_basis", ""),
+                    "inputs": dict(getattr(rule, "inputs", {}) or {}),
+                    "chapter_code": chapter["code"], "chapter_name": chapter["name"],
+                    "knowledge_point_id": unit["id"], "knowledge_point_code": unit["code"],
+                    "knowledge_point_name": unit["name"],
+                })
+                if len(rule_labs) >= RULE_LAB_LIMIT:
+                    break
+            if len(rule_labs) >= RULE_LAB_LIMIT:
+                break
+        if len(rule_labs) >= RULE_LAB_LIMIT:
+            break
+
+    subject_payload: list[dict[str, Any]] = []
+    ordered_subjects = list(subjects)
+    for row in rows:
+        name = (row["subject"] or "").strip()
+        if name and name not in ordered_subjects:
+            ordered_subjects.append(name)
+    if any(not (row["subject"] or "").strip() for row in rows):
+        ordered_subjects.append("")
+    for subject in ordered_subjects:
+        subject_chapters = [chapter for chapter in chapters if (chapter["subject"] or "").strip() == subject]
+        if not subject_chapters:
+            continue
+        chapter_items = []
+        for chapter in subject_chapters:
+            units_of_chapter = [unit for unit in units if unit["chapter_code"] == chapter["code"]]
+            chapter_items.append({
+                "code": chapter["code"], "name": chapter["name"],
+                "requirement": _chapter_requirement(chapter.get("description")),
+                "kp_count": len(units_of_chapter),
+                "high_freq_count": sum(1 for unit in units_of_chapter if unit["high_freq"]),
+                "practice_kp_count": sum(1 for unit in units_of_chapter if unit["rule_links"]),
+                "focus_count": sum(1 for item in focus_items if item["chapter_code"] == chapter["code"]),
+                "kps": [{"id": unit["id"], "code": unit["code"], "name": unit["name"],
+                         "high_freq": bool(unit["high_freq"]), "rule_links": unit["rule_links"],
+                         "required": unit["required"], "attempts": unit["attempts"],
+                         "perfect": unit["perfect"]} for unit in units_of_chapter],
+            })
+        subject_payload.append({"subject": subject or "未标注科目",
+                                "kp_count": sum(item["kp_count"] for item in chapter_items),
+                                "chapters": chapter_items})
+
+    upcoming = [row for row in date_rows if not row["countdown"]["expired"]]
+    if goal and goal.get("countdown") and not goal["countdown"]["expired"]:
+        target, target_source, scope = goal["countdown"], goal.get("countdown_source"), "goal"
+    elif upcoming:
+        target, target_source, scope = upcoming[0]["countdown"], upcoming[0]["date_type"], "certificate"
+    else:
+        target, target_source, scope = None, None, "none"
+
+    pacing: dict[str, Any] = {"days_left": None, "per_day": None}
+    if target is None:
+        pacing["note"] = "还没有未来的考试日期：先在证书详情里设定考试日（或让教师录入官方日期），才能换算每天学几个。"
+    elif not focus_items:
+        pacing["note"] = "该证书还没有配置知识点，等教师上架后可给出学习节奏。"
+    else:
+        days_left = target["days_left"]
+        per_day = -(-len(focus_items) // max(days_left, 1))
+        pacing.update({"days_left": days_left, "per_day": min(per_day, len(focus_items)),
+                       "note": (f"距考试 {days_left} 天，{len(focus_items)} 个重点知识点，"
+                                f"约每天 {per_day} 个可在考前至少过一遍；练不完就先保常考。"
+                                if days_left else
+                                f"考试就在今天，{len(focus_items)} 个重点知识点按状态量力过一遍。")})
+
+    total_kps = len(units)
+    covered = sum(1 for unit in units if unit["attempts"] > 0)
+    practical_cov = practical_coverage(chapter_codes)
+    return {
+        "certificate": {"id": cert["id"], "code": cert["code"], "name": cert["name"],
+                        "description": cert.get("description") or "",
+                        "subjects": subjects, "source_ref": cert.get("source_ref") or ""},
+        "content_version": ({"id": version["id"], "label": version["label"], "year": version["year"],
+                             "source_type": version["source_type"]} if version else None),
+        "exam": {"dates": upcoming, "next": upcoming[0] if upcoming else None,
+                 "countdown": target, "countdown_source": target_source, "countdown_scope": scope,
+                 "goal": goal},
+        "progress": {"kp_total": total_kps, "covered": covered,
+                     "attempts": totals["attempts"], "perfect": totals["perfect"]},
+        "pacing": pacing,
+        "focus": {"limit": FOCUS_LIMIT, "items": focus_items,
+                  "rule": "排序口径：常考标注 > 考纲「掌握」要求条目 > 已关联仿真规则数；仅作学习优先级，不预测命题。"},
+        "subjects": subject_payload,
+        "practical": {"version": practical_cov["version"],
+                      "source_note": practical_cov["source_note"],
+                      "chapters_with_items": practical_cov["chapters_with_items"],
+                      "chapters_total": practical_cov["chapters_total"],
+                      "items": practical, "rule_labs": rule_labs},
+    }
+
+
+# ---------------------------------------------------------------------------
 # 自主刷题闭环（FR-K06）：确定性出题 → 作答 → 判分 → 解析与错题
 # ---------------------------------------------------------------------------
 
@@ -2637,11 +2685,21 @@ def _candidate_rules(db, cert_id: str, kp_id: str | None) -> list[str]:
 
 def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = None,
                    rule_id: str | None = None, seed: int | None = None,
-                   mode: str = "new") -> dict[str, Any]:
+                   mode: str = "new", source_type: str = "simulated",
+                   bank_question_id: str | None = None) -> dict[str, Any]:
     if mode not in ("new", "redo_same"):
         raise TrainingPortalError("作答模式必须是 new 或 redo_same。")
-    if mode == "redo_same" and (rule_id is None or seed is None):
-        raise TrainingPortalError("原题重做必须显式提供规则与种子。")
+    if source_type not in ("simulated", "real", "recall", "mock"):
+        # 不认识的题源不能悄悄退回仿真题：那会让学生以为在练真题（决策三：不冒充真题）。
+        raise TrainingPortalError("题源类型必须是 simulated / real / recall / mock。")
+    bank_mode = source_type in ("real", "recall", "mock")
+    if bank_mode and (rule_id or seed is not None):
+        raise TrainingPortalError("题库题练习不接受规则或种子参数。")
+    if mode == "redo_same":
+        if bank_mode and not bank_question_id:
+            raise TrainingPortalError("题库题原题重做必须提供题目标识。")
+        if not bank_mode and (rule_id is None or seed is None):
+            raise TrainingPortalError("原题重做必须显式提供规则与种子。")
     rules = _load_rules(store)
     with store.connect() as db:
         db.execute("BEGIN IMMEDIATE")
@@ -2655,6 +2713,54 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
             kp = db.execute("SELECT certificate_id, active FROM knowledge_point WHERE id=?", (kp_id,)).fetchone()
             if not kp or kp["certificate_id"] != cert_id or not kp["active"]:
                 raise TrainingPortalError("知识点不存在或未启用。", 404)
+        # 绑定当前内容版本（FR-K08）：证书尚无版本时自动建立仿真基线版本。
+        version = ensure_active_version(db, cert_id, rules)
+        if bank_mode:
+            # 真题/回忆/模拟题：从审核上线的题库抽题（决策三：仅授权导入且审核通过的题可见）。
+            from webapp.training_source_auth import SOURCE_LABELS as _BANK_LABELS, bank_question_for_attempt
+            if mode == "redo_same":
+                question = bank_question_for_attempt(db, bank_question_id)
+                if question["certificate_id"] != cert_id or question["source_type"] != source_type:
+                    raise TrainingPortalError("题目不属于该证书或题源类型。", 404)
+                if question["status"] != "approved":
+                    raise TrainingPortalError("该题已下线或未通过审核，无法原题重做；请改练其他题目。", 409)
+            else:
+                clauses = ["certificate_id=?", "status='approved'", "source_type=?"]
+                params: list[Any] = [cert_id, source_type]
+                if kp_id:
+                    clauses.append("knowledge_point_id=?")
+                    params.append(kp_id)
+                # 抽题优先未做过的题：同一学生已判分的题不再重复抽（题库题数量少于
+                # 练习次数时不至于反复刷同几道）；整库都做过之后才允许重复练，
+                # 避免"没题可练"与"永远抽同一题"两个极端。
+                fresh = db.execute(
+                    f"SELECT id FROM training_bank_question WHERE {' AND '.join(clauses)}"
+                    " AND id NOT IN (SELECT bank_question_id FROM training_self_practice_attempts"
+                    " WHERE student_id=? AND bank_question_id IS NOT NULL AND status='scored')",
+                    [*params, student_id]).fetchall()
+                pool = fresh or db.execute(
+                    f"SELECT id FROM training_bank_question WHERE {' AND '.join(clauses)}",
+                    params).fetchall()
+                if not pool:
+                    label = _BANK_LABELS[source_type]
+                    scope = "该知识点" if kp_id else "该证书"
+                    raise TrainingPortalError(
+                        f"{scope}暂无已审核上线的{label}；教师导入并审核通过后即可练习。", 404)
+                question = bank_question_for_attempt(db, secrets.choice([r["id"] for r in pool]))
+            attempt_id = str(uuid.uuid4())
+            digest = hashlib.sha256(
+                json.dumps({"stem": question["stem"], "options": question["options_json"],
+                            "answer": question["answer_keys_json"]},
+                           ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+            db.execute(
+                """INSERT INTO training_self_practice_attempts (id, student_id, certificate_id, knowledge_point_id,
+                   rule_id, seed, level, year, source_type, digest, status, content_version_id, mode,
+                   bank_question_id, created_at)
+                   VALUES (?,?,?,?,?,0,'normal',?,?,?,'open',?,?,?,?)""",
+                (attempt_id, student_id, cert_id, kp_id, "", question["year"], question["source_type"],
+                 digest, version["id"], mode, question["id"], _now()))
+            row = db.execute("SELECT * FROM training_self_practice_attempts WHERE id=?", (attempt_id,)).fetchone()
+            return _bank_open_view(question, row, db)
         if rule_id:
             if rule_id not in by_id:
                 raise TrainingPortalError("所选规则不存在或未启用。")
@@ -2708,6 +2814,28 @@ def _open_view(exercise, row: Any, rules: list[Any], db=None) -> dict[str, Any]:
     return view
 
 
+def _bank_open_view(question: Any, row: Any, db=None) -> dict[str, Any]:
+    """题库题作中视图：题干与选项下发；标准答案与解析判分前绝不下发。
+
+    题干只下发题干本身，选项走结构化 options（前端按 A/B/C 列表渲染），
+    避免把选项拼进题干导致页面重复显示两遍。"""
+    from webapp.training_content import SOURCE_LABELS
+    view = {
+        "id": row["id"], "status": "open", "bank": True,
+        "certificate_id": row["certificate_id"], "knowledge_point_id": row["knowledge_point_id"],
+        "bank_question_id": row["bank_question_id"],
+        "source_type": question["source_type"],
+        "source_type_label": SOURCE_LABELS.get(question["source_type"], question["source_type"]),
+        "year": row["year"], "question_no": question["question_no"],
+        "stem": question["stem"], "options": json.loads(question["options_json"] or "[]"),
+        "created_at": row["created_at"], "mode": row["mode"], "skipped": bool(row["skipped_at"]),
+    }
+    if db is not None:
+        view["content_version"] = version_brief(db, row["content_version_id"])
+        view["applicability"] = applicability(db, row["certificate_id"], row["content_version_id"])
+    return view
+
+
 def _attempt_row(store, student_id: str, attempt_id: str) -> sqlite3.Row:
     with store.connect() as db:
         return db.execute("SELECT * FROM training_self_practice_attempts WHERE id=? AND student_id=?",
@@ -2717,6 +2845,13 @@ def _attempt_row(store, student_id: str, attempt_id: str) -> sqlite3.Row:
 
 def get_attempt(store, student_id: str, attempt_id: str) -> dict[str, Any]:
     row = _attempt_row(store, student_id, attempt_id)
+    if row["bank_question_id"]:
+        with store.connect() as db:
+            from webapp.training_source_auth import bank_question_for_attempt
+            question = bank_question_for_attempt(db, row["bank_question_id"])
+            if row["status"] == "scored":
+                return _bank_history_view(row, db, question)
+            return _bank_open_view(question, row, db)
     if row["status"] == "scored":
         with store.connect() as db:
             return _scored_view(row, db)
@@ -2727,7 +2862,60 @@ def get_attempt(store, student_id: str, attempt_id: str) -> dict[str, Any]:
         return _open_view(exercise, row, rules, db=db)
 
 
-def submit_practice(store, student_id: str, attempt_id: str, selected: list[str]) -> dict[str, Any]:
+def _bank_history_view(row: Any, db, question: Any) -> dict[str, Any]:
+    """已判分题库题的视图：判分时快照优先（题目后续被改题干或下架也不影响回看），
+    旧记录无快照时退回当前题目内容。"""
+    view = _scored_view(row, db)
+    result = view.get("result") or {}
+    view["stem"] = result.get("stem_snapshot") or question["stem"]
+    view["options"] = result.get("options_snapshot") or json.loads(
+        question["options_json"] or "[]")
+    view["question_no"] = question["question_no"]
+    from webapp.training_content import SOURCE_LABELS
+    view["source_type_label"] = SOURCE_LABELS.get(question["source_type"], question["source_type"])
+    return view
+
+
+def _score_bank_result(question: Any, chosen: list[str]) -> dict[str, Any]:
+    """题库题判分：选择集合与标准答案完全一致得满分（多选/错选/漏选均不得分，
+    与初级会计考试客观题评分口径一致）；解析判分后随结果开放。
+
+    同时把判分时的题干/选项快照写进结果（随 result_json 加密留存），
+    供历史作答按当时题目回看，不受后续改题、下架影响。"""
+    answer = json.loads(question["answer_keys_json"] or "[]")
+    missed = [k for k in answer if k not in chosen]
+    false_positives = [k for k in chosen if k not in answer]
+    perfect = not missed and not false_positives
+    return {"missed": missed, "false_positives": false_positives,
+            "score": 100 if perfect else 0, "perfect": perfect, "answer_keys": answer,
+            "explanation": question["explanation"], "bank": True,
+            "stem_snapshot": question["stem"],
+            "options_snapshot": json.loads(question["options_json"] or "[]")}
+
+
+def submit_practice(store, student_id: str, attempt_id: str, selected: list[str],
+                    selected_keys: list[str] | None = None) -> dict[str, Any]:
+    row = _attempt_row(store, student_id, attempt_id)
+    if row["bank_question_id"]:
+        if row["status"] != "open":
+            raise TrainingPortalError("本题已判分，重复提交不重复计数。", 409)
+        chosen = sorted({str(k).strip().upper() for k in (selected_keys if selected_keys is not None else selected)
+                         if isinstance(k, str) and k.strip()})
+        if not chosen:
+            # 与仿真题口径一致：空提交不是"答错"，不能悄悄记 0 分拉低正确率；
+            # 要标记未作答请走「跳过」（skipped_at），两种口径分开统计。
+            raise TrainingPortalError("请至少选择一个选项；如需标记未作答，请用「跳过本题」。")
+        with store.connect() as db:
+            from webapp.training_source_auth import bank_question_for_attempt
+            question = bank_question_for_attempt(db, row["bank_question_id"])
+            result = _score_bank_result(question, chosen)
+            payload = json.dumps(result, ensure_ascii=False)
+            sealed = db.field_codec.seal(payload, "training_self_practice_attempts", "result_json", attempt_id)
+            db.execute(
+                "UPDATE training_self_practice_attempts SET status='scored', answers_json=?, result_json=?, scored_at=? WHERE id=?",
+                (json.dumps(chosen, ensure_ascii=False), sealed, _now(), attempt_id))
+            updated = db.execute("SELECT * FROM training_self_practice_attempts WHERE id=?", (attempt_id,)).fetchone()
+            return _bank_history_view(updated, db, question)
     chosen = sorted({s.strip() for s in selected if isinstance(s, str) and s.strip()})
     row = _attempt_row(store, student_id, attempt_id)
     if row["status"] != "open":
@@ -2764,6 +2952,10 @@ def _scored_view(row: sqlite3.Row, db=None) -> dict[str, Any]:
         "id": row["id"], "status": "scored", "certificate_id": row["certificate_id"],
         "knowledge_point_id": row["knowledge_point_id"], "rule_id": row["rule_id"],
         "seed": row["seed"], "level": row["level"], "year": row["year"], "mode": row["mode"],
+        "source_type": row["source_type"],
+        "bank_question_id": row["bank_question_id"] if "bank_question_id" in row.keys() else None,
+        # 是否题库题（真题/回忆/模拟）：前端据此选选项判分模板，而不是规则仿真模板。
+        "bank": bool(row["bank_question_id"]) if "bank_question_id" in row.keys() else False,
         "answers": json.loads(row["answers_json"] or "[]"),
         "result": result, "score": result.get("score"), "perfect": result.get("perfect"),
         "created_at": row["created_at"], "scored_at": row["scored_at"],
@@ -3323,57 +3515,6 @@ class CoursePatch(BaseModel):
     class_names: list[str] | None = None
 
 
-class CodeTestCaseIn(BaseModel):
-    input_text: str = ""
-    expected_output: str = ""
-    weight: float = 1.0
-    sample: bool = False
-    match_mode: str = Field(default="exact",
-                            pattern="^(exact|float|any_of)$")  # v3.1 比对模式
-    float_tolerance: float | None = Field(default=None, gt=0.0, le=0.5)
-    alternatives: list[str] | None = None  # any_of 多解候选
-
-
-class CodeSubmitBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    code_text: str = Field(min_length=1)
-
-
-class PlagiarismScanBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    threshold: float = Field(default=0.85, ge=0.0, le=1.0)
-
-
-class CodeScoreAdjustBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    score: float = Field(ge=0.0, le=100.0)
-    reason: str = Field(min_length=1, max_length=500)
-
-
-class CodeProblemCreate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    college: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    statement: str = ""
-    language: str = "python"
-    time_limit_ms: int = 5000
-    memory_limit_kb: int = 65536
-    knowledge_point_id: str | None = None
-    cases: list[CodeTestCaseIn] = Field(default_factory=list)
-
-
-class CodeProblemPatch(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    title: str | None = None
-    statement: str | None = None
-    language: str | None = None
-    time_limit_ms: int | None = None
-    memory_limit_kb: int | None = None
-    knowledge_point_id: str | None = None
-    active: bool | None = None
-    cases: list[CodeTestCaseIn] | None = None
-
-
 class StudentCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
     college: str = Field(min_length=1)
@@ -3520,6 +3661,7 @@ class KnowledgePointPatch(BaseModel):
     source_ref: str | None = None
     outline_version: str | None = None
     active: bool | None = None
+    review_status: str | None = None  # 考纲升版核对状态：pending/confirmed/updated/removed/added
 
 
 class MarkCreate(BaseModel):
@@ -3549,12 +3691,15 @@ class PracticeStart(BaseModel):
     knowledge_point_id: str | None = None
     rule_id: str | None = None
     seed: int | None = None
-    mode: str = "new"  # new=新题 / redo_same=原题重做（错题订正，须显式给 rule_id+seed）
+    mode: str = "new"  # new=新题 / redo_same=原题重做（错题订正，仿真须 rule_id+seed，题库题须 bank_question_id）
+    source_type: str = "simulated"  # simulated=规则仿真 / real|recall|mock=授权题库题
+    bank_question_id: str | None = None
 
 
 class PracticeSubmit(BaseModel):
     model_config = ConfigDict(extra="forbid")
     selected_rule_ids: list[str] = Field(default_factory=list)
+    selected_keys: list[str] | None = None  # 题库题选项键（A/B/…）；仿真题仍用 selected_rule_ids
 
 
 def _patch_fields(body) -> dict[str, Any]:
@@ -3638,6 +3783,23 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         student(session)
         return response({"certificates": list_certificates(store_provider())})
 
+    # ---- 学生：找证书（搜索 + 备考指引）----
+
+    @app.get("/api/training/certificates/search")
+    @guarded
+    def training_certificate_search(q: str = "", limit: int = 20,
+                                    session: str | None = Cookie(default=None,
+                                                                 alias=cookie_name)) -> Response:
+        who = student(session)
+        return response(search_certificates(store_provider(), who["id"], q, limit=limit))
+
+    @app.get("/api/training/my/certificate-guide")
+    @guarded
+    def my_certificate_guide(certificate_id: str,
+                             session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
+        who = student(session)
+        return response(certificate_guide(store_provider(), who["id"], certificate_id))
+
     @app.get("/api/training/my/goals")
     @guarded
     def training_goals(include_archived: bool = False,
@@ -3711,7 +3873,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         return response({"attempt": start_practice(
             store_provider(), who["id"], body.certificate_id,
             kp_id=body.knowledge_point_id, rule_id=body.rule_id, seed=body.seed,
-            mode=body.mode)})
+            mode=body.mode, source_type=body.source_type,
+            bank_question_id=body.bank_question_id)})
 
     @app.post("/api/training/my/practice/{attempt_id}/skip")
     @guarded
@@ -3755,7 +3918,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     def practice_submit(attempt_id: str, body: PracticeSubmit,                        session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
         who = student(session)
         return response({"attempt": submit_practice(
-            store_provider(), who["id"], attempt_id, body.selected_rule_ids)})
+            store_provider(), who["id"], attempt_id, body.selected_rule_ids,
+            selected_keys=body.selected_keys)})
 
     @app.get("/api/training/my/coverage")
     @guarded
@@ -4128,163 +4292,6 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
                                 detail="教学概况仅限实训管理员或校级管理员查看。")
         return response({"overview": college_overview(store_provider(), college)})
 
-    @app.get("/api/training/staff/code-problems")
-    @guarded
-    def staff_code_problem_list(include_inactive: bool = True,
-                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
-        return response({"problems": list_code_problems(
-            store_provider(), who["college"], include_inactive=include_inactive)})
-
-    @app.post("/api/training/staff/code-problems")
-    @guarded
-    def staff_code_problem_create(body: CodeProblemCreate,
-                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session, body.college)
-        return response({"problem": create_code_problem(
-            store_provider(), who["id"], body.college, body.title,
-            statement=body.statement, language=body.language,
-            time_limit_ms=body.time_limit_ms, memory_limit_kb=body.memory_limit_kb,
-            knowledge_point_id=body.knowledge_point_id,
-            cases=[c.model_dump() for c in body.cases])})
-
-    @app.patch("/api/training/staff/code-problems/{problem_id}")
-    @guarded
-    def staff_code_problem_update(problem_id: str, body: CodeProblemPatch,
-                                  session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        college_record(staff(session), "code_problem", problem_id)
-        fields = {k: getattr(body, k) for k in body.model_fields_set}
-        cases = [c.model_dump() for c in body.cases] if body.cases is not None else None
-        return response({"problem": update_code_problem(
-            store_provider(), problem_id, fields, cases=cases)})
-
-    @app.get("/api/training/staff/code-problems/{problem_id}/submissions")
-    @guarded
-    def staff_code_submission_list(problem_id: str, include_code: bool = False,
-                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        college_record(staff(session), "code_problem", problem_id)
-        return response({"submissions": list_code_submissions(
-            store_provider(), problem_id=problem_id, include_code=include_code)})
-
-    @app.get("/api/training/my/code/problems")
-    @guarded
-    def my_code_problem_list(session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
-        who = student(session)  # 学生仅见本院校开设中的题目，含公开样例输入
-        with store_provider().connect() as db:
-            rows = db.execute(
-                """SELECT p.id, p.title, p.statement, p.language, p.time_limit_ms,
-                          p.memory_limit_kb, kp.name AS knowledge_point_name,
-                          (SELECT count(*) FROM code_test_case t WHERE t.problem_id=p.id) AS case_count
-                   FROM code_problem p LEFT JOIN knowledge_point kp ON kp.id=p.knowledge_point_id
-                   WHERE p.active=1 AND p.college=? ORDER BY p.created_at DESC""", (who["college"],)).fetchall()
-            samples = {r["problem_id"]: r["input_text"] for r in db.execute(
-                "SELECT problem_id, input_text FROM code_test_case WHERE sample=1 ORDER BY seq").fetchall()}
-        problems = []
-        for r in rows:
-            item = dict(r)
-            item["sample_input"] = samples.get(r["id"])
-            problems.append(item)
-        return response({"problems": problems})
-
-    @app.post("/api/training/my/code/{problem_id}/submit")
-    @guarded
-    def my_code_submit(problem_id: str, body: CodeSubmitBody,
-                       session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
-        who = student(session)
-        result = submit_code(store_provider(), problem_id, who["id"], body.code_text)
-        return response({"result": result,
-                         "sandbox_notice": result.get("sandbox_notice")})
-
-    @app.get("/api/training/my/code/submissions")
-    @guarded
-    def my_code_submissions(problem_id: str | None = None,
-                            session: str | None = Cookie(default=None, alias=cookie_name)) -> Response:
-        who = student(session)
-        return response({"submissions": list_code_submissions(
-            store_provider(), problem_id=problem_id, student_id=who["id"])})
-
-    # ---- 判题队列 / 查重 / 质量分 / 评分对接（FR-J05～J08，教师端） ----
-
-    @app.get("/api/training/staff/code-judge/tasks")
-    @guarded
-    def staff_code_judge_tasks(state: str | None = None, limit: int = 50,
-                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        """判题队列视图（J05）：排队/运行/失败任务与最近错误，供教师核查。"""
-        who = staff(session)
-        from webapp import code_judge_queue
-        tasks = code_judge_queue.list_tasks(store_provider(), state=state, limit=limit,
-                                            college=who["college"])
-        return response({"tasks": tasks})
-
-    @app.post("/api/training/staff/code-judge/tasks/{task_id}/retry")
-    @guarded
-    def staff_code_judge_retry(task_id: str,
-                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        """失败/卡死任务手动重试（J05）：置回 queued，由 worker 或 run_pending 消化。"""
-        who = staff(session)
-        store = store_provider()
-        task = code_judge_queue_retry(store, task_id)
-        with store.connect() as db:
-            row = db.execute(
-                """SELECT st.college FROM code_judge_task t
-                   JOIN code_submission s ON s.id=t.submission_id
-                   JOIN student_info st ON st.id=s.student_id WHERE t.id=?""",
-                (task_id,)).fetchone()
-        if not row or row["college"] != who["college"]:
-            raise HTTPException(status_code=404, detail="任务不存在。")
-        return response({"task": task})
-
-    @app.post("/api/training/staff/code-problems/{problem_id}/plagiarism-scan")
-    @guarded
-    def staff_code_plagiarism_scan(problem_id: str, body: PlagiarismScanBody,
-                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        """同题跨学生查重扫描（J06）：每个学生最新提交两两 Jaccard 比对，落标记。"""
-        college_record(staff(session), "code_problem", problem_id)
-        from webapp import code_plagiarism
-        return response({"scan": code_plagiarism.scan_problem(
-            store_provider(), problem_id, threshold=body.threshold)})
-
-    @app.get("/api/training/staff/code-problems/{problem_id}/plagiarism")
-    @guarded
-    def staff_code_plagiarism_list(problem_id: str,
-                                   session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        college_record(staff(session), "code_problem", problem_id)
-        from webapp import code_plagiarism
-        return response({"flags": code_plagiarism.list_flags(store_provider(), problem_id)})
-
-    @app.get("/api/training/staff/code-submissions/{submission_id}/score")
-    @guarded
-    def staff_code_score_get(submission_id: str,
-                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        """评分记录（J08）：判题客观分 + 质量分 + 教师调分留痕 + 生效分。"""
-        who = staff(session)
-        if code_submission_college(store_provider(), submission_id) != who["college"]:
-            raise HTTPException(status_code=404, detail="提交不存在。")
-        return response({"score": get_code_score(store_provider(), submission_id)})
-
-    @app.put("/api/training/staff/code-submissions/{submission_id}/score")
-    @guarded
-    def staff_code_score_adjust(submission_id: str, body: CodeScoreAdjustBody,
-                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        """教师调分（J08）：生效分改为教师给定值，全部调整留痕。"""
-        who = staff(session)
-        if code_submission_college(store_provider(), submission_id) != who["college"]:
-            raise HTTPException(status_code=404, detail="提交不存在。")
-        return response({"score": adjust_code_score(
-            store_provider(), submission_id, body.score, body.reason, who["id"])})
-
-    @app.get("/api/training/staff/code-submissions/{submission_id}/quality")
-    @guarded
-    def staff_code_quality_get(submission_id: str,
-                               session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        """质量分明细（J07）：逐检查项扣分说明。"""
-        who = staff(session)
-        if code_submission_college(store_provider(), submission_id) != who["college"]:
-            raise HTTPException(status_code=404, detail="提交不存在。")
-        from webapp import code_quality
-        quality = code_quality.get_quality(store_provider(), submission_id)
-        return response({"quality": quality})
-
     # ---- 班级与教师名册（FR-U03 第一期） ----
 
     @app.get("/api/training/staff/classes")
@@ -4374,6 +4381,38 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         college_record(admin(session), "college_term", term_id)
         return response(delete_term(store_provider(), term_id))
 
+    @app.get("/api/training/staff/org/majors")
+    @guarded
+    def org_major_list(college: str, include_archived: bool = True,
+                       session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        staff(session, college)
+        return response({"majors": list_majors(
+            store_provider(), college, include_archived=include_archived)})
+
+    @app.post("/api/training/staff/org/majors")
+    @guarded
+    def org_major_create(body: OrgMajorCreate,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        admin(session, body.college)
+        return response({"major": create_major(
+            store_provider(), body.college, body.name, department_id=body.department_id)})
+
+    @app.patch("/api/training/staff/org/majors/{major_id}")
+    @guarded
+    def org_major_update(major_id: str, body: OrgMajorPatch,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        college_record(admin(session), "college_major", major_id)
+        return response({"major": update_major(
+            store_provider(), major_id, name=body.name, department_id=body.department_id,
+            archived=body.archived)})
+
+    @app.delete("/api/training/staff/org/majors/{major_id}")
+    @guarded
+    def org_major_delete(major_id: str,
+                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
+        college_record(admin(session), "college_major", major_id)
+        return response(delete_major(store_provider(), major_id))
+
     @app.get("/api/training/staff/org/classes")
     @guarded
     def org_class_list(college: str, include_archived: bool = True,
@@ -4389,7 +4428,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         admin(session, body.college)
         return response({"class": create_org_class(
             store_provider(), body.college, body.name,
-            department_id=body.department_id, term_id=body.term_id)})
+            department_id=body.department_id, major_id=body.major_id, term_id=body.term_id)})
 
     @app.patch("/api/training/staff/org/classes/{class_id}")
     @guarded
@@ -4398,7 +4437,7 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
         college_record(admin(session), "college_class", class_id)
         return response({"class": update_org_class(
             store_provider(), class_id, name=body.name, department_id=body.department_id,
-            term_id=body.term_id, archived=body.archived)})
+            major_id=body.major_id, term_id=body.term_id, archived=body.archived)})
 
     @app.delete("/api/training/staff/org/classes/{class_id}")
     @guarded
@@ -4474,6 +4513,10 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.get("/training-dark.css")
     def training_dark_theme() -> FileResponse:
         return FileResponse(STATIC_DIR / "training-dark.css", media_type="text/css")
+
+    @app.get("/training-tutor.css")
+    def training_tutor_styles() -> FileResponse:
+        return FileResponse(STATIC_DIR / "training-tutor.css", media_type="text/css")
 
     @app.get("/training-staff")
     def training_staff_page(request: Request) -> FileResponse:

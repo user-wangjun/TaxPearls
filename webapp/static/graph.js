@@ -166,18 +166,30 @@ function renderNode(){
   const badge=el("span","node-kind",graphKinds[n.kind][0]);badge.style.color=graphKinds[n.kind][1];box.append(badge,el("h3",null,n.label));
   if(["rule","risk"].includes(n.kind)){box.append(el("p","ev-title","规则级别"),el("p","kv",graphRuleLevels[n.rule_level||"unspecified"]));if(n.region)box.append(el("p","ev-title","适用地域"),el("p","kv",n.region));}
   for(const [key,label]of [["taxpayer_id","纳税人识别号"],["company_names","企业名称记录"],["audit_count","累计审查次数"],["audit_period","审查期间"],["audited_at","审查时间"],["audit_id","审查编号"],["rule_code","规则编号"],["document_no","文号"],["issuer","发布机关"],["version","版本"],["unit","指标单位"],["extraction_status","原文复核"],["reviewed_by","审核人"],["reviewed_at","审核时间"],["review_status","复核状态"],["validity_status","政策效力"],["condition_source","条件来源"],["effective_from","生效日期"],["effective_to","终止日期"],["valid_from","规则起始日期"],["valid_to","规则终止日期"],["source_schema","指标来源表"],["source_field","指标来源字段"],["period_basis","期间口径"],["source_location","原文位置"],["notes","说明"],["value","指标值"],["period","所属期间"],["category","规则类型"],["tax_type","税种"],["status","核对结果"],["conclusion","结论"],["calculation","计算过程"],["reason","未执行原因"],["scope","适用范围"],["source","材料来源"],["requirement","取数要求"],["suggestion","排查建议"]]){
-    if(n[key]===undefined||n[key]==="")continue;let value=n[key];if(key==="source_location"||(key==="source"&&n.schema_type==="Clause"))value=formatPolicySourceLocation(value);if(key==="review_status")value=({teaching_reference:"教学参考，按来源核对",candidate:"候选，尚未审核",approved:"已审核",unverified:"待核实",source_recorded:"来源已记录",legacy_unverified:"历史执行版本，政策关联待核实",rejected:"已驳回",retired:"已退役"})[value]||value;if(key==="validity_status")value=({unverified:"效力待核实",in_force:"有效",partially_modified:"部分修订",repealed:"已废止",expired:"已失效"})[value]||value;if(key==="extraction_status")value=({pending:"待解析",parsed:"已解析，待复核",needs_review:"待人工核对",verified:"原文已复核"})[value]||value;if(key==="condition_source")value=({pending:"来源待核实",statutory:"法定条件",internal_screening:"内部筛查参数"})[value]||value;if(key==="status")value={hit:"风险命中",pass:"检查通过",skipped:"未执行"}[value];box.append(el("p","ev-title",label),el("p","kv",value===null?"未提供":value));
+    if(n[key]===undefined||n[key]===""||(key==="version"&&currentUser?.org_type==="university"&&/[a-f0-9]{12,}/i.test(String(n[key]))))continue;let value=n[key];if(key==="source_location"||(key==="source"&&n.schema_type==="Clause"))value=formatPolicySourceLocation(value);if(key==="review_status")value=({teaching_reference:"教学参考，按来源核对",candidate:"候选，尚未审核",approved:"已审核",unverified:"待核实",source_recorded:"来源已记录",legacy_unverified:"历史执行版本，政策关联待核实",rejected:"已驳回",retired:"已退役"})[value]||value;if(key==="validity_status")value=({unverified:"效力待核实",in_force:"有效",partially_modified:"部分修订",repealed:"已废止",expired:"已失效"})[value]||value;if(key==="extraction_status")value=({pending:"待解析",parsed:"已解析，待复核",needs_review:"待人工核对",verified:"原文已复核"})[value]||value;if(key==="condition_source")value=({pending:"来源待核实",statutory:"法定条件",internal_screening:"内部筛查参数"})[value]||value;if(key==="status")value={hit:"风险命中",pass:"检查通过",skipped:"未执行"}[value];box.append(el("p","ev-title",label),el("p","kv",value===null?"未提供":value));
   }
   if(n.audit_id||graphData.audit_id)box.append(action("打开审计证据",()=>openAudit(n.audit_id||graphData.audit_id)));
   for(const url of n.references||[]){if(!/^https?:\/\//i.test(url))continue;const a=el("a","kv","官方来源 ↗");a.href=url;a.target="_blank";a.rel="noopener noreferrer";box.append(a,el("br"));}
   box.append(el("p","ev-title","相邻节点"));for(const e of graphData.edges.filter(e=>e.source===n.id||e.target===n.id)){const other=graphData.nodes.find(v=>v.id===(e.source===n.id?e.target:e.source));if(!graphAllowed.has(other.id))continue;box.append(action(e.label+" · "+other.label,()=>{graphVisible.add(other.id);if(!graphPositions.has(other.id))layoutGraph();selectGraphNode(other.id);}));}
 }
+function graphRagMode(){return graphQuestionMode==="rag"&&!graphData.audit_id&&!graphData.taxpayer_id;}
 function updateAIContext(){
-  const n=graphData.nodes.find(n=>n.id===graphSelected),key=[graphRequest,currentUser?.id,graphSelected].join(":");
+  const n=graphData.nodes.find(n=>n.id===graphSelected),isPublic=!graphData.audit_id&&!graphData.taxpayer_id,rag=graphRagMode();
+  const key=[graphRequest,currentUser?.id,rag?"rag":graphSelected].join(":");
   if(key!==nodeQuestionKey){stopNodeQuestion();nodeQuestionKey=key;nodeQuestionHistory=[];$("graphMessages").replaceChildren();}
-  $("graphAIContext").textContent=n?"围绕："+n.label+(n.audit_period?" · "+n.audit_period:""):"请先在图谱中选择一个节点";
-  $("graphSend").disabled=!n||!graphData.ai?.configured||graphBusy;
+  $("graphQuestionModes").hidden=!isPublic;
+  $("graphAskPublic").setAttribute("aria-pressed",String(rag));$("graphAskNode").setAttribute("aria-pressed",String(!rag));
+  $("graphAIContext").textContent=rag?"公共税务知识 · 无需选择节点":n?"围绕："+n.label+(n.audit_period?" · "+n.audit_period:""):"请先在图谱中选择一个节点";
+  $("graphQuestion").placeholder=rag?"直接输入税务问题，例如：进项税额抵扣有哪些规定？":"围绕当前节点提问…";
+  $("graphSend").disabled=(!rag&&!n)||(!rag&&!graphData.ai?.configured)||graphBusy;
+  const publicPrompts=["增值税进项税额抵扣有哪些规定？","小规模纳税人有哪些相关税务规定？","研发费用加计扣除有哪些规定？"];
+  document.querySelectorAll(".ai-prompts [data-question]").forEach((button,i)=>{
+    if(!button.dataset.nodeQuestion){button.dataset.nodeQuestion=button.dataset.question;button.dataset.nodeLabel=button.textContent;}
+    button.dataset.question=rag?publicPrompts[i]:button.dataset.nodeQuestion;
+    button.textContent=rag?["进项抵扣","小规模纳税人","研发费用"][i]:button.dataset.nodeLabel;
+  });
 }
+
 function focusGraph(){if(!graphSelected)return;graphFocused=true;graphVisible=neighbors(new Set([graphSelected]));limitGraphView();layoutGraph();graphTransform={x:0,y:0,k:1};drawGraph();}
 $("graphFocus").addEventListener("click",focusGraph);
 $("graphExpand").addEventListener("click",()=>{graphVisible=neighbors(graphVisible);layoutGraph();drawGraph();});
@@ -196,7 +208,9 @@ window.addEventListener("pointerup",()=>{graphDrag=null;});window.addEventListen
 function graphTab(ai){$("graphAssistant").hidden=!ai;$("knowledgeDetail").hidden=ai;$("nodeTab").classList.toggle("active",!ai);$("aiTab").classList.toggle("active",ai);}
 $("nodeTab").addEventListener("click",()=>graphTab(false));$("aiTab").addEventListener("click",()=>graphTab(true));
 document.querySelectorAll("[data-question]").forEach(b=>b.addEventListener("click",()=>{$("graphQuestion").value=b.dataset.question;$("graphQuestion").focus();}));
-let nodeQuestionController=null,nodeQuestionHistory=[],nodeQuestionKey=null;
+let nodeQuestionController=null,nodeQuestionHistory=[],nodeQuestionKey=null,graphQuestionMode="rag";
+$("graphAskPublic").addEventListener("click",()=>{graphQuestionMode="rag";updateAIContext();});
+$("graphAskNode").addEventListener("click",()=>{graphQuestionMode="node";updateAIContext();});
 function stopNodeQuestion(){
   if(nodeQuestionController){nodeQuestionController.abort();nodeQuestionController=null;graphBusy=false;}
   $("graphStop").hidden=true;
@@ -222,36 +236,52 @@ async function readNodeStream(response,onEvent){
     if(!done)throw new Error("连接中断，回答未完成，请重试。");
   }finally{await reader.cancel().catch(()=>{});reader.releaseLock();}
 }
+function ragSourceCard(source){
+  const details=el("details","ai-rag-source"),heading=el("summary",null,source.id+" · "+source.label);
+  const version=source.version&&!/[a-f0-9]{12,}/i.test(source.version)?"版本 "+source.version:"";
+  details.append(heading,el("p","muted",[source.issuer,source.document_no,version].filter(Boolean).join(" · ")));
+  details.append(el("p","muted","适用时间："+(source.effective_from||"起始日期待核实")+" 至 "+(source.effective_to||"终止日期待核实")));
+  const validity={unverified:"政策效力待核实",in_force:"库内记载有效，仍须核对时点",partially_modified:"部分修改",repealed:"已废止",expired:"已失效"};
+  details.append(el("p","muted",(validity[source.validity_status]||"政策效力待核实")+" · "+(source.extraction_status==="verified"?"原文已复核":"原文待复核")));
+  details.append(el("p","ai-text",source.content),el("p","muted",formatPolicySourceLocation(source.source_location)));
+  if(/^https?:\/\//i.test(source.source_url||"")){const link=el("a",null,"查看来源网页 ↗");link.href=source.source_url;link.target="_blank";link.rel="noopener noreferrer";details.append(link);}
+  return details;
+}
 $("graphQuestionForm").addEventListener("submit",async e=>{
-  e.preventDefault();if(graphBusy||!graphSelected)return;
+  e.preventDefault();if(graphBusy||(!graphRagMode()&&!graphSelected))return;
   const question=$("graphQuestion").value.trim();if(!question)return;
   const node=graphSelected,audit=graphData.audit_id,taxpayer=graphData.taxpayer_id,version=graphRequest,owner=currentUser?.id;
-  const publicMode=!audit&&!taxpayer,controller=new AbortController(),key=nodeQuestionKey;
+  const publicMode=!audit&&!taxpayer,rag=graphRagMode(),controller=new AbortController(),key=nodeQuestionKey;
   nodeQuestionController=controller;
-  const box=$("graphMessages"),turn=el("div","ai-answer"),state=el("p","muted","正在读取节点及关联依据…"),text=el("p","ai-text","");
+  const box=$("graphMessages"),turn=el("div","ai-answer"),state=el("p","muted",rag?"正在检索公共原文…":"正在读取节点及关联依据…"),text=el("p","ai-text","");
   turn.append(el("p","ai-question",question),state,text);box.append(turn);box.scrollTop=box.scrollHeight;
   graphBusy=true;$("graphSend").disabled=true;$("graphStop").hidden=false;
   const current=()=>graphCurrent(version,owner)&&nodeQuestionKey===key&&!controller.signal.aborted;
   try{
     if(publicMode){
-      const response=await fetch("/api/knowledge/node-ask",{method:"POST",credentials:"same-origin",signal:controller.signal,
-        headers:{"Content-Type":"application/json"},body:JSON.stringify({node_id:node,question,previous_questions:nodeQuestionHistory})});
+      const response=await fetch(rag?"/api/knowledge/rag-ask":"/api/knowledge/node-ask",{method:"POST",credentials:"same-origin",signal:controller.signal,
+        headers:{"Content-Type":"application/json"},body:JSON.stringify(rag?{question,previous_questions:nodeQuestionHistory}:{node_id:node,question,previous_questions:nodeQuestionHistory})});
       await readNodeStream(response,event=>{
         if(!current())return;
         if(event.type==="context"){
           state.textContent=event.message;
+          turn.querySelectorAll(".ai-reference-scope").forEach(item=>item.remove());
           const details=el("details","ai-reference-scope");details.append(el("summary",null,"本次参考范围"));
-          for(const id of event.manifest.node_ids){const n=graphData.nodes.find(n=>n.id===id);details.append(el("p","muted",n?.label||id));}
+          for(const id of event.manifest.node_ids){const n=event.manifest.sources?.find(n=>n.id===id)||graphData.nodes.find(n=>n.id===id);details.append(el("p","muted",n?.label||id));}
+          if(event.manifest.message)details.append(el("p","muted",event.manifest.message));
+          if(rag&&event.manifest.reference_date)details.append(el("p","muted","检索参考日期："+event.manifest.reference_date));
+          if(event.manifest.coverage?.omitted_candidates)details.append(el("p","muted","本次发送部分相关原文，尚未穷尽全部候选。"));
           if(event.manifest.capacity_source==="conservative_fallback")details.append(el("p","muted","模型未提供容量，使用保守容量限制。"));
           turn.insertBefore(details,text);
-        }else if(event.type==="gate")state.textContent=nodeGateLabels[event.status]||"正在生成…";
+        }else if(event.type==="progress"&&event.message)state.textContent=event.message;
+        else if(event.type==="gate")state.textContent=event.status==="out_of_scope"&&rag?"超出税务知识范围":nodeGateLabels[event.status]||"正在生成…";
         else if(event.type==="summary"&&event.text){const details=el("details","ai-reason-summary");details.append(el("summary",null,"回答依据说明"),el("p","ai-text",event.text));turn.insertBefore(details,text);}
         else if(event.type==="delta"){const nearBottom=box.scrollHeight-box.scrollTop-box.clientHeight<80;text.textContent+=event.text;if(nearBottom)box.scrollTop=box.scrollHeight;}
         else if(event.type==="done"){
-          text.textContent=event.answer;state.textContent=event.status==="answerable"?"已完成 · 引用节点已核对，原文状态请见来源":nodeGateLabels[event.status];
-          if(event.citations.length)turn.append(el("p","muted","参考节点 · 点击查看"));
-          for(const cited of event.citations)turn.append(action(cited.label,()=>{selectGraphNode(cited.id);focusGraph();renderNode();}));
-          if(event.status==="answerable")nodeQuestionHistory=[...nodeQuestionHistory,question.slice(0,500)].slice(-3);
+          text.textContent=event.answer;state.textContent=event.status==="answerable"?(rag?"已完成 · 请结合引用原文核实":"已完成 · 引用节点已核对，原文状态请见来源"):event.status==="out_of_scope"&&rag?"超出税务知识范围":nodeGateLabels[event.status];
+          if(event.citations.length)turn.append(el("p","muted",rag?"原文依据 · 展开查看":"参考节点 · 点击查看"));
+          for(const cited of event.citations){if(rag)turn.append(ragSourceCard(cited));else turn.append(action(cited.label,()=>{selectGraphNode(cited.id);focusGraph();renderNode();}));}
+          if(event.status==="answerable"||(rag&&["clarify","insufficient"].includes(event.status)))nodeQuestionHistory=[...nodeQuestionHistory,question.slice(0,500)].slice(-3);
         }
       });
     }else{
@@ -264,7 +294,7 @@ $("graphQuestionForm").addEventListener("submit",async e=>{
   }catch(err){
     if(graphCurrent(version,owner)&&nodeQuestionKey===key){state.textContent=controller.signal.aborted?"已停止 · 回答未完成":err.message;turn.dataset.incomplete="true";}
   }finally{
-    if(nodeQuestionController===controller){nodeQuestionController=null;graphBusy=false;$("graphStop").hidden=true;$("graphSend").disabled=!graphSelected||!graphData.ai?.configured;}
+    if(nodeQuestionController===controller){nodeQuestionController=null;graphBusy=false;$("graphStop").hidden=true;$("graphSend").disabled=(!graphRagMode()&&!graphSelected)||(!graphRagMode()&&!graphData.ai?.configured);}
   }
 });
 

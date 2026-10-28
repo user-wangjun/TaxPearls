@@ -129,12 +129,76 @@ def _username_from_email(email: str, db) -> str:
 from src.snapshots import serialize_dataset, deserialize_dataset, serialize_findings, deserialize_findings
 
 
+class _WriteGuard:
+    """Serialize writers until commit/rollback; leave read-only connection scopes unlocked.
+
+    A bare INSERT/UPDATE also starts a SQLite transaction. Releasing the Python
+    lock after that statement would let a second writer hold it while waiting on
+    SQLite, preventing the first writer from acquiring it to commit.
+    """
+
+    __slots__ = ("_db", "_lock", "_acquired")
+    _WRITE = frozenset({"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP", "ALTER", "VACUUM", "REINDEX"})
+
+    def __init__(self, db, lock):
+        self._db = db
+        self._lock = lock
+        self._acquired = 0
+
+    def _acquire_write(self):
+        if not self._acquired:
+            self._lock.acquire()
+            self._acquired = 1
+
+    def _guard_statement(self, sql):
+        head = str(sql).lstrip().upper()
+        command = head.split(None, 1)
+        if head.startswith("BEGIN IMMEDIATE") or (command and command[0] in self._WRITE):
+            self._acquire_write()
+
+    def execute(self, sql, *params):
+        self._guard_statement(sql)
+        return self._db.execute(sql, *params)
+
+    def executemany(self, sql, params):
+        self._guard_statement(sql)
+        return self._db.executemany(sql, params)
+
+    def executescript(self, sql):
+        self._acquire_write()
+        return self._db.executescript(sql)
+
+    def backup(self, target, *args, **kwargs):
+        # sqlite3 checks the concrete destination type in C, so __getattr__
+        # forwarding cannot accept another guarded Store connection.
+        if isinstance(target, _WriteGuard):
+            target._acquire_write()
+            target = target._db
+        return self._db.backup(target, *args, **kwargs)
+
+    def __enter__(self):
+        self._db.__enter__()
+        return self
+
+    def __exit__(self, *exc_info):
+        return self._db.__exit__(*exc_info)
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+    def release(self) -> None:
+        while self._acquired:
+            self._lock.release()
+            self._acquired -= 1
+
+
 class Store:
     """Small SQLite repository with explicit organization and ownership checks."""
 
     # 模块级共享锁：同进程所有 Store 实例（含指向同一库文件的多个实例）串行化库访问。
     # 实例级锁无法保护跨实例并发；跨进程部署无此场景（单进程单实例服务）。
     _LOCK = RLock()
+    _CONNECTION_LOCK = RLock()
 
     def __init__(self, path: str | Path | None = None, *, notification_adapters=None,
                  keepalive: bool = False) -> None:
@@ -197,25 +261,41 @@ class Store:
 
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
+        # Connection lifecycle serialization protects Windows WAL open/close.
+        # It must be independent from the transaction lock: a reader can open,
+        # commit and close while another thread retains a write transaction.
+        with self._CONNECTION_LOCK:
+            db = sqlite3.connect(self.path, timeout=10, factory=sensitive_storage.Connection)
+            try:
+                sensitive_storage.attach(db, self._field_codec)
+                if not self._fields_ready:
+                    db.row_factory = sqlite3.Row
+                else:
+                    sensitive_storage.verify_state(db, self._field_codec)
+                    deployment.verify(db, self.deployment, self._field_codec, require_bound=True)
+                db.execute("PRAGMA foreign_keys=ON")
+            except Exception:
+                db.close()
+                raise
+        guard = _WriteGuard(db, self._lock)
         try:
-            sensitive_storage.attach(db, self._field_codec)
-            if not self._fields_ready:
-                db.row_factory = sqlite3.Row
-            else:
-                sensitive_storage.verify_state(db, self._field_codec)
-                deployment.verify(db, self.deployment, self._field_codec, require_bound=True)
-            db.execute("PRAGMA foreign_keys=ON")
+            yield guard
             # journal_mode=WAL 在 _init_schema 时设置一次并持久化于库文件；
             # 不在每次连接时执行——并发连接同时切 WAL 在 Windows 上会以
             # SQLITE_READONLY 的面目报错（tests/test_auth_hardening 的偶发抖动根因）。
-            yield db
-            db.commit()
+            with self._CONNECTION_LOCK:
+                db.commit()
         except Exception:
-            db.rollback()
+            with self._CONNECTION_LOCK:
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
             raise
         finally:
-            db.close()
+            guard.release()
+            with self._CONNECTION_LOCK:
+                db.close()
 
     def _init_schema(self) -> None:
         from webapp.schema import initialize
@@ -1552,6 +1632,10 @@ class Store:
             if not account or (user and user["id"] != student_id):
                 raise classroom.ClassroomError("作业不存在。",404)
             classroom.check_submission(db,assignment_id,user or dict(account))
+            # 提交版本与订正闸门：不改 submissions 结构，只在覆盖前把旧版本快照进明细表
+            from webapp import training_submissions
+            training_submissions.guard_submit(db, assignment_id, student_id)
+            training_submissions.snapshot_current(self, db, assignment_id, student_id)
             db.execute(
                 """INSERT INTO submissions(id,assignment_id,student_id,answers_json,score,details_json,submitted_at)
                    VALUES (?,?,?,?,?,?,?)
@@ -1563,6 +1647,7 @@ class Store:
                  self._field_codec.seal(_json(details), 'submissions', 'details_json', assignment_id, student_id), _now()),
             )
             mistake_book.capture(db, assignment_id, student_id, force=True)
+            training_submissions.record_submitted(db, assignment_id, student_id)
             self._log(db, user or dict(account), "submit_assignment", "assignment", assignment_id, f"score={score}")
         return submission_id
 
