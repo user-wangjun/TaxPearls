@@ -1,4 +1,4 @@
-"""Compress public UI text without buffering private APIs or business streams."""
+"""Compress UI text and complete graph JSON; forward business streams untouched."""
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.middleware.gzip import GZipMiddleware
 
@@ -21,9 +21,11 @@ class StaticCompressionMiddleware:
     def __init__(self, app):
         self.app = app
         self.compressed = GZipMiddleware(app, minimum_size=1024, compresslevel=5)
+        self.graph_compressed = GZipMiddleware(app, minimum_size=1024, compresslevel=1)
 
     async def __call__(self, scope, receive, send):
         path = scope.get('path', '')
+        graph_json = path in {'/api/knowledge/graph', '/api/training/knowledge/graph'}
         public_text = (
             path in {'/', '/logo', '/favicon.ico', '/training-certificates', '/training-staff',
                      '/vendor/three.module.mjs'}
@@ -31,19 +33,21 @@ class StaticCompressionMiddleware:
             or (path.count('/') == 1 and path.endswith(('.js', '.mjs', '.css')))
         )
         headers = Headers(scope=scope) if scope['type'] == 'http' else None
-        if (scope['type'] != 'http' or scope['method'] != 'GET' or not public_text
+        if (scope['type'] != 'http' or scope['method'] != 'GET' or not (public_text or graph_json)
                 or headers.get('range')):
             await self.app(scope, receive, send)
             return
 
-        # Honor explicit gzip;q=0 as well as wildcard negotiation. Only public
-        # static routes see this normalized header; private requests are untouched.
+        # Only UI assets and the two complete graph responses are eligible;
+        # uploads, reports and incremental AI/check streams bypass compression.
         accepted = headers.get('accept-encoding', '')
         gzip_quality = encoding_quality(accepted, 'gzip')
 
         async def send_variant(message):
             if message['type'] == 'http.response.start':
                 outgoing = MutableHeaders(scope=message)
+                if graph_json:
+                    outgoing['Cache-Control'] = 'private, no-store'
                 vary = {part.strip().lower() for part in outgoing.get('vary', '').split(',')}
                 if 'accept-encoding' not in vary and '*' not in vary:
                     outgoing.add_vary_header('Accept-Encoding')
@@ -60,6 +64,7 @@ class StaticCompressionMiddleware:
             compressed_scope = {**scope, 'headers': [
                 (key, value) for key, value in scope['headers'] if key.lower() != b'accept-encoding'
             ] + [(b'accept-encoding', normalized)]}
-            await self.compressed(compressed_scope, receive, send_variant)
+            compressor = self.graph_compressed if graph_json else self.compressed
+            await compressor(compressed_scope, receive, send_variant)
         else:
             await self.app(scope, receive, send_variant)

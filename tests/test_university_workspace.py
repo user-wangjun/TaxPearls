@@ -381,6 +381,31 @@ class UniversityWorkspaceTests(unittest.TestCase):
         self.assertNotIn('taxpayer_id', graph)
         self.assertEqual(self.client.get('/api/training/knowledge/graph?audit_id=other').status_code, 422)
 
+    def test_initial_teaching_graph_preserves_nodes_and_edges_without_loading_policy_catalog(self):
+        with self.store.connect() as db:
+            db.execute("INSERT INTO certificate(id,code,name,active,created_at,updated_at) VALUES ('fast-cert','FAST','首屏证书',1,?,?)", (_now(), _now()))
+            db.execute("INSERT INTO knowledge_point(id,certificate_id,code,name,subject,active,created_at,updated_at) VALUES ('fast-kp','fast-cert','FAST','首屏知识点','',1,?,?)", (_now(), _now()))
+        full = self.client.get('/api/training/knowledge/graph').json()
+        response = self.client.get('/api/training/knowledge/graph?initial=1')
+        self.assertEqual(response.status_code, 200, response.text)
+        initial = response.json()
+        self.assertTrue(initial['partial'])
+        expected = {n['id']: n for n in full['nodes']}
+        self.assertLess(len(initial['nodes']), len(full['nodes']))
+        self.assertIn('KnowledgePoint:fast-kp', {n['id'] for n in initial['nodes']})
+        for node in initial['nodes']:
+            self.assertEqual(node, expected[node['id']])
+        ids = {n['id'] for n in initial['nodes']}
+        self.assertEqual(initial['edges'], [e for e in full['edges'] if e['source'] in ids and e['target'] in ids])
+        with self.store.connect() as db:
+            db.execute("UPDATE knowledge_point SET active=0 WHERE id='fast-kp'")
+        fallback = self.client.get('/api/training/knowledge/graph?initial=1').json()
+        self.assertNotIn('partial', fallback)
+        self.assertEqual(fallback, self.client.get('/api/training/knowledge/graph').json())
+        self.assertEqual(self.client.get('/api/training/knowledge/graph?initial=1&audit_id=other').status_code, 422)
+        self.login(self.business)
+        self.assertEqual(self.client.get('/api/training/knowledge/graph?initial=1').status_code, 403)
+
     def test_course_binding_rejects_foreign_same_named_class_without_losing_links(self):
         own = self.client.post('/api/classes', json={'name':'同名班级','student_ids':[]}).json()['id']
         course = self.client.post('/api/training/staff/courses', json={'college':'campus','name':'隔离课程','teacher_id':self.staff_id}).json()['course']['id']

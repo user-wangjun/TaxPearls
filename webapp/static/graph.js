@@ -6,9 +6,18 @@ const graphRuleLevels={national:"国家级规则",provincial:"省级规则",muni
 let graphAllowed=new Set();
 let graphMatchedCount=0;
 let graphScopes=new Map();
+let graphFullLoad=null,graphFilterRequest=0;
 for(const [kind,[label,color]]of Object.entries(graphKinds)){const item=el("span",null,label);item.style.setProperty("--node-color",color);$("graphLegend").append(item);}
 function graphCurrent(ticket,owner){return ticket===graphRequest&&currentUser?.id===owner&&$("knowledgePanel").classList.contains("active");}
+function updateGraphLegend(){
+  $("graphLegend").replaceChildren();for(const [kind,[label,color]]of Object.entries(graphKinds)){if(!graphData.nodes.some(n=>n.kind===kind))continue;const item=el("span",null,label);item.style.setProperty("--node-color",color);$("graphLegend").append(item);}
+}
+function updateGraphStats(){
+  $("graphSummary").replaceChildren();for(const [num,label]of [[graphData.nodes.length,graphData.partial?"已载入节点":"知识节点"],[graphData.edges.length,graphData.partial?"已载入关联":"证据关联"]]){const item=el("div");item.append(el("strong",null,num),el("span",null,label));$("graphSummary").append(item);}
+  $("graphCount").textContent=graphVisible.size?graphVisible.size+" 个节点 · "+graphData.edges.filter(e=>graphVisible.has(e.source)&&graphVisible.has(e.target)).length+" 条关系"+(graphMatchedCount>graphVisible.size?`；匹配 ${graphMatchedCount} 个节点，当前展示前 ${graphVisible.size} 个，可搜索全部知识或按地区缩小范围。`:""):graphData.partial?"正在载入政策关联…":"没有匹配的节点，请调整筛选";
+}
 function clearGraph(message=""){
+  graphFullLoad=null;graphFilterRequest++;
   stopNodeQuestion();nodeQuestionHistory=[];nodeQuestionKey=null;
   graphSelected=null;graphData={nodes:[],edges:[]};graphVisible=new Set();graphAllowed=new Set();graphPositions=new Map();graphFocused=false;graphTransform={x:0,y:0,k:1};graphDrag=null;updateGraphRegions();
   for(const id of ["knowledgeDetail","graphMessages","graphSummary"])$(id).replaceChildren();
@@ -51,15 +60,37 @@ async function loadGraph({throwOnError=false}={}){
   const ticket=++graphRequest,owner=currentUser?.id;clearGraph("正在载入关系网络…");
   try{
     const params=new URLSearchParams();if($("graphScope").value)params.set("taxpayer_id",$("graphScope").value);if($("graphAudit").value)params.set("audit_id",$("graphAudit").value);
-    const data=await api(currentUser?.org_type==="university"?"/api/training/knowledge/graph":"/api/knowledge/graph"+(params.size?"?"+params:""));if(!graphCurrent(ticket,owner))return;
-    $("graphLegend").replaceChildren();for(const [kind,[label,color]]of Object.entries(graphKinds)){if(!data.nodes.some(n=>n.kind===kind))continue;const item=el("span",null,label);item.style.setProperty("--node-color",color);$("graphLegend").append(item);}
+    const initial=currentUser?.org_type==="university"&&["knowledgeSearch","knowledgeCategory","graphStatus","graphRuleLevel","graphRegion"].every(id=>!$(id).value);
+    const data=await api(currentUser?.org_type==="university"?"/api/training/knowledge/graph"+(initial?"?initial=1":""):"/api/knowledge/graph"+(params.size?"?"+params:""));if(!graphCurrent(ticket,owner))return;
     graphData=data;graphPositions=new Map();graphFocused=false;graphTransform={x:0,y:0,k:1};
+    updateGraphLegend();
     if(data.boundary){$("graphCoverage").hidden=false;$("graphCoverage").textContent=data.boundary;}
     if(data.related_paths?.truncated){$("graphCoverage").hidden=false;$("graphCoverage").textContent=`关联方网络仅展示前 ${data.related_paths.shown} 条已复核关系候选路径，并非全部交易；G-001 的冻结结论仍基于全部路径，命中证据卡最多展示前 20 条。请结合原始台账核对其余路径。`;}
     $("graphAIStatus").textContent=data.ai.configured?"":"AI 尚未连接，请先配置模型。";$("graphAIStatus").hidden=data.ai.configured;
     $("graphSend").disabled=!data.ai.configured||graphBusy;
-    updateGraphRegions();filterGraph(true);focusGraph();if(data.empty)$("graphCount").textContent="该企业尚无审查记录，完成材料审查后可查看企业图谱。";
+    updateGraphRegions();filterGraph(true);if(data.empty)$("graphCount").textContent="该企业尚无审查记录，完成材料审查后可查看企业图谱。";
+    if(data.partial)setTimeout(()=>{if(graphCurrent(ticket,owner)&&graphData===data)ensureGraphComplete();},0);
   }catch(e){if(graphCurrent(ticket,owner)){clearGraph(e.message);if(throwOnError)throw e;}}
+}
+async function ensureGraphComplete(){
+  if(!graphData.partial)return true;
+  if(graphFullLoad)return graphFullLoad;
+  const ticket=graphRequest,owner=currentUser?.id,initial=graphData;
+  const loading=(async()=>{
+    try{
+      const data=await api("/api/training/knowledge/graph");
+      if(!graphCurrent(ticket,owner)||graphData!==initial)return false;
+      graphData=data;graphAllowed=new Set(data.nodes.map(n=>n.id));updateGraphLegend();updateGraphRegions();
+      $("graphCoverage").hidden=!data.boundary;$("graphCoverage").textContent=data.boundary||"";
+      if(!graphVisible.size||[...graphVisible].some(id=>!graphAllowed.has(id)))filterGraph(true);
+      else{updateGraphStats();renderNode();}
+      return true;
+    }catch(e){
+      if(graphCurrent(ticket,owner)){$("graphCoverage").hidden=false;$("graphCoverage").textContent=(initial.boundary||"")+" 完整政策关联暂未载入，可刷新或重试搜索："+e.message;}
+      return false;
+    }finally{if(graphFullLoad===loading)graphFullLoad=null;}
+  })();
+  graphFullLoad=loading;return loading;
 }
 $("graphScope").addEventListener("change",()=>{updateGraphAudits();loadGraph();});
 $("graphAudit").addEventListener("change",loadGraph);
@@ -70,7 +101,7 @@ function updateGraphRegions(){
   select.disabled=$("graphRuleLevel").value!=="local";
   if(!select.disabled&&regions.includes(previous))select.value=previous;
 }
-for(const id of ["knowledgeSearch","knowledgeCategory","graphStatus","graphRuleLevel","graphRegion"])$(id).addEventListener(id==="knowledgeSearch"?"input":"change",()=>{if(id==="graphRuleLevel")updateGraphRegions();graphFocused=false;graphTransform={x:0,y:0,k:1};filterGraph();});
+for(const id of ["knowledgeSearch","knowledgeCategory","graphStatus","graphRuleLevel","graphRegion"])$(id).addEventListener(id==="knowledgeSearch"?"input":"change",async()=>{const request=++graphFilterRequest;if(!await ensureGraphComplete()||request!==graphFilterRequest)return;if(id==="graphRuleLevel")updateGraphRegions();graphFocused=false;graphTransform={x:0,y:0,k:1};filterGraph();});
 function neighbors(ids){const result=new Set(ids);for(const e of graphData.edges){if(ids.has(e.source))result.add(e.target);if(ids.has(e.target))result.add(e.source);}return new Set([...result].filter(id=>graphAllowed.has(id)));}
 function limitGraphView(){
   graphMatchedCount=graphVisible.size;
@@ -80,7 +111,7 @@ function limitGraphView(){
   ordered.sort((a,b)=>(a.id===graphSelected?-1:b.id===graphSelected?1:graphData.view==="public_teaching"?importance(a)-importance(b):0));
   graphVisible=new Set(ordered.slice(0,240).map(n=>n.id));
 }
-function filterGraph(historyFocus=false){
+function filterGraph(initialFocus=false){
   const query=$("knowledgeSearch").value.trim().toLowerCase(),category=$("knowledgeCategory").value,status=$("graphStatus").value,level=$("graphRuleLevel").value,region=$("graphRegion").value;
   const matchesLevel=n=>!level||(level==="local"?["provincial","municipal"].includes(n.rule_level)&&(!region||n.region===region):(n.rule_level||"unspecified")===level);
   graphAllowed=new Set(graphData.nodes.filter(n=>!["rule","risk"].includes(n.kind)||matchesLevel(n)).map(n=>n.id));
@@ -89,7 +120,7 @@ function filterGraph(historyFocus=false){
   if(category&&status){const ruleIds=new Set(candidates.filter(n=>n.category===category).map(n=>n.id));seeds=candidates.filter(n=>n.status===status&&(n.category===category||ruleIds.has(n.rule_id))&&(!query||JSON.stringify(n).toLowerCase().includes(query)));}
   graphVisible=neighbors(new Set(seeds.map(n=>n.id)));
   if(!graphSelected||!graphVisible.has(graphSelected))graphSelected=(graphData.view==="public_teaching"?seeds.find(n=>n.kind==="knowledge_point"):graphData.taxpayer_id?seeds.find(n=>n.kind==="risk"&&n.status==="hit")||seeds.find(n=>n.kind==="risk"):seeds.find(n=>n.kind==="rule"||n.kind==="risk"))?.id||seeds[0]?.id||null;
-  if(historyFocus&&graphData.taxpayer_id&&!query&&!category&&!status&&!level){graphFocused=true;graphVisible=neighbors(new Set(graphSelected?[graphSelected]:[]));}
+  if(initialFocus&&graphSelected){graphFocused=true;graphVisible=neighbors(new Set([graphSelected]));}
   limitGraphView();
   layoutGraph();drawGraph();renderNode();
 }
@@ -100,19 +131,20 @@ function layoutGraph(){
     nodes.forEach((node,i)=>graphPositions.set(node.id,{x:80+i%6*160,y:65+Math.floor(i/6)*90}));
     const height=Math.ceil(nodes.length/6)*90+40;graphCanvas.setAttribute("viewBox",`0 0 960 ${height}`);graphCanvas.style.height=height+"px";return;
   }
-  const groups=Object.keys(graphKinds).filter(k=>nodes.some(n=>n.kind===k));
-  groups.forEach((kind,group)=>{const members=nodes.filter(n=>n.kind===kind),angle=group*2*Math.PI/groups.length-Math.PI/2,cx=480+Math.cos(angle)*220,cy=335+Math.sin(angle)*160;members.forEach((n,i)=>{const a=i*2.39996,r=22*Math.sqrt(i);graphPositions.set(n.id,{x:cx+Math.cos(a)*r,y:cy+Math.sin(a)*r});});});
-  const links=graphData.edges.filter(e=>graphVisible.has(e.source)&&graphVisible.has(e.target));
-  for(let step=0;step<140;step++){
-    const force=new Map(nodes.map(n=>[n.id,{x:0,y:0}]));
-    for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){const a=graphPositions.get(nodes[i].id),b=graphPositions.get(nodes[j].id),dx=a.x-b.x,dy=a.y-b.y,d=Math.max(1,Math.hypot(dx,dy)),f=2600/(d*d);const fa=force.get(nodes[i].id),fb=force.get(nodes[j].id);fa.x+=dx/d*f;fa.y+=dy/d*f;fb.x-=dx/d*f;fb.y-=dy/d*f;}
-    for(const e of links){const a=graphPositions.get(e.source),b=graphPositions.get(e.target),d=Math.max(1,Math.hypot(a.x-b.x,a.y-b.y)),f=(d-100)*.012;const fa=force.get(e.source),fb=force.get(e.target);fa.x-=(a.x-b.x)/d*f;fa.y-=(a.y-b.y)/d*f;fb.x+=(a.x-b.x)/d*f;fb.y+=(a.y-b.y)/d*f;}
-    for(const n of nodes){const p=graphPositions.get(n.id),f=force.get(n.id);p.x=Math.max(45,Math.min(915,p.x+Math.max(-6,Math.min(6,f.x))));p.y=Math.max(45,Math.min(620,p.y+Math.max(-6,Math.min(6,f.y))));}
-  }
   if(graphFocused&&graphSelected&&nodes.length<=9){
     graphPositions.set(graphSelected,{x:480,y:335});const others=nodes.filter(n=>n.id!==graphSelected);
     const left=others.filter(n=>n.kind==="metric"||n.kind==="company"||n.kind==="source"),right=others.filter(n=>!left.includes(n));
     for(const [list,x]of [[left,170],[right,790]])list.forEach((n,i)=>graphPositions.set(n.id,{x,y:335+(i-(list.length-1)/2)*138}));
+  }else{
+    const groups=Object.keys(graphKinds).filter(k=>nodes.some(n=>n.kind===k));
+    groups.forEach((kind,group)=>{const members=nodes.filter(n=>n.kind===kind),angle=group*2*Math.PI/groups.length-Math.PI/2,cx=480+Math.cos(angle)*220,cy=335+Math.sin(angle)*160;members.forEach((n,i)=>{const a=i*2.39996,r=22*Math.sqrt(i);graphPositions.set(n.id,{x:cx+Math.cos(a)*r,y:cy+Math.sin(a)*r});});});
+    const links=graphData.edges.filter(e=>graphVisible.has(e.source)&&graphVisible.has(e.target));
+    for(let step=0;step<140;step++){
+      const force=new Map(nodes.map(n=>[n.id,{x:0,y:0}]));
+      for(let i=0;i<nodes.length;i++)for(let j=i+1;j<nodes.length;j++){const a=graphPositions.get(nodes[i].id),b=graphPositions.get(nodes[j].id),dx=a.x-b.x,dy=a.y-b.y,d=Math.max(1,Math.hypot(dx,dy)),f=2600/(d*d);const fa=force.get(nodes[i].id),fb=force.get(nodes[j].id);fa.x+=dx/d*f;fa.y+=dy/d*f;fb.x-=dx/d*f;fb.y-=dy/d*f;}
+      for(const e of links){const a=graphPositions.get(e.source),b=graphPositions.get(e.target),d=Math.max(1,Math.hypot(a.x-b.x,a.y-b.y)),f=(d-100)*.012;const fa=force.get(e.source),fb=force.get(e.target);fa.x-=(a.x-b.x)/d*f;fa.y-=(a.y-b.y)/d*f;fb.x+=(a.x-b.x)/d*f;fb.y+=(a.y-b.y)/d*f;}
+      for(const n of nodes){const p=graphPositions.get(n.id),f=force.get(n.id);p.x=Math.max(45,Math.min(915,p.x+Math.max(-6,Math.min(6,f.x))));p.y=Math.max(45,Math.min(620,p.y+Math.max(-6,Math.min(6,f.y))));}
+    }
   }
   if(innerWidth<=600&&graphFocused&&nodes.length<=9){
     const ordered=nodes.filter(n=>n.id!==graphSelected);ordered.splice(Math.floor(ordered.length/2),0,nodes.find(n=>n.id===graphSelected));
@@ -157,8 +189,7 @@ function drawGraph(){
   }
   $("graphMode").textContent=graphFocused?"关联视图":"全景视图";
   $("graphOverview").classList.toggle("selected",!graphFocused);$("graphFocus").classList.toggle("selected",graphFocused);
-  $("graphSummary").replaceChildren();for(const [num,label]of [[graphData.nodes.length,"知识节点"],[graphData.edges.length,"证据关联"]]){const item=el("div");item.append(el("strong",null,num),el("span",null,label));$("graphSummary").append(item);}
-  $("graphCount").textContent=graphVisible.size?graphVisible.size+" 个节点 · "+graphData.edges.filter(e=>graphVisible.has(e.source)&&graphVisible.has(e.target)).length+" 条关系"+(graphMatchedCount>graphVisible.size?`；匹配 ${graphMatchedCount} 个节点，当前展示前 ${graphVisible.size} 个，可搜索全部知识或按地区缩小范围。`:""):"没有匹配的节点，请调整筛选";
+  updateGraphStats();
 }
 function selectGraphNode(id){graphSelected=id;drawGraph();renderNode();}
 function renderNode(){
@@ -191,12 +222,12 @@ function updateAIContext(){
 }
 
 function focusGraph(){if(!graphSelected)return;graphFocused=true;graphVisible=neighbors(new Set([graphSelected]));limitGraphView();layoutGraph();graphTransform={x:0,y:0,k:1};drawGraph();}
-$("graphFocus").addEventListener("click",focusGraph);
-$("graphExpand").addEventListener("click",()=>{graphVisible=neighbors(graphVisible);layoutGraph();drawGraph();});
+$("graphFocus").addEventListener("click",async()=>{if(await ensureGraphComplete())focusGraph();});
+$("graphExpand").addEventListener("click",async()=>{if(!await ensureGraphComplete())return;graphVisible=neighbors(graphVisible);layoutGraph();drawGraph();});
 function clearGraphFilters(){for(const id of ["knowledgeSearch","knowledgeCategory","graphStatus","graphRuleLevel","graphRegion"])$(id).value="";updateGraphRegions();}
-$("graphOverview").addEventListener("click",()=>{graphFocused=false;clearGraphFilters();graphTransform={x:0,y:0,k:1};filterGraph();});
+$("graphOverview").addEventListener("click",async()=>{if(!await ensureGraphComplete())return;graphFocused=false;clearGraphFilters();graphTransform={x:0,y:0,k:1};filterGraph();});
 $("graphCenter").addEventListener("click",()=>{graphTransform={x:0,y:0,k:1};layoutGraph();drawGraph();});
-$("graphReset").addEventListener("click",()=>{clearGraphFilters();graphSelected=null;graphFocused=false;graphDrag=null;graphDragged=false;graphPositions=new Map();graphTransform={x:0,y:0,k:1};filterGraph(true);focusGraph();renderNode();graphTab(false);if(graphData.empty)$("graphCount").textContent="该企业尚无审查记录，完成材料审查后可查看企业图谱。";});
+$("graphReset").addEventListener("click",()=>{clearGraphFilters();graphSelected=null;graphFocused=false;graphDrag=null;graphDragged=false;graphPositions=new Map();graphTransform={x:0,y:0,k:1};filterGraph(true);graphTab(false);if(graphData.empty)$("graphCount").textContent="该企业尚无审查记录，完成材料审查后可查看企业图谱。";});
 function zoomGraph(factor,p={x:480,y:340}){const old=graphTransform.k,k=Math.max(.35,Math.min(3,old*factor));graphTransform.x=p.x-(p.x-graphTransform.x)*k/old;graphTransform.y=p.y-(p.y-graphTransform.y)*k/old;graphTransform.k=k;drawGraph();}
 $("graphZoomIn").addEventListener("click",()=>zoomGraph(1.2));$("graphZoomOut").addEventListener("click",()=>zoomGraph(1/1.2));
 function svgPoint(e){return new DOMPoint(e.clientX,e.clientY).matrixTransform(graphCanvas.getScreenCTM().inverse());}

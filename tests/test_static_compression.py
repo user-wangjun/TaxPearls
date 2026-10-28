@@ -1,10 +1,10 @@
-"""Public text compression preserves negotiation, byte ranges and private streams."""
+"""UI and graph compression preserves negotiation, byte ranges and private streams."""
 import asyncio
 from pathlib import Path
 import unittest
 
 from starlette.applications import Starlette
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
@@ -23,9 +23,17 @@ class StaticCompressionTests(unittest.TestCase):
         async def small(request):
             return Response(b'let ready=true;', media_type='text/javascript')
 
+        async def graph(request):
+            if request.query_params.get('denied'):
+                return JSONResponse({'detail': 'Access denied'}, status_code=401)
+            return JSONResponse({'nodes': [{'id': str(i), 'label': '公开政策原文' * 50}
+                                           for i in range(200)], 'edges': []},
+                                headers={'Cache-Control': 'private, no-store', 'Vary': 'Cookie'})
+
         self.client = TestClient(StaticCompressionMiddleware(Starlette(routes=[
             Route('/bundle.js', text, methods=['GET', 'POST']), Route('/small.js', small),
             Route('/api/private.js', text), Route('/report', text),
+            Route('/api/knowledge/graph', graph), Route('/api/training/knowledge/graph', graph),
         ])))
         self.addCleanup(self.client.close)
 
@@ -67,6 +75,35 @@ class StaticCompressionTests(unittest.TestCase):
         self.assertNotIn('Content-Encoding', response.headers)
         self.assertEqual(response.content, b'let ready=true;')
 
+    def test_graph_responses_compress_without_changing_data_or_private_headers(self):
+        for path in ['/api/knowledge/graph?audit_id=example', '/api/training/knowledge/graph']:
+            with self.subTest(path=path):
+                original = self.client.get(path, headers={'Accept-Encoding': 'identity'})
+                response = self.client.get(path, headers={'Accept-Encoding': 'gzip'})
+                self.assertEqual(response.content, original.content)
+                self.assertEqual(response.headers.get('Content-Encoding'), 'gzip')
+                self.assertLess(int(response.headers['Content-Length']), len(original.content) // 5)
+                self.assertEqual(response.headers['Cache-Control'], 'private, no-store')
+                self.assertEqual({part.strip().lower() for part in response.headers['Vary'].split(',')},
+                                 {'cookie', 'accept-encoding'})
+
+    def test_graph_compression_honors_negotiation_and_does_not_cache_errors(self):
+        for path in ['/api/knowledge/graph', '/api/training/knowledge/graph']:
+            for encoding in ['identity', 'gzip;q=0', '*;q=1, gzip;q=0', 'br', 'gzip;q=invalid']:
+                with self.subTest(path=path, encoding=encoding):
+                    response = self.client.get(path, headers={'Accept-Encoding': encoding})
+                    self.assertNotIn('Content-Encoding', response.headers)
+                    self.assertEqual(len(response.json()['nodes']), 200)
+                    self.assertIn('Accept-Encoding', response.headers['Vary'])
+            # Authentication/routing errors pass through and cannot be cached.
+            denied = self.client.get(path + '?denied=1', headers={'Accept-Encoding': 'gzip'})
+            self.assertEqual(denied.status_code, 401)
+            self.assertEqual(denied.headers['Cache-Control'], 'private, no-store')
+            self.assertNotIn('Content-Encoding', denied.headers)
+            response = self.client.post(path, headers={'Accept-Encoding': 'gzip'})
+            self.assertEqual(response.status_code, 405)
+            self.assertNotIn('Content-Encoding', response.headers)
+
     def test_private_ndjson_chunks_are_forwarded_immediately(self):
         sent = []
 
@@ -84,12 +121,15 @@ class StaticCompressionTests(unittest.TestCase):
         async def send(message):
             sent.append(message)
 
-        asyncio.run(StaticCompressionMiddleware(endpoint)(
-            {'type': 'http', 'method': 'GET', 'path': '/api/checks',
-             'headers': [(b'accept-encoding', b'gzip')]}, receive, send))
-        self.assertEqual(dict(sent[0]['headers'])[b'vary'], b'Cookie')
-        self.assertNotIn(b'content-encoding', dict(sent[0]['headers']))
-        self.assertEqual(len(sent), 3)
+        for path in ['/api/checks', '/api/knowledge/ask', '/api/training/knowledge/ask']:
+            with self.subTest(path=path):
+                sent.clear()
+                asyncio.run(StaticCompressionMiddleware(endpoint)(
+                    {'type': 'http', 'method': 'GET', 'path': path,
+                     'headers': [(b'accept-encoding', b'gzip')]}, receive, send))
+                self.assertEqual(dict(sent[0]['headers'])[b'vary'], b'Cookie')
+                self.assertNotIn(b'content-encoding', dict(sent[0]['headers']))
+                self.assertEqual(len(sent), 3)
 
     def test_real_public_assets_and_ranges(self):
         from webapp.app import app

@@ -14,6 +14,51 @@ from webapp import policy_graph as pg
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class CitationDeliveryTests(unittest.TestCase):
+    def setUp(self):
+        import gzip
+        from src.public_policy_package import FORMAT, _citation_delivery
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.package = self.root / 'snapshot.json.gz'
+        self.manifest = self.root / 'manifest.json'
+        payload = {'format': FORMAT, 'schema_version': 1,
+                   'tables': {table: [] for table in pg.IDS},
+                   'originals': [{'path': 'policy-originals/missing.txt',
+                                  'repository_path': 'missing.txt', 'sha256': '0' * 64}],
+                   'citation_resolutions': [{'fixture': 'verified snapshot metadata'}]}
+        raw = json.dumps(payload).encode()
+        compressed = gzip.compress(raw)
+        self.package.write_bytes(compressed)
+        self.metadata = {'format': FORMAT, 'schema_version': 1, 'snapshot': self.package.name,
+                         'compressed_sha256': hashlib.sha256(compressed).hexdigest(),
+                         'content_sha256': hashlib.sha256(raw).hexdigest(),
+                         'table_counts': {table: 0 for table in pg.IDS}, 'original_file_count': 1}
+        self.manifest.write_text(json.dumps(self.metadata), encoding='utf-8')
+        _citation_delivery.cache_clear()
+        self.addCleanup(_citation_delivery.cache_clear)
+
+    def test_citation_metadata_does_not_reopen_originals_but_import_still_checks_them(self):
+        from src.public_policy_package import _citation_delivery
+        rows = _citation_delivery(str(self.package), self.manifest.read_bytes())
+        self.assertEqual(rows, [{'fixture': 'verified snapshot metadata'}])
+        with self.assertRaises(FileNotFoundError):
+            load_package(self.package, self.root)
+
+    def test_citation_metadata_rejects_tampered_snapshot_and_updated_manifest(self):
+        from src.public_policy_package import _citation_delivery
+        # A changed manifest must invalidate the cache, even for the same path.
+        _citation_delivery(str(self.package), self.manifest.read_bytes())
+        self.metadata['content_sha256'] = '0' * 64
+        self.manifest.write_text(json.dumps(self.metadata), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, '内容超过限额或哈希不一致'):
+            _citation_delivery(str(self.package), self.manifest.read_bytes())
+        self.package.write_bytes(b'tampered snapshot')
+        with self.assertRaisesRegex(ValueError, '数据包哈希不一致'):
+            _citation_delivery(str(self.package), self.manifest.read_bytes())
+
+
 class PublicPolicyPackageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -209,6 +254,23 @@ class PublicPolicyPackageTests(unittest.TestCase):
             self.assertNotEqual(node['content'], raw['content'])
             self.assertEqual(node['content'], node['requirement'])
             self.assertNotIn('original_text', node)
+
+    def test_graph_reads_citation_manifest_once_per_projection(self):
+        from unittest.mock import patch
+        from src.public_policy_package import _citation_delivery
+        _citation_delivery.cache_clear()
+        reads = []
+        original = Path.read_bytes
+
+        def read(path):
+            if path == ROOT / 'data/public-policy/manifest.json':
+                reads.append(path)
+            return original(path)
+
+        with patch.object(Path, 'read_bytes', read):
+            graph = pg.graph(self.db)
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(sum(bool(n.get('citation_corrected')) for n in graph['nodes']), 5)
 
     def test_supplement_retains_exceptions_and_evidenced_version_changes(self):
         policies = self.payload['tables']['Policy']

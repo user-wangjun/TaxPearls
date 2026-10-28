@@ -19,7 +19,14 @@ MAX_BYTES = 64 * 1024 * 1024
 @lru_cache(maxsize=1)
 def _citation_delivery(package_path, manifest_bytes):
     # Cache is keyed by the actual manifest bytes, so a package update is visible.
-    return load_package(Path(package_path), Path(package_path).parents[2]).get('citation_resolutions', [])
+    # Projection uses only the hash-verified snapshot. Original files are fully
+    # verified by load_package during bootstrap/import, outside graph requests.
+    return _load_snapshot(Path(package_path), manifest_bytes).get('citation_resolutions', [])
+
+
+def citation_resolutions():
+    package = Path(__file__).resolve().parents[1] / 'data/public-policy/snapshot.json.gz'
+    return _citation_delivery(str(package), package.with_name('manifest.json').read_bytes())
 
 
 def citation_view(clause, policy, *, resolutions=None):
@@ -36,8 +43,7 @@ def citation_view(clause, policy, *, resolutions=None):
     if not location.get('text_sha256'):
         return {'text': original}
     if resolutions is None:
-        package = Path(__file__).resolve().parents[1] / 'data/public-policy/snapshot.json.gz'
-        resolutions = _citation_delivery(str(package), package.with_name('manifest.json').read_bytes())
+        resolutions = citation_resolutions()
     changes = []
     for row in resolutions:
         if (row['source_url'] != policy['source_url']
@@ -141,9 +147,10 @@ def relative(value):
     return value
 
 
-def load_package(package, repository):
-    package, repository = Path(package).resolve(), Path(repository).resolve()
-    manifest = json.loads(package.with_name('manifest.json').read_text(encoding='utf-8'))
+def _load_snapshot(package, manifest_bytes=None):
+    package = Path(package).resolve()
+    manifest = json.loads(manifest_bytes if manifest_bytes is not None
+                          else package.with_name('manifest.json').read_bytes())
     compressed = package.read_bytes()
     if package.name != manifest['snapshot'] or digest(compressed) != manifest['compressed_sha256']:
         raise ValueError('公共图谱数据包哈希不一致。')
@@ -168,6 +175,14 @@ def load_package(package, repository):
         name = relative(item['path'])
         if not name.startswith('policy-originals/'):
             raise ValueError('原文目标须在 policy-originals 目录内。')
+        relative(item['repository_path'])
+    return payload
+
+
+def load_package(package, repository):
+    payload = _load_snapshot(package)
+    repository = Path(repository).resolve()
+    for item in payload['originals']:
         data = resolve_path(relative(item['repository_path']), repository).read_bytes()
         if digest(data) != item['sha256']:
             raise ValueError('仓库原文哈希不一致。')
