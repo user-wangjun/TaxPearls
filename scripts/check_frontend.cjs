@@ -4,6 +4,33 @@ const vm = require("node:vm");
 const assert = require("node:assert/strict");
 const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n" + fs.readFileSync("webapp/static/console.js", "utf8");
 
+// Student labels hide login accounts unless names need disambiguation.
+{
+  const source=fs.readFileSync("webapp/static/classroom.js","utf8");
+  const ctx={};vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf("  function personName("),source.indexOf("  function roster(")),ctx);
+  const first={id:"one",display_name:"同学",username:"first@example.com"};
+  const second={id:"two",display_name:"同学",username:"second@example.com"};
+  assert.equal(ctx.personName(first,[first]),"同学");
+  assert.equal(ctx.personName(first,[first,second]),"同学（first@example.com）");
+  assert.equal(ctx.personName(second,[first,second]),"同学（second@example.com）");
+}
+
+// Display names stay separate from stored school keys and disambiguate same-name teachers.
+{
+  const source=fs.readFileSync("webapp/static/training-staff.js","utf8");
+  const ctx={state:{staff:{college:"school-key",college_name:"示例高校"},
+    teachers:[{id:"one",display_name:"王老师",username:"teacher-one"}]}};
+  vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf("function esc("),source.indexOf("async function api("))
+    +source.slice(source.indexOf("function teacherOptions("),source.indexOf("function renderCourses(")),ctx);
+  assert.equal(ctx.schoolName(),"示例高校");assert.equal(ctx.state.staff.college,"school-key");
+  assert.ok(ctx.teacherOptions().includes("王老师"));assert.ok(!ctx.teacherOptions().includes("teacher-one"));
+  ctx.state.teachers.push({id:"two",display_name:"王老师",username:"teacher-two"});
+  assert.ok(ctx.teacherOptions().includes("teacher-one"));assert.ok(ctx.teacherOptions().includes("teacher-two"));
+  console.log("Teaching names: school display names, stable school keys and same-name teacher disambiguation passed.");
+}
+
 // The task board uses the signed-in identity and refreshes progress without polling /api/me.
 (async()=>{
   const all = node => [node, ...node.children.flatMap(all)];

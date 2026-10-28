@@ -14,6 +14,10 @@ function esc(value) {
   }[c]));
 }
 
+function schoolName(college = state.staff?.college) {
+  return college === state.staff?.college ? (state.staff?.college_name || college || "") : (college || "");
+}
+
 async function api(path, options = {}) {
   if(disposed)throw new DOMException("视图已关闭","AbortError");
   const form = options.form instanceof FormData ? options.form : null;
@@ -376,8 +380,8 @@ function renderStudents() {
   box.innerHTML = state.students.map((s) => `
     <div class="item">
       <div class="item-head">
-        <div><strong>${esc(s.student_no)}</strong> ${esc(s.name)}
-          <span class="chip">${esc(s.college)}</span>
+        <div><strong>${esc(s.name)}</strong> <span class="muted">学号 ${esc(s.student_no)}</span>
+          <span class="chip">${esc(schoolName(s.college))}</span>
           ${s.class_name ? `<span class="chip">${esc(s.class_name)}</span>` : ""}
           ${s.active ? `<span class="badge">启用中</span>` : `<span class="badge gray">已停用</span>`}
         </div>
@@ -405,8 +409,13 @@ async function loadCourses() {
 }
 
 function teacherOptions(selectedId) {
-  return state.teachers.map((t) =>
-    `<option value="${esc(t.id)}" ${t.id === selectedId ? "selected" : ""}>${esc(t.display_name)}（${esc(t.username)}）</option>`).join("");
+  return state.teachers.map(t => {
+    const name = (t.display_name || t.username || "").trim();
+    const duplicate = state.teachers.some(other => other.id !== t.id
+      && (other.display_name || other.username || "").trim() === name);
+    const label = duplicate ? `${name}（${t.username}）` : name;
+    return `<option value="${esc(t.id)}" ${t.id === selectedId ? "selected" : ""}>${esc(label)}</option>`;
+  }).join("");
 }
 
 function renderCourses() {
@@ -515,11 +524,11 @@ function showApp(loggedIn) {
   if(!loggedIn){membershipUI?.destroy();membershipUI=null;state.staff=null;location.replace("/");return;}
   document.getElementById("app-view").hidden = !loggedIn;
   for (const id of ["sf-college", "si-college", "cf2-college", "cm-college", "ti-college"]) {
-    document.getElementById(id).value = loggedIn ? state.staff.college : "";
+    document.getElementById(id).value = loggedIn ? schoolName() : "";
   }
   document.getElementById("teacher-import-btn").hidden = !(loggedIn && state.staff && state.staff.role === "admin");
   document.getElementById("who").innerHTML = loggedIn
-    ? `${esc(state.staff.display_name)}（${esc(state.staff.role)} · ${esc(state.staff.college)}）
+    ? `${esc(state.staff.display_name)}（${esc(({admin:"高校管理员",school_admin:"高校管理员",teacher:"教师"})[state.staff.role] || "教学人员")} · ${esc(schoolName())}）
        <button class="small" id="pass-btn">改密码</button>
        <button class="small" id="logout-btn">退出</button>` : "";
   if (loggedIn) {
@@ -591,7 +600,7 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
     "refresh-roster": () => loadRoster().catch((err) => flash(err.message, true)),
     "show-teacher-import": () => { q("#teacher-import-form").hidden = !q("#teacher-import-form").hidden; },
     "migrate-class": async () => {
-      const college = q("#cm-college").value.trim();
+      const college = state.staff.college;
       const fromClass = q("#cm-from").value.trim();
       const toClass = q("#cm-to").value.trim();
       if (!college || !fromClass || !toClass) { flash("院校、原班级、新班级均必填。", true); return; }
@@ -611,7 +620,7 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
     "import-teachers": async () => {
       const rows = parseTeacherRows(q("#ti-text").value);
       if (!rows.length) { flash("没有可导入的行。格式：登录名,姓名,邮箱可选", true); return; }
-      const college = q("#ti-college").value.trim();
+      const college = state.staff.college;
       const defaultPassword = q("#ti-pass").value;
       if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
       try {
@@ -633,7 +642,7 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
       await api("/api/training/staff/students", {
         method: "POST",
         body: {
-          college: q("#sf-college").value.trim(),
+          college: state.staff.college,
           student_no: q("#sf-no").value.trim(),
           name: q("#sf-name").value.trim(),
           class_name: q("#sf-class").value.trim() || null,
@@ -649,7 +658,7 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
     "import-students": () => withCert(async () => {
       const rows = parseStudentRows(q("#si-text").value);
       if (!rows.length) { flash("没有可导入的行。格式：学号,姓名,班级", true); return; }
-      const college = q("#si-college").value.trim();
+      const college = state.staff.college;
       const defaultPassword = q("#si-pass").value;
       if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
       const result = await api("/api/training/staff/students/import", {
@@ -663,7 +672,7 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
     "import-students-xlsx": () => withCert(async () => {
       const file = q("#si-file").files && q("#si-file").files[0];
       if (!file) { flash("请选择 .xlsx 名册文件。", true); return; }
-      const college = q("#si-college").value.trim();
+      const college = state.staff.college;
       const defaultPassword = q("#si-pass").value;
       if (!college || !defaultPassword) { flash("院校和统一初始密码必填。", true); return; }
       const fd = new FormData();
@@ -846,7 +855,7 @@ document.getElementById("app-view").addEventListener("click", async (event) => {
         method: "POST",
         body: {
           name: q("#cf2-name").value.trim(),
-          college: q("#cf2-college").value.trim(),
+          college: state.staff.college,
           semester: q("#cf2-semester").value.trim() || null,
           teacher_id: q("#cf2-teacher").value || null,
           class_names: splitClassNames(q("#cf2-classes").value),
@@ -940,7 +949,7 @@ function renderStaffWorkbench() {
   const box = document.getElementById("staff-workbench-body");
   if (!box) return;
   const count = (label, value, unit) => `<div class="kpi"><div>${esc(label)}</div><div class="value">${esc(value)}<span class="unit">${esc(unit)}</span></div></div>`;
-  box.innerHTML = `<p class="muted">${esc(state.staff.college)} · ${esc(state.staff.display_name)}，从这里继续教学与管理。</p>
+  box.innerHTML = `<p class="muted">${esc(schoolName())} · ${esc(state.staff.display_name)}，从这里继续教学与管理。</p>
     <div class="kpi-grid">${count("在读学生", state.students.filter(s => s.active).length, "人")}${count("名册班级", state.classes.length, "个")}${count("课程", state.courses.length, "门")}${count("上架证书", state.certificates.filter(c => c.active).length, "项")}</div>
     <p class="muted">师生、班级和课程按本院校统计；考证内容为共享教学资源。这里不将资源数量当作学习成绩。</p>
     <div class="university-home-actions"><button data-workspace-view="students">查看师生与班级</button><button data-workspace-view="courses">查看课程</button><button data-workspace-view="organization">查看组织与学期</button></div>`;

@@ -4037,7 +4037,13 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.get("/api/training/staff/auth/me")
     @guarded
     def staff_me(session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        return response({"staff": staff(session)})
+        who = staff(session)
+        with store_provider().connect() as db:
+            school = db.execute("""SELECT s.display_name FROM university_organizations o
+                JOIN org_settings s ON s.org_id=o.org_id
+                WHERE o.college=? AND s.org_type='university'""", (who['college'],)).fetchone()
+        name = (school['display_name'] or '').strip() if school else ''
+        return response({"staff": {**who, "college_name": name or who['college']}})
 
     @app.post("/api/training/staff/auth/change-password")
     @guarded

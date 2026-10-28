@@ -1,4 +1,6 @@
 """Teaching workbench over existing identities, classrooms and public knowledge."""
+import json
+import uuid
 from datetime import UTC, datetime
 
 from fastapi import HTTPException, Request
@@ -29,7 +31,62 @@ def migrate(db):
         CREATE TABLE IF NOT EXISTS university_assignment_courses (
             assignment_id TEXT PRIMARY KEY REFERENCES assignments(id), course_id TEXT NOT NULL REFERENCES course(id)
         );
+        CREATE TABLE IF NOT EXISTS university_legacy_classrooms (
+            college TEXT NOT NULL, class_name TEXT NOT NULL,
+            class_id TEXT NOT NULL REFERENCES training_classes(id),
+            PRIMARY KEY(college,class_name)
+        );
     """)
+    migrate_legacy_classrooms(db)
+
+
+def migrate_legacy_classrooms(db):
+    """Bridge existing school rosters once; never rewrite later classroom edits."""
+    schools = db.execute("""SELECT o.college,o.org_id FROM university_organizations o
+        JOIN org_settings s ON s.org_id=o.org_id WHERE s.org_type='university'""").fetchall()
+    for school in schools:
+        college, org_id = school['college'], school['org_id']
+        staff = db.execute("""SELECT u.id,c.id staff_id,c.role FROM college_user c
+            JOIN university_identity_links l ON l.staff_id=c.id JOIN users u ON u.id=l.user_id
+            WHERE c.college=? AND u.org_id=? AND c.active=1 AND u.active=1
+            AND c.role IN ('admin','teacher') AND u.role IN ('org_admin','teacher')""", (college,org_id)).fetchall()
+        teachers = {row['staff_id']: row['id'] for row in staff}
+        admins = {row['id'] for row in staff if row['role'] == 'admin'}
+        entities = db.execute('SELECT name,archived,created_at FROM college_class WHERE college=?', (college,)).fetchall()
+        names = {row['name'] for row in entities if not row['archived']}
+        entity_names = {row['name'] for row in entities}
+        names.update(row[0] for row in db.execute("""SELECT DISTINCT class_name FROM student_info
+            WHERE college=? AND active=1 AND TRIM(COALESCE(class_name,''))<>''""", (college,))
+                     if row[0] not in entity_names)
+        courses = db.execute("""SELECT c.id,c.teacher_id,b.class_name FROM course c
+            JOIN course_class b ON b.course_id=c.id WHERE c.college=? AND c.active=1""", (college,)).fetchall()
+        names.update(row['class_name'] for row in courses if row['class_name'] not in entity_names)
+        for name in sorted(names):
+            if (not name or len(name) > 200 or db.execute(
+                    'SELECT 1 FROM university_legacy_classrooms WHERE college=? AND class_name=?',
+                    (college,name)).fetchone()):
+                continue
+            owners = {teachers[row['teacher_id']] for row in courses
+                      if row['class_name'] == name and row['teacher_id'] in teachers}
+            owner = next(iter(owners)) if len(owners) == 1 else next(iter(admins)) if len(admins) == 1 else None
+            # A same-name manual classroom is not proof that two cohorts match.
+            if not owner or db.execute('SELECT 1 FROM training_classes WHERE org_id=? AND name=?', (org_id,name)).fetchone():
+                continue
+            key = json.dumps(['taxpearls-legacy-classroom',college,name], ensure_ascii=False)
+            class_id = uuid.uuid5(uuid.NAMESPACE_URL, key).hex
+            stamp = min((row['created_at'] for row in entities if row['name'] == name and not row['archived']),
+                        default=datetime.now(UTC).isoformat(timespec='seconds'))
+            db.execute('INSERT INTO training_classes VALUES (?,?,?,?,1,?)', (class_id,org_id,owner,name,stamp))
+            people = db.execute("""SELECT u.id FROM student_info s
+                JOIN university_identity_links l ON l.student_id=s.id JOIN users u ON u.id=l.user_id
+                WHERE s.college=? AND s.class_name=? AND s.active=1
+                AND u.org_id=? AND u.role='student' AND u.active=1
+                AND NOT EXISTS (SELECT 1 FROM training_class_members m JOIN training_classes c ON c.id=m.class_id
+                    WHERE m.student_id=u.id AND c.org_id=?)""", (college,name,org_id,org_id)).fetchall()
+            db.executemany('INSERT INTO training_class_members VALUES (?,?)', [(class_id,row['id']) for row in people])
+            db.executemany('INSERT OR IGNORE INTO university_course_classrooms VALUES (?,?)',
+                           [(row['id'],class_id) for row in courses if row['class_name'] == name])
+            db.execute('INSERT INTO university_legacy_classrooms VALUES (?,?,?)', (college,name,class_id))
 
 
 def course_for_actor(db, actor, course_id):

@@ -41,6 +41,83 @@ class UniversityWorkspaceTests(unittest.TestCase):
         response = self.client.post('/api/login', json={'username':user['username'], 'password':self.password})
         self.assertEqual(response.status_code, 200, response.text)
 
+    def _legacy_classroom(self):
+        with self.store.connect() as db:
+            db.execute("INSERT INTO college_class(id,college,name,archived,created_at) VALUES ('legacy-class','campus','教学一班',0,?)", (_now(),))
+            db.execute("INSERT INTO college_class(id,college,name,archived,created_at) VALUES ('retired-class','campus','历史归档班',1,?)", (_now(),))
+        response = self.client.post('/api/training/staff/courses', json={
+            'college': 'campus', 'name': '旧课程', 'teacher_id': self.staff_id,
+            'class_names': ['教学一班']})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()['course']['id']
+
+    def test_staff_display_uses_school_name_and_preserves_school_key(self):
+        response = self.client.get('/api/training/staff/auth/me')
+        self.assertEqual(response.status_code, 200, response.text)
+        staff = response.json()['staff']
+        self.assertEqual(staff['college'], 'campus')
+        self.assertEqual(staff.get('college_name'), '示例高校')
+
+    def test_legacy_classroom_restores_members_and_course_binding(self):
+        from webapp import university_workspace
+        course = self._legacy_classroom()
+        with self.store.connect() as db:
+            university_workspace.migrate(db)
+        classes = self.client.get('/api/classes').json()
+        self.assertEqual([item['name'] for item in classes], ['教学一班'])
+        classroom = classes[0]
+        self.assertEqual([person['id'] for person in classroom['students']], [self.student['id']])
+        courses = self.client.get('/api/teaching/courses').json()
+        self.assertEqual(next(item for item in courses if item['id'] == course)['class_ids'], [classroom['id']])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT class_name FROM student_info WHERE id='learner'").fetchone()[0], '教学一班')
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM course_class WHERE course_id=?', (course,)).fetchone()[0], 1)
+        self.login(self.student)
+        self.assertEqual([item['id'] for item in self.client.get('/api/classes').json()], [classroom['id']])
+
+    def test_legacy_classroom_migration_does_not_repeat_or_undo_later_edits(self):
+        from webapp import university_workspace
+        self._legacy_classroom()
+        with self.store.connect() as db:
+            university_workspace.migrate(db)
+        classes = self.client.get('/api/classes').json()
+        self.assertEqual(len(classes), 1)
+        classroom = classes[0]
+        updated = self.client.put('/api/classes/'+classroom['id'], json={
+            'name': '调整后班级', 'student_ids': [], 'revision': classroom['revision']})
+        self.assertEqual(updated.status_code, 200, updated.text)
+        with self.store.connect() as db:
+            university_workspace.migrate(db)
+        classes = self.client.get('/api/classes').json()
+        self.assertEqual([(item['id'], item['name'], item['students']) for item in classes],
+                         [(classroom['id'], '调整后班级', [])])
+
+    def test_legacy_classroom_migration_preserves_same_name_manual_class(self):
+        from webapp import university_workspace
+        self._legacy_classroom()
+        created = self.client.post('/api/classes', json={'name': '教学一班', 'student_ids': []})
+        self.assertEqual(created.status_code, 200, created.text)
+        with self.store.connect() as db:
+            university_workspace.migrate(db)
+        classes = self.client.get('/api/classes').json()
+        self.assertEqual([(item['id'], item['students']) for item in classes], [(created.json()['id'], [])])
+
+    def test_legacy_classroom_migration_keeps_school_boundaries(self):
+        from webapp import university_workspace
+        self._legacy_classroom()
+        foreign = self.store.create_user('foreign-student', self.password, '外校学生', 'student', 'other-school')
+        with self.store.connect() as db:
+            password_hash = db.execute("SELECT password_hash FROM student_info WHERE id='learner'").fetchone()[0]
+            db.execute("INSERT INTO student_info VALUES ('mismatched-profile','campus','S002','外校学生','教学一班',?,NULL,1,?)", (password_hash, _now()))
+            db.execute("INSERT INTO university_identity_links VALUES (?,NULL,'mismatched-profile')", (foreign['id'],))
+            db.execute("INSERT INTO college_class(id,college,name,archived,created_at) VALUES ('foreign-class','other-school','教学一班',0,?)", (_now(),))
+            university_workspace.migrate(db)
+        classes = self.client.get('/api/classes').json()
+        self.assertEqual(len(classes), 1)
+        self.assertEqual([person['id'] for person in classes[0]['students']], [self.student['id']])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM training_classes').fetchone()[0], 1)
+
     def test_campus_admin_teaches_without_changing_canonical_account_role(self):
         response = self.client.post('/api/classes', json={'name':'教学一班','student_ids':[self.student['id']]})
         self.assertEqual(response.status_code, 200, response.text)
