@@ -31,3 +31,13 @@ def legacy_token(store, email, purpose):
         db.execute('INSERT INTO email_tokens(token_hash,email,purpose,expires_at,created_at) VALUES (?,?,?,?,?)',
                    (email_auth.digest(token),email,purpose,(datetime.now(UTC)+timedelta(minutes=10)).isoformat(),datetime.now(UTC).isoformat()))
     return token
+
+
+def content_session(store, client):
+    """Give content-maintenance tests an actual platform session."""
+    username, password = "content-maintenance-test", "ContentMaintenance-2026!"
+    result = store.authenticate(username, password)
+    if result is None:
+        store.create_user(username, password, "内容维护测试", "platform_admin", "platform")
+        result = store.authenticate(username, password)
+    client.cookies.set("taxpearls_session", result[1])

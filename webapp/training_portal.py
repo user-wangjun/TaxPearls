@@ -10,6 +10,8 @@
 """
 from __future__ import annotations
 
+from webapp.training_content import public_content_operator
+
 import csv
 import hashlib
 import io
@@ -2775,7 +2777,7 @@ def start_practice(store, student_id: str, cert_id: str, kp_id: str | None = Non
                     if not prior:
                         raise TrainingPortalError("该规则未关联到此知识点，请从关联规则中练习。")
             if rule_id not in covered:
-                raise TrainingPortalError("该规则尚未纳入当前教学版本，请等待教师发布新版本。", 409)
+                raise TrainingPortalError("该规则尚未纳入当前教学版本，请等待平台更新教学资源。", 409)
         else:
             candidates = [c for c in _candidate_rules(db, cert_id, kp_id) if c in by_id and c in covered]
             if not candidates:
@@ -3833,17 +3835,18 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.post("/api/training/staff/knowledge-points/{kp_id}/links")
     @guarded
     def staff_link_create(kp_id: str, body: LinkCreate,
-                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"link": create_link(store_provider(), who, kp_id,
                                              body.target_type, body.target_id)})
 
     @app.delete("/api/training/staff/links/{link_id}")
     @guarded
     def staff_link_delete(link_id: str,
-                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response(delete_link(store_provider(), who, link_id))
+
 
     # ---- 学生：知识点清单（含覆盖统计）----
 
@@ -4059,8 +4062,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.post("/api/training/staff/certificates")
     @guarded
     def staff_certificate_create(body: CertificateCreate,
-                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                                 session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"certificate": create_certificate(
             store_provider(), who, body.code, body.name, description=body.description,
             subjects=body.subjects, source_ref=body.source_ref)})
@@ -4068,32 +4071,32 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.patch("/api/training/staff/certificates/{cert_id}")
     @guarded
     def staff_certificate_update(cert_id: str, body: CertificatePatch,
-                                 session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                                 session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"certificate": update_certificate(
             store_provider(), who, cert_id, fields=_patch_fields(body))})
 
     @app.post("/api/training/staff/certificates/{cert_id}/dates")
     @guarded
     def staff_date_create(cert_id: str, body: ExamDateCreate,
-                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"exam_date": create_exam_date(
             store_provider(), who, cert_id, body.date_type, body.exam_date, body.round_label)})
 
     @app.patch("/api/training/staff/dates/{date_id}")
     @guarded
     def staff_date_update(date_id: str, body: ExamDatePatch,
-                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"exam_date": update_exam_date(
             store_provider(), who, date_id, fields=_patch_fields(body))})
 
     @app.delete("/api/training/staff/dates/{date_id}")
     @guarded
     def staff_date_delete(date_id: str,
-                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response(delete_exam_date(store_provider(), who, date_id))
 
     @app.get("/api/training/staff/certificates/{cert_id}/knowledge-points")
@@ -4107,8 +4110,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.post("/api/training/staff/certificates/{cert_id}/knowledge-points")
     @guarded
     def staff_kp_create(cert_id: str, body: KnowledgePointCreate,
-                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                        session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"knowledge_point": create_knowledge_point(
             store_provider(), who, cert_id, body.code, body.name, subject=body.subject,
             parent_id=body.parent_id, description=body.description, source_ref=body.source_ref,
@@ -4117,24 +4120,24 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.post("/api/training/staff/certificates/{cert_id}/knowledge-points/import/preview")
     @guarded
     def staff_kp_import_preview(cert_id: str, body: KnowledgePointImportBody,
-                                session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                                session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response(preview_kp_import(store_provider(), who, cert_id, body.text,
                                           body.format, body.default_outline_version))
 
     @app.post("/api/training/staff/certificates/{cert_id}/knowledge-points/import")
     @guarded
     def staff_kp_import(cert_id: str, body: KnowledgePointImportBody,
-                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                        session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response(apply_kp_import(store_provider(), who, cert_id, body.text,
                                         body.format, body.default_outline_version))
 
     @app.patch("/api/training/staff/knowledge-points/{kp_id}")
     @guarded
     def staff_kp_update(kp_id: str, body: KnowledgePointPatch,
-                        session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                        session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"knowledge_point": update_knowledge_point(
             store_provider(), who, kp_id, fields=_patch_fields(body))})
 
@@ -4156,8 +4159,8 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.post("/api/training/staff/knowledge-points/{kp_id}/marks")
     @guarded
     def staff_mark_create(kp_id: str, body: MarkCreate,
-                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"mark": create_mark(
             store_provider(), who, kp_id, body.mark_type, level=body.level,
             basis_ref=body.basis_ref, basis_version=body.basis_version)})
@@ -4165,15 +4168,15 @@ def register(app, store_provider: Callable[[], Any], cookie_name: str) -> None:
     @app.patch("/api/training/staff/marks/{mark_id}")
     @guarded
     def staff_mark_update(mark_id: str, body: MarkPatch,
-                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"mark": update_mark(store_provider(), who, mark_id, fields=_patch_fields(body))})
 
     @app.delete("/api/training/staff/marks/{mark_id}")
     @guarded
     def staff_mark_delete(mark_id: str,
-                          session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response(delete_mark(store_provider(), who, mark_id))
 
     @app.get("/api/training/staff/students")

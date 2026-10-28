@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import auth_support
+
 import tempfile
 import unittest
 import uuid
@@ -62,6 +64,7 @@ class TrainingOutlineUpgradeTests(unittest.TestCase):
         res = self.client.post("/api/training/staff/auth/login",
                                json={"username": "admin1", "password": "staff-pass"})
         self.assertEqual(res.status_code, 200, res.text)
+        auth_support.content_session(self.store, self.client)
 
     def _start(self, to_version="2027", note=""):
         return self.client.post(

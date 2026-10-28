@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+from webapp.training_content import public_content_operator
+
 import sqlite3
 import uuid
 from functools import wraps
@@ -199,8 +201,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/knowledge-points/{kp_id}/relations")
     @guarded
     def staff_relation_create(kp_id: str, body: RelationCreate,
-                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                              session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"relation": create_relation(
             store_provider(), who, kp_id, body.to_kp_id, body.relation_type,
             body.basis_ref, body.basis_version)})
@@ -208,6 +210,6 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.delete("/api/training/staff/relations/{relation_id}")
     @guarded
     def staff_relation_delete(relation_id: str,
-                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                              session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"relation": delete_relation(store_provider(), who, relation_id)})

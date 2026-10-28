@@ -1,4 +1,4 @@
-/* 课程任务清单：把「单案例作业」与「组卷」统一成一屏，并管排期、答案开放与归档。
+/* 课程任务清单：教师统一查看案例作业、试卷和 AI 课堂练习。
    由统一登录传入身份，随课堂数据刷新；进入作答仍走原入口。 */
 "use strict";
 (() => {
@@ -12,6 +12,13 @@
   const MINE = {not_started: "未开始", in_progress: "进行中", submitted: "待复核",
     pending_review: "待复核", returned: "待订正", done: "已完成"};
   const RELEASE = {after_submit: "交卷后开放", after_due: "截止后开放", manual: "教师统一开放"};
+  const FILTER_INFO = {
+    all: "全部任务，包含草稿、进行中、已截止和已归档的任务。",
+    draft: "草稿尚未发布，学生不可见。",
+    published: "进行中的任务已发布，且尚未截止。",
+    closed: "已截止任务已超过提交期限；历史提交和成绩保留。",
+    archived: "已归档任务对学生隐藏；历史提交和成绩保留。",
+  };
 
   async function api(path, options = {}) {
     const response = await fetch(path, {credentials: "same-origin", ...options});
@@ -38,6 +45,7 @@
   let role = null;
   let cache = [];
   let filter = "all";
+  let loadError = null;
   let identityRevision = 0, loadRevision = 0;
   const expanded = new Set();
 
@@ -47,6 +55,9 @@
     style.id = "task-board-style";
     style.textContent = "#task-board-card .tb-row{border-top:1px solid rgba(127,127,127,.18);padding:10px 0}"
       + "#task-board-card .tb-row:first-of-type{border-top:0}"
+      + "#task-board-card .tb-list{max-height:min(500px,60dvh);overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;scrollbar-width:thin;scrollbar-color:var(--line,#aab8c6) transparent}"
+      + "#task-board-card .tb-list>.tb-row{min-height:100px;box-sizing:border-box}"
+      + "#task-board-card .tb-list::-webkit-scrollbar{width:7px}#task-board-card .tb-list::-webkit-scrollbar-thumb{background:var(--line,#aab8c6);border-radius:8px}"
       + "#task-board-card .tb-head{display:flex;gap:10px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}"
       + "#task-board-card .tb-main{flex:1 1 260px;min-width:220px}"
       + "#task-board-card .tb-acts{display:flex;gap:6px;flex-wrap:wrap}"
@@ -55,7 +66,8 @@
       + "#task-board-card .tb-form{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px}"
       + "#task-board-card .tb-form>div{flex:0 1 190px}"
       + "#task-board-card input,#task-board-card select{width:100%;box-sizing:border-box}"
-      + "#task-board-card .tb-filters{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px}";
+      + "#task-board-card .tb-filters{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px}"
+      + "@media(max-width:600px){#appMain #task-board-card .tb-filters{grid-auto-flow:row;grid-auto-columns:auto;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px;border-radius:18px}#appMain #task-board-card .tb-filters>button:last-child:nth-child(odd){grid-column:1/-1}}";
     document.head.append(style);
   }
 
@@ -91,6 +103,7 @@
   }
 
   function teacherRow(task) {
+    if (task.kind === "ai") return window.tpAICoach.createTaskRow(task);
     const row = el("div", "tb-row");
     const head = el("div", "tb-head");
     const main = el("div", "tb-main");
@@ -260,10 +273,21 @@
   function paintList(card) {
     const box = card.querySelector(".tb-list");
     box.replaceChildren();
+    card.querySelector(".tb-filters").querySelectorAll("button").forEach(button => {
+      const key = button.dataset.filter;
+      const count = key === "all" ? cache.length : cache.filter(task => task.state === key).length;
+      button.textContent = `${button.dataset.label}（${count}）`;
+    });
+    const hint = card.querySelector(".tb-filter-hint");
+    if (hint) hint.textContent = FILTER_INFO[filter] || "";
+    if (loadError) {
+      box.append(el("p", "muted", "读取失败：" + loadError));
+      return;
+    }
     const rows = cache.filter(task => filter === "all" || task.state === filter);
     if (!rows.length) {
       box.append(el("p", "muted", role === "staff"
-        ? "当前筛选下没有任务。可在下方「发布实训作业」或「多案例组卷」创建。"
+        ? (filter === "all" ? "还没有课程任务。可在下方创建课堂练习、实训作业或试卷。" : `没有${STATE[filter]}任务。`)
         : "暂无分配给你的课程任务；如果刚入班，请联系任课教师确认名册。"));
       return;
     }
@@ -277,15 +301,20 @@
     const current = () => identity === identityRevision && ticket === loadRevision
       && document.getElementById("task-board-card") === card;
     const box = card.querySelector(".tb-list");
+    loadError = null;
     box.replaceChildren(el("p", "muted", "正在读取任务…"));
     try {
-      const data = await api("/api/training/tasks");
+      const [data, ai] = await Promise.all([api("/api/training/tasks"),
+        role === "staff" ? api("/api/teaching/ai-tasks") : Promise.resolve({items: []})]);
       if (!current()) return;
-      cache = data.items || [];
+      cache = [...(data.items || []), ...(ai.items || []).map(item => ({...item, kind: "ai", state: item.status}))];
+      window.tpAICoach?.useTaskBoard?.();
       paintList(card);
     } catch (error) {
       if (!current()) return;
-      box.replaceChildren(el("p", "muted", "读取失败：" + error.message));
+      cache = [];
+      loadError = error.message;
+      paintList(card);
       if (throwOnError) throw error;
     }
   }
@@ -294,14 +323,16 @@
     injectStyle();
     const card = el("section", "card");
     card.id = "task-board-card";
-    const heading = el("h2", null, role === "staff" ? "课程任务清单（作业与试卷）" : "课程任务（作业与试卷）");
+    const heading = el("h2", null, role === "staff" ? "课程任务清单" : "课程任务（作业与试卷）");
     const refresh = el("button", "small", "刷新任务");
     refresh.onclick = load;
     heading.append(refresh);
     card.append(heading, el("p", "muted", role === "staff"
-      ? "单案例作业与组卷都算一项课程任务，在这里统一看状态、排期和答案开放方式。题目本身仍在下方原有入口维护；发布后不改题，需要调整就归档后新建。"
+      ? "集中查看课堂练习、案例作业和试卷，按任务状态筛选。创建与编辑仍在下方对应入口完成。"
       : "这里按截止时间列出要完成的任务。答案是否可看由教师设置决定，不是提交就一定开放。"));
     const filters = el("div", "tb-filters");
+    filters.setAttribute("role", "group");
+    filters.setAttribute("aria-label", "任务状态筛选");
     const options = role === "staff"
       ? [["all", "全部"], ["draft", "草稿"], ["published", "进行中"], ["closed", "已截止"], ["archived", "已归档"]]
       : [["all", "全部"], ["scheduled", "未开放"], ["published", "进行中"], ["closed", "已截止"]];
@@ -309,19 +340,28 @@
       const button = el("button", "small", text);
       button.onclick = () => {
         filter = key;
-        filters.querySelectorAll("button").forEach(node => node.classList.toggle("primary", node === button));
+        filters.querySelectorAll("button").forEach(node => node.setAttribute("aria-pressed", String(node === button)));
         paintList(card);
       };
-      if (key === "all") button.classList.add("primary");
+      button.type = "button";
+      button.dataset.filter = key;
+      button.dataset.label = text;
+      button.setAttribute("aria-pressed", String(key === filter));
       filters.append(button);
     }
-    card.append(filters, el("div", "tb-list"));
+    card.append(filters);
+    if (role === "staff") card.append(el("p", "muted tb-filter-hint", FILTER_INFO.all));
+    const list = el("div", "tb-list");
+    list.tabIndex = 0;
+    list.setAttribute("role", "region");
+    list.setAttribute("aria-label", "课程任务列表");
+    card.append(list);
     return card;
   }
 
   function setUser(who) {
     identityRevision++;
-    cache = []; filter = "all"; expanded.clear();
+    cache = []; filter = "all"; loadError = null; expanded.clear();
     document.getElementById("task-board-card")?.remove();
     const studentRole = who?.role === "student" || who?.education_role === "student";
     const teacherRole = who?.role === "teacher" || who?.education_role === "teacher"

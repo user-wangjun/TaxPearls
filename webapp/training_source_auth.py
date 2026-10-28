@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+from webapp.training_content import public_content_operator
+
 import json
 import sqlite3
 import uuid
@@ -430,8 +432,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/certificates/{cert_id}/source-authorizations")
     @guarded
     def auth_create(cert_id: str, body: AuthorizationCreate,
-                    session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                    session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         record = create_authorization(store_provider(), who, cert_id, licensor=body.licensor,
                                       auth_no=body.auth_no, question_types=body.question_types,
                                       valid_from=body.valid_from, valid_until=body.valid_until,
@@ -441,8 +443,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/source-authorizations/{auth_id}/revoke")
     @guarded
     def auth_revoke(auth_id: str,
-                    session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                    session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"authorization": revoke_authorization(store_provider(), who, auth_id)})
 
     @app.get("/api/training/staff/certificates/{cert_id}/bank-questions")
@@ -456,28 +458,28 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/certificates/{cert_id}/bank-questions")
     @guarded
     def bank_import(cert_id: str, body: QuestionImport,
-                    session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                    session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response(import_questions(store_provider(), who, cert_id, body.questions))
 
     @app.post("/api/training/staff/bank-questions/{question_id}/submit")
     @guarded
     def bank_submit(question_id: str,
-                    session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                    session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"question": submit_question(store_provider(), who, question_id)})
 
     @app.post("/api/training/staff/bank-questions/{question_id}/review")
     @guarded
     def bank_review(question_id: str, body: QuestionReview,
-                    session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                    session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"question": review_question(store_provider(), who, question_id,
                                                      decision=body.decision, note=body.note)})
 
     @app.post("/api/training/staff/bank-questions/{question_id}/offline")
     @guarded
     def bank_offline(question_id: str,
-                     session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                     session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"question": offline_question(store_provider(), who, question_id)})

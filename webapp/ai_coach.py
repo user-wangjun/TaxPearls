@@ -262,7 +262,7 @@ def generate_draft(store, user: dict[str, Any], body: DraftBody) -> dict[str, An
     settings = ai_keys.apply(AISettings.from_env(), store, usage="tutor")
     problem = settings.problem()
     if problem:
-        raise CoachError(f"AI 服务不可用：{problem} 请先在“AI 密钥”中配置后重试。", 503)
+        raise CoachError("AI 备课服务暂不可用，请联系平台管理员检查服务配置后重试。", 503)
     instruction = {"teaching_idea": brief, "question_count": body.question_count,
                    "allowed_kinds": kinds, "teacher": user.get("display_name", "")}
     from src.ai_transport import chat_content
@@ -440,6 +440,20 @@ def task_detail(db, task_id: str, user: dict[str, Any], *, student: bool) -> dic
     return data
 
 
+def task_submissions(store, user: dict[str, Any], task_id: str) -> dict[str, Any]:
+    with store.connect() as db:
+        current_actor(db, user, {"teacher"})
+        task = task_detail(db, task_id, user, student=False)
+        rows = db.execute("""SELECT s.score, s.detail_json, s.submitted_at, u.display_name, u.username
+            FROM teaching_ai_task_submission s JOIN users u ON u.id=s.student_id
+            WHERE s.task_id=? AND u.org_id=? ORDER BY s.submitted_at DESC, u.username""",
+                          (task_id, user["org_id"])).fetchall()
+        return {"task": {key: task[key] for key in ("id", "title", "status", "class_name", "questions")},
+                "items": [{"student_name": row["display_name"], "username": row["username"],
+                           "score": row["score"], "submitted_at": row["submitted_at"],
+                           "detail": json.loads(row["detail_json"])} for row in rows]}
+
+
 def list_tasks(store, user: dict[str, Any], *, student: bool) -> list[dict[str, Any]]:
     with store.connect() as db:
         if student:
@@ -562,6 +576,11 @@ def register(app, store_provider: Callable[[], Any], user_fn: Callable[..., dict
     def update(task_id: str, body: TaskBody,
                session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
         return response(save_task(store_provider(), teacher(session), body, task_id))
+
+    @app.get("/api/teaching/ai-tasks/{task_id}/submissions")
+    @guarded
+    def submissions(task_id: str, session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
+        return response(task_submissions(store_provider(), teacher(session), task_id))
 
     @app.post("/api/teaching/ai-tasks/{task_id}/publish")
     @guarded

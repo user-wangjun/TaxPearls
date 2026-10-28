@@ -313,6 +313,30 @@
   #trainingPanel button:disabled { opacity:.55; cursor:not-allowed; }
   #trainingPanel summary { cursor:pointer; color:var(--navy); padding:10px 0; }
   #trainingPanel .training-actions { display:flex; flex-wrap:wrap; gap:10px; align-items:end; margin:10px 0; }
+  #trainingPanel .assignment-fields { display:grid; gap:18px 22px; margin-top:20px; }
+  #trainingPanel .assignment-main { grid-template-columns:minmax(0,1fr) minmax(0,1.2fr) minmax(140px,.38fr); }
+  #trainingPanel .assignment-scope { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  #trainingPanel .assignment-fields .field { min-width:0; margin:0; }
+  #trainingPanel .assignment-fields :is(input,select) { width:100%; box-sizing:border-box; }
+  #trainingPanel .assignment-hint { display:block; margin-top:6px; font-size:12px; }
+  #trainingPanel .assignment-footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:16px 22px; margin-top:24px; padding-top:18px; border-top:1px solid var(--line); }
+  #trainingPanel .assignment-publish { display:inline-flex; align-items:center; gap:8px; margin:0; white-space:nowrap; }
+  #trainingPanel .assignment-publish input { width:18px; height:18px; margin:0; }
+  #trainingPanel .assignment-footer .training-actions { margin:0; align-items:center; }
+  #trainingPanel .assignment-footer button { min-height:44px; box-sizing:border-box; padding:10px 16px; font:inherit; line-height:1.5; }
+  @media(max-width:1100px) {
+    #trainingPanel .assignment-main { grid-template-columns:minmax(0,1fr) minmax(140px,.35fr); }
+    #trainingPanel .assignment-main .field:first-child { grid-column:1 / -1; }
+  }
+  @media(max-width:520px) {
+    #trainingPanel .assignment-fields { grid-template-columns:minmax(0,1fr); gap:16px; }
+    #trainingPanel .assignment-footer { align-items:stretch; }
+    #trainingPanel .assignment-footer .training-actions { display:grid; grid-template-columns:minmax(0,1fr); width:100%; }
+    #trainingPanel .assignment-footer button { width:100%; }
+  }
+  #trainingPanel #paperComposer .training-actions { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); max-width:660px; align-items:stretch; }
+  #trainingPanel #paperComposer .training-actions > button { display:flex; align-items:center; justify-content:center; box-sizing:border-box; width:100%; min-width:0; min-height:44px; margin:0; padding:10px 14px; border:1px solid var(--line); border-radius:10px; font:inherit; font-size:14px; line-height:1.5; text-align:center; }
+  @media(max-width:600px) { #trainingPanel #paperComposer .training-actions { grid-template-columns:1fr; } }
   #trainingPanel .training-deadline { flex:1; min-width:180px; }
   #trainingPanel .training-progress { color:var(--navy); font-weight:600; }
   #trainingPanel fieldset { border:0; padding:0; margin:0; min-width:0; }
@@ -577,7 +601,7 @@
     </div>
 
     <section class="panel university-workspace" id="universityPanel">
-      <div class="page-head"><div><div class="eyebrow" id="universityEyebrow">高校工作空间</div><h2 id="universityTitle">学习概览</h2><p class="muted" id="universitySubtitle"></p></div><button class="btn pdf" id="universityRefresh" type="button">刷新数据</button></div>
+      <div class="page-head"><div><div class="eyebrow" id="universityEyebrow">高校工作空间</div><h2 id="universityTitle">学习概览</h2></div><button class="btn pdf" id="universityRefresh" type="button">刷新数据</button></div>
       <div class="university-load-status" role="status" aria-live="polite"><span id="universityStatus" class="muted"></span><button id="universityRetry" type="button" hidden>重新加载</button></div>
       <div id="universityContent"></div>
     </section>
@@ -939,9 +963,19 @@
         <p class="muted" id="exerciseLevelHelp">通过偏离幅度调整案例；每次生成会自动更换一组仿真数据。</p>
         <p id="exerciseGenerationStatus" class="muted" role="status"></p><div id="exerciseGenerationResult" hidden></div>
         <h2>发布实训作业</h2><p class="muted">只允许使用明确标记的仿真案例。标准答案直接来自同一规则引擎。</p>
-        <div class="row"><div class="field"><label for="assignmentTitle">作业标题</label><input id="assignmentTitle" maxlength="200" value="税务风险识别实训"></div><div class="field"><label for="assignmentAudit">选择审计案例</label><select id="assignmentAudit"></select></div><div class="field"><label for="assignmentPenalty">每项误报扣分</label><input id="assignmentPenalty" type="number" min="0" max="100" value="5"></div></div>
-        <div class="row"><div class="field"><label for="assignmentClass">单案例发布范围</label><select id="assignmentClass"><option value="">全机构学生（不限制班级）</option></select></div><div class="field"><label for="assignmentDeadline">单案例截止时间（本机时区，留空为不限）</label><input id="assignmentDeadline" type="datetime-local"></div><label><input id="assignmentPublished" type="checkbox" checked> 立即发布</label><button class="btn pdf" id="btnAssignment">保存单案例作业</button></div>
-        <button id="btnExerciseRecord" type="button">查看所选案例生成记录与答案</button>
+        <div class="assignment-fields assignment-main">
+          <div class="field"><label for="assignmentTitle">作业标题</label><input id="assignmentTitle" maxlength="200" value="税务风险识别实训"></div>
+          <div class="field"><label for="assignmentAudit">选择审计案例</label><select id="assignmentAudit"></select></div>
+          <div class="field"><label for="assignmentPenalty">每项误报扣分</label><input id="assignmentPenalty" type="number" min="0" max="100" value="5"></div>
+        </div>
+        <div class="assignment-fields assignment-scope">
+          <div class="field"><label for="assignmentClass">发布范围</label><select id="assignmentClass"><option value="">全机构学生（不限制班级）</option></select></div>
+          <div class="field"><label for="assignmentDeadline">截止时间</label><input id="assignmentDeadline" type="datetime-local" aria-describedby="assignmentDeadlineHint"><span id="assignmentDeadlineHint" class="muted assignment-hint">按本机时区，留空为不限</span></div>
+        </div>
+        <div class="assignment-footer">
+          <label class="assignment-publish"><input id="assignmentPublished" type="checkbox" checked>立即发布</label>
+          <div class="training-actions"><button id="btnExerciseRecord" type="button">查看案例记录与答案</button><button class="btn pdf" id="btnAssignment">保存单案例作业</button></div>
+        </div>
       </div>
       <div class="sheet" id="classManager" hidden><h2>班级与学生名册</h2><fieldset id="classEditorControls"><div class="row"><div class="field"><label for="classEditor">选择班级 / 新建</label><select id="classEditor"><option value="">新建班级</option></select></div><div class="field"><label for="className">班级名称</label><input id="className" maxlength="200"></div></div><div id="classRoster" class="check-grid training-checks"></div><div class="training-actions"><button class="btn pdf" type="button" id="btnSaveClass">保存班级与名册</button><button type="button" id="btnReloadRoster">刷新名册重新编辑</button><button type="button" id="btnResetClass">新建另一班级</button></div></fieldset><p class="muted" id="classEditStatus" role="status">新建班级：勾选本机构有效学生。</p></div>
       <div class="sheet" id="paperComposer" hidden><h2>多案例组卷</h2><p class="muted">题目按顺序与分值汇总。案例须为仿真；保存后组成冻结，修改题目须新建试卷。未全部提交时不显示最终总评分。</p><fieldset id="paperComposerControls"><div class="row"><div class="field"><label for="paperTitle">试卷标题</label><input id="paperTitle" maxlength="200" value="税务风险综合实训"></div><div class="field"><label for="paperClass">试卷发布范围</label><select id="paperClass"><option value="__choose__">请选择发布范围</option><option value="">全机构学生（不限制班级）</option></select></div><div class="field"><label for="paperDeadline">试卷截止时间（本机时区，留空为不限）</label><input id="paperDeadline" type="datetime-local"></div></div><div class="row"><div class="field"><label for="paperAudit">组卷仿真案例</label><select id="paperAudit"><option value="">请选择仿真案例</option></select></div><div class="field"><label for="paperPoints">本题分值</label><input id="paperPoints" type="number" min="0.01" max="1000000" step="any" value="100"></div><div class="field"><label for="paperPenalty">本题每项误报扣分</label><input id="paperPenalty" type="number" min="0" max="100" step="any" value="5"></div><button type="button" id="btnAddPaperCase">添加到试卷</button></div><div id="paperDraft"></div><div class="training-actions"><button type="button" id="btnSavePaperDraft">保存试卷草稿</button><button class="btn pdf" type="button" id="btnPublishPaper">保存并发布试卷</button><button type="button" id="btnClearPaper">清空组卷选择</button></div></fieldset><p class="muted" id="paperComposeStatus" role="status"></p></div>
@@ -1043,7 +1077,7 @@
   </div>
 </footer>
 
-<script defer src="/auth.js?v=20261028-coach-buttons-3"></script>
+<script defer src="/auth.js?v=20261028-task-list-scroll-11"></script>
 <script defer src="/auth-glass.js?v=20261027-ocean-start-10"></script>
 <div id="toastStack" aria-live="polite"></div>
 </body>

@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import auth_support
+
 import tempfile
 import unittest
 import uuid
@@ -72,8 +74,10 @@ class TrainingContentVersionTests(unittest.TestCase):
         res = self.client.post("/api/training/staff/auth/login", json={
             "username": "admin1", "password": "staff-pass"})
         self.assertEqual(res.status_code, 200, res.text)
+        auth_support.content_session(self.store, self.client)
 
     def _student_login(self):
+        self.client.cookies.delete("taxpearls_session")
         res = self.client.post("/api/training/auth/login", json={
             "student_no": "2026001", "password": "study-pass", "college": "示例大学"})
         self.assertEqual(res.status_code, 200, res.text)

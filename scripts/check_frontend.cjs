@@ -8,7 +8,9 @@ const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n
 (async()=>{
   const all = node => [node, ...node.children.flatMap(all)];
   function node(tag, cls="", text="") {
-    return {tag,className:cls,textContent:text,children:[],dataset:{},
+    return {tag,className:cls,textContent:text,children:[],dataset:{},attributes:{},
+      setAttribute(name,value){this.attributes[name]=String(value);},
+      getAttribute(name){return this.attributes[name];},
       classList:{add(){},toggle(){}},
       append(...items){for(const item of items){item.parent=this;this.children.push(item);}},
       prepend(item){item.parent=this;this.children.unshift(item);},
@@ -21,8 +23,10 @@ const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n
   const calls=[];let pending=null,fail=false;
   const task={id:"task-1",kind:"assignment",title:"实测作业",state:"published",expected:1,
     submitted_total:1,reviewed_total:0,answer_release:"after_due",my_status:"not_started",submit_limit:1};
-  const ctx={window:{},document:{head,createElement:tag=>node(tag),getElementById:id=>all(root).find(item=>item.id===id)},
-    fetch:async path=>{calls.push(path);if(pending)return await pending;return {ok:!fail,status:503,json:async()=>fail?{detail:"任务暂不可用"}:{items:[{...task}]}};}};
+  const aiTasks=[{id:"ai-live",status:"published",title:"课堂练习已发布"},
+    {id:"ai-draft",status:"draft",title:"课堂练习草稿"},{id:"ai-archive",status:"archived",title:"课堂练习已归档"}];
+  const ctx={window:{tpAICoach:{createTaskRow:item=>node("div","tb-row",item.title)}},document:{head,createElement:tag=>node(tag),getElementById:id=>all(root).find(item=>item.id===id)},
+    fetch:async path=>{calls.push(path);if(pending)return await pending;return {ok:!fail,status:503,json:async()=>fail?{detail:"任务暂不可用"}:{items:path==="/api/teaching/ai-tasks"?aiTasks.map(item=>({...item})):[{...task}]}};}};
   vm.createContext(ctx);vm.runInContext(fs.readFileSync("webapp/static/training-tasks.js","utf8"),ctx);
   const board=ctx.window.tpTrainingTasks,text=()=>all(root).map(item=>item.textContent).join("\n");
   assert.equal(calls.length,0,"Loading the login page must not request identity or task data");
@@ -30,6 +34,18 @@ const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n
   board.setUser({id:"enterprise",role:"org_admin"});await board.refresh();assert.equal(calls.length,0);
   board.setUser({id:"teacher",role:"teacher"});await board.refresh();
   assert.match(text(),/已交 1\/1 人 · 已复核 0 人/);
+  const filters=panel.querySelector('.tb-filters'),buttons=filters.querySelectorAll('button');
+  assert.equal(filters.getAttribute('aria-label'),'任务状态筛选');
+  assert.equal(buttons[0].getAttribute('aria-pressed'),'true');
+  assert.equal(buttons[0].textContent,"全部（4）","all task types must be counted together");
+  buttons[1].onclick();assert.ok(!text().includes('实测作业'));
+  assert.match(text(),/课堂练习草稿/);assert.ok(!text().includes("课堂练习已发布"));
+  assert.deepEqual(buttons.map(button=>button.getAttribute('aria-pressed')),['false','true','false','false','false']);
+  buttons[2].onclick();assert.match(text(),/实测作业/);
+  assert.match(text(),/课堂练习已发布/);assert.equal(buttons[2].textContent,"进行中（2）");
+  buttons[4].onclick();assert.match(text(),/课堂练习已归档/);assert.ok(!text().includes("实测作业"));
+  buttons[3].onclick();assert.match(text(),/没有已截止任务/);assert.ok(!text().includes("课堂练习已发布"));
+  buttons[2].onclick();
   task.reviewed_total=1;await board.refresh();assert.match(text(),/已复核 1 人/);
   // A superseded refresh cannot undo a newer review count.
   let resolve;pending=new Promise(done=>{resolve=done;});const old=board.refresh();pending=null;
@@ -45,7 +61,7 @@ const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n
   fail=true;await assert.rejects(board.refresh({throwOnError:true}),/任务暂不可用/);
   assert.match(text(),/读取失败：任务暂不可用/);
   board.setUser(null);assert.ok(!all(root).some(item=>item.id==="task-board-card"));
-  assert.ok(calls.every(path=>path==="/api/training/tasks"));
+  assert.ok(calls.every(path=>["/api/training/tasks","/api/teaching/ai-tasks"].includes(path)));
   const consoleSource=readConsole();
   assert.ok(consoleSource.includes("window.tpTrainingTasks?.setUser(currentUser)"));
   const load=consoleSource.slice(consoleSource.indexOf("async function loadAssignments("),consoleSource.indexOf('$("btnAssignment").addEventListener'));
@@ -70,6 +86,92 @@ for(const file of ["training-ai-coach.js","teaching-case-ui.js"]){
   assert.equal(calls.length,0,file+" must not request identity or teaching data before login");
   assert.equal(timers.length,0,file+" must not schedule anonymous login retries");
 }
+
+// Closing answer details invalidates pending reads; reopening cannot show an older task response.
+(async()=>{
+  const nodes=[],pending=[],writes=[];
+  const node=(tag="div")=>{
+    const item={tag,children:[],dataset:{},style:{},events:{},isConnected:true,open:false,_text:"",
+      classList:{toggle(){}},setAttribute(){},addEventListener(name,fn){this.events[name]=fn;},
+      append(...items){this.children.push(...items);},prepend(...items){this.children.unshift(...items);},
+      replaceChildren(...items){this._text="";this.children=items;},scrollIntoView(){},
+      closest(){return this.tag==="button"?this:null;},
+      showModal(){this.open=true;},close(){this.open=false;this.events.close?.();},
+      get textContent(){return this._text+this.children.map(child=>child.textContent||"").join("");},
+      set textContent(value){this._text=value;this.children=[];}};
+    nodes.push(item);return item;
+  };
+  const app=node();app.id="app-view";
+  const get=id=>nodes.find(item=>item.id===id);
+  const ctx={currentUser:{id:"teacher",role:"teacher"},CSS:{escape:value=>value},
+    window:{setTimeout(){},confirm:()=>true},Option:function(label,value){const item=node("option");item.textContent=label;item.value=value;return item;},
+    document:{head:node(),documentElement:node(),readyState:"complete",createElement:node,getElementById:id=>get(id)||null,
+      querySelector:selector=>get(selector.slice(1))||null},
+    MutationObserver:class{observe(){}},
+    fetch:async (path,options={})=>{
+      if(options.method==="POST") {writes.push({path,body:JSON.parse(options.body)});return {ok:true,json:async()=>({})};}
+      if(path.endsWith("/submissions"))return await new Promise(resolve=>pending.push(resolve));
+      return {ok:true,json:async()=>path==="/api/classes"?[]:{items:[{id:"task",title:"任务",status:"published",question_count:1,submitted:1,expected:1,mean_score:100}]}};
+    }};
+  vm.createContext(ctx);vm.runInContext(fs.readFileSync("webapp/static/training-ai-coach.js","utf8"),ctx);
+  const flush=()=>new Promise(resolve=>setImmediate(resolve));
+  await flush();
+  const card=get("ai-coach-card"),dialog=get("ac-results");
+  assert.equal(dialog.tag,"dialog","answer details must open in a separate modal frame");
+  const open=nodes.find(item=>item.dataset.ac==="results");
+  card.events.click({target:open});
+  assert.equal(dialog.open,true);
+  dialog.events.cancel({preventDefault(){}});
+  assert.equal(dialog.open,false);
+  card.events.click({target:open});
+  pending[0]({ok:true,json:async()=>({task:{title:"旧结果",questions:[]},items:[]})});
+  await flush();
+  assert.ok(!dialog.textContent.includes("旧结果"),"a closed read must not overwrite the reopened dialog");
+  pending[1]({ok:true,json:async()=>({task:{title:"新结果",questions:[]},items:[]})});
+  await flush();
+  assert.ok(dialog.textContent.includes("新结果"));
+  assert.ok(dialog.textContent.includes("暂无学生提交"));
+  card.events.click({target:nodes.find(item=>item.dataset.ac==="close-results")});
+  assert.equal(dialog.open,false);
+  assert.equal(get("ac-results-body").textContent,"");
+  card.events.click({target:open});
+  const question=id=>({id,kind:"single",stem:"测试题目",options:[{key:"A",text:"选项一"}],answers:["A"],explanation:"题目解析"});
+  pending[2]({ok:true,json:async()=>({task:{title:"按题分析",questions:[question("q1"),question("q2")]},items:[
+    {student_name:"学生甲",detail:[{question_id:"q1",correct:true},{question_id:"q2",correct:false}]},
+    {student_name:"学生乙",detail:[{question_id:"q1",correct:false},{question_id:"q2",correct:true}]},
+    {student_name:"学生丙",detail:[]},
+  ]})});
+  await flush();
+  assert.equal(nodes.filter(item=>item.className==="ac-result-question").length,2,"render each question once, not once per student");
+  const group=outcome=>nodes.find(item=>item.dataset.question==="q1"&&item.dataset.outcome===outcome);
+  assert.ok(group("correct").textContent.includes("答对 1 人"));
+  assert.ok(group("incorrect").textContent.includes("答错 1 人"));
+  assert.ok(group("unknown").textContent.includes("待核对 1 人"),"missing results must not count as incorrect");
+  const right=get("ac-roster-q1-correct"),wrong=get("ac-roster-q1-incorrect");
+  assert.equal(group("correct").tag,"details","student rosters use an arrow disclosure");
+  assert.equal(group("incorrect").tag,"details");
+  assert.equal(group("correct").open,false,"student rosters start collapsed");
+  assert.equal(group("incorrect").open,false);
+  assert.ok(right.textContent.includes("学生甲"));
+  assert.ok(!right.textContent.includes("学生乙"));
+  assert.ok(wrong.textContent.includes("学生乙"));
+  assert.ok(!wrong.textContent.includes("学生甲"));
+  assert.ok(get("ac-roster-q1-unknown").textContent.includes("学生丙"));
+  assert.ok(!get("ac-results-body").textContent.includes("学生作答："),"do not repeat individual answer sheets");
+  card.events.click({target:nodes.find(item=>item.dataset.ac==="close-results")});
+  const taskBoard=node();taskBoard.id="task-board-card";
+  let refreshes=0;ctx.window.tpTrainingTasks={refresh:async()=>{refreshes++;}};
+  const tree=item=>[item,...item.children.flatMap(tree)];
+  for(const status of ["archived","published"]) {
+    const row=ctx.window.tpAICoach.createTaskRow({id:"ai-task",title:"课堂练习",status,question_count:2,submitted:1,expected:2,mean_score:50});
+    const action=tree(row).find(item=>item.dataset.ac===(status==="archived"?"restore":"archive"));
+    row.events.click({target:action,stopPropagation(){}});await flush();
+    assert.equal(writes.at(-1).path,"/api/teaching/ai-tasks/ai-task/publish");
+    assert.equal(writes.at(-1).body.published,status==="archived");
+  }
+  assert.equal(refreshes,2,"AI archive and restore must refresh the unified task counts");
+  console.log("Answer details: modal lifecycle, stale reads, question counts and matching student rosters passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
 
 // The submission button follows pending, reviewed and returned states, including zero scores.
 (async()=>{

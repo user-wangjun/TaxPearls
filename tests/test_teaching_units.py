@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+import auth_support
+
 import json
 import tempfile
 import unittest
@@ -66,6 +68,7 @@ class TeachingUnitTests(unittest.TestCase):
         res = self.client.post("/api/training/staff/auth/login",
                                json={"username": "admin1", "password": "staff-b1"})
         self.assertEqual(res.status_code, 200, res.text)
+        auth_support.content_session(self.store, self.client)
 
     # ---- 单元 ---------------------------------------------------------
 

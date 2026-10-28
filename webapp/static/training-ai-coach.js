@@ -40,6 +40,28 @@
       + "#ai-coach-card .data-item>input,#ai-coach-card .data-item>textarea,#ai-coach-card .data-item>div>textarea{width:100%;box-sizing:border-box;margin-bottom:6px}"
       + ".ac-block{display:block;padding:10px 0;border-top:1px solid rgba(127,127,127,.18)}"
       + ".ac-block>.row{display:flex;gap:10px;align-items:flex-end}"
+      + "#ac-results{width:min(1100px,calc(100vw - 48px));max-width:none;max-height:calc(100dvh - 48px);margin:auto;padding:0;overflow:hidden;border:1px solid var(--line,#c7d2de);border-radius:20px;background:var(--card,#fff);color:var(--ink,#25334a);box-shadow:0 24px 80px #0005;overflow-wrap:anywhere}"
+      + "#ac-results[open]{display:flex;flex-direction:column}#ac-results:not([open]){display:none}"
+      + "#ac-results::backdrop{background:rgba(15,23,42,.48);backdrop-filter:blur(4px)}"
+      + "#ac-results .ac-results-header{display:flex;align-items:flex-start;gap:20px;padding:20px 24px;border-bottom:1px solid var(--line,#c7d2de);flex-shrink:0}"
+      + "#ac-results .ac-results-header h3{flex:1;min-width:0;margin:0;align-self:center}"
+      + "#ac-results .ac-results-header button{flex:0 0 auto}"
+      + "#ac-results-body{padding:16px 24px;overflow-y:scroll;min-height:0;overscroll-behavior:contain;scrollbar-gutter:stable}"
+      + "#ac-results .ac-result-question{margin:0 0 16px;padding:18px;border:1px solid var(--line,#c7d2de);border-radius:14px;background:var(--card,#fff)}"
+      + "#ac-results .ac-result-question h4{margin:0 0 12px;font-size:16px;line-height:1.6}"
+      + "#ac-results .ac-result-options{padding-left:24px;margin:0 0 12px;line-height:1.8}"
+      + "#ac-results .ac-result-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}"
+      + "#ac-results .ac-result-group{min-width:0;padding:12px;border:1px solid var(--line,#c7d2de);border-radius:10px;background:rgba(127,127,127,.035)}"
+      + "#ac-results .ac-result-group summary{display:flex;align-items:center;gap:8px;list-style:none;cursor:pointer}#ac-results .ac-result-group summary::-webkit-details-marker{display:none}"
+      + "#ac-results .ac-result-group summary::before{content:'▸';color:var(--ink-2,#64748b);font-size:16px}#ac-results .ac-result-group[open] summary::before{content:'▾'}"
+      + "#ac-results .ac-result-group[open] summary{margin-bottom:8px}#ac-results .ac-result-group summary span{display:inline-block;padding:3px 9px;border-radius:7px;font-size:13px;font-weight:600;line-height:1.5}"
+      + "#ac-results .ac-result-correct summary span{color:#137956;background:rgba(16,185,129,.12)}#ac-results .ac-result-incorrect summary span{color:var(--danger,#b42318);background:rgba(239,68,68,.10)}"
+      + "#ac-results .ac-result-unknown{grid-column:1/-1}#ac-results .ac-result-unknown summary span{color:var(--ink-2,#64748b);background:rgba(127,127,127,.12)}"
+      + "#ac-results .ac-result-names{max-height:104px;min-height:40px;overflow-y:scroll;overscroll-behavior:contain;scrollbar-gutter:stable;list-style:none;margin:0;padding:0 8px 0 0;line-height:1.8;overflow-wrap:anywhere}"
+      + "#ac-results-body,#ac-results .ac-result-names{scrollbar-width:thin;scrollbar-color:var(--line,#aab8c6) transparent}"
+      + "#ac-results-body::-webkit-scrollbar,#ac-results .ac-result-names::-webkit-scrollbar{width:7px}#ac-results-body::-webkit-scrollbar-thumb,#ac-results .ac-result-names::-webkit-scrollbar-thumb{background:var(--line,#aab8c6);border-radius:8px}"
+      + "html:has(#ac-results[open]),body:has(#ac-results[open]){overflow:hidden}"
+      + "@media(max-width:600px){#ac-results{width:calc(100vw - 24px);max-height:calc(100dvh - 24px);border-radius:16px}#ac-results .ac-results-header{padding:16px;gap:12px}#ac-results-body{padding:12px}#ac-results .ac-result-question{padding:12px}#ac-results .ac-result-groups{gap:8px}#ac-results .ac-result-group{padding:8px}}"
       + "#ai-coach-card textarea,#ai-student-card textarea{width:100%;box-sizing:border-box}"
       + "#ai-coach-card{padding:24px;min-width:0;box-sizing:border-box}"
       + "#ai-coach-card .ac-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}"
@@ -193,7 +215,32 @@
     draftBox.id = "ac-draft";
     const listBox = el("div");
     listBox.id = "ac-tasks";
-    card.append(status, draftBox, listBox);
+    const resultsBox = el("dialog");
+    resultsBox.id = "ac-results";
+    resultsBox.setAttribute("aria-labelledby", "ac-results-title");
+    const resultsHeader = el("div", "ac-results-header");
+    const resultsTitle = el("h3", null, "答题详情");
+    resultsTitle.id = "ac-results-title";
+    const closeResultsButton = button("关闭", "close-results", "small");
+    closeResultsButton.setAttribute("aria-label", "关闭答题详情");
+    closeResultsButton.autofocus = true;
+    resultsHeader.append(resultsTitle, closeResultsButton);
+    const resultsBody = el("div");
+    resultsBody.id = "ac-results-body";
+    resultsBody.setAttribute("aria-live", "polite");
+    resultsBox.append(resultsHeader, resultsBody);
+    resultsBox.addEventListener("cancel", event => {
+      event.preventDefault();
+      closeResults();
+    });
+    resultsBox.addEventListener("close", () => {
+      staff.resultsRequest += 1;
+      resultsBody.replaceChildren();
+    });
+    resultsBox.addEventListener("click", event => {
+      if (event.target === resultsBox) closeResults();
+    });
+    card.append(status, draftBox, listBox, resultsBox);
 
     card.addEventListener("click", event => {
       const act = event.target.closest("button[data-ac]")?.dataset.ac;
@@ -430,6 +477,9 @@
     if (act === "edit") return editTask(node.dataset.task);
     if (act === "delete") return deleteTask(node.dataset.task, node);
     if (act === "archive") return archiveTask(node.dataset.task, node);
+    if (act === "restore") return archiveTask(node.dataset.task, node, true);
+    if (act === "results") return openResults(node.dataset.task);
+    if (act === "close-results") return closeResults();
   }
 
   async function generate(node) {
@@ -525,14 +575,15 @@
     }
   }
 
-  async function archiveTask(id, node) {
-    if (!window.confirm("归档后学生将不再看到这份任务，已提交的记录保留。确认归档？")) return;
+  async function archiveTask(id, node, published = false) {
+    if (!window.confirm(published ? "恢复后学生可再次查看任务，原有提交记录保留。确认恢复？"
+      : "归档后学生将不再看到这份任务，已提交的记录保留。确认归档？")) return;
     node.disabled = true;
     try {
       await api(`/api/teaching/ai-tasks/${id}/publish`, {
-        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({published: false}),
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({published}),
       });
-      setStatus("任务已归档。");
+      setStatus(published ? "任务已恢复。" : "任务已归档。");
       await paintTasks();
     } catch (error) {
       setStatus(error.message, true);
@@ -541,13 +592,18 @@
     }
   }
 
-  async function paintTasks() {
+  async function paintTasks(refreshBoard = true) {
     const box = $("ac-tasks");
     if (!box) return;
     box.replaceChildren();
+    if (document.getElementById("task-board-card") && window.tpTrainingTasks) {
+      if (refreshBoard) await window.tpTrainingTasks.refresh();
+      return;
+    }
     let items = [];
     try {
       items = (await api("/api/teaching/ai-tasks")).items || [];
+      if (document.getElementById("task-board-card") && window.tpTrainingTasks) return;
     } catch (error) {
       box.append(el("p", "error", `任务列表读取失败：${error.message}`));
       return;
@@ -558,29 +614,111 @@
       box.append(el("p", "muted", "还没有布置过任务。生成草稿并发布后，这里会显示完成情况。"));
       return;
     }
-    const statusText = {draft: "草稿（学生不可见）", published: "已发布", archived: "已归档"};
-    for (const item of items) {
-      const row = el("div", "data-item");
-      const info = el("div");
-      info.append(el("strong", null, item.title),
-        el("p", "muted", `${statusText[item.status] || item.status} · ${item.question_count} 题 · 已提交 `
-          + `${item.submitted}/${item.expected} 人` + (item.mean_score === null ? "" : ` · 平均 ${item.mean_score} 分`)));
-      const actions = el("div", "row");
-      if (item.status === "draft") {
-        const edit = button("编辑草稿", "edit");
-        edit.dataset.task = item.id;
-        actions.append(edit);
-        const remove = button("删除", "delete");
-        remove.dataset.task = item.id;
-        actions.append(remove);
+    for (const item of items) box.append(createTaskRow(item));
+  }
+
+  function createTaskRow(item) {
+    const statusText = {draft: "草稿（学生不可见）", published: "进行中", archived: "已归档"};
+    const row = el("div", "data-item tb-row");
+    const info = el("div");
+    info.append(el("strong", null, item.title),
+      el("p", "muted", `课堂练习 · ${statusText[item.status] || item.status} · ${item.question_count} 题 · 已提交 `
+        + `${item.submitted}/${item.expected} 人` + (item.mean_score === null ? "" : ` · 平均 ${item.mean_score} 分`)));
+    const actions = el("div", "row");
+    if (item.status !== "draft") {
+      const results = button("查看答题详情", "results");
+      results.dataset.task = item.id;
+      actions.append(results);
+    }
+    if (item.status === "draft") {
+      const edit = button("编辑草稿", "edit");
+      edit.dataset.task = item.id;
+      actions.append(edit);
+      const remove = button("删除", "delete");
+      remove.dataset.task = item.id;
+      actions.append(remove);
+    }
+    if (item.status === "published") {
+      const archive = button("归档", "archive");
+      archive.dataset.task = item.id;
+      actions.append(archive);
+    }
+    if (item.status === "archived") {
+      const restore = button("恢复任务", "restore");
+      restore.dataset.task = item.id;
+      actions.append(restore);
+    }
+    row.append(info, actions);
+    row.addEventListener("click", event => {
+      const node = event.target.closest("button[data-ac]");
+      if (!node) return;
+      event.stopPropagation();
+      staffAction(node.dataset.ac, node);
+    });
+    return row;
+  }
+
+  function closeResults() {
+    staff.resultsRequest += 1;
+    $("ac-results-body").replaceChildren();
+    $("ac-results").close();
+  }
+
+  async function openResults(id) {
+    const dialog = $("ac-results"), box = $("ac-results-body");
+    const request = ++staff.resultsRequest;
+    $("ac-results-title").textContent = "答题详情";
+    box.replaceChildren(el("p", "muted", "正在读取答题详情…"));
+    box.scrollTop = 0;
+    if (!dialog.open) dialog.showModal();
+    try {
+      const data = await api(`/api/teaching/ai-tasks/${id}/submissions`);
+      if (request !== staff.resultsRequest || !dialog.open || !box.isConnected) return;
+      $("ac-results-title").textContent = `${data.task.title} · 答题分析`;
+      box.replaceChildren();
+      box.append(el("p", "muted", `共 ${data.task.questions.length} 题 · 已提交 ${data.items.length} 人`));
+      if (!data.items.length) box.append(el("p", "muted", "暂无学生提交。"));
+      const submissions = data.items.map(record => ({name: record.student_name || record.username,
+        answers: Object.fromEntries(record.detail.map(answer => [answer.question_id, answer]))}));
+      data.task.questions.forEach((question, position) => {
+        const item = el("section", "ac-result-question");
+        item.append(el("h4", null, `第 ${position + 1} 题（${question.kind === "single" ? "单选" : "多选"}）${question.stem}`));
+        const options = el("ul", "ac-result-options");
+        for (const option of question.options) options.append(el("li", null, `${option.key}. ${option.text}`));
+        item.append(options, el("p", "ok", `正确答案：${question.answers.join("、")}`));
+        if (question.explanation) item.append(el("p", "muted", `解析：${question.explanation}`));
+        const groups = {correct: [], incorrect: [], unknown: []};
+        for (const record of submissions) {
+          const answer = record.answers[question.id];
+          const outcome = answer?.correct === true ? "correct" : answer?.correct === false ? "incorrect" : "unknown";
+          groups[outcome].push(record.name);
+        }
+        const lists = el("div", "ac-result-groups");
+        for (const [outcome, label] of [["correct", "答对"], ["incorrect", "答错"], ["unknown", "待核对"]]) {
+          const names = groups[outcome];
+          if (outcome === "unknown" && !names.length) continue;
+          const group = el("details", `ac-result-group ac-result-${outcome}`);
+          group.dataset.question = question.id;
+          group.dataset.outcome = outcome;
+          const summary = el("summary");
+          summary.append(el("span", null, `${label} ${names.length} 人`));
+          group.append(summary);
+          const roster = el("ul", "ac-result-names");
+          roster.id = `ac-roster-${question.id}-${outcome}`;
+          roster.tabIndex = 0;
+          roster.setAttribute("aria-label", `第 ${position + 1} 题${label}学生名单`);
+          for (const name of names) roster.append(el("li", null, name));
+          if (!names.length) roster.append(el("li", "muted", "暂无"));
+          group.append(roster);
+          lists.append(group);
+        }
+        item.append(lists);
+        box.append(item);
+      });
+    } catch (error) {
+      if (request === staff.resultsRequest && dialog.open && box.isConnected) {
+        box.replaceChildren(el("p", "error", `答题详情读取失败：${error.message}`));
       }
-      if (item.status === "published") {
-        const archive = button("归档", "archive");
-        archive.dataset.task = item.id;
-        actions.append(archive);
-      }
-      row.append(info, actions);
-      box.append(row);
     }
   }
 
@@ -588,7 +726,7 @@
     injectStyle();
     const card = staffCard();
     if (!container.classroom) card.dataset.universityView = "tasks";
-    staff = {draft: null};
+    staff = {draft: null, resultsRequest: 0};
     if (!mount(card)) return;
     try {
       const classes = await api("/api/classes");
@@ -597,7 +735,7 @@
     } catch (error) {
       setStatus(`班级列表读取失败：${error.message}`, true);
     }
-    await paintTasks();
+    await paintTasks(false);
   }
 
   /* ---------------------------- 学生：任务作答 ---------------------------- */
@@ -775,6 +913,10 @@
     }
     return true;
   }
+
+  window.tpAICoach = {createTaskRow, useTaskBoard() {
+    if (document.getElementById("task-board-card")) $("ac-tasks")?.replaceChildren();
+  }};
 
   let attempts = 0;
   function tryBoot() {

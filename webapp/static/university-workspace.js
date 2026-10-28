@@ -53,7 +53,7 @@ window.universityWorkspace = (() => {
 
     const heading=$("knowledgePanel").querySelector(".graph-page-head");
     heading.querySelector("h2").textContent="政策、规则与知识点";
-    heading.querySelector(".eyebrow").textContent="公共政策 / LEARNING GRAPH";
+    heading.querySelector(".eyebrow").remove();
     heading.querySelector(".muted").textContent="从课程知识点查阅关联规则与政策原文，保留来源、版本和审核状态。";
     $("graphScope").closest(".graph-scope").hidden=true;
     $("graphStatus").closest(".field").hidden=true;
@@ -136,7 +136,6 @@ window.universityWorkspace = (() => {
     selected = next;
     if(window.matchMedia("(max-width:760px)").matches)setNavCollapsed(true);
     $("universityTitle").textContent = selected === "answer" ? "练习作答" : selected === "settings" ? "个人信息" : allowed.find(([id]) => id === selected)[1];
-    $("universitySubtitle").textContent=identity.display_name+" · "+labels[identity.role]+"｜"+(identity.universityKind==="student"?"围绕目标安排学习，在练习与复习中积累自己的记录。":"从班级、课程到教学内容，在同一工作空间开展教学。");
     const account = document.querySelector('#nav [data-panel="userSettingsPanel"]');
     account.classList.toggle("active", selected === "settings");
     if (selected === "settings") account.setAttribute("aria-current", "page"); else account.removeAttribute("aria-current");
@@ -210,7 +209,7 @@ window.universityWorkspace = (() => {
     await Promise.all([
       loadClientScript("/member-links.js?v=20261027-login-first-1"),
       loadClientScript("/policy-source.js?v=20261027-login-first-1"),
-      loadClientScript("/training-"+(kind === "student" ? "portal" : "staff")+".js?v=20261027-login-first-1")
+      loadClientScript("/training-"+(kind === "student" ? "portal" : "staff")+".js?v=20261028-teaching-resources-1")
     ]);
     const initial = !controller;
     if (!controller) {

@@ -100,6 +100,16 @@ class AiCoachTests(unittest.TestCase):
         body.update(fields)
         return body
 
+    def test_unavailable_generation_directs_teacher_to_platform_admin(self):
+        with patch("src.ai_transport.chat_content") as chat:
+            response = self.client.post("/api/teaching/ai-tasks/draft", json={
+                "brief": BRIEF, "question_count": 5, "kinds": ["single"]})
+        self.assertEqual(response.status_code, 503, response.text)
+        self.assertIn("联系平台管理员", response.json()["detail"])
+        self.assertNotIn("AI 密钥", response.json()["detail"])
+        self.assertNotIn("本地解析", response.json()["detail"])
+        chat.assert_not_called()
+
     def create(self, publish=False):
         response = self.client.post("/api/teaching/ai-tasks", json=self.task_body(publish))
         self.assertEqual(response.status_code, 200, response.text)
@@ -236,6 +246,55 @@ class AiCoachTests(unittest.TestCase):
         items = self.client.get("/api/teaching/ai-tasks").json()["items"]
         self.assertEqual(items[0]["submitted"], 1)
         self.assertEqual(items[0]["expected"], 1)
+
+    def test_teacher_reads_question_details_before_and_after_archive(self):
+        task = self.create(publish=True)
+        url = f"/api/teaching/ai-tasks/{task['id']}/submissions"
+        empty = self.client.get(url)
+        self.assertEqual(empty.status_code, 200, empty.text)
+        self.assertEqual(empty.json()["items"], [])
+        self.login(self.student)
+        questions = self.client.get(f"/api/teaching/ai-tasks/{task['id']}").json()["questions"]
+        submitted = self.client.post(f"/api/teaching/ai-tasks/{task['id']}/submit", json={
+            "answers": {questions[0]["id"]: ["B"], questions[1]["id"]: []}})
+        self.assertEqual(submitted.status_code, 200, submitted.text)
+        self.login(self.teacher)
+        for archived in (False, True):
+            if archived:
+                self.client.post(f"/api/teaching/ai-tasks/{task['id']}/publish", json={"published": False})
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.headers["cache-control"], "private, no-store")
+            data = response.json()
+            self.assertEqual(data["task"]["title"], task["title"])
+            self.assertNotIn("model", data["task"])
+            self.assertEqual(data["task"]["questions"][0]["stem"], questions[0]["stem"])
+            record = data["items"][0]
+            self.assertEqual(record["student_name"], "学生甲")
+            self.assertEqual(record["username"], self.student["username"])
+            self.assertEqual(record["score"], 50.0)
+            self.assertTrue(record["submitted_at"])
+            right, blank = record["detail"]
+            self.assertEqual(right["picked"], ["B"])
+            self.assertTrue(right["correct"])
+            self.assertEqual(right["points"], 50.0)
+            self.assertEqual(blank["picked"], [])
+            self.assertFalse(blank["correct"])
+            self.assertEqual(blank["answers"], ["A", "B"])
+            self.assertTrue(blank["explanation"])
+
+    def test_submission_details_are_only_visible_to_task_owner(self):
+        task = self.create(publish=True)
+        url = f"/api/teaching/ai-tasks/{task['id']}/submissions"
+        foreign_teacher = self.store.create_user("foreign-teacher", self.password, "外校教师", "teacher", "school-b")
+        for who, status in ((self.student, 403), (self.colleague, 403),
+                            (self.outsider, 403), (foreign_teacher, 404)):
+            self.login(who)
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, status, response.text)
+        self.login(self.teacher)
+        response = self.client.get("/api/teaching/ai-tasks/missing/submissions")
+        self.assertEqual(response.status_code, 404, response.text)
 
 
 if __name__ == "__main__":
