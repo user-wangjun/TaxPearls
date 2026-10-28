@@ -4,6 +4,47 @@ const vm = require("node:vm");
 const assert = require("node:assert/strict");
 const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n" + fs.readFileSync("webapp/static/console.js", "utf8");
 
+// Roster edits expose current placement and allow explicit repair of legacy duplicates.
+{
+  const source = fs.readFileSync("webapp/static/classroom.js", "utf8");
+  const code = source.slice(source.indexOf("  function personName("), source.indexOf('  $("classEditor").onchange'));
+  const nodes = new Map();
+  const element = (tag, cls, text="") => ({tag,children:[],value:"",checked:false,disabled:false,
+    _text:text, get textContent(){return this._text;}, set textContent(value){this._text=value;this.children=[];},
+    append(...items){this.children.push(...items);},
+    querySelectorAll(selector){return this.children.flatMap(label=>label.children||[])
+      .filter(node=>node.tag==="input" && (selector!=="input:checked" || node.checked));}});
+  const get = id => {if(!nodes.has(id))nodes.set(id,element("div"));return nodes.get(id);};
+  const student = {id:"student",display_name:"测试学生",username:"student@example.com",
+    classes:[{id:"old",name:"会计5班"},{id:"keep",name:"创新1班"}]};
+  const context = {data:{students:[student,{id:"new",display_name:"未分班学生",username:"new@example.com",classes:[]}],
+    classes:[{id:"old",name:"会计5班",revision:1,students:[student]},
+             {id:"keep",name:"创新1班",revision:1,students:[student]}]},
+    editingClass:null,$:get,el:element,document:{createTextNode:text=>({textContent:text})}};
+  vm.createContext(context);vm.runInContext(code,context);
+  context.roster();
+  let checks=get("classRoster").querySelectorAll("input");
+  assert.equal(checks[0].disabled,true,"Already assigned students cannot be checked for a new class");
+  assert.equal(checks[1].disabled,false,"Unassigned students remain selectable");
+  assert.match(get("classRoster").children[0].children[1].textContent,/已在：会计5班、创新1班.*请先从原班级移出/);
+  checks[0].checked=true;context.roster(true);
+  assert.equal(get("classRoster").querySelectorAll("input")[0].checked,false,"Preserved drafts cannot silently add a conflicting member");
+  get("classEditor").value="old";context.editClass();
+  checks=get("classRoster").querySelectorAll("input");
+  assert.equal(checks[0].disabled,false,"Legacy duplicates must remain removable");
+  assert.equal(checks[0].checked,true,"Opening an old class must not silently drop members");
+  assert.match(get("classRoster").children[0].children[1].textContent,/存在重复绑定/);
+  checks[0].checked=false;context.roster(true);
+  assert.equal(get("classRoster").querySelectorAll("input")[0].checked,false,"Explicit member removal survives a roster refresh");
+  context.data.students[0].classes=[{id:"keep",name:"创新1班"}];
+  context.data.classes[0].students=[];
+  get("classEditor").value="keep";context.editClass();
+  checks=get("classRoster").querySelectorAll("input");
+  assert.equal(checks[0].disabled,false);assert.equal(checks[0].checked,true);
+  assert.doesNotMatch(get("classRoster").children[0].children[1].textContent,/重复绑定/);
+  console.log("Class rosters: existing placement, duplicate prevention, legacy repair and preserved selections passed.");
+}
+
 // Student labels hide login accounts unless names need disambiguation.
 {
   const source=fs.readFileSync("webapp/static/classroom.js","utf8");
