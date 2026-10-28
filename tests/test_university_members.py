@@ -434,6 +434,61 @@ class UniversityMembershipTests(unittest.TestCase):
         )
         self.assertEqual(service.overview(self.store, self.actor)["mine"]["used"], 0)
 
+    def magic_invitation(self, link, email):
+        code = link["path"].rsplit("/", 1)[1]
+        delivery = email_auth.issue(self.store, email, "register", auth_support.BROWSER, invite_code=code)
+        self.client.cookies.set("taxpearls_email_browser", auth_support.BROWSER)
+        response = self.client.post("/api/auth/email/verify", json={"token": delivery["token"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        return response.json()
+
+    def test_magic_teacher_and_student_registration_resume_the_original_invitation(self):
+        self.allocate(1)
+        for role in ("teacher", "student"):
+            with self.subTest(role=role):
+                link = self.link(role)
+                email = f"magic-{role}@example.com"
+                verified = self.magic_invitation(link, email)
+                self.assertEqual(verified["join_path"], link["path"])
+                body = {"invite_code": link["path"].rsplit("/", 1)[1], "email": email,
+                        "email_proof": verified["proof"], "password": self.password,
+                        "display_name": "邮件验证成员", "student_no": "MAGIC001", "accepted": True}
+                for invalid in ({"accepted": False}, {"display_name": ""},
+                                *([{"student_no": ""}] if role == "student" else [])):
+                    rejected = self.client.post("/api/join", json={**body, **invalid})
+                    self.assertEqual(rejected.status_code, 422, rejected.text)
+                    self.assertIsNone(self.store.get_user_by_email(email))
+                joined = self.client.post("/api/join", json=body)
+                self.assertEqual(joined.status_code, 200, joined.text)
+                user = self.client.get("/api/me").json()
+                self.assertEqual((user["role"], user["org_id"]), (role, self.owner["org_id"]))
+                self.assertEqual(self.client.post("/api/join", json=body).status_code, 422)
+                with self.store.connect() as db:
+                    self.assertIsNotNone(db.execute(
+                        "SELECT used_at FROM email_tokens WHERE email=?", (email,)
+                    ).fetchone()[0])
+                    if role == "student":
+                        student_id = db.execute("SELECT student_id FROM university_identity_links WHERE user_id=?",
+                                                (user["id"],)).fetchone()[0]
+                        self.assertEqual(db.execute("SELECT teacher_id FROM student_teacher_memberships WHERE student_id=?",
+                                                    (student_id,)).fetchone()[0], self.actor["id"])
+
+    def test_magic_join_rejects_other_browser_email_and_invitation_without_consuming_proof(self):
+        self.allocate(1)
+        link = self.link()
+        verified = self.magic_invitation(link, "bound@example.com")
+        body = {"invite_code": link["path"].rsplit("/", 1)[1], "email": "bound@example.com",
+                "email_proof": verified["proof"], "password": self.password,
+                "display_name": "绑定学生", "student_no": "BOUND001", "accepted": True}
+        with TestClient(application.app) as other:
+            self.assertEqual(other.post("/api/join", json=body).status_code, 422)
+        self.assertEqual(self.client.post("/api/join", json={**body, "email": "other@example.com"}).status_code, 422)
+        teacher_link = self.link("teacher")
+        self.assertEqual(self.client.post("/api/join", json={
+            **body, "invite_code": teacher_link["path"].rsplit("/", 1)[1]
+        }).status_code, 422)
+        self.assertEqual(self.client.post("/api/join", json=body).status_code, 200)
+
     def test_employee_links_use_the_same_landing_and_reject_school_roles(self):
         owner = self.store.create_user("enterprise", self.password, "企业管理员", "org_admin", "enterprise")
         with self.store.connect() as db:
