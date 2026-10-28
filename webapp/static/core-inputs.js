@@ -517,6 +517,25 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   function legacyCheck(slot){
     return slot.bundle?.batching?.strategy!=="category_and_source_v1"||!slot.bundle?.batching?.model_context;
   }
+  function checkReviewState(slot){
+    const pack=slot.bundle,ai=slot.ai;
+    if(slot.stale)return {label:"资料有变化，待重检",action:"请点击「开始检查」，按更新后的资料重新分析。"};
+    if(legacyCheck(slot))return {label:"旧版结果，需重新检查",action:"请点击「开始检查」，生成当前流程的检查结果。"};
+    if(!ai)return {label:"尚未完成 AI 分析",action:"请点击「开始检查」完成分析。"};
+    const batches=(ai.batches||[]).filter(b=>b.status!=="split");
+    if(!ai.validated){
+      const invalid=batches.some(b=>b.status==="invalid");
+      const incomplete=batches.some(b=>b.status==="failed"||b.status==="pending")||pack.batching?.unsplittable;
+      return {label:invalid?"AI 结果校验未通过":incomplete?"AI 分析未完成":"AI 结果尚未通过校验",
+        action:"请重新开始检查；如仍失败，请联系管理员。"};
+    }
+    if(ai.status!=="needs_review")return {label:"AI 分析已完成"};
+    const codes=(pack.gaps||[]).map(g=>g.code||"");
+    const facts=(pack.facts||[]).some(f=>f.state!=="known")||codes.some(c=>/^(metric_|comparability_)/.test(c));
+    const policy=codes.some(c=>/^(policy_|rule_|relationship_|change_|required_clause_|entity_|exception_)/.test(c));
+    return {label:facts&&policy?"资料与依据待核实":facts?"资料待核实":policy?"依据待核实":batches.length>1?"分批分析已完成，需综合核实":"分析已完成，需人工核实",
+      action:facts&&policy?"请核对下方数据来源、统计口径及政策适用条件。":facts?"请核对下方数据来源和统计口径，必要时补充或更正资料。":policy?"请核实下方政策依据和适用条件。":"请结合下方材料与依据核实分析结论。"};
+  }
   function renderReviewGaps(card,pack,legacy,foldKey){
     const categories=new Map([
       ["facts",{name:"指标与材料",hint:"展开查看具体指标，并在下方核对数据与材料来源；未取得有效值不一定是少上传了文件。",groups:new Map()}],
@@ -597,18 +616,26 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     for(const slot of checks.slice(checkPage*CHECK_PAGE_SIZE,(checkPage+1)*CHECK_PAGE_SIZE)){
       const pack=slot.bundle,ai=slot.ai;if(!pack)continue;
       const legacy=legacyCheck(slot);
-      const label=slot.stale?"资料有变化，待重检":legacy?"旧版结果，需重新检查":!ai?"尚未完成 AI 分析":!ai.validated||ai.status==="needs_review"?"待复核":"AI 分析已完成";
-      const foldKey=`rule:${pack.check.rule_id}`,{details:card,close}=checkDisclosure(foldKey,`${pack.check.topic} · ${label}`,"material-card");
+      const review=checkReviewState(slot);
+      const foldKey=`rule:${pack.check.rule_id}`,{details:card,close}=checkDisclosure(foldKey,`${pack.check.topic} · ${review.label}`,"material-card");
+      if(review.action)card.append(el("p","muted",review.action));
       if(slot.stale)card.append(el("p","material-note","以下是历史结果，不能代表当前资料。请重新开始检查。"));
       if(legacy)card.append(el("p","material-note","这份结果生成于旧版检查流程，尚未按当前容量和分类批次重检。请点击「开始检查」重新生成；以下缺口为当时记录。"));
-      if(ai?.reason&&!legacy&&!(pack.gaps||[]).some(g=>g.message===ai.reason))card.append(el("p","material-note",ai.reason));
-      const capacity=pack.batching?.model_context;
-      if(capacity)card.append(el("p","muted",(capacity.context_window?`模型上下文：${capacity.context_window.toLocaleString()} Token。`:"上游未提供模型上下文容量，使用保守容量。")+`本次单批输入估算上限 ${capacity.input_budget.toLocaleString()}（含缓存输入），输出预留 ${capacity.output_reserve.toLocaleString()} Token。`));
-      if(ai?.batches?.length){
-        const active=ai.batches.filter(b=>b.status!=="split"),total=Math.max(pack.batching.part_count,active.length);
-        const {details:batches}=checkDisclosure(`${foldKey}:batches`,`分析批次：已完成 ${active.filter(b=>b.status==="completed").length}/${total} 批`);
-        for(const batch of ai.batches)batches.append(el("p","muted",`批次 ${batch.part_number} · ${batch.category_name}${batch.group?" · "+batch.group:""} · ${batch.status==="completed"?"已完成":batch.status==="split"?"容量不足，已自动细分":"待复核"}`));
-        card.append(batches);
+      if(!legacy&&ai&&(ai.reason||!ai.validated)){
+        const {details:processing}=checkDisclosure(`${foldKey}:processing`,slot.stale?"历史处理详情":"处理详情");
+        if(ai.reason&&!(pack.gaps||[]).some(g=>g.message===ai.reason))processing.append(el("p","material-note",ai.reason));
+        if(!ai.validated&&!ai.reason&&!(ai.batches||[]).some(b=>b.reason))processing.append(el("p","muted","本次结果未记录具体失败原因。"));
+        if(ai.batches?.length){
+          const active=ai.batches.filter(b=>b.status!=="split"),total=Math.max(pack.batching.part_count,active.length);
+          processing.append(el("p","muted",`分析批次：已完成 ${active.filter(b=>b.status==="completed").length}/${total} 批`));
+          const labels={completed:"已完成",split:"容量不足，已自动细分",invalid:"结果校验未通过",failed:"分析失败",pending:"尚未分析"};
+          for(const batch of ai.batches){
+            const name=`批次 ${batch.part_number} · ${batch.category_name}${batch.group?" · "+batch.group:""}`;
+            processing.append(el("p","muted",`${name} · ${labels[batch.status]||"状态待确认"}`));
+            if(["failed","invalid"].includes(batch.status)&&batch.reason)processing.append(el("p","material-note",`${name}：${batch.reason}`));
+          }
+        }
+        card.append(processing);
       }
       const assessments=legacy?checkDisclosure(`${foldKey}:assessments`,"历史分析说明（仅供追溯）").details:card;
       if(legacy&&ai?.assessments?.length)card.append(assessments);
@@ -636,7 +663,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       card.append(basis,button("收起本项",close));root.append(card);
     }
     if(pages>1)root.append(pager("底部"));
-    root.append(el("p","muted","AI 分析为待复核线索；资料或政策依据不足的项目保留待核实状态。未选择企业所在地时先匹配国家级政策；地方政策须确认地区后再核查。"));
+    root.append(el("p","muted","AI 分析用于辅助核查，分析完成不代表检查通过。存在失败或核实事项时，请按各项说明处理。未选择企业所在地时先匹配国家级政策；地方政策须确认地区后再核查。"));
     if(checks.length){const evidence=button("查看知识依据图谱",()=>continueCheck(current.id));evidence.disabled=busy;root.append(evidence);}
   }
 
