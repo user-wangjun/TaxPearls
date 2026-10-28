@@ -389,6 +389,12 @@ $("authForm").addEventListener("submit", async (e) => {
       pendingEmailToken="";
       if(result.purpose==="login"){await enterApp(result.user);return;}
       if(result.purpose==="reset"){authResetProof=result.proof;showAuthView("reset");return;}
+      if(result.join_path){
+        if(!/^\/p\/[A-Z0-9]{1,128}$/.test(result.join_path))throw new Error("邀请链接无效，请重新打开邀请页。");
+        try{sessionStorage.setItem("taxpearls:invitation-proof",JSON.stringify({...result,path:result.join_path}));}
+        catch{throw new Error("无法打开邀请注册页，请返回邀请页填写邮箱验证码。");}
+        location.assign(result.join_path);return;
+      }
       emailRegistrationProof=result;showAuthView("signup");return;
     }
     if(view==="emailLogin"){
