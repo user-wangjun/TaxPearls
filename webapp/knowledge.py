@@ -18,7 +18,7 @@ def node_id(kind, label):
     return kind + ":" + hashlib.sha256(label.encode()).hexdigest()[:16]
 
 
-def public_graph(db, rules, *, teaching=False):
+def public_graph(db, rules, *, teaching=False, initial=False):
     """One public-policy catalog and graph contract for both workspaces.
 
     Learning objects reference canonical rule IDs. They never assert a legal
@@ -26,8 +26,18 @@ def public_graph(db, rules, *, teaching=False):
     """
     from webapp import policy_graph
     selected = policy_graph.sync_rules(db, rules)
-    graph = policy_graph.graph(db, selected)
+    initial = bool(initial and teaching and db.execute(
+        'SELECT 1 FROM knowledge_point k JOIN certificate c ON c.id=k.certificate_id '
+        'WHERE k.active=1 AND c.active=1 LIMIT 1').fetchone())
+    # The first teaching view needs learning objects and their explicitly linked
+    # rules. Large policy texts and calculations are fetched after first paint.
+    node_ids = {row['target_id'] for row in db.execute(
+        "SELECT target_id FROM knowledge_point_link WHERE target_type='rule'")
+    } if teaching and initial else None
+    graph = policy_graph.graph(db, selected, node_ids=node_ids)
     graph.update(public_source='shared_policy_catalog', view='public_policy')
+    if initial and teaching:
+        graph['partial'] = True
     if not teaching:
         return graph
     from webapp.training_graph import TYPE_LABELS

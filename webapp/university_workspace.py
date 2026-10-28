@@ -142,13 +142,14 @@ def register(app, store_provider, effective_rules, ai_config):
 
     @app.get('/api/training/knowledge/graph')
     def graph(request: Request):
-        if request.query_params:
+        initial = list(request.query_params.multi_items()) == [('initial', '1')]
+        if request.query_params and not initial:
             raise HTTPException(422, '高校公共学习图谱不接受企业或审计范围。')
         store = store_provider()
         identity(store, request)
         from webapp.knowledge import public_graph
         with store.connect() as db:
-            data = public_graph(db, effective_rules(), teaching=True)
+            data = public_graph(db, effective_rules(), teaching=True, initial=initial)
         base, model, _ = ai_config()
         return response({**data,'ai':{'configured':bool(base and model),'model':model}})
 

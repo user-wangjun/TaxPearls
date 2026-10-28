@@ -450,7 +450,7 @@ def sync_rules(db, rules):
     return selected
 
 
-def graph(db, selected=None):
+def graph(db, selected=None, *, node_ids=None):
     """Public definitions only. Audit graphs continue using their frozen findings."""
     selected = selected or {}
     from src.models import Rule
@@ -463,11 +463,24 @@ def graph(db, selected=None):
             if db.execute('SELECT 1 FROM TaxRule WHERE rule_id=?',(rid,)).fetchone():
                 converted[old]=rid
     selected={**selected,**{rid:selected[old] for old,rid in converted.items()}}
+    def rows(table):
+        sql = f'SELECT * FROM "{table}"'
+        if node_ids is None:
+            return db.execute(sql + f' ORDER BY {IDS[table]}')
+        prefix = table + ':'
+        keys = {key[len(prefix):] for key in node_ids if key.startswith(prefix)}
+        if table == 'TaxRule':
+            keys.update(key for key, public_id in selected.items() if public_id in node_ids)
+        if not keys:
+            return []
+        return db.execute(sql + f' WHERE {IDS[table]} IN ({",".join("?" for _ in keys)})'
+                          + f' ORDER BY {IDS[table]}', list(keys))
     active_rules=set(converted.values())|{r['rule_id'] for r in db.execute('SELECT rule_id FROM TaxRule WHERE execution_json IS NULL AND conversion_json IS NULL')}
     active_metrics={r['to_id'] for r in db.execute("SELECT from_id,to_id FROM Relationship WHERE from_type='TaxRule' AND to_type='Metric' AND relation_type='USES_METRIC'") if r['from_id'] in active_rules}
     nodes, identifiers = [], {}
+    resolutions = None
     for table in KINDS:
-        for source in db.execute(f'SELECT * FROM "{table}" ORDER BY {IDS[table]}'):
+        for source in rows(table):
             row = dict(source)
             record_id = row[IDS[table]]
             if table=='TaxRule' and record_id in converted:
@@ -490,8 +503,17 @@ def graph(db, selected=None):
                 node["source"] = row["source_url"]
                 node["review_status"] = "unverified" if row["validity_status"] == "unverified" else "source_recorded"
             if table == "Clause":
-                from src.public_policy_package import citation_view
-                citation = citation_view(row, get(db, 'Policy', row['policy_id']))
+                from src.public_policy_package import citation_view, citation_resolutions
+                if resolutions is None:
+                    location = row.get('source_location') or {}
+                    if isinstance(location, str):
+                        try:
+                            location = json.loads(location)
+                        except json.JSONDecodeError:
+                            location = {}
+                    if isinstance(location, dict) and location.get('text_sha256'):
+                        resolutions = citation_resolutions()
+                citation = citation_view(row, get(db, 'Policy', row['policy_id']), resolutions=resolutions)
                 node['content'] = citation['text']
                 node["requirement"] = citation['text']
                 if citation.get('citation_corrections'):
@@ -528,7 +550,15 @@ def graph(db, selected=None):
             identifiers[(table, record_id)] = node["id"]
             nodes.append(node)
     edges = []
-    for item in db.execute("SELECT * FROM Relationship ORDER BY relationship_id"):
+    if node_ids is None:
+        relations = db.execute("SELECT * FROM Relationship ORDER BY relationship_id")
+    else:
+        keys = {key for _, key in identifiers}
+        placeholders = ','.join('?' for _ in keys)
+        relations = db.execute(f'SELECT * FROM Relationship WHERE from_id IN ({placeholders}) '
+                               f'AND to_id IN ({placeholders}) ORDER BY relationship_id',
+                               [*keys, *keys]) if keys else []
+    for item in relations:
         row = dict(item)
         source, target = identifiers.get((row["from_type"], row["from_id"])), identifiers.get((row["to_type"], row["to_id"]))
         if source and target:
@@ -542,7 +572,7 @@ def graph(db, selected=None):
             edges.append({"source": source, "target": target, "label": RELATION_LABELS[label], "relation_type": label, "structural": True})
             seen.add((source, target, label))
     for table in ("Clause", "Condition", "Exception"):
-        for row in db.execute(f'SELECT * FROM "{table}"'):
+        for row in (db.execute(f'SELECT * FROM "{table}"') if node_ids is None else rows(table)):
             if table == "Clause":
                 link("Policy", row["policy_id"], table, row[IDS[table]], "HAS_CLAUSE")
             else:

@@ -557,15 +557,17 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   const node = () => ({children:[], textContent:"", disabled:false, checked:false,
     classList:{contains:()=>true}, replaceChildren(){this.children=[];},
     append(...items){this.children.push(...items);}, get childElementCount(){return this.children.length;}});
-  const graphNodes=new Map(),graphCalls=[],graphDraws=[];
+  const graphNodes=new Map(),graphCalls=[],graphDraws=[],graphTimers=[];
   const graphCtx={graphKinds:{},currentUser:{id:'owner',role:'org_admin'},graphCanvas:{...node(),style:{},setAttribute(){}},
     URLSearchParams,
     $:id=>{if(!graphNodes.has(id))graphNodes.set(id,{...node(),value:'',style:{},addEventListener(){}});return graphNodes.get(id);},
-    option:(select,value)=>select.append(value),updateAIContext(){},stopNodeQuestion(){},
+    option:(select,value)=>select.append(value),updateAIContext(){},stopNodeQuestion(){},renderNode(){},
+    el:(_tag,_cls,text)=>({...node(),textContent:text,style:{setProperty(){}}}),
+    setTimeout:fn=>graphTimers.push(fn),
     api:url=>new Promise((resolve,reject)=>graphCalls.push({url,resolve,reject})),
     filterGraph:()=>graphDraws.push(vm.runInContext('graphData.audit_id',graphCtx)),focusGraph(){}};
   vm.createContext(graphCtx);
-  vm.runInContext('let nodeQuestionHistory=[],nodeQuestionKey=null,graphMatchedCount=0,graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
+  vm.runInContext('let graphFullLoad=null,graphFilterRequest=0,nodeQuestionHistory=[],nodeQuestionKey=null,graphMatchedCount=0,graphRequest=0,graphScopes=new Map(),graphAllowed=new Set(),graphData={nodes:[],edges:[]},graphSelected=null,graphVisible=new Set(),graphPositions=new Map(),graphFocused=false,graphTransform={},graphDrag=null,graphBusy=false;'+
     graph.slice(graph.indexOf('function graphCurrent('),graph.indexOf('$("graphAudit").addEventListener'))+
     graph.slice(graph.indexOf('function updateGraphRegions('),graph.indexOf('for(const id of ["knowledgeSearch"')),graphCtx);
   const listOld=graphCtx.loadKnowledge(),oldList=graphCalls.shift();
@@ -585,6 +587,29 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   assert.equal(graphCtx.$('graphCount').textContent,'graph failure');assert.equal(graphCtx.$('graphSummary').children.length,0);
   const changedOwner=graphCtx.loadKnowledge(),ownerCall=graphCalls.shift();graphCtx.currentUser={id:'other',role:'org_admin'};
   ownerCall.resolve([{taxpayer_id:'private',name:'不可显示的企业',audits:[]}]);await changedOwner;assert.deepEqual(graphCtx.$('graphScope').children,['']);
+  graphCtx.currentUser={id:'campus',role:'teacher',org_type:'university'};
+  const firstPaint=graphCtx.loadGraph();
+  const initialCall=graphCalls.shift();
+  assert.equal(initialCall.url,'/api/training/knowledge/graph?initial=1');
+  initialCall.resolve({nodes:[],edges:[],partial:true,audit_id:'initial',ai:{configured:false}});
+  await firstPaint;
+  assert.equal(graphCalls.length,0,'Full graph must not block the first draw');
+  assert.equal(graphDraws.at(-1),'initial');
+  graphTimers.shift()();
+  const completing=graphCtx.ensureGraphComplete();
+  assert.equal(graphCalls.length,1,'Background and user actions share the same full request');
+  graphCalls.shift().resolve({nodes:[{id:'complete',kind:'clause'}],edges:[],ai:{configured:false}});
+  await completing;
+  assert.equal(vm.runInContext('graphData.nodes[0].id',graphCtx),'complete');
+  const failureFirst=graphCtx.loadGraph();graphCalls.shift().resolve({nodes:[],edges:[],partial:true,ai:{configured:false}});await failureFirst;
+  graphTimers.shift()();const incomplete=graphCtx.ensureGraphComplete();graphCalls.shift().reject(new Error('background unavailable'));await incomplete;
+  assert.equal(vm.runInContext('graphData.partial',graphCtx),true,'Keep the usable initial graph when background loading fails');
+  assert.match(graphCtx.$('graphCoverage').textContent,/background unavailable/);
+  const retryFull=graphCtx.ensureGraphComplete();graphCalls.shift().resolve({nodes:[],edges:[],ai:{configured:false}});assert.equal(await retryFull,true);
+  const again=graphCtx.loadGraph();graphCalls.shift().resolve({nodes:[],edges:[],partial:true,ai:{configured:false}});await again;
+  graphTimers.shift()();const abandoned=graphCtx.ensureGraphComplete(),abandonedCall=graphCalls.shift();
+  graphCtx.invalidateGraph();abandonedCall.resolve({nodes:[{id:'stale'}],edges:[],ai:{configured:false}});await abandoned;
+  assert.equal(vm.runInContext('graphData.nodes.length',graphCtx),0,'Late full graphs must not restore a closed view');
   vm.runInContext(graph.slice(graph.indexOf('function neighbors('),graph.indexOf('function layoutGraph(')),graphCtx);
   graphCtx.layoutGraph=()=>{};graphCtx.drawGraph=()=>{};graphCtx.renderNode=()=>{};
   vm.runInContext('graphData={nodes:[{id:"trade",category:"关联方图",status:"skipped",kind:"trade"}],edges:[]};',graphCtx);
@@ -600,7 +625,23 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   graphCtx.filterGraph();assert.equal(vm.runInContext('graphVisible.size',graphCtx),240);
   graphCtx.$('knowledgeSearch').value='policy-999';graphCtx.filterGraph();
   assert.equal(vm.runInContext('graphVisible.has("policy-999")',graphCtx),true);
+  graphCtx.$('knowledgeSearch').value='';
+  const initialLayouts=[],initialDraws=[];
+  graphCtx.layoutGraph=()=>initialLayouts.push(vm.runInContext('graphVisible.size',graphCtx));
+  graphCtx.drawGraph=()=>initialDraws.push(vm.runInContext('graphVisible.size',graphCtx));
+  vm.runInContext('graphData={view:"public_teaching",nodes:Array.from({length:150},(_,i)=>({id:"kp-"+i,kind:"knowledge_point",label:"知识点"+i})),edges:Array.from({length:6},(_,i)=>({source:"kp-0",target:"kp-"+(i+1)}))};graphSelected=null;',graphCtx);
+  graphCtx.filterGraph(true);
+  assert.deepEqual(initialLayouts,[7],'Initial load must lay out only the selected neighborhood');
+  assert.deepEqual(initialDraws,[7],'Initial load must draw the focused view once');
+  assert.equal(vm.runInContext('graphFocused',graphCtx),true);
   vm.runInContext(graph.slice(graph.indexOf('function layoutGraph('),graph.indexOf('function drawGraph(')),graphCtx);
+  graphCtx.innerWidth=1306;
+  graphCtx.graphKinds={knowledge_point:[]};
+  graphCtx.Math=Object.create(Math);
+  graphCtx.Math.hypot=()=>assert.fail('Small focused cards must not run a discarded force simulation');
+  graphCtx.layoutGraph();
+  assert.equal(vm.runInContext('graphPositions.get("kp-0").x',graphCtx),480);
+  assert.equal(vm.runInContext('graphPositions.get("kp-6").y',graphCtx),680);
   vm.runInContext('graphData={nodes:[],edges:[]};graphFocused=true;graphVisible=new Set();',graphCtx);
   graphCtx.innerWidth=390;graphCtx.layoutGraph(); // empty focused mobile view must not dereference undefined
   const pending = [];
