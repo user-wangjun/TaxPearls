@@ -83,7 +83,8 @@ def register(app, get_store, get_user, allow):
                     task = {'audit_task_id': body.task_id, 'tax_type': tax_type(context['rule']['tax_type']),
                             'region_code': body.region_code}
                     package = metrics.build_task_bundle(db, payload, task, rid,
-                                                        token_budget=profile['input_budget'], offline=True)
+                                                        token_budget=profile['input_budget'], offline=True,
+                                                        output_tokens=profile['output_reserve'])
                 package['batching']['model_context'] = profile
                 old = payload.get('tax_checks', {}).get(rid)
                 same = old and not old.get('stale') and bundle.content_hash(old['bundle']) == bundle.content_hash(package)
@@ -190,7 +191,7 @@ def register(app, get_store, get_user, allow):
                             # A stale/unauthorized snapshot must stop pending paid work.
                             if errors[-1]['status'] in {403, 404, 409}:
                                 stopped.set()
-                        if not errors:
+                        if not stopped.is_set():
                             submit()
                 if errors:
                     yield encode({'type': 'error', **errors[0], 'revision': state['revision'], 'completed_rule_ids': completed})

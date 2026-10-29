@@ -546,6 +546,26 @@ def parse(raw, name, kind, file_id, mapper, *, ocr=False):
         try:
             for sheet in book:
                 rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+                if kind == 'account_balance':
+                    # A ledger export may retain explicit standard workpapers
+                    # for the complete business-metric import. Their 项目 column
+                    # is not a ledger project-code header. Unknown layouts still
+                    # take the normal parser/issue path; originals remain intact.
+                    from . import config
+                    appendices = {
+                        config.SHEET_COMPANY: ['项目', '内容'],
+                        config.SHEET_DECLARATION: ['项目', '金额'],
+                        config.SHEET_INCOME: config.COL_STATEMENT,
+                        config.SHEET_BALANCE: config.COL_STATEMENT,
+                        config.SHEET_CASHFLOW: config.COL_STATEMENT,
+                        config.SHEET_SUPPLEMENT: config.COL_SUPPLEMENT,
+                        config.SHEET_HISTORY: config.COL_HISTORY,
+                        config.SHEET_REFERENCE: config.COL_REFERENCE,
+                    }
+                    expected = appendices.get(sheet.title)
+                    if expected and rows and rows[0][:len(expected)] == expected:
+                        result.setdefault('business_appendices', []).append({'name': sheet.title, 'rows': len(rows) - 1})
+                        continue
                 meta = metadata([[sheet.title], *rows], kind)
                 pos = lambda r, c, s=sheet.title: f"{s}!{get_column_letter(c + 1)}{r + 1}"
                 records = table_records(rows, pos, meta, kind, file_id, mapper, result["issues"], sheet.title)

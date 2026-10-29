@@ -55,6 +55,56 @@ class RetrievalTests(unittest.TestCase):
         package['batching'] = bundle.split_bundle(package, 128000)
         return package
 
+    def test_converted_check_keeps_unlinked_pending_policy_as_nonblocking_lead(self):
+        from src.kg_retrieval.common import candidate, clause_record
+        # Source selection is independent of the fixture's arithmetic. Mark its
+        # existing screening calculation as converted, with an explicit CL01 basis.
+        self.db.execute("UPDATE TaxRule SET conversion_json=? WHERE rule_id='R01'",
+                        (json.dumps({'compiler': 'yaml-screen-v2'}),))
+        self.db.execute("INSERT INTO Relationship (relationship_id,from_type,from_id,relation_type,to_type,to_id,evidence_clause_id,effective_from,review_status) VALUES ('pending-unrelated','Clause','CL20','AMENDS','Clause','CL08','CL20','2026-07-01','candidate')")
+        clause, policy = clause_record(self.db, 'CL08')
+        hit = candidate(clause, policy, 'keyword', score=100,
+                        reason={'mode':'fts', 'matched_terms':['收入口径勾稽']})
+        with patch.object(keyword_search, 'search', return_value={'status':'ready', 'hits':[hit]}):
+            result = self.package()
+        self.assertEqual(result['bundle_status'], 'ready')
+        self.assertFalse(result['gaps'])
+        self.assertEqual({p['clause_id'] for p in result['policy_evidence']}, {'CL01'})
+        lead = next(p for p in result['policy_leads'] if p['clause_id']=='CL08')
+        self.assertIn('尚缺施行日期', lead['text'])
+        self.assertEqual(lead['applicability'], 'needs_review')
+        self.assertTrue(lead['retrieval_only'])
+        self.assertIn('CL08', result['retrieval_trace']['keyword_hits'])
+        self.db.execute("UPDATE TaxRule SET conversion_json=NULL WHERE rule_id='R01'")
+        with patch.object(keyword_search, 'search', return_value={'status':'ready', 'hits':[hit]}):
+            unbound = self.package()
+        self.assertIn('policy_review', {g['code'] for g in unbound['gaps']})
+
+    def test_converted_check_still_blocks_pending_required_source_and_amendment(self):
+        self.db.execute("UPDATE TaxRule SET conversion_json=? WHERE rule_id='R01'",
+                        (json.dumps({'compiler': 'yaml-screen-v2'}),))
+        self.db.execute("UPDATE Clause SET extraction_status='needs_review' WHERE clause_id='CL01'")
+        self.db.execute("INSERT INTO Relationship (relationship_id,from_type,from_id,relation_type,to_type,to_id,evidence_clause_id,effective_from,review_status) VALUES ('pending-current','Clause','CL20','AMENDS','Clause','CL01','CL20','2026-07-01','candidate')")
+        result = self.package()
+        self.assertEqual(result['check']['evaluation'], 'UNKNOWN')
+        self.assertIn('change_pending', {g['code'] for g in result['gaps']})
+        self.assertTrue(any(g['code']=='policy_review' and g.get('clause_id')=='CL01' for g in result['gaps']))
+        self.assertIn('CL20', result['retrieval_trace']['dependency_clause_ids'])
+
+    def test_reviewed_native_screen_uses_explicit_reviewed_basis_without_promoting_search_hits(self):
+        from src.kg_retrieval.common import candidate, clause_record
+        self.db.execute("INSERT INTO Relationship(relationship_id,from_type,from_id,relation_type,to_type,to_id,evidence_clause_id,review_status) VALUES ('native-basis','Clause','CL01','PROVIDES_CONTEXT','TaxRule','R01','CL01','approved')")
+        clause, policy = clause_record(self.db, 'CL08')
+        hit = candidate(clause, policy, 'keyword', score=100, reason={'mode':'fts','matched_terms':['收入口径勾稽']})
+        with patch.object(keyword_search, 'search', return_value={'status':'ready','hits':[hit]}):
+            result = self.package()
+        self.assertEqual(result['bundle_status'], 'ready')
+        self.assertTrue(next(p for p in result['policy_leads'] if p['clause_id']=='CL08')['retrieval_only'])
+        self.db.execute("UPDATE Relationship SET review_status='candidate' WHERE relationship_id='native-basis'")
+        with patch.object(keyword_search, 'search', return_value={'status':'ready','hits':[hit]}):
+            pending = self.package()
+        self.assertIn('relationship_pending', {g['code'] for g in pending['gaps']})
+
     @staticmethod
     def context_answer(_system, part, _failure):
         return {'assessments': [{'type': part['response_constraints']['required_type'],
@@ -116,7 +166,8 @@ class RetrievalTests(unittest.TestCase):
         self.assertTrue(all(a['source_char_end'] == b['source_char_start'] for a, b in zip(pieces, pieces[1:])))
         expected_hash = hashlib.sha256(package['policy_evidence'][0]['text'].encode()).hexdigest()
         self.assertTrue(all(p['original_text_sha256'] == expected_hash for p in pieces))
-        self.assertEqual(result['status'], 'needs_review')
+        self.assertEqual(result['status'], 'reviewed_clues')
+        self.assertEqual(result['batch_summary']['status'], 'completed')
         self.assertTrue(all(p['response_constraints']['required_type'] == 'insufficient_evidence' for p in successful))
 
     def test_preflight_uses_full_wire_payload_and_recovers_before_sending(self):
@@ -375,7 +426,8 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(len(result['batches']),9)
         self.assertTrue(all(b['status']=='completed' for b in result['batches']))
         self.assertTrue(result['validated'])
-        self.assertEqual(result['status'],'needs_review')
+        self.assertEqual(result['status'],'reviewed_clues')
+        self.assertEqual(result['batch_summary']['completed_batches'],9)
         successful_answer=answer
         attempt=[0]
         def intermittent(system, part, failure):
@@ -638,6 +690,11 @@ class AnswerValidationTests(unittest.TestCase):
 @material_key
 class RetrievalHTTPTests(unittest.TestCase):
     def setUp(self):
+        # These HTTP tests own an explicit synthetic corpus. Public package
+        # startup/import has separate tests and must not replace these sources.
+        startup = patch('src.public_policy_package.bootstrap', return_value={'status': 'fixture'})
+        startup.start()
+        self.addCleanup(startup.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "test.db"
@@ -903,7 +960,8 @@ class CoreReportTests(unittest.TestCase):
         saved = self.client.get(base + '/1?format=json').json()['checks']['R01']['ai']
         self.assertTrue(saved['validated'])
         self.assertEqual(saved['assessments'], checked.json()['ai']['assessments'])
-        self.assertEqual(saved['status'], 'needs_review')
+        self.assertEqual(saved['status'], 'reviewed_clues')
+        self.assertEqual(saved['batch_summary']['status'], 'completed')
 
     def test_extra_upload_requires_recheck_and_report_keeps_trace_and_previous_version(self):
         tid, checked = self.checked()

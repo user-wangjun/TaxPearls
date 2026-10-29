@@ -227,6 +227,21 @@ def balance_xls():
 
 
 class CoreParserTests(unittest.TestCase):
+    def test_standard_financial_appendices_do_not_become_broken_ledger_rows(self):
+        wb = load_workbook(BytesIO(book('account_balance')))
+        for name, header, row in [
+            ('企业信息', ['项目', '内容'], ['企业名称', '模拟企业']),
+            ('利润表', ['项目', '本期金额'], ['营业收入', 100]),
+            ('增值税申报', ['项目', '金额'], ['销售额', 100]),
+        ]:
+            sheet = wb.create_sheet(name); sheet.append(header); sheet.append(row)
+        raw = BytesIO(); wb.save(raw); wb.close()
+        core_materials.validate_upload_content(raw.getvalue(), '账表.xlsx', 'account_balance')
+        result = core_materials.parse(raw.getvalue(), '账表.xlsx', 'account_balance', 'appendices', self.mapper)
+        self.assertEqual(len(result['records']), 1)
+        self.assertEqual(result['issues'], [])
+        self.assertTrue(all(r['source_position'].startswith('科目余额表!') for r in result['records']))
+
     def setUp(self):
         self.db, self.mapper = mapper()
         self.addCleanup(self.db.close)

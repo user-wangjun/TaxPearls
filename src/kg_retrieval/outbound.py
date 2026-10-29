@@ -2,8 +2,65 @@
 from copy import deepcopy
 import re
 from urllib.parse import urlsplit
+from collections import Counter
 
 from .common import canonical
+
+
+def compact(payload):
+    """Intern repeated prose, losslessly, within this independent request only.
+
+    Identifiers and citation lists remain literal. No evidence is summarized or
+    dropped; the dictionary travels with every request that references it.
+    """
+    protected = {'response_constraints', 'clause_ids', 'source_ids', 'required_clause_ids'}
+    counts = Counter()
+    collision = False
+
+    def visit(value, key='', collect=False):
+        nonlocal collision
+        if key in protected or key.endswith(('_id', '_ids')):
+            return deepcopy(value)
+        if isinstance(value, dict):
+            if set(value) == {'context_ref'}:
+                collision = True
+            return {k: visit(v, k, collect) for k, v in value.items()}
+        if isinstance(value, list):
+            return [visit(v, key, collect) for v in value]
+        if isinstance(value, str) and len(value.encode()) >= 100:
+            if collect:
+                counts[value] += 1
+            elif value in refs:
+                return {'context_ref': refs[value]}
+        return value
+
+    refs = {}
+    visit(payload, collect=True)
+    if collision or 'shared_context' in payload or 'context_encoding' in payload:
+        return deepcopy(payload)
+    refs = {value: f'ctx{i}' for i, (value, count) in enumerate(counts.items(), 1) if count > 1}
+    if not refs:
+        return deepcopy(payload)
+    result = visit(payload)
+    result['shared_context'] = {ref: value for value, ref in refs.items()}
+    result['context_encoding'] = 'repeated_text_v1'
+    return result if len(canonical(result).encode()) < len(canonical(payload).encode()) else deepcopy(payload)
+
+
+def expand(payload):
+    """Exact inverse used by diagnostics/tests; never trusts model references."""
+    if payload.get('context_encoding') != 'repeated_text_v1':
+        return deepcopy(payload)
+    dictionary = payload.get('shared_context', {})
+    def visit(value):
+        if isinstance(value, dict):
+            if set(value) == {'context_ref'} and value['context_ref'] in dictionary:
+                return deepcopy(dictionary[value['context_ref']])
+            return {k: visit(v) for k, v in value.items()}
+        if isinstance(value, list):
+            return [visit(v) for v in value]
+        return value
+    return visit({k: v for k, v in payload.items() if k not in {'shared_context', 'context_encoding'}})
 
 
 def prepare(package, *, authorized, destination):
@@ -18,6 +75,8 @@ def prepare(package, *, authorized, destination):
         part = {k: deepcopy(original[k]) for k in ("task", "check", "facts", "conditions", "exceptions", "policy_evidence", "policy_leads", "gaps", "relationships", "part_number", "part_count")}
         if original.get("supporting_materials"):
             part["supporting_materials"] = deepcopy(original["supporting_materials"])
+        if original.get('retrieval_lead_index'):
+            part['retrieval_lead_index'] = deepcopy(original['retrieval_lead_index'])
         for key in ('batch_category', 'batch_category_name', 'batch_group', 'batch_group_name', 'required_clause_ids'):
             if key in original:
                 part[key] = deepcopy(original[key])

@@ -209,6 +209,18 @@ class AIKeyFailoverTests(unittest.TestCase):
                 self.assertEqual(opener.open.call_count, 1)
                 self.assertEqual(ai_transport._key_failures, {})
 
+    def test_only_explicit_output_length_is_classified_as_recoverable(self):
+        for finish in ('length', 'content_filter', 'tool_calls', 'unknown-private-value'):
+            opener = Mock()
+            opener.open.return_value = BytesIO(envelope('{}', finish))
+            with self.subTest(finish=finish), patch('src.ai_transport.build_opener', return_value=opener):
+                with self.assertRaises(TransportError) as caught:
+                    chat_content(SETTINGS, [], 5)
+                self.assertEqual(caught.exception.kind, 'incomplete')
+                self.assertEqual(caught.exception.finish_reason, None if finish == 'unknown-private-value' else finish)
+                self.assertEqual(opener.open.call_count, 1)
+                self.assertEqual(ai_transport._key_failures, {})
+
     def test_context_error_survives_json_wrapper_without_exposing_provider_body(self):
         from webapp.knowledge import _chat_json, SELECTED_SETTINGS, ContextLengthExceeded
         selected = SELECTED_SETTINGS.set(SETTINGS)
@@ -216,6 +228,20 @@ class AIKeyFailoverTests(unittest.TestCase):
             with patch('webapp.knowledge.chat_content', side_effect=TransportError('context_length', 400)):
                 with self.assertRaises(ContextLengthExceeded):
                     _chat_json('synthetic', {}, 'failed')
+        finally:
+            SELECTED_SETTINGS.reset(selected)
+
+    def test_json_wrapper_honors_configured_timeout_and_explains_timeout_safely(self):
+        from webapp.knowledge import _chat_json, SELECTED_SETTINGS
+        selected = SELECTED_SETTINGS.set(replace(SETTINGS, timeout=90))
+        try:
+            with patch('webapp.knowledge.chat_content', return_value='{}') as call:
+                _chat_json('synthetic', {}, 'failed')
+                self.assertEqual(call.call_args.args[2], 90)
+            with patch('webapp.knowledge.chat_content', side_effect=TransportError('timeout')):
+                with self.assertRaises(HTTPException) as caught:
+                    _chat_json('synthetic', {}, 'failed')
+                self.assertIn('超时', caught.exception.detail)
         finally:
             SELECTED_SETTINGS.reset(selected)
 

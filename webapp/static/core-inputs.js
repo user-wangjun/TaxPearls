@@ -515,7 +515,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     return {details,heading,close:()=>{details.open=false;sync();heading.focus?.({preventScroll:true});heading.scrollIntoView?.({block:"nearest"});}};
   }
   function legacyCheck(slot){
-    return slot.bundle?.batching?.strategy!=="category_and_source_v1"||!slot.bundle?.batching?.model_context;
+    return !["category_and_source_v1","category_and_source_v2"].includes(slot.bundle?.batching?.strategy)||!slot.bundle?.batching?.model_context;
   }
   function checkReviewState(slot){
     const pack=slot.bundle,ai=slot.ai;
@@ -639,9 +639,17 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       }
       const assessments=legacy?checkDisclosure(`${foldKey}:assessments`,"历史分析说明（仅供追溯）").details:card;
       if(legacy&&ai?.assessments?.length)card.append(assessments);
-      for(const item of ai?.assessments||[]){
+      for(const item of ai?.batch_summary?.assessments||ai?.assessments||[]){
         assessments.append(el("p","",item.text));
         if(item.required_materials?.length)assessments.append(el("p","material-note","需补充或核实："+item.required_materials.join("；")));
+      }
+      if(!legacy&&ai?.batch_summary&&ai.batch_results?.length>1){
+        const {details:parts}=checkDisclosure(`${foldKey}:batch-evidence`,"各批分析与引用追溯");
+        for(const [index,batch] of ai.batch_results.entries()){
+          parts.append(el("p","muted",`第 ${index+1} 批`));
+          for(const item of batch.assessments||[])parts.append(el("p","",item.text));
+        }
+        card.append(parts);
       }
       const archived=renderReviewGaps(card,pack,legacy,foldKey);
       if(legacy&&ai?.reason)archived.add(ai.reason);
@@ -919,13 +927,13 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     }
     review.append(formScope);
     let readVAT=null;
-    const vatRows=(current.processing.records||[]).filter(r=>r.material_type==="vat_declaration"&&r.field_sources?.declared_value);
+    const vatRows=(current.processing.records||[]).filter(r=>r.material_type==="vat_declaration"&&r.field_sources?.declared_value||r.material_type==="business_metric"&&r.audit_id&&r.metric_name==="增值税.销售额"&&r.field_sources?.value);
     if(vatRows.length){
       const saved=current.vat_review_current?current.check_reviews?.["VAT-R01"]||{}:{},inputs={};let touched=false;
       const panel=el("details","core-metadata");panel.open=!current.vat_review_current;
       panel.append(el("summary","","增值税销售额取数与可比口径"),el("p","muted","选择与销项发票比较的申报原表记录，核实表单版本、纳税人类型及调整口径。未知时留空，本项会保留待核对；这不代表政策适用性已获批准。"));
       function add(key,label,kind="text",choices){const control=choices?select(label,choices,saved[key]||""):field(label,kind,saved[key]||"");if(kind==="checkbox")control.input.checked=saved[key]===true;control.input.maxLength=key==="basis"?500:200;inputs[key]=control.input;control.input.addEventListener("change",()=>{touched=true;dirty=true;});panel.append(control.wrap);return control.input;}
-      add("mapping_record_id","申报销售额原表记录","text",[["","请选择已核实的申报记录"],...vatRows.map(r=>[r.id,`${r.form_name||"申报表"} · ${r.item_label||r.item_key||"项目待核对"} · ${r.column_scope||r.field_sources.declared_value.source_label||"列待核对"} · ${r.declared_value??"缺失"} · ${r.source_position||""}`])]);
+      add("mapping_record_id","申报销售额原表记录","text",[["","请选择已核实的申报记录"],...vatRows.map(r=>[r.id,r.material_type==="business_metric"?`已关联完整底稿 · ${r.metric_name} · ${r.value} · ${r.source_position}`:`${r.form_name||"申报表"} · ${r.item_label||r.item_key||"项目待核对"} · ${r.column_scope||r.field_sources.declared_value.source_label||"列待核对"} · ${r.declared_value??"缺失"} · ${r.source_position||""}`])]);
       add("form_revision","申报表版本（已核实）");add("taxpayer_category","纳税人类型（已核实）");add("basis","口径核对依据");add("comparable","两侧统计口径已核对可比","checkbox");
       add("zero_proof_file_id","零发生额证明原件（仅无票时）","text",[["","未提供零发生额证明"],...current.documents.filter(d=>d.material_type==="invoice_detail"&&!d.records.length).map(d=>[d.id,d.name])]);
       readVAT=()=>touched?Object.fromEntries(Object.entries(inputs).map(([key,node])=>[key,key==="comparable"?node.checked:node.value.trim()])):null;

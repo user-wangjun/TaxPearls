@@ -37,6 +37,18 @@ class CheckRunTests(unittest.TestCase):
         self.assertIn('application/x-ndjson', response.headers['content-type'])
         return [json.loads(line) for line in response.text.splitlines()]
 
+    def test_one_failed_check_does_not_skip_other_requested_checks(self):
+        task = self.task()
+        def analyze(package):
+            failed = package['check']['rule_id'] == 'R01'
+            return {'validated': not failed, 'assessments': [], 'reason': '模拟单项失败' if failed else '',
+                    'batches': [{'status': 'failed' if failed else 'completed'}]}
+        rules = tuple(f'R{i:02}' for i in range(1, 7))
+        with patch.object(service, 'analyze', side_effect=analyze):
+            events = self.events(self.run_body(task, rules))
+        self.assertEqual({e['rule_id'] for e in events if e['type'] == 'result'}, set(rules))
+        self.assertEqual(events[-1]['type'], 'error')
+
     @staticmethod
     def answer(system, payload, failure):
         evidence = [*payload['policy_evidence'], *payload['policy_leads']]
@@ -176,12 +188,13 @@ class CheckRunTests(unittest.TestCase):
         self.assertEqual(saved['task']['company_name'], '纯合成测试修改后的企业')
         self.assertFalse(saved.get('tax_checks'))
 
-    def test_failed_rule_saves_other_inflight_results_and_stops_queued_work(self):
+    def test_failed_rule_saves_other_inflight_and_queued_results(self):
         task = self.task()
         barrier = Barrier(3)
         def analyze(package):
             rid = package['check']['rule_id']
-            barrier.wait(timeout=10)
+            if rid != 'R04':
+                barrier.wait(timeout=10)
             if rid == 'R01':
                 return {'validated': False, 'reason': '合成失败，保留已完成批次', 'batches': [{'status': 'failed'}],
                         'batch_results': [{'batch_id': 'synthetic', 'status': 'completed'}], 'assessments': []}
@@ -189,10 +202,10 @@ class CheckRunTests(unittest.TestCase):
             return {'validated': True, 'batches': [], 'assessments': []}
         with patch.object(service, 'analyze', side_effect=analyze) as ai:
             events = self.events(self.run_body(task, ('R01', 'R02', 'R03', 'R04')))
-        self.assertEqual(ai.call_count, 3)
+        self.assertEqual(ai.call_count, 4)
         self.assertEqual(events[-1]['type'], 'error', events)
         saved = self.client.get('/api/enterprise/input-tasks/' + task['id']).json()
-        self.assertEqual(set(saved['tax_checks']), {'R01', 'R02', 'R03'})
+        self.assertEqual(set(saved['tax_checks']), {'R01', 'R02', 'R03', 'R04'})
         self.assertEqual(saved['tax_checks']['R01']['ai']['batch_results'][0]['batch_id'], 'synthetic')
 
     def test_permission_revocation_stops_before_another_batch_or_result_write(self):

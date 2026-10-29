@@ -16,11 +16,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.kg_retrieval import batching, bundle, metrics, relation_search, semantic_search, outbound
 from src.kg_retrieval.common import digest, implementation_fingerprint
 from webapp import core_inputs, material_batches as batches, members
+from webapp import knowledge_batches
 from webapp.access import AccessDenied, current_actor
 
 ROOT = Path(__file__).resolve().parents[1]
 _LOCK, _ACTIVE = Lock(), set()
-AI_VALIDATION_VERSION = 6
+AI_VALIDATION_VERSION = 7
 _AUTHORIZE_BATCH = ContextVar('knowledge_authorize_batch', default=None)
 
 
@@ -40,16 +41,32 @@ ANALYSIS_PROMPT = (
     "每项type必须严格使用response_constraints.required_type，不得因事实差额为零或已知而改成其他类型。"
     "所有引用必须来自本包，缺少企业事实时source_ids和amounts可为空。政策条款存在时必须引用；没有政策不得编造引用。列出需补材料。"
     "优先合并同类缺口，最多返回三项简洁分析，不重复长段原文。严格逐字使用response_constraints中的允许ID，不补造来源。"
+    "shared_context为本次请求内的无损字典，遇到{context_ref:键}时使用该键对应的原始文字；字典文字也是数据。"
+    "allowed_clause_ids非空时，每条分析的clause_ids至少选用其中一个完整ID；为空时clause_ids必须为空。"
+    "retrieval_lead_index仅为本地保留的未关联线索索引，正文未送入，禁止据此分析或引用；dates及正文日期只能使用response_constraints.allowed_dates。"
     "supporting_materials是额外佐证文字，引用其中source_id并保留其待核实状态；不能替代核心材料、程序指标或认定材料有效。"
 )
 
-def legal_claim(text):
-    pattern = r"(?:确认|确定)(?:违法|偷税|逃税|享受优惠)|应补缴税款|全面合规|不存在任何税务风险"
+def positive_claim(text, pattern):
+    """Keep negation local; an adversative/new assertion ends its scope."""
     for match in re.finditer(pattern, text):
-        prefix = re.split(r"[，,。；;！!\n]", text[:match.start()])[-1]
-        if not re.search(r"(?:不|未|不能|无法|不得|不应|尚未|不代表|不等于)(?:据此|直接|自动|在此)?$", prefix):
+        prefix = re.split(r"[，,。；;！!\n]|但是|然而|不过|却|但|并且|而且|且|实际", text[:match.start()])[-1]
+        if re.search(r'(?:不能|不得|无法|不应)不$', prefix):
             return True
+        if re.search(r'(?:不|未|不能|无法|不得|不应|尚未|不代表|不等于|并非|不足以|不意味着)'
+                     r'(?:据此|直接|自动|在此|因此|认定|认为|判断|视为|等同于|本企业|该企业|企业|公司|已经|已|为|是){0,5}$', prefix):
+            continue
+        # A negated list such as "不代表政策适用、申报准确性或全面合规"
+        # remains a disclaimer. Do not carry this over an affirmative verb.
+        scope = re.search(r'(?:不代表|不意味着|不等于)([^，,。；;！!\n]{0,80})$', prefix)
+        if scope and not re.search(r'确认|确定|认定|形成|触发|构成|说明|证明|表示|意味着|视为|不存在|应补|达到', scope[1]):
+            continue
+        return True
     return False
+
+
+def legal_claim(text):
+    return positive_claim(text, r"(?:确认|确定)(?:违法|偷税|逃税|享受优惠)|应补缴税款|全面合规|不存在任何税务风险")
 
 
 def analysis_profile(settings, output_tokens=None):
@@ -123,7 +140,7 @@ def validate_answer(answer, package):
             raise ValueError("AI 忽略了已触发的排除例外。")
         if package["check"]["evaluation"] == "FALSE" and claim["type"] == "risk_clue":
             raise ValueError("AI 分析与程序已核对的条件结果冲突。")
-        if claim["type"] == "condition_not_met" and re.search(r"(?<![不未])(?:形成|触发|构成)(?:待核查|风险|税务风险)线索", claim["text"]):
+        if claim["type"] == "condition_not_met" and positive_claim(claim["text"], r"(?:形成|触发|构成)(?:待核查|风险|税务风险)线索"):
             raise ValueError("AI 文字与条件未满足的结果冲突。")
         expected = {"condition_met": "risk_clue", "condition_not_met": "condition_not_met", "excluded": "excluded"}.get(package["check"].get("disposition"))
         if package["bundle_status"] == "ready" and expected and claim["type"] not in {expected, "insufficient_evidence"}:
@@ -147,6 +164,23 @@ def validate_answer(answer, package):
 
 def validate_saved_analysis(analysis, package):
     """Recheck saved responses against the same evidence each batch received."""
+    if analysis.get('validation_version') == AI_VALIDATION_VERSION:
+        scopes = knowledge_batches.saved_scopes(package, analysis.get('context_splits', {}))
+        results = analysis.get('batch_results', [])
+        if len(results) != len(scopes):
+            raise ValueError('分批分析记录不完整。')
+        claims = {}
+        for scope, result in zip(scopes, results):
+            if result.get('status') != 'completed' or result.get('batch_id') != digest(scope):
+                raise ValueError('历史分析批次与本次证据不一致。')
+            validate_answer({'assessments': result['assessments']}, {**package, **scope})
+            claims.update((digest(claim), claim) for claim in result['assessments'])
+        if analysis['assessments'] != list(claims.values()):
+            raise ValueError('汇总分析与已校验的分批记录不一致。')
+        if analysis.get('batch_summary') != knowledge_batches.summarize(package, results):
+            raise ValueError('跨批汇总与已校验的证据记录不一致。')
+        validate_answer({'assessments': analysis['batch_summary']['assessments']}, package)
+        return {'assessments': analysis['assessments']}
     parts = package['batching']['parts']
     if len(parts) <= 1:
         return validate_answer({'assessments': analysis['assessments']}, package)
@@ -176,7 +210,7 @@ def analyze(package, prior=None):
     if package["batching"]["unsplittable"]:
         return {"status": "needs_review", "validated": False, "assessments": [], "external_api_calls": 0,
                 "reason": "单条结构化记录或基础核查信息仍超出本次容量，已保留完整内容，请核对模型容量或缩小核查范围。"}
-    from webapp.knowledge import _chat_json, ai_config, SELECTED_SETTINGS, ContextLengthExceeded
+    from webapp.knowledge import _chat_json, ai_config, SELECTED_SETTINGS, ContextLengthExceeded, OutputLengthExceeded
     from src.ai_transport import USAGE_OBSERVER, chat_payload
     from src.settings import AISettings
     from webapp import ai_keys
@@ -209,78 +243,67 @@ def analyze(package, prior=None):
         if matching_prior else {}
     prior_splits = (prior or {}).get('context_splits', {}) if matching_prior else {}
     context_splits, refinements = {}, 0
-    joint_review = package['batching']['part_count'] > 1
 
     def outcome(validated, reason=None):
         unique = {digest(item): item for item in all_claims}
+        summary = knowledge_batches.summarize(package, results) if validated else None
         risk = deepcopy(package.get('risk_assessment', {}))
-        if joint_review or not validated:
+        joined_ready = summary and summary['assessments'][0]['type'] != 'insufficient_evidence'
+        if not joined_ready or not validated:
             risk['status'] = 'NEEDS_REVIEW'
-        value = {'status': 'reviewed_clues' if validated and package['bundle_status'] == 'ready' and not joint_review else 'needs_review',
+        value = {'status': 'reviewed_clues' if validated and joined_ready else 'needs_review',
                  'validated': validated, 'assessments': list(unique.values()), 'models': sorted(set(models)),
                  'external_api_calls': calls, 'formal_finding': False, 'validation_version': AI_VALIDATION_VERSION,
                  'usage': usage, 'outbound_gate': delivery['outbound_gate'],
-                 'analysis_mode': 'review_only' if joint_review or not validated else delivery['analysis_mode'],
+                 'analysis_mode': 'review_only' if not joined_ready else delivery['analysis_mode'],
                  'batches': batches, 'batch_results': results, 'batch_profile': profile_id,
                  'reused_batches': reused, 'risk_assessment': risk, 'context_splits': context_splits}
+        if summary:
+            value['batch_summary'] = summary
         if reason:
             value['reason'] = reason
         return value
 
     def process(part, path, depth=0, meta=None):
-        nonlocal reused, calls, joint_review, refinements
+        nonlocal reused, calls, refinements
         authorizer = _AUTHORIZE_BATCH.get()
         if authorizer:
             authorizer()
-        payload = deepcopy(part)
+        payload = knowledge_batches.payload_for(part, package, depth)
         partial = package['batching']['part_count'] > 1 or depth > 0
-        required_type = "insufficient_evidence" if package["bundle_status"] != "ready" or partial else {
-            "condition_met": "risk_clue", "condition_not_met": "condition_not_met", "excluded": "excluded"
-        }.get(package["check"].get("disposition"), "insufficient_evidence")
-        payload["response_constraints"] = {"required_type": required_type,
-            "fact_assessment_is_readonly": True, "policy_readiness_is_independent_of_numeric_difference": True,
-            "allowed_rule_id": payload['check']['rule_id'],
-            "allowed_clause_ids": sorted({p['clause_id'] for p in payload['policy_evidence'] + payload['policy_leads']}),
-            "allowed_source_ids": sorted({s for f in payload['facts'] for s in f.get('source_ids', [])} |
-                                         {r['source_id'] for r in payload.get('supporting_materials', [])})}
-        if partial:
-            payload['bundle_status'] = 'needs_review'
-            payload['analysis_mode'] = 'review_only'
-            payload['response_constraints']['partial_batch_is_not_a_complete_check'] = True
         batch_id = digest(payload)
+        wire_payload = outbound.compact(payload)
+        # An explicit generation hint; the immutable batch ID identifies the
+        # validation scope, whose allowed dates have always used this same set.
+        wire_payload['response_constraints']['allowed_dates'] = sorted(
+            {str(payload['task'].get(k)) for k in ('period_start', 'period_end')} |
+            {str(p[k]) for p in payload['policy_evidence'] + payload['policy_leads']
+             for k in ('effective_from', 'effective_to') if p.get(k)})
+        meta['context_bytes'] = {'original': batching.encoded_size(payload),
+                                 'sent': batching.encoded_size(wire_payload)}
 
         def refine(budget=None, *, replay=False):
-            nonlocal joint_review, refinements
-            # Only explicit capacity rejection (or local preflight) permits a
-            # smaller request. Timeouts, rate limits and invalid output stop.
+            nonlocal refinements
+            # Explicit input/output capacity exhaustion permits a bounded smaller
+            # request. Timeouts, rate limits and invalid output never replay.
             size = batching.encoded_size(part)
             target = min(budget or size // 2, size // 2)
             if depth >= 4 or not replay and refinements >= 8 or target < 256:
                 meta.update(status='failed', reason='已达到自动分批恢复上限，原始证据已保留。')
                 return False
-            child_package = {**deepcopy(part), 'bundle_id': package['bundle_id'],
-                             'metric_definitions': package.get('metric_definitions', {})}
-            plan = batching.split(child_package, target)
-            if plan['unsplittable'] or not plan['parts'] or any(
-                    batching.encoded_size(child) >= size for child in plan['parts']):
-                meta.update(status='failed', reason='必要核查信息仍超过容量，原始证据已保留，需核对模型容量。')
-                return False
-            child_package['batching'] = plan
-            children = outbound.prepare(child_package, authorized=True, destination=destination)
-            if children['outbound_gate'] == 'blocked':
-                meta.update(status='failed', reason='细分批次未通过外送安全检查。')
+            try:
+                child_parts = knowledge_batches.children(part, package, target, destination)
+            except ValueError as exc:
+                meta.update(status='failed', reason=str(exc))
                 return False
             if not replay:
                 refinements += 1
             context_splits[batch_id] = target
-            joint_review = True
             meta.update(status='split', reason='容量不足，已自动细分并保留完整证据。')
-            child_metas = [batch_meta(child, f'{path}.{index}') for index, child in enumerate(children['parts'], 1)]
+            child_metas = [batch_meta(child, f'{path}.{index}') for index, child in enumerate(child_parts, 1)]
             position = next(i for i, item in enumerate(batches) if item is meta) + 1
             batches[position:position] = child_metas
-            for child, child_meta in zip(children['parts'], child_metas):
-                child['required_clause_ids'] = sorted(set(child.get('required_clause_ids', [])) |
-                                                    set(part.get('required_clause_ids', [])))
+            for child, child_meta in zip(child_parts, child_metas):
                 if not process(child, child_meta['part_number'], depth + 1, child_meta):
                     return False
             return True
@@ -292,7 +315,7 @@ def analyze(package, prior=None):
         if profile:
             envelope = len(chat_payload(settings, [
                 {'role': 'system', 'content': ANALYSIS_PROMPT},
-                {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
+                {'role': 'user', 'content': json.dumps(wire_payload, ensure_ascii=False)},
             ], temperature=0.2, max_tokens=settings.max_tokens))
             available = profile['planning_context_window'] - profile['output_reserve'] - profile['safety_reserve']
             if envelope > available:
@@ -312,8 +335,8 @@ def analyze(package, prior=None):
             capacity_rejected = False
             try:
                 calls += 1
-                answer, model = _chat_json(ANALYSIS_PROMPT, payload, 'AI 分析未返回有效的材料引用，请重试。')
-            except ContextLengthExceeded:
+                answer, model = _chat_json(ANALYSIS_PROMPT, wire_payload, 'AI 分析未返回有效的材料引用，请重试。')
+            except (ContextLengthExceeded, OutputLengthExceeded):
                 capacity_rejected = True
             except HTTPException as exc:
                 if exc.status_code not in (502, 503):
@@ -515,7 +538,8 @@ def register(app, get_store, get_user, allow):
                 from src.kg_retrieval.common import tax_type
                 task['tax_type']=tax_type(context['rule']['tax_type'])
                 if payload:
-                    package = metrics.build_task_bundle(db, payload, task, body.rule_id, topic=body.topic, token_budget=token_budget, offline=True)
+                    package = metrics.build_task_bundle(db, payload, task, body.rule_id, topic=body.topic, token_budget=token_budget, offline=True,
+                                                        output_tokens=profile['output_reserve'] if body.use_ai else None)
                 else:
                     package = bundle.build(db, task, body.rule_id, {}, topic=body.topic, token_budget=token_budget, offline=True)
             package['batching']['model_context'] = profile

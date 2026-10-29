@@ -117,14 +117,14 @@ def _conditions(context, facts, task):
     return output, exceptions, values, gaps
 
 
-def split_bundle(bundle, token_budget=6000):
+def split_bundle(bundle, token_budget=6000, *, output_tokens=None):
     from .batching import split
-    return split(bundle, token_budget)
+    return split(bundle, token_budget, output_tokens=output_tokens)
 
 
 def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_catalog=(), model_dir=None,
           candidate_limit=20, review_limit=30, token_budget=6000, offline=True, metric_definitions=None, fact_assessment=None,
-          supporting_materials=()):
+          supporting_materials=(), output_tokens=None):
     started = perf_counter()
     task = checked_task(task)
     if not db.in_transaction:
@@ -156,7 +156,16 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
     selected_ids = {row["clause_id"] for row in selected}
     # Required dependencies bypass both route top-k and review_limit.
     required = set(context["required"])
-    closure = relation_search.dependency_closure(db, selected_ids | required)
+    # Converted screens have an explicitly reviewed source basis. Search may
+    # surface other policies, but does not itself establish a rule dependency.
+    reviewed_screen_basis = (rule.get('rule_type') == 'risk_screen' and rule.get('review_status') == 'approved'
+        and all(c.get('condition_source') == 'internal_screening' for c in context['conditions'])
+        and any(e['relation_type'] == 'PROVIDES_CONTEXT' and e['review_status'] == 'approved'
+                and e['from_type'] == 'Clause' and e['to_type'] == 'TaxRule' and e['to_id'] == rule_id
+                for e in context['relationships']))
+    source_bound = bool(required and (rule.get('conversion_json') or reviewed_screen_basis))
+    closure = relation_search.dependency_closure(db, required if source_bound else selected_ids | required)
+    optional_ids = selected_ids - set(closure['clause_ids']) if source_bound else set()
     # Preserve all required, parent and change-chain sources. Only optional
     # retrieval matches with reliable structural boundaries may be excerpted.
     dependency_ids = set(closure['clause_ids']) - selected_ids
@@ -189,7 +198,7 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
     has_reviews = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='PolicyReview'").fetchone()
     source_reviews = ([dict(r) for r in db.execute('SELECT * FROM PolicyReview WHERE coverage_start<=? AND coverage_end>=?',
                                                   (task['period_start'], task['period_end']))] if has_reviews else [])
-    for cid in closure["clause_ids"]:
+    for cid in sorted(set(closure["clause_ids"]) | optional_ids):
         clause, policy = clause_record(db, cid)
         decision = applicability.check(clause, policy, task, closure["relationships"], source_cache=source_cache,
                                        source_root=database_directory(db), source_reviews=source_reviews)
@@ -215,6 +224,14 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
         selection = passages.select(record['text'], matches.get(cid, []),
                                     required=cid in required or bool(record.get('citation_corrections')), dependency=cid in dependency_ids)
         record.update(selection)
+        if cid in optional_ids:
+            if decision['status'] == 'excluded':
+                excluded.append({'clause_id':cid, 'stage':'applicability', 'reasons':decision['reasons']})
+            else:
+                record.update(retrieval_only=True, applicability='needs_review', reasons=[
+                    *decision['reasons'], '检索线索尚未关联为本规则依据，不参与本项检查判定。'])
+                leads.append(record)
+            continue
         if decision["status"] == "excluded":
             excluded.append({"clause_id": cid, "stage": "applicability", "reasons": decision["reasons"]})
             if cid in required:
@@ -292,7 +309,7 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
         bundle["supporting_materials"] = deepcopy(list(supporting_materials))
         core["supporting_materials"] = bundle["supporting_materials"]
     bundle["bundle_id"] = digest(core)
-    bundle["batching"] = split_bundle(bundle, token_budget)
+    bundle["batching"] = split_bundle(bundle, token_budget, output_tokens=output_tokens)
     if bundle["batching"]["unsplittable"]:
         bundle["bundle_status"] = "needs_review"
         bundle["gaps"].append({"code": "budget_unsplittable", "message": "单个完整条款或必要上下文超出预算，保留原文并转复核。"})

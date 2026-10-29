@@ -12,6 +12,51 @@ from src.kg_retrieval import outbound
 from webapp import knowledge_evidence as service
 
 
+class FrozenDeclarationTests(unittest.TestCase):
+    def payload(self):
+        from src.rule_bindings import material_signature
+        task = {'id':'task', 'tenant_id':'org', 'company_id':'company', 'tax_no':TAX,
+                'start_date':'2026-01-01', 'end_date':'2026-12-31', 'applicable_forms':[]}
+        row = {'id':'audit-metric:sales', 'material_type':'business_metric', 'metric_name':'增值税.销售额',
+               'value':'100000', 'unit':'元', 'audit_id':'authorized-audit', 'source_file_id':'audit:authorized-audit',
+               'source_position':'增值税申报!B2', 'field_sources':{'value':{'position':'增值税申报!B2'}},
+               'tenant_id':'org', 'company_id':'company', 'task_id':'task',
+               'period_start':task['start_date'], 'period_end':task['end_date'], 'metric_period':'2026年度'}
+        payload = {'task':task, 'documents':[], 'processing':{'records':[row], 'issues':[], 'status':'ready_for_analysis'}}
+        task['audit_metric_records'] = [deepcopy(row)]
+        task['audit_metric_source_signature'] = material_signature(payload['processing'])
+        return payload
+
+    def values(self):
+        return {'mapping_record_id':'audit-metric:sales', 'form_revision':'年度核对汇总及月度申报底稿',
+                'taxpayer_category':'增值税一般纳税人', 'comparable':True, 'basis':'同一主体全年核对，不含税销售额。'}
+
+    def test_authorized_same_period_declaration_source_can_be_explicitly_selected(self):
+        payload = self.payload()
+        payload['check_reviews'] = {vat.RULE:vat.make_review(payload, self.values(), 'reviewer', 'stamp')}
+        definitions = {
+            vat.INVOICE:{'name':'销项发票不含税金额','unit':'元','source_schema':'Invoice','source_field':'amount_excluding_tax',
+                         'aggregation':'sum','period_basis':'issue_date','source_filter_json':'{}'},
+            vat.DECLARATION:{'name':'申报销售额','unit':'元','source_schema':'VATDeclaration','source_field':'declared_value',
+                             'aggregation':'direct','period_basis':'tax_period','source_filter_json':'{}'}}
+        _, facts, _ = vat.resolve(definitions, payload)
+        self.assertEqual(facts[vat.DECLARATION]['state'], 'known')
+        self.assertEqual(facts[vat.DECLARATION]['value'], '100000')
+        self.assertEqual(facts[vat.DECLARATION]['source_record_ids'], ['audit-metric:sales'])
+        payload['task']['audit_metric_records'][0]['value'] = '999'
+        self.assertFalse(vat.review(payload))
+
+    def test_foreign_stale_or_unfrozen_metric_is_not_a_declaration_source(self):
+        for change in ('foreign','stale','unfrozen','wrong_metric'):
+            payload = self.payload(); row = payload['processing']['records'][0]
+            if change == 'foreign': row['company_id'] = 'other-company'
+            elif change == 'stale': payload['processing']['records'].append({'id':'new', 'material_type':'account_balance'})
+            elif change == 'unfrozen': payload['task'].pop('audit_metric_records')
+            else: row['metric_name'] = '营业收入'
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                vat.make_review(payload, self.values(), 'reviewer', 'stamp')
+
+
 def invoices(rows):
     workbook = load_workbook(BytesIO(book("invoice_detail")))
     sheet = workbook.active
