@@ -4,6 +4,77 @@ const vm = require("node:vm");
 const assert = require("node:assert/strict");
 const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n" + fs.readFileSync("webapp/static/console.js", "utf8");
 
+// Sending consumes the question immediately; delayed answers cannot erase a new draft.
+(async()=>{
+  const source=fs.readFileSync("webapp/static/graph.js","utf8");
+  const code=source.slice(source.indexOf("async function readNodeStream("),source.indexOf("function ragSourceCard("))
+    +source.slice(source.indexOf('$("graphQuestionForm").addEventListener("submit"'),source.indexOf("let graphResizeTimer;"));
+  function setup(mode="rag"){
+    const nodes=new Map();let submit,resolve,reject,stream;
+    const element=(tag,cls,text="")=>({tag,className:cls,textContent:text,value:"",children:[],dataset:{},
+      append(...items){this.children.push(...items);},insertBefore(item,before){this.children.splice(this.children.indexOf(before),0,item);},
+      querySelectorAll(){return [];},addEventListener(type,handler){if(type==="submit")submit=handler;}});
+    const get=id=>{if(!nodes.has(id))nodes.set(id,element("div"));return nodes.get(id);};
+    const request=new Promise((yes,no)=>{resolve=yes;reject=no;});
+    const calls=[];
+    const send=(path,options)=>{calls.push({path,body:JSON.parse(options.body)});return request;};
+    const ctx={$:get,el:element,AbortController,TextDecoder,Uint8Array,currentUser:{id:"owner"},
+      graphSelected:mode==="rag"?null:"rule",graphData:{ai:{configured:true},...(mode==="enterprise"?{audit_id:"audit",taxpayer_id:"company"}:{})},
+      graphRequest:1,graphBusy:false,nodeQuestionKey:"scope",nodeQuestionHistory:[],nodeQuestionController:null,
+      nodeGateLabels:{},graphRagMode:()=>mode==="rag",graphCurrent:(version,owner)=>version===ctx.graphRequest&&owner===ctx.currentUser.id,
+      fetch:send,api:send};
+    vm.createContext(ctx);vm.runInContext(code,ctx);
+    const raw="  增值税进项税额抵扣有哪些规定？  ";get("graphQuestion").value=raw;
+    return {ctx,get,raw,calls,submit:()=>submit({preventDefault(){}}),reject,
+      async context(){
+        resolve({ok:true,headers:new Headers({"content-type":"text/event-stream"}),body:new ReadableStream({start(controller){stream=controller;}})});
+        stream.enqueue(new TextEncoder().encode('data: '+JSON.stringify({type:"context",message:"已检索并读取 13 条公共原文。",manifest:{node_ids:[]}})+'\n\n'));
+        await new Promise(setImmediate);
+      },
+      complete(){if(mode==="enterprise")resolve({answer:"核对原文",citations:[]});else{
+        stream.enqueue(new TextEncoder().encode('data: '+JSON.stringify({type:"done",answer:"核对原文",status:"answerable",citations:[]})+'\n\n'));stream.close();
+      }},fail(){stream.error(new Error("连接中断"));}};
+  }
+  for(const mode of ["rag","node","enterprise"]){
+    const test=setup(mode),pending=test.submit();
+    assert.equal(test.get("graphQuestion").value,"",mode+": clear as soon as the question is sent");
+    assert.equal(test.get("graphMessages").children[0].children[0].textContent,"增值税进项税额抵扣有哪些规定？");
+    assert.equal(test.calls[0].body.question,"增值税进项税额抵扣有哪些规定？");
+    assert.equal(test.calls[0].path,mode==="rag"?"/api/knowledge/rag-ask":mode==="node"?"/api/knowledge/node-ask":"/api/knowledge/ask");
+    if(mode!=="enterprise"){
+      await test.context();assert.equal(test.get("graphQuestion").value,"","Context events must not restore submitted text");
+    }
+    // Even an intentionally retyped identical question is a new draft.
+    test.get("graphQuestion").value="增值税进项税额抵扣有哪些规定？";
+    test.complete();await pending;
+    assert.equal(test.get("graphQuestion").value,"增值税进项税额抵扣有哪些规定？","Completion preserves the next draft");
+    assert.equal(test.ctx.graphBusy,false);assert.equal(test.get("graphStop").hidden,true);
+  }
+  for(const failure of ["request","stream","stop","new-draft","stale"]){
+    const test=setup(),pending=test.submit();
+    if(failure==="request")test.reject(new Error("提问失败"));
+    else{
+      await test.context();
+      if(failure==="new-draft")test.get("graphQuestion").value="下一条问题";
+      if(failure==="stale")test.ctx.currentUser={id:"other"};
+      if(failure==="stop")test.ctx.nodeQuestionController.abort();
+      test.fail();
+    }
+    await pending;
+    assert.equal(test.get("graphQuestion").value,failure==="new-draft"?"下一条问题":failure==="stale"?"":test.raw,
+      failure+": restore failed submissions only in the original, empty composer");
+  }
+  for(const guard of ["empty","busy","missing-node"]){
+    const test=setup(guard==="missing-node"?"node":"rag");
+    if(guard==="empty")test.get("graphQuestion").value="  ";
+    if(guard==="busy")test.ctx.graphBusy=true;
+    if(guard==="missing-node")test.ctx.graphSelected=null;
+    const before=test.get("graphQuestion").value;await test.submit();
+    assert.equal(test.calls.length,0);assert.equal(test.get("graphQuestion").value,before);
+  }
+  console.log("Graph composer: immediate clearing, streamed context, draft preservation, failure recovery and submit guards passed.");
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
 // Roster edits expose current placement and allow explicit repair of legacy duplicates.
 {
   const source = fs.readFileSync("webapp/static/classroom.js", "utf8");
