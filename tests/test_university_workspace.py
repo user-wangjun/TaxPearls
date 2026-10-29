@@ -483,6 +483,28 @@ class UniversityWorkspaceTests(unittest.TestCase):
         self.login(self.business)
         self.assertEqual(self.client.get('/api/training/knowledge/graph?initial=1').status_code, 403)
 
+    def test_enterprise_public_graph_has_the_same_fast_first_neighborhood(self):
+        self.login(self.business)
+        full = self.client.get('/api/knowledge/graph').json()
+        response = self.client.get('/api/knowledge/graph?initial=1')
+        self.assertEqual(response.status_code, 200, response.text)
+        initial = response.json()
+        self.assertTrue(initial.get('partial'), 'Enterprise public view must also use a small first response')
+        root = next(n for n in full['nodes'] if n['kind'] == 'rule')['id']
+        ids = {root}
+        for edge in full['edges']:
+            if edge['source'] == root:
+                ids.add(edge['target'])
+            if edge['target'] == root:
+                ids.add(edge['source'])
+        self.assertEqual(initial['nodes'], [n for n in full['nodes'] if n['id'] in ids])
+        self.assertEqual(initial['edges'], [e for e in full['edges'] if e['source'] in ids and e['target'] in ids])
+        self.assertLess(len(initial['nodes']), len(full['nodes']))
+        self.assertEqual(self.client.get('/api/knowledge/graph?initial=1&taxpayer_id=other').status_code, 422)
+        self.assertEqual(self.client.get('/api/knowledge/graph?initial=1&audit_id=other').status_code, 422)
+        self.client.cookies.clear()
+        self.assertEqual(self.client.get('/api/knowledge/graph?initial=1').status_code, 401)
+
     def test_course_binding_rejects_foreign_same_named_class_without_losing_links(self):
         own = self.client.post('/api/classes', json={'name':'同名班级','student_ids':[]}).json()['id']
         course = self.client.post('/api/training/staff/courses', json={'college':'campus','name':'隔离课程','teacher_id':self.staff_id}).json()['course']['id']

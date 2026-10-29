@@ -1092,7 +1092,9 @@ async def knowledge_rag_ask(body: RAGQuestion, request: Request):
     return await public_node_answer(body, None, identity_reader=reader, rag=True)
 
 
-def _graph_for_user(user, audit_id, taxpayer_id=None):
+def _graph_for_user(user, audit_id, taxpayer_id=None, *, initial=False):
+    if initial and (audit_id is not None or taxpayer_id is not None):
+        raise HTTPException(422, '快速首屏仅用于公共图谱，不能代替企业或审计证据图。')
     if taxpayer_id is not None:
         _allow(user, "org_admin", "accountant", "teacher")
         from webapp.enterprise_graph import read_enterprise_history, build_enterprise_graph
@@ -1106,7 +1108,7 @@ def _graph_for_user(user, audit_id, taxpayer_id=None):
         return {**build_graph([], entry), "schema_version": 1, "view": "frozen_audit_evidence"}
     with store.connect() as db:
         from webapp.knowledge import public_graph
-        return public_graph(db, _effective_rules())
+        return public_graph(db, _effective_rules(), initial=initial)
 
 
 class PolicyBundleBody(BaseModel):
@@ -1246,10 +1248,10 @@ def knowledge_enterprises(session: str | None = Cookie(default=None, alias=COOKI
 
 
 @app.get("/api/knowledge/graph")
-def knowledge_graph(audit_id: str | None = None, taxpayer_id: str | None = None,
+def knowledge_graph(audit_id: str | None = None, taxpayer_id: str | None = None, initial: bool = False,
                     session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
     user = _user(session)
-    graph = _graph_for_user(user, audit_id, taxpayer_id)
+    graph = _graph_for_user(user, audit_id, taxpayer_id, initial=True) if initial else _graph_for_user(user, audit_id, taxpayer_id)
     base, model, _ = ai_config()
     return {**graph, "ai": {"configured": bool(base and model), "model": model}}
 

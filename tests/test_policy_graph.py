@@ -97,6 +97,20 @@ class PolicyGraphTests(unittest.TestCase):
         self.assertTrue(any(e.get("schema_type") == "Relationship" for e in graph["edges"]))
         self.assertFalse(any(n["kind"] in {"company", "risk"} for n in graph["nodes"]))
 
+    def test_sync_of_installed_rule_snapshots_does_not_take_a_write_transaction(self):
+        rules = engine.load_rules(ROOT / 'rules')
+        selected = pg.sync_rules(self.db, rules)
+        self.db.commit()
+        statements = []
+        self.db.set_trace_callback(statements.append)
+        self.assertEqual(pg.sync_rules(self.db, rules), selected)
+        self.assertNotIn('BEGIN IMMEDIATE', statements)
+        self.assertFalse(any(s.startswith(('INSERT', 'UPDATE', 'DELETE')) for s in statements))
+        self.db.commit()
+        changed = replace(rules[0], name=rules[0].name + ' updated')
+        updated = pg.sync_rules(self.db, [changed])
+        self.assertNotEqual(set(updated), {key for key, value in selected.items() if value == changed.id})
+
     def test_candidate_cannot_execute_and_approval_records_reviewer(self):
         self.install()
         self.assertEqual(self.preview()["truth"], "UNKNOWN")

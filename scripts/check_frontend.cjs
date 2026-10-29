@@ -828,6 +828,17 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   assert.equal(graphCtx.$('graphCount').textContent,'graph failure');assert.equal(graphCtx.$('graphSummary').children.length,0);
   const changedOwner=graphCtx.loadKnowledge(),ownerCall=graphCalls.shift();graphCtx.currentUser={id:'other',role:'org_admin'};
   ownerCall.resolve([{taxpayer_id:'private',name:'不可显示的企业',audits:[]}]);await changedOwner;assert.deepEqual(graphCtx.$('graphScope').children,['']);
+  graphCtx.currentUser={id:'business',role:'org_admin',org_type:'enterprise'};
+  const businessFirst=graphCtx.loadGraph(),businessCall=graphCalls.shift();
+  assert.equal(businessCall.url,'/api/knowledge/graph?initial=1','Enterprise public view needs the same fast first response');
+  businessCall.resolve({nodes:[],edges:[],partial:true,ai:{configured:false}});await businessFirst;
+  graphTimers.shift()();const businessFull=graphCtx.ensureGraphComplete(),businessFullCall=graphCalls.shift();
+  assert.equal(businessFullCall.url,'/api/knowledge/graph','Enterprise background loading must not call the university endpoint');
+  businessFullCall.resolve({nodes:[],edges:[],ai:{configured:false}});await businessFull;
+  graphCtx.$('graphScope').value='enterprise-a';
+  const scoped=graphCtx.loadGraph(),scopedCall=graphCalls.shift();
+  assert.equal(scopedCall.url,'/api/knowledge/graph?taxpayer_id=enterprise-a');
+  scopedCall.resolve({nodes:[],edges:[],ai:{configured:false}});await scoped;graphCtx.$('graphScope').value='';
   graphCtx.currentUser={id:'campus',role:'teacher',org_type:'university'};
   const firstPaint=graphCtx.loadGraph();
   const initialCall=graphCalls.shift();
