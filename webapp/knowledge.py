@@ -183,6 +183,11 @@ class ContextLengthExceeded(HTTPException):
         super().__init__(502, '模型明确拒绝了超出上下文容量的请求。')
 
 
+class OutputLengthExceeded(HTTPException):
+    def __init__(self):
+        super().__init__(502, '模型输出已达到容量上限，需细分批次。')
+
+
 def _chat_json(system_prompt, user_payload, failure_message, *, usage='knowledge'):
     settings = SELECTED_SETTINGS.get() or ai_keys.apply(AISettings.from_env(), usage=usage)
     if settings.problem():
@@ -191,7 +196,7 @@ def _chat_json(system_prompt, user_payload, failure_message, *, usage='knowledge
         content = chat_content(settings, [
             {"role":"system", "content":system_prompt},
             {"role":"user", "content":json.dumps(user_payload, ensure_ascii=False)},
-        ], min(settings.timeout, 60), temperature=0.2,
+        ], settings.timeout, temperature=0.2,
            max_tokens=settings.max_tokens if SELECTED_SETTINGS.get() is not None else min(settings.max_tokens, 2048))
         if content.startswith("```"):
             content = content.split("\n", 1)[1].rsplit("```", 1)[0]
@@ -203,7 +208,11 @@ def _chat_json(system_prompt, user_payload, failure_message, *, usage='knowledge
         if exc.kind == 'context_length':
             raise ContextLengthExceeded() from None
         if exc.kind == 'incomplete':
+            if exc.finish_reason == 'length':
+                raise OutputLengthExceeded() from None
             raise HTTPException(502, 'AI 输出未完整结束，可能达到输出上限；已停止本批，请调整输出容量或缩小批次后重试。') from None
+        if exc.kind == 'timeout':
+            raise HTTPException(502, 'AI 服务响应超时，已停止本批；已完成结果会保留，请稍后续跑。') from None
         if exc.kind == "keys_unavailable" or (exc.kind == "http" and exc.status in {401, 402}):
             raise HTTPException(502, "AI 密钥暂不可用（密钥无效或余额不足）；请检查主用及备用密钥和余额。备用列表中的失败密钥五分钟后可重试，重启服务可立即重试。") from None
         raise HTTPException(502, failure_message) from None

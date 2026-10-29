@@ -49,7 +49,7 @@ def report_analysis(slot):
         return ''.join(sentence.strip() for sentence in sentences if not diagnostic.search(sentence))
 
     result = []
-    for claim in ai.get('assessments', []):
+    for claim in (ai.get('batch_summary') or {}).get('assessments', ai.get('assessments', [])):
         text = business_text(claim.get('text'))
         materials = list(dict.fromkeys(value for material in claim.get('required_materials', [])
                                       if (value := business_text(material))))
@@ -261,7 +261,8 @@ def check_result(slot):
     pending = bool(slot.get('stale') or package['bundle_status'] != 'ready' or package.get('gaps')
                    or fact.get('status') != 'FACT_CONFIRMED'
                    or ai and (not ai.get('validated') or ai.get('status') == 'needs_review'
-                              or any(c.get('type') == 'insufficient_evidence' for c in ai.get('assessments', [])))
+                              or any(c.get('type') == 'insufficient_evidence' for c in
+                                     (ai.get('batch_summary') or {}).get('assessments', ai.get('assessments', []))))
                    or risk.get('status') in {'NEEDS_REVIEW', 'NEEDS_MORE_DATA'})
     try:
         amount = Decimal(fact['amount']) if fact.get('amount') is not None else None

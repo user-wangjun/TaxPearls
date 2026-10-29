@@ -368,6 +368,13 @@ function all(root){return [root,...root.children.flatMap(all)];}
   sample.tax_checks={"R-001":recovered};await controller.openTask("task");
   assert.ok(!reviewNodes().some(n=>/分析批次：|容量不足，已自动细分/.test(n.textContent||"")),"successful recovery keeps its batch history out of the business result");
   assert.ok(reviewNodes().some(n=>n.textContent==="R-001 · 分批分析已完成，需综合核实"));
+  recovered.bundle.batching.strategy="category_and_source_v2";
+  recovered.ai.batch_summary={status:"completed",assessments:[{text:"全部批次已联合核对。",required_materials:[]}]};
+  recovered.ai.batch_results=[{assessments:[{text:"第一批保留的证据说明。"}]},{assessments:[{text:"第二批保留的证据说明。"}]}];
+  await controller.openTask("task");
+  assert.ok(!reviewNodes().some(n=>/旧版结果/.test(n.textContent||"")),"output-aware plans are current results");
+  assert.ok(reviewNodes().some(n=>n.textContent==="全部批次已联合核对。"));
+  assert.ok(reviewNodes().some(n=>n.textContent==="各批分析与引用追溯"));
   // Saved statuses must explain the actual blocker without issuing new analysis requests.
   const statusSlot=structuredClone(savedChecks["R-001"]);
   sample.tax_checks={"R-001":statusSlot};

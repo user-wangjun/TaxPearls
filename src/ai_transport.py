@@ -31,11 +31,12 @@ def _cooldown_status(identity, now):
 
 
 class TransportError(ValueError):
-    def __init__(self, kind, status=None, *, attempts=0):
+    def __init__(self, kind, status=None, *, attempts=0, finish_reason=None):
         super().__init__(kind)
         self.kind = kind
         self.status = status
         self.attempts = attempts
+        self.finish_reason = finish_reason
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -133,7 +134,8 @@ def _content(opener, request, timeout):
                       "elapsed_seconds": round(time.monotonic() - started, 3)})
         choice = result["choices"][0]
         if choice.get("finish_reason") != "stop":
-            raise TransportError("incomplete")
+            reason = choice.get('finish_reason')
+            raise TransportError("incomplete", finish_reason=reason if reason in {'length', 'content_filter', 'tool_calls'} else None)
         content = choice["message"]["content"]
         if not isinstance(content, str) or not content.strip():
             raise TransportError("empty")
