@@ -6,7 +6,8 @@ let disposed=false;const requests=new AbortController();
 "use strict";
 
 const state = { student: null, certificates: [], goals: [], kps: [], attempt: null,
-                profile: null, pfCert: null, certQuery: "", certSearch: null, guideCert: null };
+                profile: null, pfCert: null, certQuery: "", certSearch: null, guideCert: null,
+                kpPage: 1, kpPageSize: 10, kpCertificate: null };
 let tutorView = null, tutorRevision = 0, tutorTimer = null;
 
 function resetTutorDialog() {
@@ -301,6 +302,7 @@ function selectPracticeTab(value, focus = false) {
   const index = tabs.findIndex(tab => tab.dataset.practiceTab === value);
   if (index < 0) return;
   practiceTab = value;
+  document.getElementById("practice-new-options").hidden = value !== "new";
   tabs[0].parentElement.style.setProperty("--report-index", index);
   tabs.forEach((tab, position) => {
     const selected = position === index;
@@ -843,7 +845,21 @@ async function refreshPractice() {
 
 function renderKpRows() {
   const box = document.getElementById("pr-kps");
-  box.innerHTML = state.kps.map((k) => {
+  if (state.kpCertificate !== state.prCert) {
+    state.kpCertificate = state.prCert;
+    state.kpPage = 1;
+  }
+  const pages = Math.max(1, Math.ceil(state.kps.length / state.kpPageSize));
+  state.kpPage = Math.max(1, Math.min(state.kpPage, pages));
+  const start = (state.kpPage - 1) * state.kpPageSize;
+  const rows = state.kps.slice(start, start + state.kpPageSize);
+  document.getElementById("pr-kp-page-size").value = String(state.kpPageSize);
+  document.getElementById("pr-kp-page-status").textContent = state.kps.length
+    ? `共 ${state.kps.length} 条 · 第 ${state.kpPage} / ${pages} 页 · 显示 ${start + 1}–${start + rows.length} 条`
+    : "暂无知识点";
+  document.getElementById("pr-kp-prev").disabled = state.kpPage === 1;
+  document.getElementById("pr-kp-next").disabled = state.kpPage === pages;
+  box.innerHTML = rows.map((k) => {
     const rel = k.relations || {};
     const relChips = [
       ...(rel.prerequisite || []).map((t) => `<span class="chip" title="学本知识点前建议先学">前置：${esc(t.name)}</span>`),
@@ -880,7 +896,23 @@ function renderKpRows() {
       ? `<details class="item student-knowledge-item"><summary>${heading}<span class="knowledge-disclosure-label">规则与政策依据</span></summary><p class="muted">供仿真练习参考，具体政策适用请结合原文核对。</p>${knowledge}</details>`
       : `<div class="item">${heading}</div>`;
   }).join("");
+  box.scrollTop = 0;
 }
+
+document.getElementById("pr-kp-page-size").addEventListener("change", (event) => {
+  const size = Number(event.target.value);
+  state.kpPageSize = [10, 20, 50].includes(size) ? size : 10;
+  state.kpPage = 1;
+  renderKpRows();
+});
+document.getElementById("pr-kp-prev").addEventListener("click", () => {
+  state.kpPage--;
+  renderKpRows();
+});
+document.getElementById("pr-kp-next").addEventListener("click", () => {
+  state.kpPage++;
+  renderKpRows();
+});
 
 function renderWrong() {
   const box = document.getElementById("pr-wrong");
