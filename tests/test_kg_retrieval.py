@@ -926,6 +926,71 @@ class CoreReportTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         return task["id"], response.json()
 
+    def budget_limited_check(self):
+        from src.settings import AISettings
+        from webapp import ai_keys
+        # One indivisible structured fact fits the normal input budget but not
+        # the smaller request capacity derived from the selected output limit.
+        with self.store.connect() as db:
+            db.execute("UPDATE Metric SET name=? WHERE metric_id='M01'", ('合成指标名称' * 800,))
+        task = self.task()
+        profile = ai_keys.context_budget(AISettings.from_env(), self.store)
+        profile['output_reserve'] = 1024
+        model, _ = semantic_search.available()
+        gate = {'passed': True, 'model_fingerprints': [model.fingerprint if model else None]}
+        with patch.object(ai_keys, 'context_budget', return_value=profile), \
+             patch.object(service, 'acceptance_gate', return_value=gate), \
+             patch('webapp.knowledge._chat_json') as provider:
+            response = self.client.post('/api/knowledge/retrieve', json={
+                'rule_id': 'R01', 'task_id': task['id'], 'expected_revision': task['revision'],
+                'region_code': 'CN-33', 'use_ai': True})
+            self.assertEqual(response.status_code, 200, response.text)
+            provider.assert_not_called()
+        checked = response.json()
+        self.assertTrue(checked['bundle']['batching']['unsplittable'])
+        self.assertEqual(checked['bundle']['batching']['output_tokens'], 1024)
+        self.assertIn('budget_unsplittable', {g['code'] for g in checked['bundle']['gaps']})
+        self.assertEqual(checked['ai']['status'], 'needs_review')
+        return task['id'], checked
+
+    def test_budget_limited_check_generates_report_with_review_note_and_keeps_policy_guard(self):
+        tid, checked = self.budget_limited_check()
+        base = '/api/enterprise/input-tasks/' + tid
+        with patch.object(service, 'analyze') as analyze, patch('webapp.knowledge._chat_json') as provider:
+            created = self.client.post(base + '/reports', json={'expected_revision': checked['revision']})
+            self.assertEqual(created.status_code, 200, created.text)
+            analyze.assert_not_called()
+            provider.assert_not_called()
+        report = self.client.get(base + '/reports/1?format=json').json()
+        self.assertEqual(report['checks']['R01']['bundle'], checked['bundle'])
+        self.assertEqual(report['checks']['R01']['ai'], checked['ai'])
+        self.assertEqual(report['summary']['needs_review'], 1)
+        html = self.client.get(base + '/reports/1').text
+        self.assertIn('本项自动分析未完成，需人工复核。', html)
+        self.assertNotIn('budget_unsplittable', html)
+        self.assertNotIn('超出预算', html)
+        with self.store.connect() as db:
+            db.execute("UPDATE Policy SET validity_status='unverified' WHERE policy_id='P01'")
+        changed = self.client.post(base + '/reports', json={'expected_revision': checked['revision']})
+        self.assertEqual(changed.status_code, 409, changed.text)
+        self.assertEqual(self.client.get(base + '/reports/1?format=json').json(), report)
+
+    def test_recheck_reuses_budget_limited_result_without_dropping_review_note_or_ai(self):
+        tid, checked = self.budget_limited_check()
+        base = '/api/enterprise/input-tasks/' + tid
+        with patch.object(service, 'analyze') as analyze, patch('webapp.knowledge._chat_json') as provider:
+            response = self.client.post(base + '/recheck', json={'expected_revision': checked['revision']})
+            self.assertEqual(response.status_code, 200, response.text)
+            result = response.json()
+            self.assertEqual(result['revision'], checked['revision'])
+            self.assertEqual(result['changed_rule_ids'], [])
+            self.assertEqual(result['reused_rule_ids'], ['R01'])
+            self.assertEqual(result['tax_checks']['R01']['bundle'], checked['bundle'])
+            self.assertEqual(result['tax_checks']['R01']['ai'], checked['ai'])
+            self.assertEqual(result['external_api_calls'], 0)
+            analyze.assert_not_called()
+            provider.assert_not_called()
+
     def test_report_preserves_validated_multibatch_ai_without_recalling_provider(self):
         original = metrics.build_task_bundle
         def multipart(*args, **kwargs):
