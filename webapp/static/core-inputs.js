@@ -589,7 +589,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   function renderChecks(){
     const root=$("coreCheckResult");root.replaceChildren();
     const scope=JSON.stringify([user()?.id,current?.id]);if(scope!==checkFoldScope){checkFolds.clear();checkFoldScope=scope;checkPage=0;}
-    const progress=checkProgress?.id===current?.id&&(!checkProgress.complete||checkProgress.revision===current?.revision)?checkProgress:null,checks=Object.values(current?.tax_checks||{}).filter(slot=>slot.bundle);
+    const progress=current&&checkProgress&&checkProgress.id===current.id&&(!checkProgress.complete||checkProgress.revision===current.revision)?checkProgress:null,checks=Object.values(current?.tax_checks||{}).filter(slot=>slot.bundle);
     const pages=Math.max(1,Math.ceil(checks.length/CHECK_PAGE_SIZE));checkPage=Math.max(0,Math.min(checkPage,pages-1));
     root.hidden=!progress&&!checks.length;if(root.hidden)return;
     root.append(el("h3","",progress?.error?"检查未完成":progress&&!progress.complete?"正在检查":"检查结果"));

@@ -87,6 +87,16 @@ function all(root){return [root,...root.children.flatMap(all)];}
   const context={document:{createElement:tag=>new Node(tag)},Blob,setTimeout:(fn,ms)=>timeoutAI&&ms===300000?(queueMicrotask(fn),0):setTimeout(fn,ms),clearTimeout,AbortController,console,FormData,XMLHttpRequest:UploadRequest,addEventListener:(event,fn)=>pageEvents[event]=fn};vm.createContext(context);vm.runInContext(fs.readFileSync("webapp/static/core-inputs.js","utf8"),context);
   const controller=context.createCoreInputs({api,el:(tag,cls,text)=>{const n=new Node(tag);n.className=cls||"";n.textContent=text||"";return n;},$,user:()=>actor,showError:msg=>errors.push(msg),continueCheck:id=>continued.push(id)});
   await controller.refresh();assert.equal($("coreClient").children.length,2);
+  // A task loaded in this session has no in-memory check progress, even if it has saved results.
+  await controller.openTask("task");await Promise.resolve();
+  const deleteErrors=errors.length;
+  const deleteUnrun=all($("coreTaskResult")).find(n=>n.textContent==="删除本次任务").onclick();
+  $("coreDeleteConfirm").onclick();await deleteUnrun;
+  assert.deepEqual(errors.slice(deleteErrors),[],"successful deletion without check progress must not show an error");
+  assert.equal($("coreTaskResult").children.length,0);assert.equal($("coreCheckResult").hidden,true);
+  assert.equal($("coreCompanyName").value,"");assert.equal($("coreTaskForm").disabled,false);
+  assert.equal(calls.at(-1).url,"/api/enterprise/input-tasks","successful deletion refreshes task history");
+  assert.equal(calls.at(-1).options,undefined);
   $("coreClient").value="existing";$("coreClient").onchange();assert.equal($("coreCompanyName").value,"历史企业");assert.equal($("coreTaxNo").value,"91310000123456789A");
   $("coreClient").value="";$("coreClient").onchange();assert.equal($("coreTaxNo").value,"");assert.equal($("coreTaxNo")["aria-invalid"],"false");
   const chooseKind=kind=>{$("coreRangeKind").value=kind;$("coreRangeKind").listeners.change();};
@@ -579,7 +589,11 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.equal(typeof $("coreDeleteDialog").listeners.keydown,"function");$("coreDeleteDialog").listeners.keydown({key:"Tab",target:$("coreDeleteConfirm"),preventDefault(){}});assert.equal($("coreDeleteCancel").focused,true);
   $("coreDeleteCancel").onclick();await cancelDelete;assert.equal(calls.length,beforeDelete,"cancel does not send DELETE");
   failDelete=true;const failedDelete=find("删除本次任务").onclick();$("coreDeleteConfirm").onclick();await failedDelete;assert.match(errors.at(-1),/删除失败/);assert.ok(find("删除本次任务"));assert.equal($("coreCompanyName").value,"企业");
-  failDelete=false;const confirmedDelete=find("删除本次任务").onclick();$("coreDeleteConfirm").onclick();await confirmedDelete;
+  assert.ok(Object.keys(sample.tax_checks).length,"the loaded task has saved check results");
+  failDelete=false;const savedCheckDeleteErrors=errors.length,confirmedDelete=find("删除本次任务").onclick();$("coreDeleteConfirm").onclick();await confirmedDelete;
+  assert.deepEqual(errors.slice(savedCheckDeleteErrors),[],"deleting a loaded task with saved results must not show an error");
+  assert.equal($("coreCheckResult").hidden,true);assert.equal($("coreCheckResult").children.length,0);
+  assert.equal(calls.at(-1).url,"/api/enterprise/input-tasks");assert.equal(calls.at(-1).options,undefined);
   const deletion=calls.findLast(c=>c.options?.method==="DELETE");assert.equal(deletion.url,"/api/enterprise/input-tasks/task");assert.deepEqual(JSON.parse(deletion.options.body),{expected_revision:sample.revision,confirm:true});
   assert.equal($("coreTaskResult").children.length,0);assert.equal($("coreCompanyName").value,"");assert.equal($("coreStart").value,"");
   await controller.openTask("task");let finishDelete;delay=new Promise(resolve=>finishDelete=resolve);
