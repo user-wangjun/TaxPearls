@@ -1,6 +1,7 @@
 """Teacher-only rule-driven case creation; no provider or real-data input."""
 from __future__ import annotations
 
+import secrets
 from typing import Literal
 
 from fastapi import Cookie, HTTPException, Query
@@ -16,7 +17,7 @@ class GenerateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rule_id: str = Field(pattern=r"^R-\d{3}$")
     expected_version: str = Field(min_length=1,max_length=32)
-    seed: int = Field(default=1,ge=0,le=2147483647,strict=True)
+    seed: int = Field(default_factory=lambda: secrets.randbelow(2147483648),ge=0,le=2147483647,strict=True)
     level: Literal["near","normal","obvious"] = "normal"
     year: int = Field(default=2026,ge=2000,le=2099,strict=True)
 

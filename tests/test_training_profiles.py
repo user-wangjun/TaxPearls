@@ -231,7 +231,15 @@ class TrainingProfileTests(unittest.TestCase):
         self.lesson([self.hit], '2026-01-02T00:00:00+00:00', class_id=None)
         other_teacher = self.person('second-teacher', 'teacher')
         self.login(other_teacher)
-        other_class = self.client.post('/api/classes', json={'name': '另一班', 'student_ids': [self.student['id']]}).json()['id']
+        duplicate = self.client.post('/api/classes', json={'name': '另一班', 'student_ids': [self.student['id']]})
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        created = self.client.post('/api/classes', json={'name': '另一班', 'student_ids': []})
+        self.assertEqual(created.status_code, 200, created.text)
+        other_class = created.json()['id']
+        # Historical duplicate memberships must still respect teacher/profile scope;
+        # the current API intentionally prevents creating this legacy state.
+        with self.store.connect() as db:
+            db.execute('INSERT INTO training_class_members VALUES (?,?)', (other_class, self.student['id']))
         entry = self.store.get_audit(self.audit)
         other_audit = 'other-teacher-audit'
         self.store.save_audit(other_audit, other_teacher, None, entry['dataset'], entry['findings'], entry['summary'], entry['audited_at'])

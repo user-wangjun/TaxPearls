@@ -19,6 +19,8 @@
 """
 from __future__ import annotations
 
+from webapp.training_content import public_content_operator
+
 import sqlite3
 import uuid
 from functools import wraps
@@ -207,14 +209,14 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/certificates/{cert_id}/outline-upgrade/start")
     @guarded
     def outline_start(cert_id: str, body: OutlineUpgradeStart,
-                      session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                      session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"upgrade": start_upgrade(store_provider(), who, cert_id,
                                                   to_version=body.to_version, note=body.note)})
 
     @app.post("/api/training/staff/certificates/{cert_id}/outline-upgrade/activate")
     @guarded
     def outline_activate(cert_id: str,
-                         session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                         session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"upgrade": activate_upgrade(store_provider(), who, cert_id)})

@@ -202,7 +202,15 @@ class TrainingStatisticsTests(unittest.TestCase):
         public = self.assignment(class_id=None)
         self.submit(public, self.students[0], [self.hit])
         self.login(self.teacher)
-        other = self.client.post('/api/classes', json={'name': '其他班', 'student_ids': [self.students[0]['id']]}).json()['id']
+        duplicate = self.client.post('/api/classes', json={'name': '其他班', 'student_ids': [self.students[0]['id']]})
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        created = self.client.post('/api/classes', json={'name': '其他班', 'student_ids': []})
+        self.assertEqual(created.status_code, 200, created.text)
+        other = created.json()['id']
+        # Preserve coverage of historical duplicate rosters without bypassing
+        # the new-membership guard in the production API.
+        with self.store.connect() as db:
+            db.execute('INSERT INTO training_class_members VALUES (?,?)', (other, self.students[0]['id']))
         aid = self.assignment(class_id=other)
         self.submit(aid, self.students[0], [self.hit])
         self.assignment(published=False)

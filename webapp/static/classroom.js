@@ -39,6 +39,12 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     catch (error) { if (getUser()?.id === uid) showError(error.message); }
     finally { if (getUser()?.id === uid) { button.disabled = false; if (fieldset) fieldset.disabled = false; } }
   }
+  function personName(person, peers = []) {
+    const name = (person.display_name || person.name || person.username || "").trim();
+    const duplicate = peers.some(other => other.id !== person.id
+      && (other.display_name || other.name || other.username || "").trim() === name);
+    return duplicate && person.username ? `${name}（${person.username}）` : name;
+  }
   function roster(preserve = false) {
     const box = $("classRoster");
     const included = new Set(preserve ? [...box.querySelectorAll("input:checked")].map(n=>n.value) : editingClass?.students.map(s => s.id) || []);
@@ -49,7 +55,15 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     for (const person of people.values()) {
       const label = el("label"), check = el("input"); check.type = "checkbox"; check.value = person.id;
       check.checked = included.has(person.id);
-      label.append(check, document.createTextNode(` ${person.display_name}（${person.username}）`)); box.append(label);
+      const assigned = person.classes || [];
+      const elsewhere = assigned.filter(c => c.id !== editingClass?.id);
+      const existingMember = editingClass?.students.some(s => s.id === person.id);
+      check.disabled = elsewhere.length > 0 && !existingMember;
+      if (check.disabled) check.checked = false;
+      const names = assigned.map(c => c.name).join("、");
+      const hint = elsewhere.length
+        ? (existingMember ? "；存在重复绑定，可取消勾选移出本班" : "；请先从原班级移出") : "";
+      label.append(check, document.createTextNode(` ${personName(person, [...people.values()])}${names ? ` · 已在：${names}${hint}` : " · 未分班"}`)); box.append(label);
     }
     if (!people.size) box.append(el("p", "muted", "暂无有效学生账号；需先由管理员创建账号。空班级不会自动公开作业。"));
   }
@@ -57,7 +71,7 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     const selected = data.classes.find(c => c.id === $("classEditor").value);
     editingClass = selected ? {...selected} : null;
     $("className").value = selected?.name || "";
-    $("classEditStatus").textContent = selected ? `编辑名册 v${selected.revision}；移出成员会撤回其班级作业访问，历史提交仍保留。` : "新建班级：可先保存空班级，再编辑名册。";
+    $("classEditStatus").textContent = selected ? `编辑名册 v${selected.revision}；移出成员会撤回其班级作业访问，历史提交仍保留。调班请先从原班级移出，再加入新班级。` : "新建班级：可先保存空班级；已有班级的学生须先从原班级移出。";
     roster();
   }
   $("classEditor").onchange = editClass;
@@ -190,7 +204,8 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     const group = data.classes.find(c => c.id === $("profileClass").value);
     const active = new Set(data.students.map(s => s.id));
     if (resetSelection) $("profileStudent").value = "";
-    fillSelect("profileStudent", [["", "请选择学生"], ...(group?.students || []).filter(s => active.has(s.id)).map(s => [s.id, `${s.display_name}（${s.username}）`])], "");
+    const people = (group?.students || []).filter(s => active.has(s.id));
+    fillSelect("profileStudent", [["", "请选择学生"], ...people.map(s => [s.id, personName(s, people)])], "");
   }
   function profileChart(points, category) {
     const wrap = el("div", "training-stats-scroll profile-chart");

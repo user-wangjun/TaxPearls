@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+from webapp.training_content import public_content_operator
+
 import json
 import sqlite3
 import uuid
@@ -509,8 +511,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/teaching/units")
     @guarded
     def units_create(body: UnitCreate,
-                     session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                     session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         unit = create_unit(store_provider(), who, body.certificate_id, name=body.name,
                            stage=body.stage, standard=body.standard,
                            knowledge_point_ids=body.knowledge_point_ids,
@@ -521,8 +523,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.put("/api/training/teaching/units/{unit_id}")
     @guarded
     def units_update(unit_id: str, body: UnitUpdate,
-                     session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                     session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         unit = update_unit(store_provider(), who, unit_id, name=body.name, stage=body.stage,
                            standard=body.standard, knowledge_point_ids=body.knowledge_point_ids,
                            rule_codes=body.rule_codes, deliverables=body.deliverables,
@@ -540,8 +542,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/teaching/cases")
     @guarded
     def cases_create(body: CaseCreate,
-                     session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                     session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         case = create_case(store_provider(), who, body.certificate_id, name=body.name,
                            unit_id=body.unit_id, scenario=body.scenario,
                            rule_codes=body.rule_codes, materials=body.materials,
@@ -552,8 +554,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.put("/api/training/teaching/cases/{case_id}")
     @guarded
     def cases_update(case_id: str, body: CaseUpdate,
-                     session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                     session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         case = update_case(store_provider(), who, case_id, name=body.name,
                            unit_id=body.unit_id, scenario=body.scenario,
                            rule_codes=body.rule_codes, materials=body.materials,

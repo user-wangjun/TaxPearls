@@ -134,13 +134,27 @@ def owned_class(db, class_id, user):
     return dict(row)
 
 
-def validate_students(db, student_ids, org_id):
+def validate_students(db, student_ids, org_id, class_id=None):
     if len(set(student_ids)) != len(student_ids):
         raise ClassroomError("名册不能重复添加同一学生。")
     for sid in student_ids:
         row = db.execute("SELECT role,org_id,active FROM users WHERE id=?", (sid,)).fetchone()
         if not row or row["role"] != "student" or row["org_id"] != org_id or not row["active"]:
             raise ClassroomError("名册只能选择本机构的有效学生账号。")
+        # Existing duplicate memberships can be removed without rewriting history.
+        # Only new memberships are blocked; the caller holds BEGIN IMMEDIATE.
+        if class_id and db.execute(
+                "SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?",
+                (class_id, sid)).fetchone():
+            continue
+        assigned = db.execute("""SELECT c.name FROM training_class_members m
+            JOIN training_classes c ON c.id=m.class_id
+            WHERE m.student_id=? AND c.org_id=? ORDER BY c.created_at,c.id LIMIT 1""",
+            (sid, org_id)).fetchone()
+        if assigned:
+            person = db.execute("SELECT display_name FROM users WHERE id=?", (sid,)).fetchone()
+            raise ClassroomError(f"学生“{person['display_name']}”已在“{assigned['name']}”，"
+                                 "请先从原班级移出，再加入新班级；历史提交会保留。", 409)
 
 
 def set_assignment_settings(db, assignment_id, user, class_id=None, deadline_at=None,
@@ -207,9 +221,17 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
     @app.get("/api/classes/students")
     def students(session: str | None = Cookie(default=None,alias=cookie_name)):
         who = user(session,True)
-        return response([{k:person[k] for k in ('id','username','display_name')}
-                         for person in store_provider().list_users(who['org_id'], actor=who)
-                         if person['role']=='student' and person['active']])
+        people = [{k:person[k] for k in ('id','username','display_name')}
+                  for person in store_provider().list_users(who['org_id'], actor=who)
+                  if person['role']=='student' and person['active']]
+        with store_provider().connect() as db:
+            current_actor(db, who, {'teacher'})
+            memberships = {}
+            for row in db.execute("""SELECT m.student_id,c.id,c.name FROM training_class_members m
+                    JOIN training_classes c ON c.id=m.class_id WHERE c.org_id=? ORDER BY c.created_at,c.id""",
+                    (who['org_id'],)):
+                memberships.setdefault(row['student_id'], []).append({'id':row['id'], 'name':row['name']})
+        return response([person | {'classes':memberships.get(person['id'], [])} for person in people])
 
     @app.get("/api/classes")
     def classes(session: str | None = Cookie(default=None,alias=cookie_name)):
@@ -293,7 +315,7 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
                 item=owned_class(db,class_id,who)
                 if item['revision']!=body.revision:
                     raise ClassroomError("班级名册已变化，请刷新后重试。",409)
-                validate_students(db,body.student_ids,who['org_id'])
+                validate_students(db,body.student_ids,who['org_id'],class_id)
                 db.execute("UPDATE training_classes SET name=?,revision=revision+1 WHERE id=?",(clean_title(body.name),class_id))
                 db.execute("DELETE FROM training_class_members WHERE class_id=?",(class_id,))
                 db.executemany("INSERT INTO training_class_members VALUES (?,?)",[(class_id,s) for s in body.student_ids])

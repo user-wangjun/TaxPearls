@@ -135,10 +135,10 @@ def ensure_active_version(db, cert_id: str, rules: list[Any]) -> Any:
     active = resolve_active_version(db, cert_id)
     if active:
         if not active['rules_snapshot_json']:
-            raise _portal_error("当前教学版本缺少规则快照，请教师发布新版本后再开始练习。", 409)
+            raise _portal_error("当前教学版本缺少规则快照，请联系平台更新教学资源后再开始练习。", 409)
         return active
     if db.execute('SELECT 1 FROM training_content_version WHERE certificate_id=?', (cert_id,)).fetchone():
-        raise _portal_error("当前证书没有启用的教学版本，请教师发布新版本后再开始练习。", 409)
+        raise _portal_error("当前证书没有启用的教学版本，请联系平台更新教学资源后再开始练习。", 409)
     rule_ids = linked_rule_ids(db, cert_id)
     snapshot = json.dumps([asdict(r) for r in sorted(rules, key=lambda r: r.id)],
                           ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
@@ -197,7 +197,7 @@ def update_status(db, version, rules):
     return {'pending': pending, 'changed_rule_ids': changed,
             'added_rule_ids': sorted(linked - covered), 'removed_rule_ids': sorted(covered - linked),
             'evidence_changed': evidence_changed,
-            'notice': ('公共知识或课程关联已有更新；当前练习继续使用已发布版本。请核对后发布新教学版本。'
+            'notice': ('公共知识或课程关联已有更新；当前练习继续使用已发布版本。平台将在核对后更新教学资源。'
                        if pending else None)}
 
 
@@ -308,6 +308,22 @@ class VersionCreate(BaseModel):
     rule_ids: list[str] | None = None
 
 
+def public_content_operator(store, session):
+    """Public teaching content belongs to platform maintenance, not school staff."""
+    user = store.user_for_token(session)
+    if not user:
+        raise HTTPException(401, "公共教学内容由平台统一维护，请使用平台管理员账号。")
+    if user["role"] != "platform_admin":
+        raise HTTPException(403, "公共教学内容由平台统一维护，教师和高校管理员仅可选用。")
+    from webapp.access import current_actor
+    with store.connect() as db:
+        current_actor(db, user, {"platform_admin"})
+    store.log(user, "access_public_teaching_maintenance", "teaching_content", "shared")
+    # Legacy author columns reference college_user, so platform attribution stays
+    # in the platform audit log rather than inventing a teaching identity.
+    return {"id": None, "platform_user_id": user["id"]}
+
+
 def register(app, store_provider: Callable[[], Any]) -> None:
     # 延迟导入：本模块被 training_portal 顶层引用，不能反向在模块级导入它。
     from webapp.training_portal import STAFF_COOKIE, TrainingPortalError, staff_for_token
@@ -342,8 +358,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/certificates/{cert_id}/content-versions")
     @guarded
     def staff_version_create(cert_id: str, body: VersionCreate,
-                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                             session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"content_version": create_version(
             store_provider(), who, cert_id, label=body.label, source_type=body.source_type,
             year=body.year, source_ref=body.source_ref, note=body.note, rule_ids=body.rule_ids)})
@@ -351,6 +367,6 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/content-versions/{version_id}/retire")
     @guarded
     def staff_version_retire(version_id: str,
-                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                             session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"content_version": retire_version(store_provider(), who, version_id)})

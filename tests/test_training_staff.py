@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import auth_support
+
 import tempfile
 import subprocess
 import unittest
@@ -66,7 +68,12 @@ class TrainingStaffTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.text)
         return res
 
+    def _content_login(self):
+        self._staff_login()
+        auth_support.content_session(self.store, self.client)
+
     def _student_login(self):
+        self.client.cookies.delete("taxpearls_session")
         res = self.client.post("/api/training/auth/login", json={
             "student_no": "2026001", "password": "study-pass", "college": "示例大学"})
         self.assertEqual(res.status_code, 200, res.text)
@@ -260,7 +267,11 @@ class TrainingStaffTests(unittest.TestCase):
         staff_page = Containers()
         self._staff_login()
         staff_page.feed((STATIC_DIR/"training-staff.html").read_text(encoding="utf-8"))
-        self.assertEqual(staff_page.nodes["new-cert-btn"][0].get("data-act"), "new-cert-btn")
+        self.assertIn("cert-select", staff_page.nodes)
+        self.assertIn("cert-summary", staff_page.nodes)
+        for removed in ("new-cert-btn", "cert-form", "auth-card", "bank-card", "outline-card",
+                        "kf-code", "unit-form", "case-form", "mark-stats"):
+            self.assertNotIn(removed, staff_page.nodes)
         for field in ("sf-college", "si-college", "cf2-college", "cm-college", "ti-college"):
             attrs = staff_page.nodes[field][0]
             self.assertIn("readonly", attrs)
@@ -324,10 +335,131 @@ async function click(container, dataset) {
                                 capture_output=True, text=True, encoding="utf-8", timeout=20)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_staff_actions_report_request_failures(self):
+        script = r"""
+const fs = require('node:fs'), vm = require('node:vm'), assert = require('node:assert/strict');
+const nodes = new Map(), requests = [], notices = [];
+function node(id) {
+  if (!nodes.has(id)) nodes.set(id, {id, listeners: {}, value: '测试名称', dataset: {v: '1'},
+    hidden: true, innerHTML: '', textContent: '', checked: false,
+    addEventListener(kind, fn) { this.listeners[kind] = fn; }});
+  return nodes.get(id);
+}
+const ctx = {disposed: false, embedded: true,
+  window: {universityWorkspace: {notify: (...args) => notices.push(args)}},
+  document: {getElementById: node, querySelector: node, querySelectorAll() { return []; }},
+  setTimeout() {}};
+vm.createContext(ctx);
+const source = fs.readFileSync('webapp/static/training-staff.js', 'utf8');
+const controller = source.split('/* controller body */')[1].split('/* controller end */')[0];
+vm.runInContext(controller.slice(0, controller.lastIndexOf('const ready=boot();')), ctx);
+vm.runInContext("state.staff={college:'测试大学',role:'admin'};", ctx);
+let failure = '仅实训管理员可维护组织架构', reloads = 0;
+ctx.api = async path => { requests.push(path); if (failure) throw new Error(failure); return {}; };
+ctx.loadOrg = async () => { reloads++; };
+async function click(act) {
+  const btn = {dataset: {act, id: 'entity'}, closest() { return this; }};
+  await node('app-view').listeners.click({target: btn});
+}
+(async () => {
+  for (const act of ['org-dep-create', 'org-dep-toggle', 'org-term-create',
+                     'org-term-current', 'org-term-toggle', 'org-class-toggle']) {
+    const before = notices.length;
+    await click(act);
+    assert.equal(notices.length, before + 1, act + ' must report a rejected request');
+    assert.deepEqual(notices.at(-1), [failure, true]);
+  }
+  assert.equal(requests.length, 6);
+  assert.equal(reloads, 0, 'Rejected writes must not continue with a success refresh');
+  failure = '';
+  await click('org-dep-toggle');
+  assert.equal(reloads, 1, 'Successful actions must still refresh');
+  await click('cancel-course-form');
+  assert.equal(node('#course-form').hidden, true, 'Synchronous form controls still work');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        result = subprocess.run(["node", "-e", script], cwd=Path(__file__).resolve().parents[1],
+                                capture_output=True, text=True, encoding="utf-8", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_public_content_requires_platform_maintenance(self):
+        from webapp import training_content, training_source_auth, training_graph, training_outline, teaching_units
+        for module in (training_content, training_source_auth, training_graph, training_outline, teaching_units):
+            module.register(self.client.app, lambda: self.store)
+        self._staff_login()
+        cert = f"/api/training/staff/certificates/{self.cert}"
+        writes = [
+            ("POST", "/api/training/staff/certificates", {"code": "new", "name": "公共证书"}),
+            ("PATCH", cert, {"name": "不应被修改"}),
+            ("POST", cert + "/dates", {"date_type": "official", "exam_date": _future()}),
+            ("DELETE", "/api/training/staff/dates/missing", None),
+            ("POST", cert + "/knowledge-points", {"code": "KP", "name": "公共知识点"}),
+            ("PATCH", "/api/training/staff/knowledge-points/missing", {"name": "修改"}),
+            ("POST", cert + "/knowledge-points/import", {"text": "code,name\nKP,知识点", "format": "csv"}),
+            ("POST", "/api/training/staff/knowledge-points/missing/marks", {"mark_type": "risk_context"}),
+            ("DELETE", "/api/training/staff/marks/missing", None),
+            ("POST", "/api/training/staff/knowledge-points/missing/links", {"target_type": "rule", "target_id": "R-002"}),
+            ("DELETE", "/api/training/staff/links/missing", None),
+            ("POST", "/api/training/staff/knowledge-points/missing/relations", {"to_kp_id": "target", "relation_type": "concept"}),
+            ("DELETE", "/api/training/staff/relations/missing", None),
+            ("POST", cert + "/content-versions", {"label": "新版", "source_ref": "来源"}),
+            ("POST", "/api/training/staff/content-versions/missing/retire", None),
+            ("POST", cert + "/source-authorizations", {"licensor": "发布方", "auth_no": "TEST", "question_types": ["real"], "valid_from": "2026-01-01"}),
+            ("POST", cert + "/bank-questions", {"questions": [{}]}),
+            ("POST", "/api/training/staff/bank-questions/missing/review", {"decision": "approve"}),
+            ("POST", cert + "/outline-upgrade/start", {"to_version": "2027"}),
+            ("POST", cert + "/outline-upgrade/activate", None),
+            ("POST", "/api/training/teaching/units", {"certificate_id": self.cert, "name": "公共单元", "stage": "data", "rule_codes": ["R-002"]}),
+            ("POST", "/api/training/teaching/cases", {"certificate_id": self.cert, "name": "公共案例", "scenario": "情境", "rule_codes": ["R-002"]}),
+        ]
+        # A legacy school administrator session alone cannot maintain shared content.
+        for method, path, body in writes:
+            result = self.client.request(method, path, json=body) if body is not None else self.client.request(method, path)
+            self.assertEqual(result.status_code, 401, (path, result.text))
+        user = self.store.create_user("school-owner", "CampusOwner-2026!", "高校管理员", "org_admin", "campus")
+        self.client.cookies.set("taxpearls_session", self.store.authenticate(user["username"], "CampusOwner-2026!")[1])
+        for method, path, body in writes:
+            result = self.client.request(method, path, json=body) if body is not None else self.client.request(method, path)
+            self.assertEqual(result.status_code, 403, (path, result.text))
+        self.assertEqual(self.client.get(cert + "/knowledge-points").status_code, 200)
+        self.assertEqual(self.client.get("/api/training/staff/certificates").json()["certificates"][0]["name"], "初级会计职称")
+        # Platform maintenance works without creating a fictitious teacher identity.
+        auth_support.content_session(self.store, self.client)
+        self.client.cookies.delete("taxpearls_staff_session")
+        result = self.client.post(cert + "/dates", json={"date_type": "official", "exam_date": _future(90)})
+        self.assertEqual(result.status_code, 200, result.text)
+        with self.store.connect() as db:
+            self.assertIsNone(db.execute("SELECT created_by FROM exam_date WHERE id=?", (result.json()["exam_date"]["id"],)).fetchone()[0])
+            self.assertGreater(db.execute("SELECT count(*) FROM audit_log WHERE action='access_public_teaching_maintenance'").fetchone()[0], 0)
+
+    def test_teacher_resource_rendering_omits_maintenance_metadata(self):
+        script = r"""
+const fs=require('node:fs'), vm=require('node:vm'), assert=require('node:assert/strict');
+const nodes=new Map();
+const node=id=>{if(!nodes.has(id))nodes.set(id,{innerHTML:'',value:'',addEventListener(){}});return nodes.get(id);};
+const ctx={document:{getElementById:node},URL}; vm.createContext(ctx);
+const source=fs.readFileSync('webapp/static/training-staff.js','utf8');
+const body=source.split('/* controller body */')[1].split('/* controller end */')[0];
+vm.runInContext(body.slice(0,body.lastIndexOf('const ready=boot();')),ctx);
+vm.runInContext(`state.certificates=[{id:'cert',name:'税务师职业资格',code:'tax-adviser',subjects:['财务与会计'],description:'按科目组织实训。',source_ref:'https://example.com/notice',exam_dates:[]}];
+state.currentId='cert';state.kps=[{id:'point',name:'财务报表与会计勾稽',code:'KB-ACCOUNTING',subject:'财务与会计',source_ref:'internal/path',outline_version:'2026科目分类 / 规则仿真 f9b2bd5f0784',description:'核对报表项目。'}];
+renderAll();`,ctx);
+const html=[...nodes.values()].map(n=>n.innerHTML).join('');
+assert.match(html,/财务报表与会计勾稽/);assert.match(html,/财务与会计/);assert.match(html,/查看发布来源/);
+assert.doesNotMatch(html,/f9b2bd5f0784|KB-ACCOUNTING|tax-adviser|internal\/path|<input|<textarea|data-act=/);
+vm.runInContext(`state.certificates[0].source_ref='javascript:alert(1)';renderCertForm();`,ctx);
+assert.doesNotMatch(node('cert-summary').innerHTML,/javascript:|<a /);
+vm.runInContext(`state.certificates=[];state.currentId=null;state.kps=[];renderAll();`,ctx);
+assert.match(node('cert-summary').innerHTML,/暂无可用教学资源/);
+"""
+        result = subprocess.run(["node", "-e", script], cwd=Path(__file__).resolve().parents[1],
+                                capture_output=True, text=True, encoding="utf-8", timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     # ---- 证书上架（FR-K01）---------------------------------------------
 
     def test_certificate_create_duplicate_and_toggle(self):
-        self._staff_login()
+        self._content_login()
         res = self.client.post("/api/training/staff/certificates", json={
             "code": "cns", "name": "纳税实务证书", "subjects": ["纳税实务", "税法", "税法 "],
             "description": "测试证书", "source_ref": "依据 X"})
@@ -351,7 +483,7 @@ async function click(container, dataset) {
     # ---- 官方日期录入（FR-K02）-----------------------------------------
 
     def test_exam_date_crud_and_reference_protection(self):
-        self._staff_login()
+        self._content_login()
         ok = self.client.post(f"/api/training/staff/certificates/{self.cert}/dates", json={
             "date_type": "official", "exam_date": _future(30), "round_label": "2026年加考"})
         self.assertEqual(ok.status_code, 200, ok.text)
@@ -367,7 +499,7 @@ async function click(container, dataset) {
         goal = self.client.post("/api/training/my/goals", json={
             "certificate_id": self.cert, "official_date_id": date_id})
         self.assertEqual(goal.status_code, 200)
-        self._staff_login()
+        self._content_login()
         blocked = self.client.delete(f"/api/training/staff/dates/{date_id}")
         self.assertEqual(blocked.status_code, 409)
         self.assertIn("引用", blocked.json()["detail"])
@@ -386,7 +518,7 @@ async function click(container, dataset) {
         return res
 
     def test_knowledge_point_crud_and_guards(self):
-        self._staff_login()
+        self._content_login()
         root = self._make_kp(self.cert, "KP-01", "会计概述")
         self.assertEqual(root.status_code, 200, root.text)
         root_id = root.json()["knowledge_point"]["id"]
@@ -415,7 +547,7 @@ async function click(container, dataset) {
     # ---- 三类标注（FR-K04）---------------------------------------------
 
     def test_marks_require_basis_for_high_freq(self):
-        self._staff_login()
+        self._content_login()
         root_id = self._make_kp(self.cert, "KP-02", "收入确认").json()["knowledge_point"]["id"]
         no_basis = self.client.post(f"/api/training/staff/knowledge-points/{root_id}/marks", json={
             "mark_type": "high_freq"})

@@ -10,10 +10,17 @@
     return node;
   };
   const button = (label, act, cls = "", key = "ac") => {
-    const node = el("button", cls, label);
+    const classes = new Set(["btn", "ac-button", ...cls.split(/\s+/).filter(Boolean)]);
+    if (!classes.has("pdf")) classes.add("re");
+    const node = el("button", [...classes].join(" "), label);
     node.type = "button";
     if (act) node.dataset[key] = act;
     return node;
+  };
+  const controlField = (control) => {
+    const wrapper = el("div", "field");
+    wrapper.append(control);
+    return wrapper;
   };
 
   function injectStyle() {
@@ -33,7 +40,60 @@
       + "#ai-coach-card .data-item>input,#ai-coach-card .data-item>textarea,#ai-coach-card .data-item>div>textarea{width:100%;box-sizing:border-box;margin-bottom:6px}"
       + ".ac-block{display:block;padding:10px 0;border-top:1px solid rgba(127,127,127,.18)}"
       + ".ac-block>.row{display:flex;gap:10px;align-items:flex-end}"
-      + "#ai-coach-card textarea,#ai-student-card textarea{width:100%;box-sizing:border-box}";
+      + "#ac-results{width:min(1100px,calc(100vw - 48px));max-width:none;max-height:calc(100dvh - 48px);margin:auto;padding:0;overflow:hidden;border:1px solid var(--line,#c7d2de);border-radius:20px;background:var(--card,#fff);color:var(--ink,#25334a);box-shadow:0 24px 80px #0005;overflow-wrap:anywhere}"
+      + "#ac-results[open]{display:flex;flex-direction:column}#ac-results:not([open]){display:none}"
+      + "#ac-results::backdrop{background:rgba(15,23,42,.48);backdrop-filter:blur(4px)}"
+      + "#ac-results .ac-results-header{display:flex;align-items:flex-start;gap:20px;padding:20px 24px;border-bottom:1px solid var(--line,#c7d2de);flex-shrink:0}"
+      + "#ac-results .ac-results-header h3{flex:1;min-width:0;margin:0;align-self:center}"
+      + "#ac-results .ac-results-header button{flex:0 0 auto}"
+      + "#ac-results-body{padding:16px 24px;overflow-y:scroll;min-height:0;overscroll-behavior:contain;scrollbar-gutter:stable}"
+      + "#ac-results .ac-result-question{margin:0 0 16px;padding:18px;border:1px solid var(--line,#c7d2de);border-radius:14px;background:var(--card,#fff)}"
+      + "#ac-results .ac-result-question h4{margin:0 0 12px;font-size:16px;line-height:1.6}"
+      + "#ac-results .ac-result-options{padding-left:24px;margin:0 0 12px;line-height:1.8}"
+      + "#ac-results .ac-result-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}"
+      + "#ac-results .ac-result-group{min-width:0;padding:12px;border:1px solid var(--line,#c7d2de);border-radius:10px;background:rgba(127,127,127,.035)}"
+      + "#ac-results .ac-result-group summary{display:flex;align-items:center;gap:8px;list-style:none;cursor:pointer}#ac-results .ac-result-group summary::-webkit-details-marker{display:none}"
+      + "#ac-results .ac-result-group summary::before{content:'▸';color:var(--ink-2,#64748b);font-size:16px}#ac-results .ac-result-group[open] summary::before{content:'▾'}"
+      + "#ac-results .ac-result-group[open] summary{margin-bottom:8px}#ac-results .ac-result-group summary span{display:inline-block;padding:3px 9px;border-radius:7px;font-size:13px;font-weight:600;line-height:1.5}"
+      + "#ac-results .ac-result-correct summary span{color:#137956;background:rgba(16,185,129,.12)}#ac-results .ac-result-incorrect summary span{color:var(--danger,#b42318);background:rgba(239,68,68,.10)}"
+      + "#ac-results .ac-result-unknown{grid-column:1/-1}#ac-results .ac-result-unknown summary span{color:var(--ink-2,#64748b);background:rgba(127,127,127,.12)}"
+      + "#ac-results .ac-result-names{max-height:104px;min-height:40px;overflow-y:scroll;overscroll-behavior:contain;scrollbar-gutter:stable;list-style:none;margin:0;padding:0 8px 0 0;line-height:1.8;overflow-wrap:anywhere}"
+      + "#ac-results-body,#ac-results .ac-result-names{scrollbar-width:thin;scrollbar-color:var(--line,#aab8c6) transparent}"
+      + "#ac-results-body::-webkit-scrollbar,#ac-results .ac-result-names::-webkit-scrollbar{width:7px}#ac-results-body::-webkit-scrollbar-thumb,#ac-results .ac-result-names::-webkit-scrollbar-thumb{background:var(--line,#aab8c6);border-radius:8px}"
+      + "html:has(#ac-results[open]),body:has(#ac-results[open]){overflow:hidden}"
+      + "@media(max-width:600px){#ac-results{width:calc(100vw - 24px);max-height:calc(100dvh - 24px);border-radius:16px}#ac-results .ac-results-header{padding:16px;gap:12px}#ac-results-body{padding:12px}#ac-results .ac-result-question{padding:12px}#ac-results .ac-result-groups{gap:8px}#ac-results .ac-result-group{padding:8px}}"
+      + "#ai-coach-card textarea,#ai-student-card textarea{width:100%;box-sizing:border-box}"
+      + "#ai-coach-card{padding:24px;min-width:0;box-sizing:border-box}"
+      + "#ai-coach-card .ac-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}"
+      + "#ai-coach-card .ac-heading h2{margin:0;min-width:0}"
+      + "#ai-coach-card .ac-source{margin:16px 0}"
+      + "#ai-coach-card .ac-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:end}"
+      + "#ai-coach-card .ac-controls>.field{min-width:0;margin:0}"
+      + "#ai-coach-card .ac-controls :is(input,select){height:48px;min-width:0}"
+      + "#appMain #ai-coach-card #ac-file{display:block;min-width:0;min-height:44px;height:auto;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;font:inherit;color:var(--ink-2)}"
+      + "#appMain #ai-coach-card #ac-file::file-selector-button{min-height:44px;padding:9px 16px;margin-right:12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font:inherit;cursor:pointer}"
+      + "#ai-coach-card .ac-source-hint{display:block;margin:6px 0 0;font-size:13px;color:var(--ink-2)}"
+      + "#ai-coach-card .ac-generate-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:20px 0 12px}"
+      + "#ai-coach-card .ac-generate-actions p{flex:1 1 220px;margin:0}"
+      + "#appMain #ai-coach-card .ac-generate{min-height:48px;padding:12px 24px;font-size:17px;font-weight:600;white-space:nowrap}"
+      + "#ai-coach-card .ac-generate:disabled{opacity:.65;cursor:wait}"
+      + "#ai-coach-card .ac-button,#ai-student-card .ac-button{min-height:44px;box-sizing:border-box;padding:10px 18px;font-size:14px;font-weight:500;line-height:22px;white-space:normal}"
+      + "#ai-coach-card .ac-draft-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line)}"
+      + "#ai-coach-card .ac-draft-actions .ac-discard{margin-left:auto}"
+      + "#ai-coach-card .ac-draft-actions .pdf{font-weight:600}"
+      + "#ai-coach-card .ac-item-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:10px 0 4px}"
+      + "#ai-coach-card .ac-item-actions .muted{flex:1 1 240px;min-width:0;margin:0;overflow-wrap:anywhere}"
+      + "#ai-coach-card .ac-item-actions .ac-button{flex:0 0 auto}"
+      + "#ai-coach-card .ac-block>.field{margin:8px 0}"
+      + "#ai-coach-card .ac-opt>.field{flex:1;min-width:160px;margin:0}"
+      + "@media(max-width:760px){#ai-coach-card{padding:18px}#ai-coach-card .ac-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}"
+      + "#ai-coach-card .ac-class-field{grid-column:1/-1}"
+      + "#ai-coach-card .ac-generate-actions{align-items:stretch}"
+      + "#ai-coach-card .ac-generate-actions p{flex-basis:100%}"
+      + "#appMain #ai-coach-card .ac-generate{width:100%;white-space:normal}"
+      + "#ai-coach-card .ac-draft-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}"
+      + "#ai-coach-card .ac-draft-actions .ac-button{width:100%;min-width:0}"
+      + "#ai-coach-card .ac-draft-actions .ac-discard{grid-column:1/-1;justify-self:start;width:auto;margin-left:0}}";
     document.head.append(style);
   }
   let booted = false;
@@ -83,15 +143,15 @@
   function staffCard() {
     const card = el("section", "card");
     card.id = "ai-coach-card";
-    const heading = el("h2", null, "AI 备课助手：把教学想法变成学生任务 ");
-    heading.append(button("刷新任务", "refresh", "small"));
+    const heading = el("div", "ac-heading");
+    heading.append(el("h2", null, "AI 备课助手：把教学想法变成学生任务"), button("刷新任务", "refresh", "small"));
     card.append(
       heading,
       el("p", "muted", "把备课时写的想法或讲义贴进来（也可载入 .md / .txt），AI 会拆成知识点和客观题。"
         + "生成后必须由你逐题核对、修改，点“发布给学生”之后学生才能看到；AI 内容不会写入考纲知识点库。"),
     );
     const briefRow = el("div", "row");
-    const briefCell = el("div");
+    const briefCell = el("div", "field");
     briefCell.style.flex = "1";
     const label = el("label", null, "教学想法 / 备课材料");
     label.htmlFor = "ac-brief";
@@ -103,17 +163,20 @@
     briefRow.append(briefCell);
     card.append(briefRow);
 
-    const controls = el("div", "row");
-    const fileCell = el("div");
-    const fileLabel = el("label", null, "载入本地文档");
+    const controls = el("div", "ac-controls");
+    const fileCell = el("div", "ac-source");
+    const fileLabel = el("label", null, "或载入本地讲义");
     fileLabel.htmlFor = "ac-file";
     const file = el("input");
     file.type = "file";
     file.id = "ac-file";
     file.accept = ".txt,.md,.markdown,text/plain,text/markdown";
-    fileCell.append(fileLabel, file);
+    file.setAttribute("aria-describedby", "ac-file-hint");
+    const fileHint = el("span", "ac-source-hint", "支持 .txt、.md 文档，最大 200KB；载入的文字会添加到上方材料中。");
+    fileHint.id = "ac-file-hint";
+    fileCell.append(fileLabel, file, fileHint);
 
-    const classCell = el("div");
+    const classCell = el("div", "field ac-class-field");
     const classLabel = el("label", null, "发布到班级");
     classLabel.htmlFor = "ac-class";
     const classes = el("select");
@@ -121,7 +184,7 @@
     classes.append(new Option("全机构学生", ""));
     classCell.append(classLabel, classes);
 
-    const countCell = el("div");
+    const countCell = el("div", "field");
     const countLabel = el("label", null, "题目数量");
     countLabel.htmlFor = "ac-count";
     const count = el("input");
@@ -132,7 +195,7 @@
     count.value = "5";
     countCell.append(countLabel, count);
 
-    const kindCell = el("div");
+    const kindCell = el("div", "field");
     const kindLabel = el("label", null, "题型");
     kindLabel.htmlFor = "ac-kinds";
     const kinds = el("select");
@@ -140,11 +203,10 @@
     kinds.append(new Option("单选", "single"), new Option("单选 + 多选", "single,multiple"), new Option("多选", "multiple"));
     kindCell.append(kindLabel, kinds);
 
-    const goCell = el("div");
-    goCell.style.flex = "0 0 auto";
-    goCell.append(button("生成草稿", "generate", "primary"));
-    controls.append(fileCell, classCell, countCell, kindCell, goCell);
-    card.append(controls);
+    const goCell = el("div", "ac-generate-actions");
+    goCell.append(el("p", "muted", "先生成练习题，核对后再发布给学生。"), button("AI 生成练习题", "generate", "btn pdf primary ac-generate"));
+    controls.append(classCell, countCell, kindCell);
+    card.append(fileCell, controls, goCell);
 
     const status = el("div", "muted");
     status.id = "ac-status";
@@ -153,7 +215,32 @@
     draftBox.id = "ac-draft";
     const listBox = el("div");
     listBox.id = "ac-tasks";
-    card.append(status, draftBox, listBox);
+    const resultsBox = el("dialog");
+    resultsBox.id = "ac-results";
+    resultsBox.setAttribute("aria-labelledby", "ac-results-title");
+    const resultsHeader = el("div", "ac-results-header");
+    const resultsTitle = el("h3", null, "答题详情");
+    resultsTitle.id = "ac-results-title";
+    const closeResultsButton = button("关闭", "close-results", "small");
+    closeResultsButton.setAttribute("aria-label", "关闭答题详情");
+    closeResultsButton.autofocus = true;
+    resultsHeader.append(resultsTitle, closeResultsButton);
+    const resultsBody = el("div");
+    resultsBody.id = "ac-results-body";
+    resultsBody.setAttribute("aria-live", "polite");
+    resultsBox.append(resultsHeader, resultsBody);
+    resultsBox.addEventListener("cancel", event => {
+      event.preventDefault();
+      closeResults();
+    });
+    resultsBox.addEventListener("close", () => {
+      staff.resultsRequest += 1;
+      resultsBody.replaceChildren();
+    });
+    resultsBox.addEventListener("click", event => {
+      if (event.target === resultsBox) closeResults();
+    });
+    card.append(status, draftBox, listBox, resultsBox);
 
     card.addEventListener("click", event => {
       const act = event.target.closest("button[data-ac]")?.dataset.ac;
@@ -248,7 +335,7 @@
     if (!staff?.draft) return;
     const draft = staff.draft;
     const head = el("div", "row");
-    const titleCell = el("div");
+    const titleCell = el("div", "field");
     titleCell.style.flex = "1";
     const titleLabel = el("label", null, "任务标题（学生看到的）");
     titleLabel.htmlFor = "ac-title";
@@ -273,7 +360,7 @@
       summary.dataset.kpField = "summary";
       summary.setAttribute("aria-label", `知识点 ${index + 1} 要点`);
       const line = el("div", "row");
-      const diffCell = el("div");
+      const diffCell = el("div", "field");
       const diff = el("select");
       diff.dataset.kp = index;
       diff.dataset.kpField = "difficulty";
@@ -284,15 +371,15 @@
       const remove = button("删除这条知识点", "remove-kp");
       remove.dataset.kp = index;
       line.append(diffCell, remove);
-      item.append(name, summary, line);
+      item.append(controlField(name), controlField(summary), line);
       if (kp.source_quote) item.append(el("p", "muted", `材料原句：${kp.source_quote}`));
       box.append(item);
     });
     box.append(el("h3", null, `题目（${draft.questions.length} 道）`));
     draft.questions.forEach((q, index) => box.append(questionEditor(q, index)));
-    const actions = el("div", "row");
-    actions.append(button("保存草稿", "save", "primary"), button("发布给学生", "publish", "primary"),
-                   button("丢弃这份草稿", "discard"));
+    const actions = el("div", "ac-draft-actions");
+    actions.append(button("保存草稿", "save"), button("发布给学生", "publish", "pdf primary"),
+                   button("丢弃这份草稿", "discard", "ac-discard"));
     box.append(actions);
   }
 
@@ -306,7 +393,7 @@
     stem.dataset.q = index;
     stem.dataset.qField = "stem";
     stem.setAttribute("aria-label", `第 ${index + 1} 题题干`);
-    item.append(meta, stem);
+    item.append(meta, controlField(stem));
     q.options.forEach((option, optIndex) => {
       const line = el("div", "ac-opt");
       const pick = el("input");
@@ -324,7 +411,7 @@
       text.dataset.qField = "option";
       text.setAttribute("aria-label", `第 ${index + 1} 题选项 ${option.key}`);
       const key = el("strong", null, `${option.key}. `);
-      line.append(pick, key, text);
+      line.append(pick, key, controlField(text));
       item.append(line);
     });
     const why = el("textarea");
@@ -334,11 +421,13 @@
     why.dataset.q = index;
     why.dataset.qField = "explanation";
     why.setAttribute("aria-label", `第 ${index + 1} 题解析`);
-    item.append(why);
-    if (q.source_quote) item.append(el("p", "muted", `材料原句：${q.source_quote}`));
+    item.append(controlField(why));
+    const footer = el("div", "ac-item-actions");
+    if (q.source_quote) footer.append(el("p", "muted", `材料原句：${q.source_quote}`));
     const remove = button("删除这道题", "remove-q");
     remove.dataset.q = index;
-    item.append(remove);
+    footer.append(remove);
+    item.append(footer);
     return item;
   }
 
@@ -388,6 +477,9 @@
     if (act === "edit") return editTask(node.dataset.task);
     if (act === "delete") return deleteTask(node.dataset.task, node);
     if (act === "archive") return archiveTask(node.dataset.task, node);
+    if (act === "restore") return archiveTask(node.dataset.task, node, true);
+    if (act === "results") return openResults(node.dataset.task);
+    if (act === "close-results") return closeResults();
   }
 
   async function generate(node) {
@@ -395,6 +487,8 @@
     if (brief.length < 20) return setStatus("教学想法至少写 20 字，AI 才有材料可以拆解。", true);
     const kindValue = $("ac-kinds")?.value || "single";
     node.disabled = true;
+    node.textContent = "正在生成练习题…";
+    node.setAttribute("aria-busy", "true");
     setStatus("AI 正在拆解知识点与题目，通常需要十几秒…");
     try {
       const draft = await post("/api/teaching/ai-tasks/draft", {
@@ -412,6 +506,8 @@
       setStatus(error.message, true);
     } finally {
       node.disabled = false;
+      node.textContent = "AI 生成练习题";
+      node.removeAttribute("aria-busy");
     }
   }
 
@@ -479,14 +575,15 @@
     }
   }
 
-  async function archiveTask(id, node) {
-    if (!window.confirm("归档后学生将不再看到这份任务，已提交的记录保留。确认归档？")) return;
+  async function archiveTask(id, node, published = false) {
+    if (!window.confirm(published ? "恢复后学生可再次查看任务，原有提交记录保留。确认恢复？"
+      : "归档后学生将不再看到这份任务，已提交的记录保留。确认归档？")) return;
     node.disabled = true;
     try {
       await api(`/api/teaching/ai-tasks/${id}/publish`, {
-        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({published: false}),
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({published}),
       });
-      setStatus("任务已归档。");
+      setStatus(published ? "任务已恢复。" : "任务已归档。");
       await paintTasks();
     } catch (error) {
       setStatus(error.message, true);
@@ -495,13 +592,18 @@
     }
   }
 
-  async function paintTasks() {
+  async function paintTasks(refreshBoard = true) {
     const box = $("ac-tasks");
     if (!box) return;
     box.replaceChildren();
+    if (document.getElementById("task-board-card") && window.tpTrainingTasks) {
+      if (refreshBoard) await window.tpTrainingTasks.refresh();
+      return;
+    }
     let items = [];
     try {
       items = (await api("/api/teaching/ai-tasks")).items || [];
+      if (document.getElementById("task-board-card") && window.tpTrainingTasks) return;
     } catch (error) {
       box.append(el("p", "error", `任务列表读取失败：${error.message}`));
       return;
@@ -512,29 +614,111 @@
       box.append(el("p", "muted", "还没有布置过任务。生成草稿并发布后，这里会显示完成情况。"));
       return;
     }
-    const statusText = {draft: "草稿（学生不可见）", published: "已发布", archived: "已归档"};
-    for (const item of items) {
-      const row = el("div", "data-item");
-      const info = el("div");
-      info.append(el("strong", null, item.title),
-        el("p", "muted", `${statusText[item.status] || item.status} · ${item.question_count} 题 · 已提交 `
-          + `${item.submitted}/${item.expected} 人` + (item.mean_score === null ? "" : ` · 平均 ${item.mean_score} 分`)));
-      const actions = el("div", "row");
-      if (item.status === "draft") {
-        const edit = button("编辑草稿", "edit");
-        edit.dataset.task = item.id;
-        actions.append(edit);
-        const remove = button("删除", "delete");
-        remove.dataset.task = item.id;
-        actions.append(remove);
+    for (const item of items) box.append(createTaskRow(item));
+  }
+
+  function createTaskRow(item) {
+    const statusText = {draft: "草稿（学生不可见）", published: "进行中", archived: "已归档"};
+    const row = el("div", "data-item tb-row");
+    const info = el("div");
+    info.append(el("strong", null, item.title),
+      el("p", "muted", `课堂练习 · ${statusText[item.status] || item.status} · ${item.question_count} 题 · 已提交 `
+        + `${item.submitted}/${item.expected} 人` + (item.mean_score === null ? "" : ` · 平均 ${item.mean_score} 分`)));
+    const actions = el("div", "row");
+    if (item.status !== "draft") {
+      const results = button("查看答题详情", "results");
+      results.dataset.task = item.id;
+      actions.append(results);
+    }
+    if (item.status === "draft") {
+      const edit = button("编辑草稿", "edit");
+      edit.dataset.task = item.id;
+      actions.append(edit);
+      const remove = button("删除", "delete");
+      remove.dataset.task = item.id;
+      actions.append(remove);
+    }
+    if (item.status === "published") {
+      const archive = button("归档", "archive");
+      archive.dataset.task = item.id;
+      actions.append(archive);
+    }
+    if (item.status === "archived") {
+      const restore = button("恢复任务", "restore");
+      restore.dataset.task = item.id;
+      actions.append(restore);
+    }
+    row.append(info, actions);
+    row.addEventListener("click", event => {
+      const node = event.target.closest("button[data-ac]");
+      if (!node) return;
+      event.stopPropagation();
+      staffAction(node.dataset.ac, node);
+    });
+    return row;
+  }
+
+  function closeResults() {
+    staff.resultsRequest += 1;
+    $("ac-results-body").replaceChildren();
+    $("ac-results").close();
+  }
+
+  async function openResults(id) {
+    const dialog = $("ac-results"), box = $("ac-results-body");
+    const request = ++staff.resultsRequest;
+    $("ac-results-title").textContent = "答题详情";
+    box.replaceChildren(el("p", "muted", "正在读取答题详情…"));
+    box.scrollTop = 0;
+    if (!dialog.open) dialog.showModal();
+    try {
+      const data = await api(`/api/teaching/ai-tasks/${id}/submissions`);
+      if (request !== staff.resultsRequest || !dialog.open || !box.isConnected) return;
+      $("ac-results-title").textContent = `${data.task.title} · 答题分析`;
+      box.replaceChildren();
+      box.append(el("p", "muted", `共 ${data.task.questions.length} 题 · 已提交 ${data.items.length} 人`));
+      if (!data.items.length) box.append(el("p", "muted", "暂无学生提交。"));
+      const submissions = data.items.map(record => ({name: record.student_name || record.username,
+        answers: Object.fromEntries(record.detail.map(answer => [answer.question_id, answer]))}));
+      data.task.questions.forEach((question, position) => {
+        const item = el("section", "ac-result-question");
+        item.append(el("h4", null, `第 ${position + 1} 题（${question.kind === "single" ? "单选" : "多选"}）${question.stem}`));
+        const options = el("ul", "ac-result-options");
+        for (const option of question.options) options.append(el("li", null, `${option.key}. ${option.text}`));
+        item.append(options, el("p", "ok", `正确答案：${question.answers.join("、")}`));
+        if (question.explanation) item.append(el("p", "muted", `解析：${question.explanation}`));
+        const groups = {correct: [], incorrect: [], unknown: []};
+        for (const record of submissions) {
+          const answer = record.answers[question.id];
+          const outcome = answer?.correct === true ? "correct" : answer?.correct === false ? "incorrect" : "unknown";
+          groups[outcome].push(record.name);
+        }
+        const lists = el("div", "ac-result-groups");
+        for (const [outcome, label] of [["correct", "答对"], ["incorrect", "答错"], ["unknown", "待核对"]]) {
+          const names = groups[outcome];
+          if (outcome === "unknown" && !names.length) continue;
+          const group = el("details", `ac-result-group ac-result-${outcome}`);
+          group.dataset.question = question.id;
+          group.dataset.outcome = outcome;
+          const summary = el("summary");
+          summary.append(el("span", null, `${label} ${names.length} 人`));
+          group.append(summary);
+          const roster = el("ul", "ac-result-names");
+          roster.id = `ac-roster-${question.id}-${outcome}`;
+          roster.tabIndex = 0;
+          roster.setAttribute("aria-label", `第 ${position + 1} 题${label}学生名单`);
+          for (const name of names) roster.append(el("li", null, name));
+          if (!names.length) roster.append(el("li", "muted", "暂无"));
+          group.append(roster);
+          lists.append(group);
+        }
+        item.append(lists);
+        box.append(item);
+      });
+    } catch (error) {
+      if (request === staff.resultsRequest && dialog.open && box.isConnected) {
+        box.replaceChildren(el("p", "error", `答题详情读取失败：${error.message}`));
       }
-      if (item.status === "published") {
-        const archive = button("归档", "archive");
-        archive.dataset.task = item.id;
-        actions.append(archive);
-      }
-      row.append(info, actions);
-      box.append(row);
     }
   }
 
@@ -542,7 +726,7 @@
     injectStyle();
     const card = staffCard();
     if (!container.classroom) card.dataset.universityView = "tasks";
-    staff = {draft: null};
+    staff = {draft: null, resultsRequest: 0};
     if (!mount(card)) return;
     try {
       const classes = await api("/api/classes");
@@ -551,7 +735,7 @@
     } catch (error) {
       setStatus(`班级列表读取失败：${error.message}`, true);
     }
-    await paintTasks();
+    await paintTasks(false);
   }
 
   /* ---------------------------- 学生：任务作答 ---------------------------- */
@@ -729,6 +913,10 @@
     }
     return true;
   }
+
+  window.tpAICoach = {createTaskRow, useTaskBoard() {
+    if (document.getElementById("task-board-card")) $("ac-tasks")?.replaceChildren();
+  }};
 
   let attempts = 0;
   function tryBoot() {
