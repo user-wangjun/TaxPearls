@@ -209,7 +209,7 @@ window.universityWorkspace = (() => {
     await Promise.all([
       loadClientScript("/member-links.js?v=20261027-login-first-1"),
       loadClientScript("/policy-source.js?v=20261027-login-first-1"),
-      loadClientScript("/training-"+(kind === "student" ? "portal" : "staff")+".js?v=20261029-teaching-names-12")
+      loadClientScript("/training-"+(kind === "student" ? "portal" : "staff")+".js?v=20261029-student-kp-pages-2")
     ]);
     const initial = !controller;
     if (!controller) {

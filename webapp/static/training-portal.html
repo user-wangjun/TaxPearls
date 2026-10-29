@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>考证备考 · 税海拾珠</title>
-<link rel="stylesheet" href="/training-dark.css?v=student-practice-20261026-8">
+<link rel="stylesheet" href="/training-dark.css?v=student-kp-pages-20261029-3">
 <link rel="stylesheet" href="/training-tutor.css?v=student-tutor-archive-20261026-5">
 </head>
 <body>
@@ -34,24 +34,34 @@
         <button type="button" role="tab" id="practice-new-tab" aria-controls="practice-new-panel" aria-selected="true" data-act="practice-tab" data-practice-tab="new">开始新练习</button>
         <button type="button" role="tab" id="practice-open-tab" aria-controls="pr-open" aria-selected="false" tabindex="-1" data-act="practice-tab" data-practice-tab="unfinished">未完成的练习 <span id="practice-open-count">0</span></button>
       </div>
-      <div class="row">
-        <div><label>证书范围</label><select id="pr-cert"></select></div>
-      </div>
-      <section id="practice-new-panel" role="tabpanel" aria-labelledby="practice-new-tab">
-      <div class="row">
-        <div><label>题源</label>
+      <div class="row practice-controls">
+        <div><label for="pr-cert">证书范围</label><select id="pr-cert"></select></div>
+        <div id="practice-new-options" class="practice-new-options">
+        <div><label for="pr-source">题源</label>
           <select id="pr-source">
             <option value="simulated">规则仿真题</option>
             <option value="real">真题（须授权）</option>
             <option value="recall">回忆题（须授权）</option>
             <option value="mock">模拟题（须授权）</option>
           </select></div>
-        <div><label>知识点（选填，不选则整证随机）</label><select id="pr-kp"></select></div>
-        <div style="flex:0 0 auto;"><button class="primary" id="start-practice">开始训练</button></div>
+        <div><label for="pr-kp">知识点（可选）</label><select id="pr-kp"></select></div>
+        <div class="practice-start"><button class="primary" id="start-practice">开始训练</button></div>
+        </div>
       </div>
+      <section id="practice-new-panel" role="tabpanel" aria-labelledby="practice-new-tab">
       <div class="muted" id="pr-hint" style="margin-top:6px;"></div>
       <div class="muted" id="pr-stats" style="margin-top:4px;"></div>
-      <div id="pr-kps"></div>
+      <div id="pr-kp-pagination" class="practice-kp-pagination" role="group" aria-label="知识点列表分页">
+        <label for="pr-kp-page-size">每页显示
+          <select id="pr-kp-page-size"><option value="10">10 条</option><option value="20">20 条</option><option value="50">50 条</option></select>
+        </label>
+        <span id="pr-kp-page-status" class="muted" role="status"></span>
+        <div class="practice-kp-page-actions">
+          <button type="button" id="pr-kp-prev" class="small" aria-controls="pr-kps">上一页</button>
+          <button type="button" id="pr-kp-next" class="small" aria-controls="pr-kps">下一页</button>
+        </div>
+      </div>
+      <div id="pr-kps" tabindex="0" role="region" aria-label="练习知识点列表"></div>
       </section>
       <div id="pr-open" role="tabpanel" aria-labelledby="practice-open-tab" hidden></div>
       <section id="pr-wrong-section">
@@ -134,6 +144,6 @@
   </div>
 </div>
 <script src="/policy-source.js?v=public-policy-1"></script>
-<script src="/training-portal.js?v=student-tutor-archive-20261026-5"></script>
+<script src="/training-portal.js?v=student-kp-pages-20261029-3"></script>
 </body>
 </html>
