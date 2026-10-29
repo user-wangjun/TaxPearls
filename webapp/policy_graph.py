@@ -418,7 +418,24 @@ def import_corpus(db, manifest_path, document_ids, originals_dir):
 
 def sync_rules(db, rules):
     """Bridge existing executable rules by stable ID + version + exact content hash."""
-    if not db.in_transaction:
+    from src.rule_conversion import compile_rule
+    rules = list(rules)
+    selected = {}
+    required = []
+    for rule in rules:
+        digest = fingerprint(asdict(rule))
+        record_id = f"{rule.id}@{rule.version}:{digest[:16]}"
+        selected[record_id] = rule.id
+        required.extend([record_id, compile_rule(rule)['rule_id']])
+    own_transaction = not db.in_transaction
+    if own_transaction:
+        db.execute('BEGIN')
+    if all(db.execute('SELECT 1 FROM TaxRule WHERE rule_id=?', (key,)).fetchone() for key in required):
+        return selected
+    # Normal graph requests keep a read snapshot, without occupying Store's
+    # process-wide writer lock while assembling the large public catalog.
+    if own_transaction:
+        db.rollback()
         db.execute("BEGIN IMMEDIATE")
     selected = {}
     for rule in rules:
@@ -450,7 +467,7 @@ def sync_rules(db, rules):
     return selected
 
 
-def graph(db, selected=None, *, node_ids=None):
+def graph(db, selected=None, *, node_ids=None, focus_first=False):
     """Public definitions only. Audit graphs continue using their frozen findings."""
     selected = selected or {}
     from src.models import Rule
@@ -477,6 +494,27 @@ def graph(db, selected=None, *, node_ids=None):
                           + f' ORDER BY {IDS[table]}', list(keys))
     active_rules=set(converted.values())|{r['rule_id'] for r in db.execute('SELECT rule_id FROM TaxRule WHERE execution_json IS NULL AND conversion_json IS NULL')}
     active_metrics={r['to_id'] for r in db.execute("SELECT from_id,to_id FROM Relationship WHERE from_type='TaxRule' AND to_type='Metric' AND relation_type='USES_METRIC'") if r['from_id'] in active_rules}
+    partial = False
+    if focus_first:
+        first = next((row['rule_id'] for row in db.execute(
+            'SELECT rule_id, execution_json IS NOT NULL AS executable, conversion_json IS NOT NULL AS converted '
+            'FROM TaxRule ORDER BY rule_id')
+            if row['rule_id'] not in converted
+            and not (row['converted'] and selected and row['rule_id'] not in selected)
+            and not (row['executable'] and row['rule_id'] not in selected)), None)
+        if first is not None:
+            neighbors = {('TaxRule', first)}
+            for row in db.execute(
+                    "SELECT from_type,from_id,to_type,to_id FROM Relationship "
+                    "WHERE (from_type='TaxRule' AND from_id=?) OR (to_type='TaxRule' AND to_id=?)",
+                    (first, first)):
+                neighbors.update([(row['from_type'], row['from_id']), (row['to_type'], row['to_id'])])
+            for table in ('Condition', 'Exception'):
+                neighbors.update((table, row[IDS[table]]) for row in db.execute(
+                    f'SELECT {IDS[table]} FROM "{table}" WHERE rule_id=?', (first,)))
+            node_ids = {selected.get(key, f'{table}:{key}') if table == 'TaxRule'
+                        else f'{table}:{key}' for table, key in neighbors}
+            partial = True
     nodes, identifiers = [], {}
     resolutions = None
     for table in KINDS:
@@ -583,8 +621,11 @@ def graph(db, selected=None, *, node_ids=None):
                             link(table, row[IDS[table]], "Metric", row[field], "USES_METRIC")
                 if row["source_clause_id"]:
                     link("Clause", row["source_clause_id"], table, row[IDS[table]], "SOURCE_CLAUSE")
-    return {"schema_version": 1, "nodes": nodes, "edges": edges, "audit_id": None,
-            "boundary": "候选知识仅供查看；只有明确审核的版本可进入三态条件试算。现有审计结论仍使用原执行器。"}
+    result = {"schema_version": 1, "nodes": nodes, "edges": edges, "audit_id": None,
+              "boundary": "候选知识仅供查看；只有明确审核的版本可进入三态条件试算。现有审计结论仍使用原执行器。"}
+    if partial:
+        result['partial'] = True
+    return result
 
 
 def evaluate_rule(db, rule_id, facts, *, start, end, region, entities=()):

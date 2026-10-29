@@ -60,7 +60,8 @@ async function loadGraph({throwOnError=false}={}){
   const ticket=++graphRequest,owner=currentUser?.id;clearGraph("正在载入关系网络…");
   try{
     const params=new URLSearchParams();if($("graphScope").value)params.set("taxpayer_id",$("graphScope").value);if($("graphAudit").value)params.set("audit_id",$("graphAudit").value);
-    const initial=currentUser?.org_type==="university"&&["knowledgeSearch","knowledgeCategory","graphStatus","graphRuleLevel","graphRegion"].every(id=>!$(id).value);
+    const initial=!params.size&&["knowledgeSearch","knowledgeCategory","graphStatus","graphRuleLevel","graphRegion"].every(id=>!$(id).value);
+    if(initial)params.set("initial","1");
     const data=await api(currentUser?.org_type==="university"?"/api/training/knowledge/graph"+(initial?"?initial=1":""):"/api/knowledge/graph"+(params.size?"?"+params:""));if(!graphCurrent(ticket,owner))return;
     graphData=data;graphPositions=new Map();graphFocused=false;graphTransform={x:0,y:0,k:1};
     updateGraphLegend();
@@ -78,7 +79,7 @@ async function ensureGraphComplete(){
   const ticket=graphRequest,owner=currentUser?.id,initial=graphData;
   const loading=(async()=>{
     try{
-      const data=await api("/api/training/knowledge/graph");
+      const data=await api(currentUser?.org_type==="university"?"/api/training/knowledge/graph":"/api/knowledge/graph");
       if(!graphCurrent(ticket,owner)||graphData!==initial)return false;
       graphData=data;graphAllowed=new Set(data.nodes.map(n=>n.id));updateGraphLegend();updateGraphRegions();
       $("graphCoverage").hidden=!data.boundary;$("graphCoverage").textContent=data.boundary||"";

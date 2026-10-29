@@ -26,17 +26,17 @@ def public_graph(db, rules, *, teaching=False, initial=False):
     """
     from webapp import policy_graph
     selected = policy_graph.sync_rules(db, rules)
-    initial = bool(initial and teaching and db.execute(
+    initial_teaching = bool(initial and teaching and db.execute(
         'SELECT 1 FROM knowledge_point k JOIN certificate c ON c.id=k.certificate_id '
         'WHERE k.active=1 AND c.active=1 LIMIT 1').fetchone())
     # The first teaching view needs learning objects and their explicitly linked
     # rules. Large policy texts and calculations are fetched after first paint.
     node_ids = {row['target_id'] for row in db.execute(
         "SELECT target_id FROM knowledge_point_link WHERE target_type='rule'")
-    } if teaching and initial else None
-    graph = policy_graph.graph(db, selected, node_ids=node_ids)
+    } if initial_teaching else None
+    graph = policy_graph.graph(db, selected, node_ids=node_ids, focus_first=initial and not teaching)
     graph.update(public_source='shared_policy_catalog', view='public_policy')
-    if initial and teaching:
+    if initial_teaching:
         graph['partial'] = True
     if not teaching:
         return graph
