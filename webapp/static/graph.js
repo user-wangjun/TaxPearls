@@ -280,13 +280,14 @@ function ragSourceCard(source){
 }
 $("graphQuestionForm").addEventListener("submit",async e=>{
   e.preventDefault();if(graphBusy||(!graphRagMode()&&!graphSelected))return;
-  const question=$("graphQuestion").value.trim();if(!question)return;
+  const draft=$("graphQuestion").value,question=draft.trim();if(!question)return;
   const node=graphSelected,audit=graphData.audit_id,taxpayer=graphData.taxpayer_id,version=graphRequest,owner=currentUser?.id;
   const publicMode=!audit&&!taxpayer,rag=graphRagMode(),controller=new AbortController(),key=nodeQuestionKey;
   nodeQuestionController=controller;
   const box=$("graphMessages"),turn=el("div","ai-answer"),state=el("p","muted",rag?"正在检索公共原文…":"正在读取节点及关联依据…"),text=el("p","ai-text","");
   turn.append(el("p","ai-question",question),state,text);box.append(turn);box.scrollTop=box.scrollHeight;
   graphBusy=true;$("graphSend").disabled=true;$("graphStop").hidden=false;
+  $("graphQuestion").value="";
   const current=()=>graphCurrent(version,owner)&&nodeQuestionKey===key&&!controller.signal.aborted;
   try{
     if(publicMode){
@@ -321,9 +322,11 @@ $("graphQuestionForm").addEventListener("submit",async e=>{
       if(!current())return;text.textContent=result.answer;state.textContent="已完成";
       for(const cited of result.citations)turn.append(action(cited.label,()=>{selectGraphNode(cited.id);focusGraph();renderNode();}));
     }
-    if(current()&&$("graphQuestion").value.trim()===question)$("graphQuestion").value="";
   }catch(err){
-    if(graphCurrent(version,owner)&&nodeQuestionKey===key){state.textContent=controller.signal.aborted?"已停止 · 回答未完成":err.message;turn.dataset.incomplete="true";}
+    if(graphCurrent(version,owner)&&nodeQuestionKey===key){
+      state.textContent=controller.signal.aborted?"已停止 · 回答未完成":err.message;turn.dataset.incomplete="true";
+      if($("graphQuestion").value==="")$("graphQuestion").value=draft;
+    }
   }finally{
     if(nodeQuestionController===controller){nodeQuestionController=null;graphBusy=false;$("graphStop").hidden=true;$("graphSend").disabled=(!graphRagMode()&&!graphSelected)||(!graphRagMode()&&!graphData.ai?.configured);}
   }
