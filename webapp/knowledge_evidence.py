@@ -447,7 +447,8 @@ def register(app, get_store, get_user, allow):
                 for rid, old in payload["tax_checks"].items():
                     package = old["bundle"]
                     fresh = metrics.build_task_bundle(db, payload, package["task"], rid, topic=package["check"]["topic"],
-                                                      token_budget=package["batching"]["soft_token_budget"])
+                                                      token_budget=package["batching"]["soft_token_budget"],
+                                                      output_tokens=package["batching"].get("output_tokens"))
                     if bundle.content_hash(fresh) == bundle.content_hash(package) and not old.get("stale"):
                         reused.append(rid)
                     else:

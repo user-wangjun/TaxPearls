@@ -359,6 +359,7 @@ def report_gaps(gaps, slot=None):
     """Summarize review blockers for readers without exposing diagnostic fields."""
     grouped = {}
     labels = {
+        'budget_unsplittable': '本项自动分析未完成，需人工复核。',
         'metric_missing': '请补充或核对本项所需数据。',
         'comparability_pending': '不同材料的统计口径尚未核对一致。',
         'exception_review': '本项业务的特殊适用情况尚待核实。',
@@ -461,7 +462,8 @@ def archive(store, actor, task_id, expected_revision, *, complete_report_version
         for rid, slot in checks.items():
             old = slot["bundle"]
             fresh = metrics.build_task_bundle(db, payload, old["task"], rid, topic=old["check"]["topic"],
-                                              token_budget=old["batching"]["soft_token_budget"])
+                                              token_budget=old["batching"]["soft_token_budget"],
+                                              output_tokens=old["batching"].get("output_tokens"))
             if slot.get("stale") or bundle.content_hash(fresh) != bundle.content_hash(old):
                 raise AccessDenied("资料或政策依据已变化，请重新核查后生成报告。", 409)
             if (slot.get("ai") or {}).get("validated"):
