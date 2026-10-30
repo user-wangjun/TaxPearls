@@ -3,6 +3,7 @@ from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
+import shlex
 import shutil
 import sqlite3
 import tempfile
@@ -12,6 +13,35 @@ from src.public_policy_package import load_package, import_package
 from webapp import policy_graph as pg
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class ContainerPublicPolicyPackageTests(unittest.TestCase):
+    def test_container_copy_includes_package_and_all_referenced_originals(self):
+        """Validate delivered bytes, not just the presence of COPY text."""
+        with tempfile.TemporaryDirectory() as directory:
+            image_root = Path(directory)
+            for line in (ROOT/'Dockerfile').read_text(encoding='utf-8').splitlines():
+                if not line.startswith('COPY '):
+                    continue
+                arguments = line.removeprefix('COPY ').strip()
+                paths = json.loads(arguments) if arguments.startswith('[') else shlex.split(arguments)
+                sources, destination = paths[:-1], paths[-1]
+                self.assertFalse(Path(destination).is_absolute())
+                for name in sources:
+                    source, target = ROOT/name, image_root/destination
+                    if source.is_dir():
+                        shutil.copytree(source, target, dirs_exist_ok=True)
+                    else:
+                        if destination.endswith('/') or len(sources) > 1:
+                            target = target/source.name
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copyfile(source, target)
+            package = image_root/'data/public-policy/snapshot.json.gz'
+            self.assertTrue(package.is_file(), 'Container is missing the public policy snapshot required at startup')
+            payload = load_package(package, image_root)
+            manifest = json.loads((image_root/'data/public-policy/manifest.json').read_text(encoding='utf-8'))
+            self.assertEqual(len(payload['originals']), manifest['original_file_count'])
+            self.assertEqual(len(payload['tables']['Policy']), manifest['table_counts']['Policy'])
 
 
 class CitationDeliveryTests(unittest.TestCase):

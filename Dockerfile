@@ -23,6 +23,9 @@ COPY src ./src
 COPY tests/fixtures/kg_retrieval/gold_cases.json ./tests/fixtures/kg_retrieval/gold_cases.json
 COPY webapp ./webapp
 COPY rules ./rules
+COPY data/public-policy ./data/public-policy
+COPY ["docs/法规原文", "./docs/法规原文"]
+COPY ["docs/国家级税费政策.yaml", "docs/广东省地方政策.yaml", "./docs/"]
 COPY ["docs/企业政策适用目录.yaml", "./docs/企业政策适用目录.yaml"]
 COPY templates ./templates
 COPY logo ./logo
