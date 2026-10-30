@@ -55,6 +55,57 @@ GitHub：[user-wangjun/TaxPearls](https://github.com/user-wangjun/TaxPearls)
 
 手动只读复验：`python scripts/collect_guangdong_reference.py --retrieved-on YYYY-MM-DD --verify docs/广东省公开行业数据.json`（填实际采集日）。不带 `--verify` 仅向标准输出打印重新抓取的 JSON，不覆盖原文件，不启动定时任务。
 
+## Docker 部署
+
+宿主机需有可用的 Docker Engine 和提供 `docker compose` 命令的 Docker Compose；Windows 可使用 Docker Desktop。镜像内提供 Python 3.13、锁定依赖、Chromium 和中文字体，应用以非 root 用户运行，并配置健康检查。
+
+- [Dockerfile](Dockerfile)：定义镜像构建；构建时须一并打包 `data/public-policy/` 的快照、清单、`docs/法规原文/` 和快照引用的国家级、广东省政策 YAML，保留相对路径。
+- [compose.yaml](compose.yaml)：读取外置配置，将业务数据持久化到 `/data`，把容器内的 `8000` 端口映射到指定的宿主机回环端口。
+- [部署、备份恢复与回滚](docs/05-部署备份恢复与回滚.md#容器配置)：说明实例隔离、HTTPS、密钥保管及数据恢复要求。
+
+### 配置与启动
+
+参考 [.env.example](.env.example) 准备该实例独立的外置配置文件，填写下列部署参数及所需密钥。已有数据库继续使用原字段密钥和材料密钥；备份密钥独立保管。
+
+| 参数 | 配置要求 |
+| --- | --- |
+| `TAXPEARLS_ENVIRONMENT` | 明确为 `local`、`training` 或 `production` |
+| `TAXPEARLS_INSTANCE_ID` | 每个安装独立且保持稳定，Compose 据此命名项目、数据卷和网络 |
+| `TAXPEARLS_ENV_FILE` | 指向该实例受控配置文件；下方命令的配置路径须与其一致 |
+| `TAXPEARLS_IMAGE_TAG` | 填写本次构建的明确版本标签；正式发布后不覆盖同一标签 |
+| `TAXPEARLS_BIND_PORT` | 填写空闲宿主机端口，例如 `8000`；仅绑定 `127.0.0.1` |
+
+在项目根目录执行以下 PowerShell 命令，将示例路径替换为实际配置路径：
+
+```powershell
+$deployConfig = "C:/受控配置/production.env"
+docker compose --env-file $deployConfig config --quiet
+docker compose --env-file $deployConfig build
+docker compose --env-file $deployConfig up -d --no-build --pull never
+docker compose --env-file $deployConfig ps
+docker compose --env-file $deployConfig logs --tail 50 taxpearls
+```
+
+等待 `ps` 显示容器健康后，在本机访问 `http://127.0.0.1:<TAXPEARLS_BIND_PORT>`，例如 `http://127.0.0.1:8000`。应用依赖与 PDF 浏览器由镜像提供，无需在宿主机另装项目虚拟环境或 Chrome。首次使用按页面创建平台管理员，自行部署不预置演示账号。
+
+公共知识资料在应用启动时校验，并按版本初始化公共知识库；修改公共资料后须重新构建镜像。升级前备份数据与设置，保留实例 ID、数据卷及匹配的密钥；`docker compose down -v` 会删除该项目的数据卷，不用于保留数据的升级。正式环境还需配置 HTTPS、可信代理、`TAXPEARLS_COOKIE_SECURE=1` 及持久化目录访问控制。
+
+### 本机验证结果
+
+2026-10-31 已完成真实构建与运行验证。验证镜像为 `taxpearls:public-knowledge-20261030`，镜像 ID 前缀为 `afe58bef3201`；以下记录对应本次构建，其他源码或配置版本需重新验证。
+
+| 验证项 | 实测结果 |
+| --- | --- |
+| 镜像构建 | Docker 构建成功，镜像包含公共知识快照、清单及引用原文 |
+| 业务容器启动 | 使用独立临时配置与数据卷，以 production 身份及非 root 用户运行；健康检查正常，首页返回 HTTP 200 |
+| 公共知识初始化 | 155 份政策、2,350 条条款、1,257 条规则、932 份留存原文，原文字节通过哈希校验 |
+| 中文 PDF | Chromium 实际生成一页 PDF，并核对提取出的中文文本 |
+| 业务容器重启 | 图谱、原文和初始化标记保持一致，没有重复导入 |
+| Docker Desktop 升级后复验 | Windows 11 / WSL 2，Docker Desktop 4.97.0、Engine 29.9.2；多次重启及完整停止后启动成功 |
+| 引擎重启后的运行与数据 | 同一镜像可运行，测试卷内容保留，155 份政策与 932 份原文再次校验通过；原有容器、镜像与数据卷身份记录保持一致 |
+
+镜像构建、业务容器启动和 PDF 检查在 Docker Desktop 升级前完成；升级后复用同一镜像检查引擎重启、停止后启动、卷内容保留及公共知识校验。测试关闭外部 AI 与邮件，未创建业务账号；临时容器、数据卷和配置已清理，构建镜像保留。本次记录覆盖本机容器与 Docker Desktop 生命周期，不包含 Windows 整机重启、真实外部服务、备份恢复、跨版本回滚或线上部署验收。
+
 ## 快速启动
 
 需要 Python 与本机 Google Chrome。启动 Web 服务前，须通过本机 `.env` 或进程环境配置 `TAXPEARLS_FIELD_KEY`：独立的 32 字节随机密钥，以 Base64 编码。密钥应稳定保管，应用不自动生成或替换。已有数据库先按 [停服迁移步骤](docs/05-部署备份恢复与回滚.md#敏感字段加密与离线迁移)处理。
