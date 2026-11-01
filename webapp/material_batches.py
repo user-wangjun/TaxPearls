@@ -361,7 +361,7 @@ def append_revision(store, actor, batch_id, expected_revision, kind, payload):
     return revision
 
 
-def read(store, actor, batch_id, *, current_only=False):
+def _read_snapshot(store, actor, batch_id, *, current_only):
     """Snapshot reads and decryption never occupy the SQLite writer."""
     with store.connect() as db:
         db.execute('BEGIN')
@@ -403,8 +403,13 @@ def read(store, actor, batch_id, *, current_only=False):
     return result
 
 
+def read(store, actor, batch_id, *, current_only=False):
+    return _read_snapshot(store, actor, batch_id, current_only=current_only)
+
+
 def read_current(store, actor, batch_id):
-    return read(store, actor, batch_id, current_only=True)
+    """Read the current version without entering the full-history API."""
+    return _read_snapshot(store, actor, batch_id, current_only=True)
 
 
 def original(store, actor, batch_id, file_id, *, purpose='download'):
