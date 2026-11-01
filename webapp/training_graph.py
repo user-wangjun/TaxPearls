@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+from webapp.training_content import public_content_operator
+
 import sqlite3
 import uuid
 from functools import wraps
@@ -138,6 +140,8 @@ def relations_payload(db, kp_id: str) -> dict[str, list[dict[str, Any]]]:
         "SELECT * FROM knowledge_point_relation WHERE from_kp_id=? OR to_kp_id=?"
         " ORDER BY created_at", (kp_id, kp_id)).fetchall()
     for r in rows:
+        if r['relation_type'] == 'prerequisite' and r['from_kp_id'] != kp_id:
+            continue
         other_id = r["to_kp_id"] if r["from_kp_id"] == kp_id else r["from_kp_id"]
         key = (r["relation_type"], other_id)
         if other_id == kp_id or key in seen:
@@ -145,7 +149,9 @@ def relations_payload(db, kp_id: str) -> dict[str, list[dict[str, Any]]]:
         seen.add(key)
         target = brief(other_id)
         if target:
-            out[r["relation_type"]].append(target | {"relation_id": r["id"]})
+            out[r["relation_type"]].append(target | {
+                "relation_id": r["id"], "basis_ref": r['basis_ref'],
+                "basis_version": r['basis_version']})
     return out
 
 
@@ -195,8 +201,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/knowledge-points/{kp_id}/relations")
     @guarded
     def staff_relation_create(kp_id: str, body: RelationCreate,
-                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                              session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"relation": create_relation(
             store_provider(), who, kp_id, body.to_kp_id, body.relation_type,
             body.basis_ref, body.basis_version)})
@@ -204,6 +210,6 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.delete("/api/training/staff/relations/{relation_id}")
     @guarded
     def staff_relation_delete(relation_id: str,
-                              session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                              session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"relation": delete_relation(store_provider(), who, relation_id)})

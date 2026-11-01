@@ -4,7 +4,9 @@ import json
 from time import perf_counter
 
 from src import tax_conditions
-from . import applicability, keyword_search, relation_search, semantic_search
+from src.policy_paths import database_directory
+from src.public_policy_package import citation_view
+from . import applicability, keyword_search, relation_search, semantic_search, passages
 from .common import canonical, checked_task, clause_record, digest, period_basis, unit
 
 
@@ -115,14 +117,14 @@ def _conditions(context, facts, task):
     return output, exceptions, values, gaps
 
 
-def split_bundle(bundle, token_budget=6000):
+def split_bundle(bundle, token_budget=6000, *, output_tokens=None):
     from .batching import split
-    return split(bundle, token_budget)
+    return split(bundle, token_budget, output_tokens=output_tokens)
 
 
 def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_catalog=(), model_dir=None,
           candidate_limit=20, review_limit=30, token_budget=6000, offline=True, metric_definitions=None, fact_assessment=None,
-          supporting_materials=()):
+          supporting_materials=(), output_tokens=None):
     started = perf_counter()
     task = checked_task(task)
     if not db.in_transaction:
@@ -154,7 +156,25 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
     selected_ids = {row["clause_id"] for row in selected}
     # Required dependencies bypass both route top-k and review_limit.
     required = set(context["required"])
-    closure = relation_search.dependency_closure(db, selected_ids | required)
+    # Converted screens have an explicitly reviewed source basis. Search may
+    # surface other policies, but does not itself establish a rule dependency.
+    reviewed_screen_basis = (rule.get('rule_type') == 'risk_screen' and rule.get('review_status') == 'approved'
+        and all(c.get('condition_source') == 'internal_screening' for c in context['conditions'])
+        and any(e['relation_type'] == 'PROVIDES_CONTEXT' and e['review_status'] == 'approved'
+                and e['from_type'] == 'Clause' and e['to_type'] == 'TaxRule' and e['to_id'] == rule_id
+                for e in context['relationships']))
+    source_bound = bool(required and (rule.get('conversion_json') or reviewed_screen_basis))
+    closure = relation_search.dependency_closure(db, required if source_bound else selected_ids | required)
+    optional_ids = selected_ids - set(closure['clause_ids']) if source_bound else set()
+    # Preserve all required, parent and change-chain sources. Only optional
+    # retrieval matches with reliable structural boundaries may be excerpted.
+    dependency_ids = set(closure['clause_ids']) - selected_ids
+    dependency_ids |= {edge[key] for edge in closure['relationships'] for key in ('from_id', 'to_id', 'evidence_clause_id')
+                       if edge.get(key)}
+    for cid in closure['clause_ids']:
+        clause, _ = clause_record(db, cid)
+        if clause.get('parent_clause_id'):
+            dependency_ids.add(clause['parent_clause_id'])
     facts, gaps = _facts(context, supplied_facts, task, source_catalog)
     if supporting_materials:
         gaps.append({"code": "supporting_validity_review", "message": "额外材料仅作本次任务的佐证线索，其关联期间、适用性与证明力须人工核实，不替代核心资料或程序指标。"})
@@ -175,9 +195,13 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
             gaps.append({"code": "entity_pending", "entity_id": edge["to_id"], "message": "适用主体尚未核实。"})
     evidence, leads, decisions, source_cache = [], [], {}, {}
     matches = {item["clause_id"]: item["matches"] for item in selected}
-    for cid in closure["clause_ids"]:
+    has_reviews = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='PolicyReview'").fetchone()
+    source_reviews = ([dict(r) for r in db.execute('SELECT * FROM PolicyReview WHERE coverage_start<=? AND coverage_end>=?',
+                                                  (task['period_start'], task['period_end']))] if has_reviews else [])
+    for cid in sorted(set(closure["clause_ids"]) | optional_ids):
         clause, policy = clause_record(db, cid)
-        decision = applicability.check(clause, policy, task, closure["relationships"], source_cache=source_cache)
+        decision = applicability.check(clause, policy, task, closure["relationships"], source_cache=source_cache,
+                                       source_root=database_directory(db), source_reviews=source_reviews)
         paths = context["required"].get(cid, [])
         if paths and all(path.get("review_status", "approved") != "approved" for path in paths):
             decision["status"] = "needs_review"
@@ -185,13 +209,29 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
         decisions[cid] = decision
         record = {"clause_id": cid, "policy_id": policy["policy_id"], "clause_version": clause.get("version"),
                   "policy_version": policy.get("version"), "document_no": policy.get("document_no"),
-                  "title": policy["title"], "issuer": policy["issuer"], "text": clause["content"],
+                  "title": policy["title"], "issuer": policy["issuer"], **citation_view(clause, policy),
                   "source_location": clause.get("source_location"), "source_url": policy["source_url"],
                   "file_sha256": policy.get("file_sha256"), "region_code": policy["region_code"],
                   "effective_from": decision["effective_from"], "effective_to": decision["effective_to"],
                   "applicability": decision["status"], "reasons": decision["reasons"], "segments": decision["segments"],
                   "required": cid in required, "retrieval_matches": matches.get(cid, []),
                   "review_status": clause["extraction_status"]}
+        if decision.get('coverage_review'):
+            record['coverage_review'] = decision['coverage_review']
+        for field in ('tax_types_json', 'scope_json', 'date_evidence_json', 'source_metadata_json'):
+            if policy.get(field):
+                record[field.removesuffix('_json')] = json.loads(policy[field])
+        selection = passages.select(record['text'], matches.get(cid, []),
+                                    required=cid in required or bool(record.get('citation_corrections')), dependency=cid in dependency_ids)
+        record.update(selection)
+        if cid in optional_ids:
+            if decision['status'] == 'excluded':
+                excluded.append({'clause_id':cid, 'stage':'applicability', 'reasons':decision['reasons']})
+            else:
+                record.update(retrieval_only=True, applicability='needs_review', reasons=[
+                    *decision['reasons'], '检索线索尚未关联为本规则依据，不参与本项检查判定。'])
+                leads.append(record)
+            continue
         if decision["status"] == "excluded":
             excluded.append({"clause_id": cid, "stage": "applicability", "reasons": decision["reasons"]})
             if cid in required:
@@ -203,6 +243,9 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
             evidence.append(record)
             if cid in required and decision["status"] == "context_only" and decision.get('context_kind')!='supporting_basis':
                 gaps.append({"code": "rule_source_changed", "clause_id": cid, "message": "本规则的原依据已修改，仅保留历史上下文，须复核执行版本。"})
+        if decision['status'] != 'excluded' and selection.get('partial_clause'):
+            gaps.append({'code': 'retrieval_context_partial', 'clause_id': cid,
+                         'message': '本条仅取回命中段落及检测到的限制语境；完整适用条件、例外和引用仍须结合原文复核。'})
     if not evidence:
         gaps.append({"code": "policy_evidence_missing", "message": "没有可核实的相关政策证据。"})
     try:
@@ -266,7 +309,7 @@ def build(db, task, rule_id, supplied_facts, *, topic="", keywords=(), source_ca
         bundle["supporting_materials"] = deepcopy(list(supporting_materials))
         core["supporting_materials"] = bundle["supporting_materials"]
     bundle["bundle_id"] = digest(core)
-    bundle["batching"] = split_bundle(bundle, token_budget)
+    bundle["batching"] = split_bundle(bundle, token_budget, output_tokens=output_tokens)
     if bundle["batching"]["unsplittable"]:
         bundle["bundle_status"] = "needs_review"
         bundle["gaps"].append({"code": "budget_unsplittable", "message": "单个完整条款或必要上下文超出预算，保留原文并转复核。"})

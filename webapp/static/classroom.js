@@ -39,6 +39,12 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     catch (error) { if (getUser()?.id === uid) showError(error.message); }
     finally { if (getUser()?.id === uid) { button.disabled = false; if (fieldset) fieldset.disabled = false; } }
   }
+  function personName(person, peers = []) {
+    const name = (person.display_name || person.name || person.username || "").trim();
+    const duplicate = peers.some(other => other.id !== person.id
+      && (other.display_name || other.name || other.username || "").trim() === name);
+    return duplicate && person.username ? `${name}（${person.username}）` : name;
+  }
   function roster(preserve = false) {
     const box = $("classRoster");
     const included = new Set(preserve ? [...box.querySelectorAll("input:checked")].map(n=>n.value) : editingClass?.students.map(s => s.id) || []);
@@ -49,7 +55,15 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     for (const person of people.values()) {
       const label = el("label"), check = el("input"); check.type = "checkbox"; check.value = person.id;
       check.checked = included.has(person.id);
-      label.append(check, document.createTextNode(` ${person.display_name}（${person.username}）`)); box.append(label);
+      const assigned = person.classes || [];
+      const elsewhere = assigned.filter(c => c.id !== editingClass?.id);
+      const existingMember = editingClass?.students.some(s => s.id === person.id);
+      check.disabled = elsewhere.length > 0 && !existingMember;
+      if (check.disabled) check.checked = false;
+      const names = assigned.map(c => c.name).join("、");
+      const hint = elsewhere.length
+        ? (existingMember ? "；存在重复绑定，可取消勾选移出本班" : "；请先从原班级移出") : "";
+      label.append(check, document.createTextNode(` ${personName(person, [...people.values()])}${names ? ` · 已在：${names}${hint}` : " · 未分班"}`)); box.append(label);
     }
     if (!people.size) box.append(el("p", "muted", "暂无有效学生账号；需先由管理员创建账号。空班级不会自动公开作业。"));
   }
@@ -57,7 +71,7 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     const selected = data.classes.find(c => c.id === $("classEditor").value);
     editingClass = selected ? {...selected} : null;
     $("className").value = selected?.name || "";
-    $("classEditStatus").textContent = selected ? `编辑名册 v${selected.revision}；移出成员会撤回其班级作业访问，历史提交仍保留。` : "新建班级：可先保存空班级，再编辑名册。";
+    $("classEditStatus").textContent = selected ? `编辑名册 v${selected.revision}；移出成员会撤回其班级作业访问，历史提交仍保留。调班请先从原班级移出，再加入新班级。` : "新建班级：可先保存空班级；已有班级的学生须先从原班级移出。";
     roster();
   }
   $("classEditor").onchange = editClass;
@@ -110,7 +124,7 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
       const title = $("paperTitle").value.trim(), scope = $("paperClass").value;
       if (!title || !draft.length) throw new Error("请填写试卷标题并至少添加一个案例。");
       if (scope === "__choose__") throw new Error("请明确选择发布班级或全机构学生。");
-      const body = {title, class_id: scope || null, deadline_at: deadlineInput($("paperDeadline")), published,
+      const body = {title, class_id: scope || null, course_id: $("paperCourse")?.value || null, deadline_at: deadlineInput($("paperDeadline")), published,
         items: draft.map(({label, ...item}) => item)};
       await api("/api/papers", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
       if (getUser()?.id !== uid) return;
@@ -190,7 +204,8 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     const group = data.classes.find(c => c.id === $("profileClass").value);
     const active = new Set(data.students.map(s => s.id));
     if (resetSelection) $("profileStudent").value = "";
-    fillSelect("profileStudent", [["", "请选择学生"], ...(group?.students || []).filter(s => active.has(s.id)).map(s => [s.id, `${s.display_name}（${s.username}）`])], "");
+    const people = (group?.students || []).filter(s => active.has(s.id));
+    fillSelect("profileStudent", [["", "请选择学生"], ...people.map(s => [s.id, personName(s, people)])], "");
   }
   function profileChart(points, category) {
     const wrap = el("div", "training-stats-scroll profile-chart");
@@ -232,6 +247,7 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     box.append(el("p", "training-progress", `适用 ${t.assignments} 份作业 · 已交 ${t.submitted} · 未交 ${t.unsubmitted} · 有效 ${t.valid} · 不可用 ${t.invalid}`));
     box.append(el("p", "muted", `不同案例 ${t.unique_cases} 份，重复案例提交 ${t.repeated_cases} 份；当前均分 ${scoreText(t.mean_score)}，自动均分 ${scoreText(t.automatic_mean_score)}，人工调分 ${t.adjusted} 份。`));
     box.append(el("p", "muted", result.scope));
+    if (t.pending_results) box.append(el("p", "muted", `${t.pending_results} 份提交的成绩尚未开放，暂不计入评分与能力画像。`));
     const method = el("details"); method.append(el("summary", null, "画像口径与比较限制"), el("p", "muted", result.method)); box.append(method);
     if (t.invalid) box.append(el("p", "training-stat-warning", `有 ${t.invalid} 份记录不可用（其中 ${t.undated} 份时间不可用）；请核查明细，不据此判断能力。`));
     box.append(statisticsTable("跨作业薄弱项（风险类别）", ["类别", "出现漏检的作业 / 涉及作业", "漏检 / 命中机会", "漏检率", "出现误报的作业", "误报 / 通过机会", "误报率", "材料不足仍标风险"],
@@ -262,6 +278,17 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
       const card = el("div", "training-card"); card.append(el("h3", null, record.title));
       card.append(el("p", "muted", `${record.published ? "已发布" : "已撤回"} · 最新保存：${record.submitted_at ? dueText(record.submitted_at) : "时间不可用"}`));
       card.append(el("p", record.valid ? null : "training-stat-warning", record.valid ? `当前评分 ${scoreText(record.score)} · 自动评分 ${scoreText(record.automatic_score)} · 漏检 ${record.missed} · 误报 ${record.false_positive} · 材料不足仍标风险 ${record.unsupported}` : record.warning));
+      if (record.versions && record.versions.length) {
+        const history = el("details");
+        history.append(el("summary", null, `提交版本（${record.versions.length} 次）`));
+        history.append(el("p", "muted", "历次提交与当时的复核分、教师评语按原样保留；当前成绩以最新一次为准。"));
+        history.append(statisticsTable("历次提交", ["版本", "类型", "提交时间", "自动评分", "复核分", "教师评语"],
+          record.versions.map(v => [`第 ${v.version} 次`, v.kind === "correct" ? "订正" : "原始提交",
+            v.submitted_at ? dueText(v.submitted_at) : "时间不可用", scoreText(v.score),
+            v.adjusted_score === null || v.adjusted_score === undefined ? "未复核" : scoreText(v.adjusted_score),
+            v.feedback || ""])));
+        card.append(history);
+      }
       if (record.valid) { const view = el("button", null, "查看这份作业"); view.type = "button"; view.onclick = () => openExercise(record.id); card.append(view); }
       records.append(card);
     }
@@ -314,7 +341,8 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     box.append(el("h2", null, item.title), el("p", "muted", `${status(item)} · 截止：${dueText(item.deadline_at)} · 截止以服务器提交校验为准`));
     if (item.progress) {
       const p = item.progress;
-      box.append(el("p", "training-progress", `已完成 ${p.completed}/${p.case_count} 题 · 已得 ${p.earned_points}/${p.total_points} 分值 · 总评分：${p.score === null ? "待全部题目完成" : p.score + " 分"}`));
+      const earned = p.earned_points === null ? "得分尚未开放" : `已得 ${p.earned_points}/${p.total_points} 分值`;
+      box.append(el("p", "training-progress", `已完成 ${p.completed}/${p.case_count} 题 · ${earned} · 总评分：${p.score === null ? (p.earned_points === null ? "尚未开放" : "待全部题目完成") : p.score + " 分"}`));
     }
     for (const question of item.items) {
       const card = el("div", "training-card");
@@ -364,7 +392,7 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
       const card = el("div", "training-card");
       const scope = item.class_id ? data.classes.find(c => c.id === item.class_id)?.name || "所属班级" : "全机构学生";
       card.append(el("h3", null, item.title), el("p", "muted", `${status(item)} · ${scope} · ${item.items.length} 题 · 截止：${dueText(item.deadline_at)}`));
-      if (item.progress) card.append(el("p", "training-progress", `已完成 ${item.progress.completed}/${item.progress.case_count} 题 · 总评分：${item.progress.score === null ? "未完成" : item.progress.score + " 分"}`));
+      if (item.progress) card.append(el("p", "training-progress", `已完成 ${item.progress.completed}/${item.progress.case_count} 题 · 总评分：${item.progress.score === null ? (item.progress.earned_points === null ? "尚未开放" : "未完成") : item.progress.score + " 分"}`));
       const view = el("button", null, "打开试卷 / 查看进度"); view.type = "button"; view.onclick = () => openPaper(item.id); card.append(view);
       if (teacher()) card.append(settingsControls(item, "papers")); papers.append(card);
     }
@@ -389,6 +417,6 @@ window.createTrainingClassroom = function ({api, el, getUser, openExercise, refr
     $("className").value = ""; $("paperClass").value = "__choose__"; $("paperDeadline").value = "";
     draftRows();
   }
-  return {render, reset, deadlineInput, dueText, status, invalidatePending:()=>{paperRequest++;mistakeBook.invalidate("作业列表更新中，请稍候或刷新错题本。");clearStatistics("作业列表更新中，请稍候或刷新学情。");clearProfile("作业列表更新中，请稍候或刷新画像。");},
+  return {render, reset, deadlineInput, dueText, status, openPaper, invalidatePending:()=>{paperRequest++;mistakeBook.invalidate("作业列表更新中，请稍候或刷新错题本。");clearStatistics("作业列表更新中，请稍候或刷新学情。");clearProfile("作业列表更新中，请稍候或刷新画像。");},
     singleControls: item => teacher() && item.created_by === getUser()?.id ? settingsControls(item, "assignments") : null};
 };

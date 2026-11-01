@@ -3,10 +3,12 @@ from functools import lru_cache
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from threading import RLock
 
 from .common import candidate, clause_record, digest
+from .passages import VERSION
 
 _LOCK = RLock()
 
@@ -27,6 +29,11 @@ def initialize(db):
         UNIQUE(clause_id,chunk_index,model_fingerprint)
     )''')
     db.execute("CREATE INDEX IF NOT EXISTS idx_kg_vectors_model ON kg_clause_vectors(model_fingerprint,clause_id)")
+    columns = {r[1] for r in db.execute('PRAGMA table_info(kg_clause_vectors)')}
+    for name, definition in [('source_char_start', 'INTEGER'), ('source_char_end', 'INTEGER'),
+                             ('chunking_version', "TEXT NOT NULL DEFAULT 'legacy'")]:
+        if name not in columns:
+            db.execute(f'ALTER TABLE kg_clause_vectors ADD COLUMN {name} {definition}')
 
 
 class LocalEncoder:
@@ -54,20 +61,44 @@ class LocalEncoder:
                                            sess_options=options, providers=["CPUExecutionProvider"])
 
     def chunks(self, text):
-        # Token offsets cover the full clause. Long originals are not silently truncated.
-        with _LOCK:
-            self.tokenizer.no_padding()
-            encoded = self.tokenizer.encode(text, add_special_tokens=False)
-            self.tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
-        if len(encoded.ids) <= 480:
-            return [text]
-        result = []
-        for start in range(0, len(encoded.ids), 400):
-            offsets = encoded.offsets[start:start + 480]
-            result.append(text[offsets[0][0]:offsets[-1][1]])
-            if start + 480 >= len(encoded.ids):
-                break
-        return result
+        return [span['text'] for span in self.chunk_spans(text)]
+
+    def chunk_spans(self, text):
+        # Natural paragraphs stay intact when they fit. Oversized paragraphs
+        # use overlapping token windows, mapped back to exact original offsets.
+        result, pending, pending_tokens = [], None, 0
+        def append(a, b):
+            result.append({'text': text[a:b], 'source_char_start': a, 'source_char_end': b})
+        for paragraph in re.finditer(r'[^\n]*\n|[^\n]+$', text):
+            begin, end = paragraph.span()
+            body = paragraph.group()
+            with _LOCK:
+                self.tokenizer.no_padding()
+                try:
+                    encoded = self.tokenizer.encode(body, add_special_tokens=False)
+                finally:
+                    self.tokenizer.enable_padding(pad_id=0, pad_token="[PAD]")
+            if len(encoded.ids) <= 480:
+                if pending is not None and pending_tokens + len(encoded.ids) > 480:
+                    append(pending, begin)
+                    pending, pending_tokens = None, 0
+                if pending is None:
+                    pending = begin
+                pending_tokens += len(encoded.ids)
+                continue
+            if pending is not None:
+                append(pending, begin)
+                pending, pending_tokens = None, 0
+            for start in range(0, len(encoded.ids), 400):
+                offsets = encoded.offsets[start:start + 480]
+                a = begin if start == 0 else begin + offsets[0][0]
+                b = end if start + 480 >= len(encoded.ids) else begin + offsets[-1][1]
+                append(a, b)
+                if start + 480 >= len(encoded.ids):
+                    break
+        if pending is not None:
+            append(pending, len(text))
+        return result or [{'text': text, 'source_char_start': 0, 'source_char_end': len(text)}]
 
     def encode(self, texts, *, query=False):
         np, vectors = self.np, []
@@ -112,22 +143,25 @@ def available(directory=None):
 def synchronize(db, model):
     """Embed only changed clauses. SQL cache is the durable ID ↔ clause/version mapping."""
     np = model.np
-    old = {r["clause_id"]: r["content_hash"] for r in db.execute(
-        "SELECT clause_id,content_hash FROM kg_clause_vectors WHERE model_fingerprint=?", (model.fingerprint,))}
+    initialize(db)
+    old = {r["clause_id"]: (r["content_hash"], r['chunking_version']) for r in db.execute(
+        "SELECT clause_id,content_hash,chunking_version FROM kg_clause_vectors WHERE model_fingerprint=?", (model.fingerprint,))}
     current = {r["clause_id"]: (r["content"], r["version"]) for r in db.execute("SELECT clause_id,content,version FROM Clause")}
     updated, removed = [], sorted(set(old) - current.keys())
     for cid in removed:
         db.execute("DELETE FROM kg_clause_vectors WHERE clause_id=? AND model_fingerprint=?", (cid, model.fingerprint))
     for cid, (text, version) in current.items():
         fingerprint = digest([text, version])
-        if old.get(cid) == fingerprint:
+        if old.get(cid) == (fingerprint, VERSION):
             continue
-        chunks = model.chunks(text)
-        vectors = model.encode(chunks)
+        spans = model.chunk_spans(text)
+        vectors = model.encode([s['text'] for s in spans])
         db.execute("DELETE FROM kg_clause_vectors WHERE clause_id=? AND model_fingerprint=?", (cid, model.fingerprint))
         for index, vector in enumerate(vectors):
-            db.execute("INSERT INTO kg_clause_vectors(clause_id,chunk_index,content_hash,model_fingerprint,vector) VALUES (?,?,?,?,?)",
-                       (cid, index, fingerprint, model.fingerprint, np.asarray(vector, dtype="float32").tobytes()))
+            span = spans[index]
+            db.execute("INSERT INTO kg_clause_vectors(clause_id,chunk_index,content_hash,model_fingerprint,vector,source_char_start,source_char_end,chunking_version) VALUES (?,?,?,?,?,?,?,?)",
+                       (cid, index, fingerprint, model.fingerprint, np.asarray(vector, dtype="float32").tobytes(),
+                        span['source_char_start'], span['source_char_end'], VERSION))
         updated.append(cid)
     return {"updated_clause_ids": updated, "removed_clause_ids": removed, "model_fingerprint": model.fingerprint}
 
@@ -141,7 +175,8 @@ def build_faiss(db, model):
     vectors = np.stack([np.frombuffer(r["vector"], dtype="float32") for r in records])
     index = faiss.IndexIDMap2(faiss.IndexFlatIP(vectors.shape[1]))
     index.add_with_ids(vectors, np.asarray([r["vector_id"] for r in records], dtype="int64"))
-    mapping = {r["vector_id"]: {"clause_id": r["clause_id"], "chunk_index": r["chunk_index"], "content_hash": r["content_hash"]} for r in records}
+    mapping = {r["vector_id"]: {"clause_id": r["clause_id"], "chunk_index": r["chunk_index"], "content_hash": r["content_hash"],
+                               'source_char_start': r['source_char_start'], 'source_char_end': r['source_char_end']} for r in records}
     return index, mapping, digest([model.fingerprint, mapping])
 
 
@@ -184,15 +219,22 @@ def search(db, query, *, limit=20, directory=None):
         if len(unique) >= limit or take >= index.ntotal:
             break
         take = min(index.ntotal, take * 2)
-    hits, seen = [], set()
+    hits, seen = [], {}
     for score, identifier in zip(scores[0], identifiers[0]):
         row = mapping.get(int(identifier))
-        if not row or row["clause_id"] in seen:
+        if not row:
             continue
-        seen.add(row["clause_id"])
-        clause, policy = clause_record(db, row["clause_id"])
-        hits.append(candidate(clause, policy, "semantic", score=float(score),
-                              reason={"model_fingerprint": model.fingerprint, "chunk_index": row["chunk_index"]}))
-        if len(hits) >= limit:
-            break
+        cid = row['clause_id']
+        if cid not in seen:
+            if len(hits) >= limit:
+                continue
+            clause, policy = clause_record(db, cid)
+            hit = candidate(clause, policy, "semantic", score=float(score),
+                            reason={"model_fingerprint": model.fingerprint, "chunk_index": row["chunk_index"], 'spans': []})
+            seen[cid] = (hit, hashlib.sha256(clause['content'].encode()).hexdigest())
+            hits.append(hit)
+        hit, checksum = seen[cid]
+        if float(score) >= max(.60, hit['score'] - .06) and row['source_char_start'] is not None:
+            hit['reason']['spans'].append({'source_char_start': row['source_char_start'],
+                'source_char_end': row['source_char_end'], 'original_text_sha256': checksum, 'score': float(score)})
     return {"status": "ready", "hits": hits, "index_version": version, "model_fingerprint": model.fingerprint, **update}

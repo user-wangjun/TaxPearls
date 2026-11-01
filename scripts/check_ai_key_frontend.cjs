@@ -5,9 +5,20 @@ function element(tag = "div", className = "", text = "") {
   const node = {tag, children:[], classes:new Set((className || "").split(" ")), events:{}, value:"", disabled:false,
     append(...items) { this.children.push(...items); },
     replaceChildren(...items) { this.children = items; text = ""; },
-    setAttribute() {}, removeAttribute() {}, reset() {}, close() {},
+    setAttribute() {}, removeAttribute() {}, reset() {}, close() {}, focus() {},
+    reportValidity() { return !!this.value; },
     addEventListener(name, fn) { this.events[name] = fn; },
-    querySelectorAll() { return []; },
+    querySelectorAll(selector) {
+      const nested = descendants(this).slice(1);
+      if (selector === "input" || selector === "input:checked") return nested.filter(item => item.tag === "input" && (selector === "input" || item.checked));
+      if (selector.startsWith(".")) {
+        const [className, child] = selector.slice(1).split(" ");
+        const matches = nested.filter(item => item.classes.has(className));
+        return child ? matches.flatMap(item => item.querySelectorAll(child)) : matches;
+      }
+      return [];
+    },
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
     get textContent() { return text + this.children.map(item => item.textContent).join(""); },
     set textContent(value) { text = value; this.children = []; }};
   node.classList = {add(...values) { values.forEach(value => node.classes.add(value)); },
@@ -36,6 +47,41 @@ function harness() {
 }
 
 (async () => {
+  const custom = harness();
+  custom.$("aiKeyAddProvider").value = "custom";
+  custom.$("aiKeyAddProvider").events.change();
+  assert.equal(custom.$("aiKeyAddURL").value, "");
+  assert.equal(custom.$("aiKeyAddModel").value, "");
+  custom.$("aiKeyAddURL").value = "https://custom.example/v1";
+  custom.$("aiKeyAddURL").events.input();
+  assert.equal(custom.$("aiKeyAddProvider").value, "custom");
+  custom.$("aiTemporaryProvider").value = "custom";
+  custom.$("aiTemporaryProvider").events.change();
+  assert.equal(custom.$("aiTemporaryURLField").hidden, false);
+  assert.equal(custom.$("aiTemporaryURL").required, true);
+  custom.$("aiTemporaryKey").value = "synthetic-temporary-key";
+  custom.$("btnTemporaryHealth").events.click();
+  assert.equal(custom.pending.length, 0, "empty URL must not submit or clear the key");
+  assert.equal(custom.$("aiTemporaryKey").value, "synthetic-temporary-key");
+  custom.$("aiTemporaryURL").value = "https://custom.example/v1";
+  custom.$("btnTemporaryHealth").events.click();
+  assert.equal(custom.pending.length, 0, "custom health needs an explicit model");
+  custom.$("aiTemporaryModel").value = "custom-model";
+  custom.$("btnTemporaryHealth").events.click();
+  assert.equal(custom.$("aiTemporaryKey").value, "");
+  assert.deepEqual(JSON.parse(custom.pending.shift().options.body), {operation:"health",provider:"custom",
+    api_key:"synthetic-temporary-key",model:"custom-model",base_url:"https://custom.example/v1",balance_protocol:""});
+  custom.$("aiTemporaryProvider").value = "deepseek";
+  custom.$("aiTemporaryProvider").events.change();
+  assert.equal(custom.$("aiTemporaryURLField").hidden, true);
+  assert.equal(custom.$("aiTemporaryURL").disabled, true);
+  custom.$("aiTemporaryKey").value = "synthetic-official-key";
+  custom.$("btnTemporaryBalance").events.click();
+  assert.equal(Object.hasOwn(JSON.parse(custom.pending.shift().options.body),"base_url"),false);
+  custom.controller.reset();
+  assert.equal(custom.$("aiTemporaryURL").value, "");
+  assert.equal(custom.$("aiTemporaryURLField").hidden, true);
+
   const h = harness();
   const opening = h.controller.load();
   h.pending.shift().resolve(h.catalog); await tick();
@@ -45,6 +91,35 @@ function harness() {
   assert.match(h.brief().textContent, /查询中/);
   h.pending.shift().resolve(fresh); await opening;
   assert.match(h.brief().textContent, /11.71/);
+
+  const fields = h.$("aiKeyCards").querySelector(".probe-usage-choices");
+  const boxes = fields.querySelectorAll("input");
+  const detection = h.$("aiKeyCards").querySelector(".probe-only-detection input");
+  assert.equal(detection.checked, true);
+  assert.ok(boxes.every(box => !box.disabled), "detection-only keys must still allow selecting business uses");
+  boxes[0].checked = true; fields.events.change();
+  assert.equal(detection.checked, false, "selecting a use must turn off detection-only");
+  boxes[1].checked = true; fields.events.change();
+  const saveUses = descendants(h.$("aiKeyCards")).find(node => node.tag === "button" && node.textContent === "保存用途");
+  const savingUses = saveUses.events.click();
+  assert.equal(h.pending[0].options.method, "PUT");
+  assert.deepEqual(JSON.parse(h.pending[0].options.body).usages, ["extraction", "knowledge"]);
+  h.pending.shift().reject(new Error("synthetic save failure")); await savingUses;
+  assert.equal(saveUses.disabled, false, "failed saves must allow retry");
+  boxes[0].checked = false; fields.events.change();
+  assert.equal(detection.checked, false, "remaining uses must keep detection-only off");
+  boxes[1].checked = false; fields.events.change();
+  assert.equal(detection.checked, true, "clearing the last use restores detection-only");
+  boxes[2].checked = true; fields.events.change();
+  detection.checked = true; detection.events.change();
+  assert.ok(boxes.every(box => !box.checked && !box.disabled), "detection-only clears uses without disabling them");
+  const savingDetection = saveUses.events.click();
+  assert.deepEqual(JSON.parse(h.pending[0].options.body).usages, []);
+  h.pending.shift().reject(new Error("synthetic save failure")); await savingDetection;
+  boxes[3].checked = true; fields.events.change();
+  descendants(h.$("aiKeyCards")).find(node => node.tag === "button" && node.textContent === "取消").events.click();
+  assert.equal(h.$("aiKeyCards").querySelector(".probe-only-detection input").checked, true, "cancel restores saved uses");
+  console.log("AI key usages: direct multi-select, detection-only, payloads, retry and cancel passed.");
 
   const refreshing = h.$("btnRefreshAIKeys").events.click();
   h.pending.shift().resolve(h.catalog); await tick();

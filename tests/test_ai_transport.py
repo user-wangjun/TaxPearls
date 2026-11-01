@@ -195,6 +195,56 @@ class AIKeyFailoverTests(unittest.TestCase):
                 self.assertNotIn("synthetic-main", str(caught.exception))
                 self.assertEqual(ai_transport._key_failures, {})
 
+    def test_explicit_context_rejection_is_safe_and_never_switches_keys(self):
+        for error in ({'code': 'context_length_exceeded', 'message': 'private-material'},
+                      {'message': "This model's maximum context length is exceeded: private-material"}):
+            opener = Mock()
+            opener.open.side_effect = HTTPError('https://provider.example', 400, 'bad request', {},
+                                                BytesIO(json.dumps({'error': error}).encode()))
+            with self.subTest(error=error), patch('src.ai_transport.build_opener', return_value=opener):
+                with self.assertRaises(TransportError) as caught:
+                    chat_content(SETTINGS, [], 5)
+                self.assertEqual(caught.exception.kind, 'context_length')
+                self.assertNotIn('private-material', str(caught.exception))
+                self.assertEqual(opener.open.call_count, 1)
+                self.assertEqual(ai_transport._key_failures, {})
+
+    def test_only_explicit_output_length_is_classified_as_recoverable(self):
+        for finish in ('length', 'content_filter', 'tool_calls', 'unknown-private-value'):
+            opener = Mock()
+            opener.open.return_value = BytesIO(envelope('{}', finish))
+            with self.subTest(finish=finish), patch('src.ai_transport.build_opener', return_value=opener):
+                with self.assertRaises(TransportError) as caught:
+                    chat_content(SETTINGS, [], 5)
+                self.assertEqual(caught.exception.kind, 'incomplete')
+                self.assertEqual(caught.exception.finish_reason, None if finish == 'unknown-private-value' else finish)
+                self.assertEqual(opener.open.call_count, 1)
+                self.assertEqual(ai_transport._key_failures, {})
+
+    def test_context_error_survives_json_wrapper_without_exposing_provider_body(self):
+        from webapp.knowledge import _chat_json, SELECTED_SETTINGS, ContextLengthExceeded
+        selected = SELECTED_SETTINGS.set(SETTINGS)
+        try:
+            with patch('webapp.knowledge.chat_content', side_effect=TransportError('context_length', 400)):
+                with self.assertRaises(ContextLengthExceeded):
+                    _chat_json('synthetic', {}, 'failed')
+        finally:
+            SELECTED_SETTINGS.reset(selected)
+
+    def test_json_wrapper_honors_configured_timeout_and_explains_timeout_safely(self):
+        from webapp.knowledge import _chat_json, SELECTED_SETTINGS
+        selected = SELECTED_SETTINGS.set(replace(SETTINGS, timeout=90))
+        try:
+            with patch('webapp.knowledge.chat_content', return_value='{}') as call:
+                _chat_json('synthetic', {}, 'failed')
+                self.assertEqual(call.call_args.args[2], 90)
+            with patch('webapp.knowledge.chat_content', side_effect=TransportError('timeout')):
+                with self.assertRaises(HTTPException) as caught:
+                    _chat_json('synthetic', {}, 'failed')
+                self.assertIn('超时', caught.exception.detail)
+        finally:
+            SELECTED_SETTINGS.reset(selected)
+
     def test_schema_failure_after_http_success_never_uses_another_key(self):
         opener = Mock()
         opener.open.return_value = BytesIO(envelope('{"rows":"invalid"}'))

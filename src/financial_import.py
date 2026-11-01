@@ -448,6 +448,8 @@ def _accounts(sheet, model, meta):
         mapping = {}
         consumed = index
         for c, value in enumerate(row):
+            value = {'借方发生额': '本期借方', '本期借方发生额': '本期借方',
+                     '贷方发生额': '本期贷方', '本期贷方发生额': '本期贷方'}.get(value, value)
             split = index + 1 < len(grid) and grid[index + 1][c] in {'借方', '贷方'}
             if value in {'本期借方', '本期贷方'} or (value in {'期初余额', '期末余额'} and not split):
                 mapping.setdefault(value, []).append(c)

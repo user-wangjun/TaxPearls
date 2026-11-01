@@ -282,3 +282,13 @@ node scripts/check_core_frontend.cjs
 提交前运行 `scripts/check_project.py`，实际覆盖 `test_core_inputs.py`、`test_material_jobs.py`、`test_material_batches.py`、`test_supporting_materials.py`、`test_core_material_concurrency.py`、`test_kg_retrieval.py`、`test_notifications.py` 七个模块，包含检索模块中的报告归档用例。205 项测试全部通过，用时 477.339 秒；依赖检查、Ruff、四组前端检查及源码稳定性检查通过。测试数据库与凭据隔离，外部 AI 和邮件发送关闭，本轮没有重复运行真实模型吞吐测试。
 
 本次只完成本地归集及提交；未推送、未创建 PR、未合并到 main、未部署，也未删除或重命名分支。
+
+## PR 主线兼容验证（2026-11-01）
+
+后续按用户授权准备 PR，以 `origin/main` 的 `eab1611` 为主线基线，在现有预览 worktree 中合入主线并处理兼容；原业务工作区与 8016 保留 `0aa28f0`，四个原提交不重写。PR 沿用 `enterprise-materials-identity`，不合并到 main，不引入 mysql-migration-refresh 的迁移改动。
+
+兼容保留主线的重复来源记录、跨任务去重、增值税取数与可比口径核对及登录懒加载。异步材料作业保存冻结的取数核对指令，并在提交结果前核验主线去重状态；结果索引随短事务更新。浏览器发现旧文件保存时将 `ocr=false` 改为 true 会使解析指纹过期，现保留已有记录的 OCR 配置；无记录文件仍可使用自动 OCR 兜底。前端回归先复现这一问题，再验证修复。
+
+主线兼容回归覆盖上述七个模块及 `test_core_dedup.py`、`test_vat_reconciliation.py`、`test_legacy_core_inputs.py`：264 项运行 562.082 秒，263 项通过，一项仍按旧行为断言只保留两条记录；按主线保留八条来源、其中两条有效记录的语义调整断言后，并发模块 8 项全部复测通过（46.508 秒）。这不是一次 264 项全绿的完整重跑。两轮均使用隔离 SQLite，明确模拟公共政策包启动导入以避免逐个夹具反复导入，外部 AI 与邮件关闭；该启动路径需要由正常 CI 检查。依赖、Ruff、前端契约及资源检查通过，资源版本沿主线懒加载入口逐层更新。
+
+实际浏览器在临时 SQLite 完成合成扫描材料上传、自动显示口径、旧发票原表格金额 100→120 与合计 113→133、核对保存、重新读取及刷新恢复；取数核对的表单版本也成功恢复，来源保留原识别值和已保存修正。浏览器 OCR 返回为明确模拟，不代表真实模型吞吐或准确率。截图为 `output/playwright/pr-main-compatible-review.jpg`。本轮没有新增真实外部 AI、邮件或线上压测，未修改生产数据。

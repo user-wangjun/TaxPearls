@@ -183,7 +183,7 @@ tr{break-inside:avoid}
 </tbody></table>
 </div></div>
 <div class="detail-row"><h3>法规依据</h3><div class="detail-content"><ul class="policy-references">
-{% for p in slot|report_evidence %}<li>{% if p.source_url and p.source_url.startswith(('https://','http://')) %}<a href="{{ p.source_url }}" target="_blank" rel="noopener noreferrer">{{ p.clause_id|clause_reference(slot) }}</a>{% else %}{{ p.clause_id|clause_reference(slot) }}{% endif %}{% if p.document_no %}（{{ p.document_no }}）{% endif %}{% if p.applicability=='context_only' %}<span class="assessment"> · 历史条款，仅供参考</span>{% endif %}</li>{% else %}<li>法规依据尚未核实。</li>{% endfor %}
+{% for p in slot|report_evidence %}<li>{% if p.source_url and p.source_url.startswith(('https://','http://')) %}<a href="{{ p.source_url }}" target="_blank" rel="noopener noreferrer">{{ p.clause_id|clause_reference(slot) }}</a>{% else %}{{ p.clause_id|clause_reference(slot) }}{% endif %}{% if p.document_no %}（{{ p.document_no }}）{% endif %}{% if p.applicability=='needs_review' %}<span class="assessment"> · 政策线索，尚未核实为本项依据</span>{% elif p.applicability=='context_only' %}<span class="assessment"> · 背景参考，须结合本项条件核对</span>{% endif %}</li>{% else %}<li>法规依据尚未核实。</li>{% endfor %}
 </ul></div></div>
 <div class="detail-row"><h3>{{ '处理建议' if item.status in ['issue','needs_review'] else '后续事项' }}</h3><div class="detail-content"><p>{{ item.advice }}</p>
 {% set needed=supplements.by_check.get(rid) %}

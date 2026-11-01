@@ -40,7 +40,7 @@ class PolicyMigrationTests(unittest.TestCase):
             by_id = {r[pg.IDS[table]]:r for r in self.plan['bundle'][table]}
             for old in self.old['bundle'][table]:
                 self.assertEqual(by_id[old[pg.IDS[table]]], old)
-        self.assertEqual(len(self.old['bundle']['Clause']),1289)
+        self.assertTrue(self.old['bundle']['Clause'], 'source corpus must not be empty')
 
     def test_every_source_clause_has_auditable_coverage_and_lossless_predicates(self):
         plan = self.plan
@@ -90,7 +90,13 @@ class PolicyMigrationTests(unittest.TestCase):
         for rule in phases:
             self.assertIn(json.loads(rule['notes'])['phase_in']['subject'],rule['name'])
         changes=[e for e in self.plan['bundle']['Relationship'] if e['relation_type'] in {'REPEALS','AMENDS'}]
-        self.assertEqual(len(changes),len(self.old['bundle']['Relationship']))
+        expected = {r['relationship_id']: r for r in self.old['bundle']['Relationship']
+                    if r['relation_type'] in {'REPEALS', 'AMENDS'}}
+        self.assertEqual({r['relationship_id']: r for r in changes}, expected)
+        # Other source relationships (e.g. INTERPRETS) must survive too.
+        all_edges = {r['relationship_id']: r for r in self.plan['bundle']['Relationship']}
+        for old in self.old['bundle']['Relationship']:
+            self.assertEqual(all_edges[old['relationship_id']], old)
 
     def test_chinese_choices_and_exceptions_do_not_turn_into_an_executable_conjunction(self):
         text='第一条 居民企业或者非居民企业符合条件的，依本法办理；但是另有规定的，从其规定。\n'

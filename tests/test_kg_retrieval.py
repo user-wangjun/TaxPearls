@@ -45,6 +45,244 @@ class RetrievalTests(unittest.TestCase):
         self.assertFalse(metadata["legal_review"])
         self.assertTrue(all(r[0].startswith("local-fixture://") for r in self.db.execute("SELECT source_url FROM Policy")))
 
+    def context_package(self):
+        package = self.package()
+        package['policy_evidence'] = [deepcopy(package['policy_evidence'][0])]
+        package['policy_evidence'][0]['text'] = '完整合成条款，不得遗漏。' * 900
+        package['policy_leads'] = []
+        package['gaps'] = []
+        package['risk_assessment']['missing_evidence'] = []
+        package['batching'] = bundle.split_bundle(package, 128000)
+        return package
+
+    def test_converted_check_keeps_unlinked_pending_policy_as_nonblocking_lead(self):
+        from src.kg_retrieval.common import candidate, clause_record
+        # Source selection is independent of the fixture's arithmetic. Mark its
+        # existing screening calculation as converted, with an explicit CL01 basis.
+        self.db.execute("UPDATE TaxRule SET conversion_json=? WHERE rule_id='R01'",
+                        (json.dumps({'compiler': 'yaml-screen-v2'}),))
+        self.db.execute("INSERT INTO Relationship (relationship_id,from_type,from_id,relation_type,to_type,to_id,evidence_clause_id,effective_from,review_status) VALUES ('pending-unrelated','Clause','CL20','AMENDS','Clause','CL08','CL20','2026-07-01','candidate')")
+        clause, policy = clause_record(self.db, 'CL08')
+        hit = candidate(clause, policy, 'keyword', score=100,
+                        reason={'mode':'fts', 'matched_terms':['收入口径勾稽']})
+        with patch.object(keyword_search, 'search', return_value={'status':'ready', 'hits':[hit]}):
+            result = self.package()
+        self.assertEqual(result['bundle_status'], 'ready')
+        self.assertFalse(result['gaps'])
+        self.assertEqual({p['clause_id'] for p in result['policy_evidence']}, {'CL01'})
+        lead = next(p for p in result['policy_leads'] if p['clause_id']=='CL08')
+        self.assertIn('尚缺施行日期', lead['text'])
+        self.assertEqual(lead['applicability'], 'needs_review')
+        self.assertTrue(lead['retrieval_only'])
+        self.assertIn('CL08', result['retrieval_trace']['keyword_hits'])
+        self.db.execute("UPDATE TaxRule SET conversion_json=NULL WHERE rule_id='R01'")
+        with patch.object(keyword_search, 'search', return_value={'status':'ready', 'hits':[hit]}):
+            unbound = self.package()
+        self.assertIn('policy_review', {g['code'] for g in unbound['gaps']})
+
+    def test_converted_check_still_blocks_pending_required_source_and_amendment(self):
+        self.db.execute("UPDATE TaxRule SET conversion_json=? WHERE rule_id='R01'",
+                        (json.dumps({'compiler': 'yaml-screen-v2'}),))
+        self.db.execute("UPDATE Clause SET extraction_status='needs_review' WHERE clause_id='CL01'")
+        self.db.execute("INSERT INTO Relationship (relationship_id,from_type,from_id,relation_type,to_type,to_id,evidence_clause_id,effective_from,review_status) VALUES ('pending-current','Clause','CL20','AMENDS','Clause','CL01','CL20','2026-07-01','candidate')")
+        result = self.package()
+        self.assertEqual(result['check']['evaluation'], 'UNKNOWN')
+        self.assertIn('change_pending', {g['code'] for g in result['gaps']})
+        self.assertTrue(any(g['code']=='policy_review' and g.get('clause_id')=='CL01' for g in result['gaps']))
+        self.assertIn('CL20', result['retrieval_trace']['dependency_clause_ids'])
+
+    def test_reviewed_native_screen_uses_explicit_reviewed_basis_without_promoting_search_hits(self):
+        from src.kg_retrieval.common import candidate, clause_record
+        self.db.execute("INSERT INTO Relationship(relationship_id,from_type,from_id,relation_type,to_type,to_id,evidence_clause_id,review_status) VALUES ('native-basis','Clause','CL01','PROVIDES_CONTEXT','TaxRule','R01','CL01','approved')")
+        clause, policy = clause_record(self.db, 'CL08')
+        hit = candidate(clause, policy, 'keyword', score=100, reason={'mode':'fts','matched_terms':['收入口径勾稽']})
+        with patch.object(keyword_search, 'search', return_value={'status':'ready','hits':[hit]}):
+            result = self.package()
+        self.assertEqual(result['bundle_status'], 'ready')
+        self.assertTrue(next(p for p in result['policy_leads'] if p['clause_id']=='CL08')['retrieval_only'])
+        self.db.execute("UPDATE Relationship SET review_status='candidate' WHERE relationship_id='native-basis'")
+        with patch.object(keyword_search, 'search', return_value={'status':'ready','hits':[hit]}):
+            pending = self.package()
+        self.assertIn('relationship_pending', {g['code'] for g in pending['gaps']})
+
+    @staticmethod
+    def context_answer(_system, part, _failure):
+        return {'assessments': [{'type': part['response_constraints']['required_type'],
+            'text': '本批证据须联合核查。', 'rule_id': part['check']['rule_id'],
+            'clause_ids': [p['clause_id'] for p in part['policy_evidence']],
+            'source_ids': [], 'amounts': [], 'dates': [], 'required_materials': []}]}, 'synthetic-provider'
+
+    def test_final_outbound_does_not_restore_full_missing_evidence_into_each_batch(self):
+        from src.kg_retrieval import batching, outbound
+        package = self.package()
+        package['gaps'] = [{'code': 'pending', 'message': '待核实事项' + str(i)} for i in range(300)]
+        package['risk_assessment']['missing_evidence'] = [g['message'] for g in package['gaps']]
+        package['batching'] = bundle.split_bundle(package, 6000)
+        self.assertFalse(package['batching']['unsplittable'])
+        delivery = outbound.prepare(package, authorized=True, destination='https://provider.example')
+        self.assertGreater(len(delivery['parts']), 1)
+        self.assertTrue(all(batching.encoded_size(p) <= 6000 for p in delivery['parts']))
+        gaps = [g for p in delivery['parts'] for g in p['gaps']]
+        self.assertEqual(gaps, package['gaps'])
+        self.assertTrue(all('missing_evidence' not in p['risk_assessment'] for p in delivery['parts']))
+        self.assertEqual(len(package['risk_assessment']['missing_evidence']), 300)
+
+    def test_explicit_capacity_rejection_refines_losslessly_and_resumes_completed_children(self):
+        from src.kg_retrieval import batching
+        from webapp.knowledge import ContextLengthExceeded
+        package = self.context_package()
+        seen, successful = [], []
+        failures = [True]
+
+        def provider(system, part, failure):
+            seen.append(deepcopy(part))
+            if batching.encoded_size(part) > 14000:
+                raise ContextLengthExceeded()
+            if len(successful) == 1 and failures[0]:
+                failures[0] = False
+                raise service.HTTPException(502, '模拟网络中断')
+            successful.append(deepcopy(part))
+            return self.context_answer(system, part, failure)
+
+        gate = {'passed': True, 'model_fingerprints': [None]}
+        with patch.object(service, 'acceptance_gate', return_value=gate), \
+                patch('webapp.knowledge._chat_json', side_effect=provider):
+            partial = service.analyze(package)
+        self.assertFalse(partial['validated'])
+        self.assertEqual(len(partial['batch_results']), 1)
+        self.assertTrue(partial['context_splits'])
+        rejected = {json.dumps(p, sort_keys=True) for p in seen if batching.encoded_size(p) > 14000}
+        seen.clear()
+        with patch.object(service, 'acceptance_gate', return_value=gate), \
+                patch('webapp.knowledge._chat_json', side_effect=provider):
+            result = service.analyze(package, prior=partial)
+        self.assertTrue(result['validated'])
+        self.assertEqual(result['reused_batches'], 1)
+        self.assertFalse(rejected & {json.dumps(p, sort_keys=True) for p in seen})
+        pieces = [p for payload in successful for p in payload['policy_evidence']]
+        pieces.sort(key=lambda p: p['source_char_start'])
+        self.assertEqual(''.join(p['text'] for p in pieces), package['policy_evidence'][0]['text'])
+        self.assertEqual(pieces[0]['source_char_start'], 0)
+        self.assertTrue(all(a['source_char_end'] == b['source_char_start'] for a, b in zip(pieces, pieces[1:])))
+        expected_hash = hashlib.sha256(package['policy_evidence'][0]['text'].encode()).hexdigest()
+        self.assertTrue(all(p['original_text_sha256'] == expected_hash for p in pieces))
+        self.assertEqual(result['status'], 'reviewed_clues')
+        self.assertEqual(result['batch_summary']['status'], 'completed')
+        self.assertTrue(all(p['response_constraints']['required_type'] == 'insufficient_evidence' for p in successful))
+
+    def test_preflight_uses_full_wire_payload_and_recovers_before_sending(self):
+        from src.ai_transport import chat_payload
+        from src.settings import AISettings
+        from webapp.knowledge import SELECTED_SETTINGS
+        package = self.context_package()
+        settings = AISettings(model='synthetic-model', enabled=True, api_key='synthetic-key')
+        package['batching']['model_context'] = {'model': settings.effective_model,
+            'planning_context_window': 18000, 'output_reserve': 1024, 'safety_reserve': 1000}
+        observed = []
+
+        def provider(system, payload, failure):
+            wire = chat_payload(SELECTED_SETTINGS.get(), [
+                {'role': 'system', 'content': system},
+                {'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)},
+            ], temperature=0.2)
+            self.assertLessEqual(len(wire) + 1024 + 1000, 18000)
+            observed.append(payload)
+            return self.context_answer(system, payload, failure)
+
+        with patch.object(service, 'acceptance_gate', return_value={'passed': True, 'model_fingerprints': [None]}), \
+                patch('webapp.ai_keys.apply', return_value=settings), \
+                patch('webapp.knowledge._chat_json', side_effect=provider):
+            result = service.analyze(package)
+        self.assertTrue(result['validated'])
+        self.assertGreater(len(observed), 1)
+        self.assertTrue(result['context_splits'])
+
+    def test_capacity_recovery_is_bounded_and_reauthorizes_each_child(self):
+        from webapp.knowledge import ContextLengthExceeded
+        package = self.context_package()
+        gate = {'passed': True, 'model_fingerprints': [None]}
+        with patch.object(service, 'acceptance_gate', return_value=gate), \
+                patch('webapp.knowledge._chat_json', side_effect=ContextLengthExceeded()) as provider:
+            result = service.analyze(package)
+        self.assertFalse(result['validated'])
+        self.assertLessEqual(provider.call_count, 5)
+        self.assertTrue(any(b['status'] == 'failed' for b in result['batches']))
+        self.assertEqual(result['assessments'], [])
+        authorizations = []
+
+        def authorize():
+            authorizations.append(True)
+            if len(authorizations) > 1:
+                raise service.HTTPException(409, '资料已变化')
+
+        token = service._AUTHORIZE_BATCH.set(authorize)
+        try:
+            with patch.object(service, 'acceptance_gate', return_value=gate), \
+                    patch('webapp.knowledge._chat_json', side_effect=ContextLengthExceeded()) as provider:
+                with self.assertRaises(service.HTTPException) as caught:
+                    service.analyze(package)
+                self.assertEqual(caught.exception.status_code, 409)
+                self.assertEqual(provider.call_count, 1)
+        finally:
+            service._AUTHORIZE_BATCH.reset(token)
+
+    def test_execution_deadline_stops_before_another_provider_request(self):
+        package = self.context_package()
+        with patch.object(service, 'acceptance_gate', return_value={'passed': True, 'model_fingerprints': [None]}), \
+                patch.object(service, 'monotonic', side_effect=[0, 10000]), \
+                patch('webapp.knowledge._chat_json') as provider:
+            result = service.analyze(package)
+        self.assertFalse(result['validated'])
+        self.assertIn('执行时限', result['reason'])
+        provider.assert_not_called()
+
+    def test_saved_split_plans_do_not_exhaust_new_recovery_allowance(self):
+        from src.kg_retrieval import batching
+        from webapp.knowledge import ContextLengthExceeded
+        package = self.context_package()
+        original = package['batching']['parts'][0]
+        package['batching'].update(part_count=9, parts=[
+            {**deepcopy(original), 'part_number': index, 'part_count': 9} for index in range(1, 10)])
+
+        def provider(system, part, failure):
+            if batching.encoded_size(part) > 14000:
+                raise ContextLengthExceeded()
+            return self.context_answer(system, part, failure)
+
+        prior = None
+        with patch.object(service, 'acceptance_gate', return_value={'passed': True, 'model_fingerprints': [None]}), \
+                patch('webapp.knowledge._chat_json', side_effect=provider):
+            for _ in range(9):
+                prior = service.analyze(package, prior=prior)
+                if prior['validated']:
+                    break
+        self.assertTrue(prior['validated'])
+        self.assertGreater(prior['reused_batches'], 0)
+
+    def test_existing_standalone_index_without_review_extension_remains_readable(self):
+        self.db.execute('DROP TABLE PolicyReview')
+        result = self.package()
+        self.assertEqual(result['check']['evaluation'], 'TRUE')
+        self.assertTrue(result['policy_evidence'])
+
+    def test_supporting_citations_are_allowed_only_in_transmitted_part(self):
+        row={'source_id':'supporting:contract:1','file_id':'contract','file_sha256':'synthetic-sha','source_position':'PDF第1页','source_reviewed':False,'origin':'source_text','text':'明确模拟的合同原文，仅作工程测试。'}
+        package=self.package(supporting_materials=[row])
+        seen=[]
+        def provider(system,part,failure):
+            sources={sid for fact in part['facts'] for sid in fact.get('source_ids',[])}
+            extra={item['source_id'] for item in part.get('supporting_materials',[])}
+            self.assertEqual(set(part['response_constraints']['allowed_source_ids']),sources|extra)
+            seen.extend(extra)
+            answer,model=self.context_answer(system,part,failure)
+            answer['assessments'][0]['source_ids']=sorted(extra)
+            return answer,model
+        with patch.object(service,'acceptance_gate',return_value={'passed':True,'model_fingerprints':[None]}),patch('webapp.knowledge._chat_json',side_effect=provider):
+            result=service.analyze(package)
+        self.assertTrue(result['validated'])
+        self.assertIn(row['source_id'],seen)
+        self.assertTrue(any(row['source_id'] in a['source_ids'] for a in result['assessments']))
+
     def test_supporting_sources_are_losslessly_batched_citable_and_change_content_hash(self):
         from src.kg_retrieval import batching, outbound
         row = {"source_id": "supporting:contract:1", "file_id": "contract", "file_sha256": "synthetic-sha",
@@ -125,6 +363,25 @@ class RetrievalTests(unittest.TestCase):
         keyword_search.search(self.db, '\" OR * --', keywords=['%_', '"'])
         self.assertEqual(self.db.execute("SELECT count(*) FROM Policy").fetchone()[0], 20)
 
+    def test_ai_batches_keep_scope_and_period_evidence_without_reviewer_identity(self):
+        package = self.package()
+        record = package['policy_evidence'][0]
+        record.update(tax_types=['VAT', 'EIT'], scope={'excluded_regions': ['CN-GD-SZ']},
+                      date_evidence={'effective_to_source': 'original_text'},
+                      source_metadata={'content_gaps': ['附表待复核']},
+                      coverage_review={'review_id': 'review-1', 'end_kind': 'unfixed',
+                                       'coverage_start': '2026-01-01', 'coverage_end': '2026-09-30',
+                                       'evidence_json': '{"quote":"合成期间依据"}',
+                                       'reviewed_by': 'private-reviewer@example.test'})
+        batching = bundle.split_bundle(package, 1000000)
+        sent = next(p for part in batching['parts'] for p in part['policy_evidence'] if p['clause_id'] == record['clause_id'])
+        self.assertEqual(sent['tax_types'], ['VAT', 'EIT'])
+        self.assertEqual(sent['scope']['excluded_regions'], ['CN-GD-SZ'])
+        self.assertEqual(sent['coverage_review']['coverage_end'], '2026-09-30')
+        self.assertEqual(sent['date_evidence'], record['date_evidence'])
+        self.assertEqual(sent['source_metadata'], record['source_metadata'])
+        self.assertNotIn('private-reviewer@example.test', json.dumps(batching))
+
     def test_fts_insert_update_delete_are_synchronized(self):
         self.db.execute("INSERT INTO Clause(clause_id,policy_id,clause_label,sort_index,content) VALUES ('extra','P01','额外条',99,'独特测试检索甲')")
         self.assertTrue(any(h["clause_id"] == "extra" for h in keyword_search.search(self.db, "独特测试检索甲")["hits"]))
@@ -169,7 +426,8 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(len(result['batches']),9)
         self.assertTrue(all(b['status']=='completed' for b in result['batches']))
         self.assertTrue(result['validated'])
-        self.assertEqual(result['status'],'needs_review')
+        self.assertEqual(result['status'],'reviewed_clues')
+        self.assertEqual(result['batch_summary']['completed_batches'],9)
         successful_answer=answer
         attempt=[0]
         def intermittent(system, part, failure):
@@ -365,6 +623,38 @@ class RetrievalTests(unittest.TestCase):
 class AnswerValidationTests(unittest.TestCase):
     setUp = RetrievalTests.setUp
     package = RetrievalTests.package
+    def test_saved_multibatch_analysis_keeps_part_local_citations_and_all_claims(self):
+        from src.kg_retrieval.common import digest
+        package = self.package()
+        original = deepcopy(package['batching']['parts'][0])
+        parts, results, claims = [], [], []
+        for i in range(9):
+            part = {**deepcopy(original), 'part_number': i + 1, 'part_count': 9}
+            if i == 0:
+                part.update(policy_evidence=[], policy_leads=[])
+            claim = {'type': 'insufficient_evidence', 'text': f'第{i + 1}批材料尚需联合核对。',
+                     'rule_id': package['check']['rule_id'],
+                     'clause_ids': [] if i == 0 else [part['policy_evidence'][0]['clause_id']],
+                     'source_ids': [], 'amounts': [], 'dates': [], 'required_materials': []}
+            parts.append(part)
+            claims.append(claim)
+            results.append({'status': 'completed', 'batch_id': digest(part), 'assessments': [claim]})
+        package['batching'].update(parts=parts, part_count=9)
+        analysis = {'validated': True, 'assessments': deepcopy(claims), 'batch_results': results}
+        service.validate_saved_analysis(analysis, package)
+        for change in ('missing_batch', 'unbound_claim', 'foreign_citation', 'wrong_batch'):
+            bad = deepcopy(analysis)
+            if change == 'missing_batch':
+                bad['batch_results'].pop()
+            elif change == 'unbound_claim':
+                bad['assessments'][0]['text'] = '未经过分批校验的另一个说明。'
+            elif change == 'foreign_citation':
+                bad['batch_results'][1]['assessments'][0]['clause_ids'] = ['foreign']
+            else:
+                bad['batch_results'][0], bad['batch_results'][1] = bad['batch_results'][1], bad['batch_results'][0]
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                service.validate_saved_analysis(bad, package)
+
     def test_strict_amount_date_source_and_condition_validation(self):
         package = self.package()
         good = {"assessments": [{"type": "risk_clue", "text": "请结合原件进一步核对，此处仅为测试线索。", "rule_id": "R01",
@@ -400,6 +690,11 @@ class AnswerValidationTests(unittest.TestCase):
 @material_key
 class RetrievalHTTPTests(unittest.TestCase):
     def setUp(self):
+        # These HTTP tests own an explicit synthetic corpus. Public package
+        # startup/import has separate tests and must not replace these sources.
+        startup = patch('src.public_policy_package.bootstrap', return_value={'status': 'fixture'})
+        startup.start()
+        self.addCleanup(startup.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / "test.db"
@@ -542,6 +837,40 @@ class RetrievalHTTPTests(unittest.TestCase):
         saved = self.client.get("/api/enterprise/input-tasks/" + task["id"]).json()
         self.assertTrue(saved["tax_checks"]["R01"]["ai"]["validated"])
 
+    def test_http_capacity_recovery_is_saved_and_complete_result_is_reused(self):
+        from src.kg_retrieval import batching
+        from webapp.knowledge import ContextLengthExceeded
+        task = self.task()
+        body = {'rule_id': 'R01', 'task_id': task['id'], 'expected_revision': task['revision'], 'region_code': 'CN-33'}
+        retrieved = self.client.post('/api/knowledge/retrieve', json=body)
+        self.assertEqual(retrieved.status_code, 200, retrieved.text)
+        package = retrieved.json()['bundle']
+        package['policy_evidence'][0]['text'] = '完整合成条款，不得遗漏。' * 900
+        package['batching'] = bundle.split_bundle(package, 128000)
+        package['content_hash'] = bundle.content_hash(package)
+        model_fingerprint = package['retrieval_trace']['routes']['semantic'].get('model_fingerprint')
+
+        def provider(system, part, failure):
+            if batching.encoded_size(part) > 14000:
+                raise ContextLengthExceeded()
+            return RetrievalTests.context_answer(system, part, failure)
+
+        with patch.object(metrics, 'build_task_bundle', side_effect=lambda *args, **kwargs: deepcopy(package)), \
+                patch.object(service, 'acceptance_gate', return_value={'passed': True, 'model_fingerprints': [model_fingerprint]}), \
+                patch('webapp.knowledge._chat_json', side_effect=provider) as ai:
+            body.update(use_ai=True, expected_revision=retrieved.json()['revision'])
+            first = self.client.post('/api/knowledge/retrieve', json=body)
+            self.assertEqual(first.status_code, 200, first.text)
+            self.assertTrue(first.json()['ai']['validated'])
+            self.assertTrue(first.json()['ai']['context_splits'])
+            calls = ai.call_count
+            second = self.client.post('/api/knowledge/retrieve', json={**body, 'expected_revision': first.json()['revision']})
+            self.assertEqual(second.status_code, 200, second.text)
+            self.assertTrue(second.json()['cached'])
+            self.assertEqual(ai.call_count, calls)
+        saved = self.client.get('/api/enterprise/input-tasks/' + task['id']).json()
+        self.assertEqual(saved['tax_checks']['R01']['ai']['context_splits'], first.json()['ai']['context_splits'])
+
     def test_invalid_model_output_is_downgraded_and_not_saved_as_finding(self):
         task = self.task()
         model, _ = semantic_search.available()
@@ -596,6 +925,108 @@ class CoreReportTests(unittest.TestCase):
                                     "expected_revision": task["revision"], "region_code": "CN-33"})
         self.assertEqual(response.status_code, 200, response.text)
         return task["id"], response.json()
+
+    def budget_limited_check(self):
+        from src.settings import AISettings
+        from webapp import ai_keys
+        # One indivisible structured fact fits the normal input budget but not
+        # the smaller request capacity derived from the selected output limit.
+        with self.store.connect() as db:
+            db.execute("UPDATE Metric SET name=? WHERE metric_id='M01'", ('合成指标名称' * 800,))
+        task = self.task()
+        profile = ai_keys.context_budget(AISettings.from_env(), self.store)
+        profile['output_reserve'] = 1024
+        model, _ = semantic_search.available()
+        gate = {'passed': True, 'model_fingerprints': [model.fingerprint if model else None]}
+        with patch.object(ai_keys, 'context_budget', return_value=profile), \
+             patch.object(service, 'acceptance_gate', return_value=gate), \
+             patch('webapp.knowledge._chat_json') as provider:
+            response = self.client.post('/api/knowledge/retrieve', json={
+                'rule_id': 'R01', 'task_id': task['id'], 'expected_revision': task['revision'],
+                'region_code': 'CN-33', 'use_ai': True})
+            self.assertEqual(response.status_code, 200, response.text)
+            provider.assert_not_called()
+        checked = response.json()
+        self.assertTrue(checked['bundle']['batching']['unsplittable'])
+        self.assertEqual(checked['bundle']['batching']['output_tokens'], 1024)
+        self.assertIn('budget_unsplittable', {g['code'] for g in checked['bundle']['gaps']})
+        self.assertEqual(checked['ai']['status'], 'needs_review')
+        return task['id'], checked
+
+    def test_budget_limited_check_generates_report_with_review_note_and_keeps_policy_guard(self):
+        tid, checked = self.budget_limited_check()
+        base = '/api/enterprise/input-tasks/' + tid
+        with patch.object(service, 'analyze') as analyze, patch('webapp.knowledge._chat_json') as provider:
+            created = self.client.post(base + '/reports', json={'expected_revision': checked['revision']})
+            self.assertEqual(created.status_code, 200, created.text)
+            analyze.assert_not_called()
+            provider.assert_not_called()
+        report = self.client.get(base + '/reports/1?format=json').json()
+        self.assertEqual(report['checks']['R01']['bundle'], checked['bundle'])
+        self.assertEqual(report['checks']['R01']['ai'], checked['ai'])
+        self.assertEqual(report['summary']['needs_review'], 1)
+        html = self.client.get(base + '/reports/1').text
+        self.assertIn('本项自动分析未完成，需人工复核。', html)
+        self.assertNotIn('budget_unsplittable', html)
+        self.assertNotIn('超出预算', html)
+        with self.store.connect() as db:
+            db.execute("UPDATE Policy SET validity_status='unverified' WHERE policy_id='P01'")
+        changed = self.client.post(base + '/reports', json={'expected_revision': checked['revision']})
+        self.assertEqual(changed.status_code, 409, changed.text)
+        self.assertEqual(self.client.get(base + '/reports/1?format=json').json(), report)
+
+    def test_recheck_reuses_budget_limited_result_without_dropping_review_note_or_ai(self):
+        tid, checked = self.budget_limited_check()
+        base = '/api/enterprise/input-tasks/' + tid
+        with patch.object(service, 'analyze') as analyze, patch('webapp.knowledge._chat_json') as provider:
+            response = self.client.post(base + '/recheck', json={'expected_revision': checked['revision']})
+            self.assertEqual(response.status_code, 200, response.text)
+            result = response.json()
+            self.assertEqual(result['revision'], checked['revision'])
+            self.assertEqual(result['changed_rule_ids'], [])
+            self.assertEqual(result['reused_rule_ids'], ['R01'])
+            self.assertEqual(result['tax_checks']['R01']['bundle'], checked['bundle'])
+            self.assertEqual(result['tax_checks']['R01']['ai'], checked['ai'])
+            self.assertEqual(result['external_api_calls'], 0)
+            analyze.assert_not_called()
+            provider.assert_not_called()
+
+    def test_report_preserves_validated_multibatch_ai_without_recalling_provider(self):
+        original = metrics.build_task_bundle
+        def multipart(*args, **kwargs):
+            package = original(*args, **kwargs)
+            first = package['batching']['parts'][0]
+            parts = [{**deepcopy(first), 'part_number': i, 'part_count': 9} for i in range(1, 10)]
+            parts[0].update(policy_evidence=[], policy_leads=[])
+            package['batching'].update(parts=parts, part_count=9, unsplittable=False)
+            return package
+        def answer(system, part, failure):
+            evidence = [*part['policy_evidence'], *part['policy_leads']]
+            claim = {'type': 'insufficient_evidence', 'text': f'第{part["part_number"]}批材料需要联合核对。',
+                     'rule_id': 'R01', 'clause_ids': [evidence[0]['clause_id']] if evidence else [],
+                     'source_ids': [], 'amounts': [], 'dates': [], 'required_materials': []}
+            return {'assessments': [claim]}, 'unit-test-provider'
+        task = self.task()
+        model, _ = semantic_search.available()
+        gate = {'passed': True, 'model_fingerprints': [model.fingerprint if model else None]}
+        with patch.object(metrics, 'build_task_bundle', side_effect=multipart), \
+             patch.object(service, 'acceptance_gate', return_value=gate), \
+             patch('webapp.knowledge._chat_json', side_effect=answer) as ai:
+            checked = self.client.post('/api/knowledge/retrieve', json={'rule_id': 'R01', 'task_id': task['id'],
+                'expected_revision': task['revision'], 'region_code': 'CN-33', 'use_ai': True})
+            self.assertEqual(checked.status_code, 200, checked.text)
+            self.assertTrue(checked.json()['ai']['validated'])
+            self.assertEqual(len(checked.json()['ai']['assessments']), 9)
+            self.assertEqual(ai.call_count, 9)
+            base = '/api/enterprise/input-tasks/' + task['id'] + '/reports'
+            report = self.client.post(base, json={'expected_revision': checked.json()['revision']})
+            self.assertEqual(report.status_code, 200, report.text)
+            self.assertEqual(ai.call_count, 9)
+        saved = self.client.get(base + '/1?format=json').json()['checks']['R01']['ai']
+        self.assertTrue(saved['validated'])
+        self.assertEqual(saved['assessments'], checked.json()['ai']['assessments'])
+        self.assertEqual(saved['status'], 'reviewed_clues')
+        self.assertEqual(saved['batch_summary']['status'], 'completed')
 
     def test_extra_upload_requires_recheck_and_report_keeps_trace_and_previous_version(self):
         tid, checked = self.checked()
@@ -699,6 +1130,15 @@ class CoreReportTests(unittest.TestCase):
             self.assertNotIn(hidden, html)
         self.assertEqual(report, before)
         self.assertEqual(self.client.get(base + '/1?format=json').json(), original)
+        slot['bundle']['policy_evidence'] = []
+        slot['bundle']['policy_leads'] = [{**evidence, 'applicability': 'needs_review'}]
+        lead_html = env.get_template('core_check_report.html').render(report=report)
+        self.assertIn('政策线索，尚未核实为本项依据', lead_html)
+        slot['bundle']['policy_leads'] = []
+        slot['bundle']['policy_evidence'] = [{**evidence, 'applicability': 'context_only'}]
+        context_html = env.get_template('core_check_report.html').render(report=report)
+        self.assertIn('背景参考，须结合本项条件核对', context_html)
+        self.assertNotIn('历史条款，仅供参考', context_html)
         slot['ai'].update(validated=False, reason='internal diagnostic 3256 Token')
         pending_html = env.get_template('core_check_report.html').render(report=report)
         self.assertIn('部分辅助说明尚待核实，本项仍需复核', pending_html)

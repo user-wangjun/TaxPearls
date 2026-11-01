@@ -58,6 +58,9 @@ def assignment(db, aid, who):
     item = classroom.decorate(db, dict(row)) if row else None
     if not classroom.can_access(db, item, who):
         raise HTTPException(404, '错题不存在或已不可访问。')
+    from webapp.training_submissions import result_visible
+    if not result_visible(db, aid, who['id'])[0]:
+        raise HTTPException(404, '错题尚未开放。')
     return item
 
 

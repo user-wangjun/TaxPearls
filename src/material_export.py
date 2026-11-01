@@ -39,7 +39,8 @@ def build(payload):
                                                if row.get("confirmed_metadata", {}).get("direction") in {"input", "output"} else {})}},
             "quality": {"field_states": states,
                         "requires_source_review": needs_review, "in_scope": row.get("in_scope"),
-                        "duplicate_of": row.get("duplicate_of")},
+                        "duplicate_of": row.get("duplicate_of"),
+                        **({"business_record": deepcopy(row["dedup"])} if row.get("dedup") else {})},
         })
     return {
         "schema_version": "taxpearls.material-data.v1",

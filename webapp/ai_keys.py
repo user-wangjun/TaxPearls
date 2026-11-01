@@ -14,7 +14,7 @@ STORE_PROVIDER = lambda: None
 _CONTEXT_LOCK = Lock()
 _CONTEXT_ATTEMPTED = set()
 USES = {'all': '通用（当前模型）', 'extraction': '材料提取兜底', 'knowledge': '知识问答',
-        'report': '风险解读与报告', 'tutor': '教学答疑', 'none': '仅检测'}
+        'report': '风险解读与报告', 'tutor': '教学答疑与备课出题', 'none': '仅检测'}
 PROTOCOLS = {'auto', 'deepseek', 'openrouter', 'credit_grants'}
 BUSINESS_USES = ('extraction', 'knowledge', 'report', 'tutor')
 
@@ -231,7 +231,7 @@ def catalog(settings, store, user):
 
 def add(store, user, settings, *, name, key, provider, model, base_url='', usage=None,
         balance_protocol='auto', json_mode=None, vision=None, disable_thinking=None, reasoning_effort=None, usages=None):
-    target = ai_probes.temporary(settings, provider, key.strip(), model.strip())
+    target = ai_probes.temporary(settings, provider, key.strip(), model.strip(), base_url)
     if base_url:
         target = replace(target, base_url=base_url.strip().rstrip('/'))
     target = replace(target, json_mode=target.json_mode if json_mode is None else json_mode,

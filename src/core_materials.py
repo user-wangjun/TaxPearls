@@ -222,7 +222,14 @@ def metadata(rows, kind):
     form_name = next(
         (line.strip() for line in content.splitlines() if re.search(r"增值税.*申报表|附列资料|附表", line)), ""
     )
+    dimensions = {}
+    if kind == "account_balance":
+        for key, names in (("ledger_id", "账套编号|账套编码|账套"), ("currency", "币种|币别|货币代码")):
+            found = re.search(r"(?:" + names + r")\s*[:：]\s*([^\r\n\t|]+)", content)
+            if found:
+                dimensions[key] = found[1].strip()
     return {
+        **dimensions,
         "tax_nos": list(dict.fromkeys(map(identity, tax))),
         "period": period,
         "unit": unit[1] if unit else None,
@@ -453,6 +460,11 @@ def table_records(rows, positions, meta, kind, file_id, mapper, issues, sheet_na
                 "period_end": meta["period"][1] if meta["period"] else None,
                 "form_type": meta["form_type"] if kind == "vat_declaration" else None,
                 "form_name": sheet_name if kind == "vat_declaration" else None,
+                "form_identity": meta.get("form_name") if kind == "vat_declaration" else None,
+                "identity_incomplete": bool(kind == "account_balance" and any(
+                    re.search(r"辅助|核算维度|账套|币种|币别|部门|客户|项目", text(h)) and i not in mapping
+                    for i, h in enumerate(headers))),
+                **{key: meta[key] for key in ("ledger_id", "currency") if key in meta},
                 **fields,
             }
         )
@@ -509,6 +521,7 @@ def vat_grid(rows, positions, meta, file_id, header_index, label_column, value_c
                     "period_end": meta["period"][1] if meta["period"] else None,
                     "form_type": meta["form_type"],
                     "form_name": form_name,
+                    "form_identity": meta.get("form_name") or form_name,
                 }
             )
     return records
@@ -536,6 +549,26 @@ def parse(raw, name, kind, file_id, mapper, *, ocr=False):
         try:
             for sheet in book:
                 rows = [list(row) for row in sheet.iter_rows(values_only=True)]
+                if kind == 'account_balance':
+                    # A ledger export may retain explicit standard workpapers
+                    # for the complete business-metric import. Their 项目 column
+                    # is not a ledger project-code header. Unknown layouts still
+                    # take the normal parser/issue path; originals remain intact.
+                    from . import config
+                    appendices = {
+                        config.SHEET_COMPANY: ['项目', '内容'],
+                        config.SHEET_DECLARATION: ['项目', '金额'],
+                        config.SHEET_INCOME: config.COL_STATEMENT,
+                        config.SHEET_BALANCE: config.COL_STATEMENT,
+                        config.SHEET_CASHFLOW: config.COL_STATEMENT,
+                        config.SHEET_SUPPLEMENT: config.COL_SUPPLEMENT,
+                        config.SHEET_HISTORY: config.COL_HISTORY,
+                        config.SHEET_REFERENCE: config.COL_REFERENCE,
+                    }
+                    expected = appendices.get(sheet.title)
+                    if expected and rows and rows[0][:len(expected)] == expected:
+                        result.setdefault('business_appendices', []).append({'name': sheet.title, 'rows': len(rows) - 1})
+                        continue
                 meta = metadata([[sheet.title], *rows], kind)
                 pos = lambda r, c, s=sheet.title: f"{s}!{get_column_letter(c + 1)}{r + 1}"
                 records = table_records(rows, pos, meta, kind, file_id, mapper, result["issues"], sheet.title)
@@ -1414,8 +1447,8 @@ def prepare(task, documents):
             continue
         if (kind, doc["sha256"]) in source_hashes:
             notices.append(issue("duplicate_file", "同类型相同原件重复上传，保留来源但不重复纳入整理结果。", file_id))
-            continue
-        source_hashes[kind, doc["sha256"]] = file_id
+        identical_file = source_hashes.get((kind, doc["sha256"]))
+        source_hashes.setdefault((kind, doc["sha256"]), file_id)
         problems.extend(doc["issues"])
         for part in doc["parts"]:
             if part["tax_nos"] and any(t != task["tax_no"] for t in part["tax_nos"]):
@@ -1457,6 +1490,11 @@ def prepare(task, documents):
                 period_files[signature] = file_id
         for source in doc["records"]:
             record = {**source, "company_id": task["company_id"], "task_id": task["id"], "tenant_id": task["tenant_id"]}
+            if identical_file:
+                previous = next((r for r in records if r["source_file_id"] == identical_file
+                                 and r["source_position"] == record["source_position"]), None)
+                if previous:
+                    record["duplicate_of"] = previous["id"]
             if kind == "invoice_detail":
                 direction = invoice_direction(record, task["tax_no"])
                 seller, buyer = identity(record.get("seller_tax_no")), identity(record.get("buyer_tax_no"))
@@ -1500,7 +1538,10 @@ def prepare(task, documents):
                 # Explicit detail line identity permits multi-line invoices. Without
                 # it, differing rows of the same invoice remain a conflict.
                 key = (record.get("seller_tax_no"), record.get("buyer_tax_no"), direction,
-                       record.get("invoice_no"), record.get("invoice_line_no") or "")
+                       record.get("invoice_code"), record.get("invoice_no"), record.get("invoice_line_no") or "")
+                has_identity = all(record.get(k) for k in ("seller_tax_no", "buyer_tax_no", "invoice_no"))
+                if not has_identity:
+                    key = ("unidentified", record["id"])
                 if key in seen:
                     old = seen[key]
                     same = all(
@@ -1662,7 +1703,7 @@ def prepare(task, documents):
         }
         for g in aggregates.values()
     ]
-    return {
+    result = {
         "status": "needs_completion" if problems else "ready_for_analysis",
         "issues": problems,
         "notices": notices,
@@ -1678,3 +1719,6 @@ def prepare(task, documents):
         "scope": scope_summary(task, records),
         "boundary": "资料处理完成后停在规则核验之前；不生成风险结论或报告。",
     }
+    from . import core_dedup
+    core_dedup.apply(result, task)
+    return result

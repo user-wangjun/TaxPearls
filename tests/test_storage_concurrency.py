@@ -11,6 +11,7 @@ SQLite 以 SQLITE_READONLY 打断写事务（Windows 特有，CI Linux 不复现
 import sqlite3
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -18,6 +19,94 @@ from webapp.storage import Store
 
 
 class StorageConcurrencyTest(unittest.TestCase):
+    def test_backup_roundtrip_accepts_guarded_and_raw_destinations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Store(Path(tmp) / 'source.db')
+            target = Store(Path(tmp) / 'target.db')
+            with source.connect() as db:
+                db.execute('CREATE TABLE backup_probe(value TEXT)')
+                db.execute("INSERT INTO backup_probe VALUES ('preserved')")
+            progress = []
+            with source.connect() as db, target.connect() as destination:
+                db.backup(destination, pages=1, progress=lambda *args: progress.append(args))
+            with target.connect() as db:
+                self.assertEqual(db.execute('SELECT value FROM backup_probe').fetchone()[0], 'preserved')
+            self.assertTrue(progress)
+            raw = sqlite3.connect(Path(tmp) / 'raw.db')
+            try:
+                with source.connect() as db:
+                    db.backup(raw)
+                self.assertEqual(raw.execute('SELECT value FROM backup_probe').fetchone()[0], 'preserved')
+            finally:
+                raw.close()
+
+    def test_reader_sees_committed_snapshot_while_writer_holds_transaction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp) / 'reader.db', keepalive=True)
+            self.addCleanup(store.close)
+            with store.connect() as db:
+                db.execute('CREATE TABLE snapshot(value TEXT)')
+                db.execute("INSERT INTO snapshot VALUES ('committed')")
+            result = []
+            failures = []
+            done = threading.Event()
+
+            def read():
+                try:
+                    with store.connect() as db:
+                        result.append(db.execute('SELECT value FROM snapshot').fetchone()[0])
+                except Exception as exc:
+                    failures.append(exc)
+                finally:
+                    done.set()
+
+            with store.connect() as writer:
+                writer.execute('BEGIN IMMEDIATE')
+                writer.execute("UPDATE snapshot SET value='pending'")
+                worker = threading.Thread(target=read, daemon=True)
+                worker.start()
+                completed = done.wait(1)
+                writer.rollback()
+            worker.join(3)
+            store.close()
+            self.assertTrue(completed, 'reader blocked behind an unrelated write transaction')
+            self.assertEqual(failures, [])
+            self.assertEqual(result, ['committed'])
+
+    def test_implicit_writers_and_explicit_writers_share_transaction_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Store(Path(tmp)/'mixed.db', keepalive=True)
+            try:
+                with store.connect() as db:
+                    db.execute('CREATE TABLE mixed_writes(value TEXT)')
+                barrier = threading.Barrier(4)
+                failures = []
+
+                def write(tag):
+                    barrier.wait()
+                    for i in range(12):
+                        try:
+                            with store.connect() as db:
+                                if tag % 2:
+                                    db.execute('BEGIN IMMEDIATE')
+                                db.execute('INSERT INTO mixed_writes VALUES (?)', (f'{tag}-{i}',))
+                                # Give other writers a chance while the implicit transaction is still open.
+                                time.sleep(.002)
+                                db.execute('UPDATE mixed_writes SET value=value WHERE value=?', (f'{tag}-{i}',))
+                        except sqlite3.Error as exc:
+                            failures.append(str(exc))
+
+                workers = [threading.Thread(target=write, args=(i,)) for i in range(4)]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join()
+                self.assertEqual(failures, [])
+                with store.connect() as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM mixed_writes').fetchone()[0], 48)
+            finally:
+                store.close()
+
     def test_parallel_write_transactions_never_readonly_with_keepalive(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             store = Store(Path(tmp) / "conc.db", keepalive=True)

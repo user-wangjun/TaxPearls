@@ -49,7 +49,7 @@ def report_analysis(slot):
         return ''.join(sentence.strip() for sentence in sentences if not diagnostic.search(sentence))
 
     result = []
-    for claim in ai.get('assessments', []):
+    for claim in (ai.get('batch_summary') or {}).get('assessments', ai.get('assessments', [])):
         text = business_text(claim.get('text'))
         materials = list(dict.fromkeys(value for material in claim.get('required_materials', [])
                                       if (value := business_text(material))))
@@ -261,7 +261,8 @@ def check_result(slot):
     pending = bool(slot.get('stale') or package['bundle_status'] != 'ready' or package.get('gaps')
                    or fact.get('status') != 'FACT_CONFIRMED'
                    or ai and (not ai.get('validated') or ai.get('status') == 'needs_review'
-                              or any(c.get('type') == 'insufficient_evidence' for c in ai.get('assessments', [])))
+                              or any(c.get('type') == 'insufficient_evidence' for c in
+                                     (ai.get('batch_summary') or {}).get('assessments', ai.get('assessments', []))))
                    or risk.get('status') in {'NEEDS_REVIEW', 'NEEDS_MORE_DATA'})
     try:
         amount = Decimal(fact['amount']) if fact.get('amount') is not None else None
@@ -358,6 +359,7 @@ def report_gaps(gaps, slot=None):
     """Summarize review blockers for readers without exposing diagnostic fields."""
     grouped = {}
     labels = {
+        'budget_unsplittable': '本项自动分析未完成，需人工复核。',
         'metric_missing': '请补充或核对本项所需数据。',
         'comparability_pending': '不同材料的统计口径尚未核对一致。',
         'exception_review': '本项业务的特殊适用情况尚待核实。',
@@ -439,7 +441,7 @@ def summary(checks):
 
 def archive(store, actor, task_id, expected_revision, *, complete_report_version=None):
     # Frozen task read and final CAS both use the existing tenant/client authorization.
-    view = batches.read(store, actor, task_id)
+    view = batches.read_current(store, actor, task_id)
     if view["revision"] != expected_revision:
         raise AccessDenied("任务版本已变化，请重新读取后生成报告。", 409)
     payload = core_inputs.latest(view)
@@ -454,24 +456,29 @@ def archive(store, actor, task_id, expected_revision, *, complete_report_version
         batch = batches._authorize(db, actor, task_id)
         if batch["revision"] != expected_revision:
             raise AccessDenied("资料已更新，请重新读取。", 409)
+        from webapp import core_record_index
+        core_record_index.compare(db, batch, actor, payload)
         policy_assessment = core_policies.current_for_report(payload)
         for rid, slot in checks.items():
             old = slot["bundle"]
             fresh = metrics.build_task_bundle(db, payload, old["task"], rid, topic=old["check"]["topic"],
-                                              token_budget=old["batching"]["soft_token_budget"])
+                                              token_budget=old["batching"]["soft_token_budget"],
+                                              output_tokens=old["batching"].get("output_tokens"))
             if slot.get("stale") or bundle.content_hash(fresh) != bundle.content_hash(old):
                 raise AccessDenied("资料或政策依据已变化，请重新核查后生成报告。", 409)
             if (slot.get("ai") or {}).get("validated"):
-                from webapp.knowledge_evidence import validate_answer
+                from webapp.knowledge_evidence import validate_saved_analysis
                 try:
-                    validate_answer({"assessments": slot["ai"]["assessments"]}, old)
+                    validate_saved_analysis(slot["ai"], old)
                 except (ValueError, KeyError, TypeError):
                     slot["ai"] = {"status": "needs_review", "validated": False, "assessments": [],
                                   "reason": "历史 AI 说明未通过当前校验，请重新分析。"}
         file_names = {doc['id']: doc['name'] for doc in payload.get('documents', [])}
         sources = [{"record_id": row["id"], "file_id": row.get("source_file_id"),
                     "file_name": file_names.get(row.get('source_file_id')),
-                    "source_position": row.get("source_position"), "field_sources": row.get("field_sources", {})}
+                    "source_position": row.get("source_position"), "field_sources": row.get("field_sources", {}),
+                    **({"business_record": {key: row["dedup"][key] for key in ("record_key", "version_key")}}
+                       if row.get("dedup") else {})}
                    for row in payload["processing"].get("records", []) if row["id"] in
                    {sid for slot in checks.values() for fact in slot["bundle"]["facts"] for sid in fact["source_ids"]}]
         template = (ROOT / "templates/core_check_report.html").read_text(encoding="utf-8")
@@ -565,12 +572,12 @@ def register(app, get_store, get_user, allow):
     def complete(task_id: str, body: CompleteBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         store, user = get_store(), actor(session)
         archive(store, user, task_id, body.expected_revision, complete_report_version=body.report_version)
-        return core_inputs.project(batches.read(store, user, task_id))
+        return core_inputs.project(batches.read_current(store, user, task_id))
 
     @app.post("/api/enterprise/input-tasks/{task_id}/reopen")
     def reopen(task_id: str, body: ArchiveBody, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         store, user = get_store(), actor(session)
-        view = batches.read(store, user, task_id)
+        view = batches.read_current(store, user, task_id)
         payload = deepcopy(core_inputs.latest(view))
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
@@ -581,7 +588,7 @@ def register(app, get_store, get_user, allow):
                 raise AccessDenied('任务尚未归档，无需重新打开。', 409)
             payload.pop('completion')
             batches._append(db, batch, user, 'edit', payload, lifecycle='reopen')
-        return core_inputs.project(batches.read(store, user, task_id))
+        return core_inputs.project(batches.read_current(store, user, task_id))
 
     @app.get("/api/enterprise/input-tasks/{task_id}/reports")
     def listing(task_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):

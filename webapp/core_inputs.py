@@ -23,6 +23,8 @@ def migrate(db):
     db.execute("CREATE TABLE IF NOT EXISTS core_input_tasks (id TEXT PRIMARY KEY REFERENCES material_batches(id))")
     from webapp import core_reports
     core_reports.migrate(db)
+    from webapp import core_record_index
+    core_record_index.migrate(db)
 
 
 def latest(view, *, writable=False):
@@ -53,6 +55,12 @@ def delete_task(store, user, task_id, expected_revision):
                       "material_revisions", "material_events", "material_originals"):
             db.execute(f"DELETE FROM {table} WHERE batch_id=?", (task_id,))
         db.execute("DELETE FROM core_mapping_observations WHERE org_id=? AND task_id=?", (user["org_id"], task_id))
+        db.execute("DELETE FROM core_business_sources WHERE batch_id=?", (task_id,))
+        db.execute("DELETE FROM core_business_index_tasks WHERE batch_id=?", (task_id,))
+        db.execute("DELETE FROM core_business_versions WHERE NOT EXISTS (SELECT 1 FROM core_business_sources s "
+                   "WHERE s.version_key=core_business_versions.version_key)")
+        db.execute("DELETE FROM core_business_records WHERE NOT EXISTS (SELECT 1 FROM core_business_versions v "
+                   "WHERE v.record_key=core_business_records.record_key)")
         db.execute("DELETE FROM core_input_tasks WHERE id=?", (task_id,))
         db.execute("DELETE FROM material_batches WHERE id=?", (task_id,))
         members.log(db, user, "core_task_delete", "material_batch", task_id, "permanent")
@@ -203,7 +211,47 @@ def register(app, get_store, get_user, allow, static_dir):
         return value
 
     def read(user, task_id):
-        return project(batches.read(get_store(), user, task_id, current_only=True))
+        return project(batches.read_current(get_store(), user, task_id))
+
+    @app.post("/api/enterprise/input-tasks/{task_id}/deduplication/resolve")
+    async def resolve_duplicate(task_id: str, request: Request,
+                                session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, store = actor(session), get_store()
+        value = await body(request)
+        if (set(value) != {"expected_revision", "source_record_id", "expected_versions", "confirm"}
+                or type(value.get("expected_revision")) is not int or value["expected_revision"] < 0
+                or not isinstance(value.get("source_record_id"), str)
+                or not isinstance(value.get("expected_versions"), list)
+                or not 1 <= len(value["expected_versions"]) <= 100
+                or any(not isinstance(v, str) or len(v) != 64 for v in value["expected_versions"])
+                or value.get("confirm") is not True):
+            raise HTTPException(422, "请核对冲突版本后明确确认，并提供当前任务版本。")
+        view = batches.read_current(store, user, task_id)
+        payload = deepcopy(latest(view, writable=True))
+        with store.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            batch = batches._authorize(db, user, task_id)
+            if batch["revision"] != value["expected_revision"] or view["revision"] != batch["revision"]:
+                raise AccessDenied("任务版本已变化，请重新读取。", 409)
+            from webapp import core_record_index
+            core_record_index.choose(db, batch, user, payload, value["source_record_id"], value["expected_versions"])
+            batches._append(db, batch, user, "edit", payload)
+        return read(user, task_id)
+
+    @app.post("/api/enterprise/input-tasks/record-union")
+    async def record_union(request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        user, value = actor(session), await body(request)
+        if (set(value) != {"task_ids"} or not isinstance(value.get("task_ids"), list)
+                or not 1 <= len(value["task_ids"]) <= 100
+                or any(not isinstance(v, str) or not 0 < len(v) <= 100 for v in value["task_ids"])):
+            raise HTTPException(422, "请选择1至100个任务。")
+        with get_store().connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            from webapp import core_record_index
+            try:
+                return core_record_index.union(db, user, value["task_ids"])
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
 
     @app.get("/core-inputs.js")
     def script():
@@ -354,11 +402,11 @@ def register(app, get_store, get_user, allow, static_dir):
         await run_in_threadpool(delete_file, get_store(), user, task_id, file_id, value["expected_revision"])
         return read(user, task_id)
 
-    async def processing_response(request, user, task_id, revision, *, ai=False, payload=None, uploads=None):
+    async def processing_response(request, user, task_id, revision, *, ai=False, payload=None, uploads=None, vat_review=None):
         from webapp import core_material_jobs as jobs
         store = get_store()
         job_id = await run_in_threadpool(jobs.submit, store, user, task_id, revision,
-                                         ai=ai, payload=payload, uploads=uploads)
+                                         ai=ai, payload=payload, uploads=uploads, vat_review=vat_review)
         from webapp.material_jobs import QueueSettings
         if "respond-async" in request.headers.get("prefer", "") and QueueSettings.from_env().enabled:
             return JSONResponse(read(user, task_id), status_code=202)
@@ -441,7 +489,7 @@ def register(app, get_store, get_user, allow, static_dir):
         user = actor(session)
         value = await body(request)
         try:
-            if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input"}:
+            if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input", "vat_review"}:
                 raise InputError("请求包含未知字段。")
             view = batches.read(get_store(), user, task_id, current_only=True)
             payload = deepcopy(latest(view, writable=True))
@@ -540,7 +588,17 @@ def register(app, get_store, get_user, allow, static_dir):
             mode = value.get("mapping_mode", "local")
             if not isinstance(mode, str) or mode not in {"local", "ai"}:
                 raise InputError("映射方式无效。")
-            return await processing_response(request, user, task_id, revision, ai=mode == "ai", payload=payload)
+            review_values = None
+            if 'vat_review' in value:
+                from webapp.knowledge_evidence import VATReviewBody
+                from src import vat_reconciliation as vat
+                if not isinstance(value['vat_review'], dict):
+                    raise InputError('增值税取数核对须为结构化字段。')
+                checked = VATReviewBody.model_validate({**value['vat_review'], 'expected_revision': revision})
+                review_values = checked.model_dump(exclude={'expected_revision'})
+                vat.make_review(payload, review_values, user['id'], members.now())
+            return await processing_response(request, user, task_id, revision, ai=mode == "ai", payload=payload,
+                                             vat_review=review_values)
         except (InputError, ValueError, batches.MaterialStorageError) as exc:
             raise HTTPException(422, str(exc)) from None
 

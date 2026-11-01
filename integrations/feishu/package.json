@@ -1,0 +1,15 @@
+{
+  "name": "taxpearls-feishu-connection",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TaxPearls 飞书私聊与卡片回传联通验证，不访问业务数据",
+  "engines": { "node": ">=22.9.0" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env bot.cjs",
+    "check": "node --env-file-if-exists=.env bot.cjs --check",
+    "test": "node --test bot.test.cjs binding.test.cjs"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.76.0"
+  }
+}

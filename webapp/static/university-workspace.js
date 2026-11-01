@@ -1,0 +1,366 @@
+/* University modules use the main workspace shell and their existing scoped APIs.
+   Native module imports isolate legacy state/functions without an iframe or eval. */
+"use strict";
+window.universityWorkspace = (() => {
+  const $ = id => document.getElementById(id);
+  let identity = null, controller = null, selected = "home", loading = null;
+  const studentViews = [["home", "学习总览"], ["tasks", "课程任务"], ["practice", "练习与考证"], ["wrongs", "错题复习"], ["catalog", "找证书"], ["knowledge", "政策与学习图谱"], ["profile", "学习档案"], ["settings", "账号设置"]];
+  const staffViews = [["home", "教学总览"], ["students", "师生与班级"], ["courses", "课程管理"], ["tasks", "课程与作业"], ["statistics", "学情统计"], ["knowledge", "政策与学习图谱"], ["content", "教学资源"], ["archives", "教学档案"], ["settings", "账号设置"]];
+  const labels = {student:"学生", teacher:"教师", admin:"高校管理员 / 教师", school_admin:"校级管理员", unlinked:"待关联教学身份"};
+  const navigationIcons = {
+    home:"m3 10 9-7 9 7M5 9v11h5v-6h4v6h5V9",
+    tasks:"M9 4H6a2 2 0 0 0-2 2v14h16V6a2 2 0 0 0-2-2h-3M9 3h6v4H9zM8 12h8M8 16h5",
+    practice:"M12 4H5a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-7M16 3l5 5-9 9-6 1 1-6zM14 5l5 5",
+    wrongs:"M4 3h12a2 2 0 0 1 2 2v16H6a2 2 0 0 1-2-2zm0 14h14M8 7l6 6m0-6-6 6",
+    catalog:"M16 8a4 4 0 1 0-8 0 4 4 0 0 0 8 0M9 12l-2 9 5-3 5 3-2-9",
+    knowledge:"M14 5a2 2 0 1 0-4 0 2 2 0 0 0 4 0M7 19a2 2 0 1 0-4 0 2 2 0 0 0 4 0M21 19a2 2 0 1 0-4 0 2 2 0 0 0 4 0M12 7v5M5 17v-5h14v5",
+    profile:"M5 3h12l3 3v15H5zM16 3v5h4M8 17v-3m4 3V11m4 6v-4",
+    students:"M15 7a3 3 0 1 0-6 0 3 3 0 0 0 6 0M5 21v-2a7 5 0 0 1 14 0v2M18 4a3 3 0 0 1 0 6m3 11v-2a5 5 0 0 0-3-4",
+    courses:"M12 5C8 2 4 3 2 4v16c3-2 7-2 10 0 3-2 7-2 10 0V4c-2-1-6-2-10 1zm0 0v15",
+    statistics:"M4 20h17M7 16v-4m5 4V7m5 9v-6M4 4l5 3 5-4 6 2",
+    content:"M3 6h6l2 3h10v11H3zm0 0V3h7l2 3h7v3M7 13h10m-10 3h7",
+    archives:"M3 3h18v5H3zm2 5v13h14V8M9 12h6m-6 4h6",
+    settings:"M3 6h5m4 0h9M8 3v6M3 12h11m4 0h3m-7-3v6M3 18h4m4 0h10M7 15v6"
+  };
+  const viewsFor = (kind, role) => role === "unlinked" ? [["home", "教学工作台"]] : kind === "student" ? studentViews : staffViews.filter(([key]) => role !== "school_admin" || ["home", "students", "courses", "knowledge", "settings"].includes(key));
+  let overview = null, viewRevision = 0, answerId = null;
+  function resolveIdentity(user) {
+    if (!user || !(user.org_type === "university" || user.workspace === "university" || ["/training-staff", "/training-certificates"].includes(user.workspace))) return null;
+    const role = user.education_role || (user.workspace === "university" ? user.role : null);
+    const kind = role === "student" ? "student" : "staff";
+    return {...user, workspace:"university", universityKind:kind, role:role || "unlinked", platformRole:user.role};
+  }
+  const element = (tag, cls, text) => { const node = document.createElement(tag); if(cls)node.className=cls; if(text !== undefined)node.textContent=String(text); return node; };
+  const classroomViews = new Set(["students", "tasks", "statistics", "wrongs", "profile"]);
+  const nativeViews = new Set(["students", "courses", "statistics", "content", "settings", "practice", "answer", "wrongs", "catalog", "profile"]);
+  function usesNative(view=selected) { return nativeViews.has(view)||(view==="home"&&identity.universityKind==="student"); }
+  function classroomCapable() { return !identity.legacy_teaching && ["admin", "teacher", "student"].includes(identity.role); }
+  function setupPanels() {
+    const panel = $("universityPanel");
+    overview = element("div", "university-overview"); overview.id = "universityOverview";
+    panel.insertBefore(overview, $("universityContent"));
+    for (const id of ["trainingPanel", "knowledgePanel"]) panel.append($(id));
+    const sections = {teacherBox:"tasks", classManager:"students", paperComposer:"tasks", classStatistics:"statistics", studentProfile:"statistics profile", paperDetail:"tasks", mistakeBook:"wrongs"};
+    for(const [id, view] of Object.entries(sections))$(id).dataset.classroomView=view;
+    for(const [id, view] of [["classList","students"],["paperList","tasks"],["assignmentList","tasks"],["reviewBox","tasks"]]) {
+      const node=$(id);if(node)(node.classList.contains("sheet")?node:node.closest(".sheet")).dataset.classroomView=view;
+    }
+    $("exerciseBox").dataset.classroomView="tasks";
+    for(const [id, parent]of [["assignmentCourse","teacherBox"],["paperCourse","paperComposerControls"]]){
+      const field=element("div","field university-course-field"),label=element("label",null,"所属课程（可选）"),select=element("select");
+      label.htmlFor=id;select.id=id;select.append(new Option("独立作业 / 不关联课程",""));field.append(label,select);$(parent).prepend(field);
+    }
+
+    const heading=$("knowledgePanel").querySelector(".graph-page-head");
+    heading.querySelector("h2").textContent="政策、规则与知识点";
+    heading.querySelector(".eyebrow").remove();
+    heading.querySelector(".muted").textContent="从课程知识点查阅关联规则与政策原文，保留来源、版本和审核状态。";
+    $("graphScope").closest(".graph-scope").hidden=true;
+    $("graphStatus").closest(".field").hidden=true;
+    $("kgEvidencePanel").hidden=true;
+    const prompts=[["学习依据","请解释当前知识点或规则的学习依据，区分已核实来源与待审核内容。"],["知识点关联","请解释当前节点与关联知识点、规则和政策原文的关系，不将学习关联当作法律推导。"],["复习建议","请根据当前节点提供复习顺序；没有学生作答记录时，不推断其掌握程度。"]];
+    $("graphAssistant").querySelectorAll("[data-question]").forEach((button,i)=>{button.textContent=prompts[i][0];button.dataset.question=prompts[i][1];});
+  }
+  function renderOverview(data, archive=false) {
+    overview.replaceChildren();
+    if(archive) {
+      const card=element("section","sheet");card.append(element("h2",null,identity.role==="student"?"课程学习记录":"教学作答与复核记录"));
+      if(!data.records.length)card.append(element("p","muted","暂无课程作答记录。完成课堂任务后，在这里查看成绩与复核记录。"));
+      for(const row of data.records){const item=element("div","data-item");const score=row.result_released===false?"成绩尚未开放":row.score+" 分";item.append(element("strong",null,row.title),element("p","muted",(row.student?row.student+" · ":"")+score+" · "+(row.reviewed?"已人工复核":"自动评分")+" · "+new Date(row.submitted_at).toLocaleString()));card.append(item);}
+      overview.append(card);return;
+    }
+    const c=data.counts, grid=element("div","kpi-grid");
+    const metrics=identity.role==="student"?[["所在班级",c.classrooms,"个"],["课程任务",c.assignments,"项"],["已提交",c.submitted,"项"],["在学课程",c.courses,"门"]]:[["教学班级",c.classrooms,"个"],["在校学生",c.students,"人"],["课程",c.courses,"门"],["作业",c.assignments,"项"]];
+    for(const [label,value,unit]of metrics){const card=element("div","kpi");card.append(element("div",null,label));const number=element("div","value",value);number.append(element("span","unit",unit));card.append(number);grid.append(card);}overview.append(grid);
+    const actions=element("section","sheet university-home-shortcuts");actions.append(element("h2",null,identity.role==="student"?"继续学习":"继续教学"),element("p","muted",data.school+" · "+(identity.role==="student"?"查看课程任务，安排考证练习，积累学习记录。":"查看教学安排和课程进度，继续备课与复核。")));
+    const row=element("div","university-home-actions");
+    for (const [view,label] of (identity.role==="student" ? [["catalog","找证书"],["tasks","查看课程任务"],["practice","开始练习"],["knowledge","查阅政策与图谱"]] : [["students","管理师生与班级"],["tasks","备课与发布作业"],["statistics","查看学情"],["knowledge","查阅政策与图谱"]])){
+      if(!viewsFor(identity.universityKind,identity.role).some(v=>v[0]===view))continue;
+      const button=element("button","btn re",label);button.onclick=()=>choose(view);row.append(button);
+    }actions.append(row);overview.append(actions);
+    if(data.courses.length){const courseList=element("section","sheet");courseList.append(element("h2",null,identity.role==="student"?"我的课程":"课程安排"));for(const course of data.courses)courseList.append(element("p",null,course.name+(course.semester?" · "+course.semester:"")));overview.append(courseList);}
+    const tasks=element("section","sheet");tasks.append(element("h2",null,identity.role==="student"?"课程任务与截止时间":"作业进度与复核"));
+    if(!data.assignments.length)tasks.append(element("p","muted",identity.role==="student"?"暂无分配给你的课程任务，可先进入练习与考证。":"尚未发布课堂作业。可先建立教学班级，再生成仿真案例或组卷。"));
+    for(const task of data.assignments.slice(0,8)){
+      const item=element("div","data-item university-task-row"),details=element("div");
+      details.append(element("strong",null,(task.course_name?task.course_name+" · ":"")+task.title),element("p","muted",(task.published?(task.deadline_passed?"已截止":"已发布"):"草稿")+" · "+(task.deadline_at?new Date(task.deadline_at).toLocaleString():"未设置截止时间")));
+      const open=element("button","btn re",identity.role==="student"?"进入作业":"查看作业");
+      open.onclick=async()=>{if(await choose("tasks"))await openExercise(task.id);};
+      item.append(details,open);tasks.append(item);
+    }
+    if(identity.role!=="student")tasks.append(element("p","muted","已提交作答 "+c.submitted+" 份；尚未人工复核 "+c.unreviewed+" 份。自动评分和人工复核分别保留。"));overview.append(tasks);
+    if(identity.role!=="student"&&c.unreviewed){const review=element("button","btn re","复核学生作答（"+c.unreviewed+"）");review.onclick=async()=>{if(await choose("tasks"))$("reviewBox").scrollIntoView({behavior:"smooth",block:"start"});};tasks.append(review);}
+    const knowledge=element("section","sheet");knowledge.append(element("h2",null,"公共政策与教学依据"),element("p","muted","政策、条款和规则来自统一公共知识目录；课程知识点以明确关联接入同一图谱。候选或未核实内容保留来源状态，历史作答沿用当时发布的版本。"));overview.append(knowledge);
+  }
+
+  async function loadCourseBindings() {
+    if(!classroomCapable()||identity.role==="student")return;
+    const [courses,classes]=await Promise.all([request("/api/teaching/courses"),request("/api/classes")]);
+    if(selected!=="courses")return;
+    $("universityCourseBindings")?.remove();
+    const card=element("section","sheet");card.id="universityCourseBindings";card.dataset.universityView="courses";
+    card.append(element("h2",null,"课程与教学班级"),element("p","muted","按明确的课程和教学班级关联课堂任务；不按同名班级自动合并。课程作业只能发布给已关联的班级。此处维护你管理的教学班级，其他教师已有的关联会保留。"));
+    if(!courses.length)card.append(element("p","muted","尚无课程。新建课程后，可在这里选择教学班级。"));
+    for(const course of courses){
+      const item=element("div","data-item"),checks=element("div","training-checks");item.append(element("h3",null,course.name));
+      for(const classroom of classes){const label=element("label"),check=element("input");check.type="checkbox";check.value=classroom.id;check.checked=course.class_ids.includes(classroom.id);label.append(check,document.createTextNode(" "+classroom.name));checks.append(label);}
+      if(!classes.length)checks.append(element("p","muted","请先在“师生与班级”建立自己的教学班级。"));
+      const message=element("p","muted"),save=element("button","btn re","保存我管理班级的关联");save.onclick=async()=>{save.disabled=true;try{await request("/api/teaching/courses/"+encodeURIComponent(course.id)+"/classrooms",{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify({class_ids:[...checks.querySelectorAll("input:checked")].map(n=>n.value)})});message.textContent="教学班级关联已保存。";}catch(error){message.textContent=error.message;}finally{save.disabled=false;}};
+      item.append(checks,save,message);card.append(item);
+    }
+    $("universityContent").prepend(card);
+  }
+  async function request(path, options = {}) {
+    const response = await fetch(path, {credentials:"same-origin", ...options});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) { const error = new Error(data.detail || `请求失败（${response.status}）`); error.status = response.status; throw error; }
+    return data;
+  }
+  function updateLogin() { updateAuthCollege(); }
+  function status(message, error = false) {
+    $("universityStatus").textContent = message;
+    $("universityStatus").className = error ? "university-status error" : "university-status muted";
+    $("universityRetry").hidden = !error;
+  }
+  function choose(view = "home", attemptId = null, fromHistory = false) {
+    if (!identity) return;
+    const legacyQuestion = view === "qa";
+    if(legacyQuestion)view="knowledge";
+    if(view==="goals")view="home";
+    const allowed = viewsFor(identity.universityKind, identity.role);
+    const answering = view === "answer" && identity.role === "student" && attemptId;
+    const next = answering ? "answer" : allowed.some(([id]) => id === view) ? view : "home";
+    const wasAnswering = selected === "answer";
+    answerId = answering ? String(attemptId) : null;
+    if(next!==selected&&selected==="knowledge")invalidateGraph();
+    selected = next;
+    if(window.matchMedia("(max-width:760px)").matches)setNavCollapsed(true);
+    $("universityTitle").textContent = selected === "answer" ? "练习作答" : selected === "settings" ? "个人信息" : allowed.find(([id]) => id === selected)[1];
+    const account = document.querySelector('#nav [data-panel="userSettingsPanel"]');
+    account.classList.toggle("active", selected === "settings");
+    if (selected === "settings") account.setAttribute("aria-current", "page"); else account.removeAttribute("aria-current");
+    document.querySelectorAll("#universityNav button").forEach(b => {
+      const active = b.dataset.universityView === (selected === "answer" ? "practice" : selected);
+      b.classList.toggle("active", active);
+      if (active) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    });
+    applyView();
+    const url = `/?workspace=${identity.universityKind}#panel=universityPanel&view=${selected}${answerId ? "&attempt="+encodeURIComponent(answerId) : ""}`;
+    if (!fromHistory && location.pathname+location.search+location.hash !== url) {
+      history[answering || wasAnswering ? "pushState" : "replaceState"](null, "", url);
+    }
+    $("universityPanel").dataset.view = selected;
+    window.scrollTo({top:0, behavior:"instant"});
+    return refresh().then(result=>{
+      if(legacyQuestion&&result&&selected==="knowledge")graphTab(true);
+      if(result&&selected==="answer")$("answer-title").focus({preventScroll:true});
+      return result;
+    });
+  }
+
+  function applyView() {
+    if(!identity)return;
+    const native=usesNative();
+    $("universityContent").hidden=!native;
+    if(overview)overview.hidden=!["home","archives"].includes(selected);
+    $("trainingPanel").classList.toggle("active",classroomViews.has(selected)&&classroomCapable());
+    $("knowledgePanel").classList.toggle("active",selected==="knowledge");
+    const group=selected==="wrongs"?"practice":selected;
+    document.querySelectorAll("#universityContent [data-university-view]").forEach(card=>{
+      const views=card.dataset.universityView.split(" ");
+      const visible=views.includes(group)||(group==="courses"&&views.includes("organization"));
+      card.classList.toggle("university-view-hidden",!visible);
+      if(card.id==="answer-card")card.hidden=!visible;
+    });
+    document.querySelectorAll("#trainingPanel > [data-classroom-view]").forEach(card=>card.classList.toggle("university-view-hidden",!card.dataset.classroomView.split(" ").includes(selected)));
+    const tools=$("universityContent").querySelector(".toolbar");if(tools)tools.hidden=selected!=="content";
+    if(selected==="settings"&&identity.universityKind==="staff"){
+      const form=$("universityContent").querySelector("#pass-form");if(form)form.hidden=false;
+    }
+  }
+  function decorate() {
+    applyView();
+    $("universityPanel").querySelectorAll(".card").forEach(card => card.classList.add("sheet"));
+    $("universityContent").querySelectorAll("button.primary").forEach(b => b.classList.add("btn", "pdf"));
+    $("universityContent").querySelectorAll("label:not([for])").forEach(label=>{
+      const field=label.nextElementSibling;
+      if(!field?.matches("input,select,textarea"))return;
+      if(field.id)label.htmlFor=field.id;
+      else if(!field.hasAttribute("aria-label"))field.setAttribute("aria-label",label.textContent.trim());
+    });
+    $("universityPanel").querySelectorAll("table").forEach(table => {
+      if (!table.parentElement.classList.contains("table-scroll")) {
+        const wrap = document.createElement("div"); wrap.className = "table-scroll";
+        table.before(wrap); wrap.append(table);
+      }
+    });
+    if (identity?.role === "school_admin") {
+      $("universityContent").querySelectorAll("[data-university-view]:not([data-university-view=settings]) button").forEach(button => {
+        const action = button.dataset.act || "";
+        if (action.startsWith("refresh-") || button.dataset.workspaceView) return;
+        // Read-only school overview: do not offer write controls to this role.
+        button.disabled = true;
+        button.title = "校级管理员为只读查看；请由实训管理员维护。";
+      });
+    }
+  }
+  async function mount() {
+    const kind = identity.universityKind;
+    await Promise.all([
+      loadClientScript("/member-links.js?v=20261027-login-first-1"),
+      loadClientScript("/policy-source.js?v=20261027-login-first-1"),
+      loadClientScript("/training-"+(kind === "student" ? "portal" : "staff")+".js?v=20261029-student-kp-pages-2")
+    ]);
+    const initial = !controller;
+    if (!controller) {
+      const path = "/api/training/workspace/template/" + (kind === "student" ? "student" : "staff");
+      const response = await fetch(path, {credentials:"same-origin"});
+      if (!response.ok) throw new Error(`页面加载失败（${response.status}）`);
+      const parsed = new DOMParser().parseFromString(await response.text(), "text/html");
+      // Fixed local templates use the shared controllers and their request lifecycle.
+      const main = parsed.querySelector("main"), app = main.querySelector("#app-view");
+      const helpers = document.createElement("div"); helpers.hidden = true;
+      helpers.append(parsed.querySelector("header"));
+      $("universityContent").replaceChildren(helpers, app);
+      const information = element("section", "sheet");
+      information.dataset.universityView = "settings";
+      information.append(element("h2", null, "个人信息"));
+      const fields = element("dl", "settings-account-fields");
+      for (const [label, value, id] of [["登录账号", identity.username || identity.email], ["姓名", identity.display_name], ["身份", labels[identity.role]], ["所属高校", "待读取", "universityPersonalSchool"], [identity.universityKind === "student" ? "所在班级" : "任教班级", "待读取", "universityPersonalClasses"]]) {
+        const field = element("div");
+        const valueNode = element("dd", null, value || "—");
+        if (id) valueNode.id = id;
+        field.append(element("dt", null, label), valueNode);
+        fields.append(field);
+      }
+      information.append(fields);
+      app.prepend(information);
+      const modal = parsed.getElementById("pass-modal");
+      if (modal) $("universityContent").append(modal);
+      const root = $("universityContent");
+      const scoped = {
+        getElementById:id=>root.querySelector("#"+CSS.escape(id)),
+        querySelector:selector=>root.querySelector(selector),
+        querySelectorAll:selector=>root.querySelectorAll(selector),
+        createElement:tag=>document.createElement(tag), body:document.body
+      };
+      controller = (kind === "student" ? window.createTrainingStudent : window.createTrainingStaff)(scoped, {embedded:true});
+      if (kind === "student") {
+        $("workspace-change-password")?.addEventListener("click", () => scoped.getElementById("change-pass-btn").click());
+        for (const id of ["workbench-card", "pf-list", "pr-wrong"]) scoped.getElementById(id)?.addEventListener("click", event => {
+          const action = event.target.closest("button[data-act]")?.dataset.act;
+          if (action === "workspace-goals") choose("home").then(()=>{const manager=scoped.getElementById("goal-manager");if(manager){manager.open=true;manager.scrollIntoView({behavior:"smooth",block:"start"});}});
+          if (action === "workspace-catalog") choose("catalog");
+        });
+      }
+    }
+    if (initial) {
+      try { await controller.ready; }
+      catch (error) { controller.destroy(); controller = null; throw error; }
+    } else if (controller.refresh) await controller.refresh();
+    if (!identity.legacy_teaching) {
+      $("universityContent").querySelectorAll("[data-legacy-members], #teacher-import-btn").forEach(node => node.hidden = true);
+    }
+    const members = $("universityContent").querySelector("#school-membership");
+    if (members && identity.role === "school_admin") members.hidden = true;
+    decorate(); applyView();
+  }
+  async function ensureNative() {
+    if(loading)return loading;
+    loading=mount();
+    try { await loading; } finally { loading=null; }
+  }
+  async function refresh() {
+    if(!identity)return;
+    const ticket=++viewRevision,view=selected;
+    $("universityRefresh").disabled=true;status("正在读取教学数据…");
+    try {
+      if(identity.role==="unlinked")throw new Error("高校账号尚未关联教学身份，请联系平台管理员核对。当前不会进入企业业务面板。");
+      if(["home","archives"].includes(view)){
+        const data=await request("/api/training/workspace/dashboard");if(ticket!==viewRevision)return false;renderOverview(data,view==="archives");
+        if(view==="home"&&usesNative(view))await ensureNative();
+      }
+      else if(view==="knowledge"){await prepareWorkspacePanel("knowledgePanel");if(ticket!==viewRevision)return false;await loadKnowledge({throwOnError:true});}
+      else {
+        if(nativeViews.has(view)){
+          if(view === "settings") {
+            const [data] = await Promise.all([request("/api/training/workspace/dashboard"), ensureNative()]);
+            if(ticket!==viewRevision)return false;
+            $("universityPersonalSchool").textContent = data.school || "—";
+            $("universityPersonalClasses").textContent = data.classes.map(classroom => classroom.name).join("、") || (identity.universityKind === "student" ? "尚未加入教学班级" : "暂无负责的教学班级");
+          } else await ensureNative();
+          if(ticket!==viewRevision)return false;
+          if(view==="courses")await loadCourseBindings();
+        }
+        if(classroomViews.has(view)&&classroomCapable()){
+          $("teacherBox").style.display=identity.role==="student"?"none":"block";
+          await prepareWorkspacePanel("trainingPanel");if(ticket!==viewRevision)return false;
+          await loadAssignments({throwOnError:true});
+        } else if(view==="tasks"&&!classroomCapable())throw new Error("该教学档案尚未绑定课堂账号，请由管理员关联后使用课堂任务。已有考证练习仍可正常使用。");
+      }
+      if(ticket!==viewRevision)return false;
+      if(view==="answer")await controller.openAttempt(answerId);
+      if(ticket!==viewRevision)return false;applyView();
+      status("数据已更新 · "+new Date().toLocaleTimeString("zh-CN",{hour:"2-digit",minute:"2-digit"}));
+      return true;
+    }catch(error){if(ticket===viewRevision)status("加载失败："+error.message+" 请重新加载。",true);return false;}
+    finally{if(ticket===viewRevision)$("universityRefresh").disabled=false;}
+  }
+  function enter(user) {
+    identity = user;
+    $("universityPanel").dataset.kind=user.universityKind;
+    if(!overview)setupPanels();
+    document.body.classList.add("workspace-ready", "university-ready");
+    $("authScreen").style.display = "none";
+    for (const id of ["appMain", "appHeader", "appFooter"]) $(id).style.display = "block";
+    $("nav").style.display = "flex"; $("nav").setAttribute("aria-label", "高校工作空间");
+    document.querySelectorAll("#appMain > .wrap > .panel").forEach(p => p.classList.toggle("active", p.id === "universityPanel"));
+    document.querySelectorAll("#nav [data-panel]").forEach(b => b.style.display = "none");
+    const account = document.querySelector('#nav [data-panel="userSettingsPanel"]');
+    account.style.display = "";
+    account.setAttribute("aria-label", "个人信息"); account.title = "个人信息";
+    account.querySelector(".account-label").textContent = "个人信息";
+    document.querySelector("#nav .nav-caption").textContent = "高校工作空间";
+    document.title = "税海拾珠 · 高校工作空间";
+    $("currentUser").textContent = user.display_name + " · " + labels[user.role];
+    $("appFooter").querySelector(".wrap").textContent = "教学内容仅供学习与训练，仿真案例不含真实企业材料。学习建议与 AI 解读不替代标准答案和教师复核。";
+    $("universityEyebrow").textContent = user.college || "高校工作空间";
+    const nav = $("universityNav"); nav.hidden = false; nav.replaceChildren();
+    for (const [key, title] of viewsFor(user.universityKind, user.role).filter(([key]) => key !== "settings")) {
+      const b = document.createElement("button"); b.type = "button"; b.dataset.universityView = key; b.title = title; b.setAttribute("aria-label", title);
+      // Reuse the main workspace's icon sizing and label behavior.
+      const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      icon.setAttribute("class", "nav-icon"); icon.setAttribute("viewBox", "0 0 24 24"); icon.setAttribute("aria-hidden", "true");
+      const path = document.createElementNS(icon.namespaceURI, "path");
+      path.setAttribute("d", navigationIcons[key] || navigationIcons.home); icon.append(path);
+      const label = document.createElement("span"); label.className = "nav-label"; label.textContent = title;
+      b.append(icon, label); b.addEventListener("click", () => choose(key)); nav.append(b);
+    }
+    selected = new URLSearchParams(location.hash.slice(1)).get("view") || "home";
+    new MutationObserver(decorate).observe($("universityPanel"), {childList:true, subtree:true});
+    choose(selected, new URLSearchParams(location.hash.slice(1)).get("attempt"));
+  }
+  function register(kind, value) { if (identity?.universityKind === kind) controller = value; }
+  function expired(message = "登录状态已失效，请重新登录。") {
+    location.replace(`/?workspace=${identity.universityKind}&notice=${encodeURIComponent(message)}`);
+  }
+  async function logout() {
+    await request("/api/logout", {method:"POST"});
+    location.replace(`/?workspace=${identity.universityKind}`);
+  }
+  $("universityRefresh").addEventListener("click", refresh);
+  $("universityRetry").addEventListener("click", refresh);
+  window.addEventListener("hashchange", () => {
+    if (!identity) return;
+    const params = new URLSearchParams(location.hash.slice(1));
+    if(params.get("email"))return;
+    choose(params.get("view") || "home", params.get("attempt"), true);
+  });
+  function notify(message, error = false) {
+    status(message, error);
+    $("universityRetry").hidden = true;
+    decorate();
+    if(selected==="courses"&&message.includes("课程"))loadCourseBindings().catch(error=>status(error.message,true));
+  }
+  return {resolveIdentity, viewsFor, updateLogin, enter, choose, register, expired, logout, notify};
+})();

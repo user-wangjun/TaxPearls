@@ -20,6 +20,8 @@ from fastapi.testclient import TestClient
 from webapp.login_guard import LoginGuard
 
 from src import settings  # noqa: F401 - 先加载 .env，Store 需要 FIELD_KEY
+from webapp import university_members
+from fastapi import HTTPException
 from webapp.storage import Store
 from webapp.training_portal import (
     TrainingPortalError, create_student, register,
@@ -43,6 +45,17 @@ class QuotaTests(unittest.TestCase):
         register(app, lambda: self.store, COOKIE_NAME)
         self.client = TestClient(app)
         self._seed()
+        self.platform=self.store.create_initial_admin('platform', 'PlatformForest!2026', '平台', 'platform')
+        def platform_user(token):
+            who=self.store.user_for_token(token)
+            if not who:raise HTTPException(401,'请先登录。')
+            return who
+        university_members.register(app,lambda:self.store,platform_user)
+        with self.store.connect() as db:
+            admin=db.execute("SELECT id FROM college_user WHERE username='admin01'").fetchone()[0]
+            db.execute("INSERT INTO teacher_student_quotas VALUES (?,?,3,1,?,?)",(admin,COLLEGE,admin,NOW))
+            for row in db.execute("SELECT id FROM student_info WHERE college=?",(COLLEGE,)).fetchall():
+                db.execute("INSERT INTO student_teacher_memberships VALUES (?,?,?)",(row['id'],admin,COLLEGE))
 
     def tearDown(self):
         training_portal_module.login_guard = self._orig_guard
@@ -75,22 +88,24 @@ class QuotaTests(unittest.TestCase):
         self.assertEqual(res.status_code, 200, res.text)
 
     def _set_quota(self, teacher: int, student: int, revision: int | None = None):
-        state = self.client.get(
-            f"/api/training/staff/org/quota?college={COLLEGE}").json()["quota"]
-        return self.client.patch("/api/training/staff/org/quota", json={
-            "college": COLLEGE, "teacher_quota": teacher, "student_quota": student,
-            "revision": state["revision"] if revision is None else revision})
+        state=self.client.get(f"/api/training/staff/org/quota?college={COLLEGE}").json()['quota']
+        self.client.cookies.set('taxpearls_session',self.store.authenticate('platform','PlatformForest!2026')[1])
+        return self.client.put(f'/api/universities/{COLLEGE}/capacity',json={
+            'teacher_quota':teacher,'student_quota':student,'revision':state['revision'] if revision is None else revision})
 
     def test_default_quota_allows_and_reports(self):
-        self._login("teacher01", "TeacherPass1!")
+        self._login("admin01", "AdminPass1!")
         state = self.client.get(
             f"/api/training/staff/org/quota?college={COLLEGE}").json()["quota"]
         self.assertFalse(state["configured"])
         self.assertEqual(state["teacher_quota"], 10)
         self.assertEqual(state["student_quota"], 200)
         self.assertEqual(state["students_used"], 3)   # 停用不计
-        self.assertEqual(state["teachers_used"], 1)   # 只数 teacher 角色，admin 不占席
-        # 默认档下创建学生照常可用
+        self.assertEqual(state["teachers_used"], 2)   # 管理员也占教职工席位
+        with self.store.connect() as db:
+            admin=dict(db.execute("SELECT * FROM college_user WHERE username='admin01'").fetchone())
+        university_members.allocate(self.store,admin,admin['id'],4,1)
+        # 学校默认档不变，管理员为自己增加一个可用学生席位后创建。
         res = self.client.post("/api/training/staff/students", json={
             "college": COLLEGE, "student_no": "2099001", "name": "默认档"})
         self.assertEqual(res.status_code, 200, res.text)
@@ -113,7 +128,7 @@ class QuotaTests(unittest.TestCase):
 
     def test_teacher_import_quota_skips_overflow(self):
         self._login("admin01", "AdminPass1!")
-        self.assertEqual(self._set_quota(1, 200).status_code, 200)  # 在读教师 1 → 满
+        self.assertEqual(self._set_quota(2, 200).status_code, 200)  # 在读教师 1 → 满
         res = self.client.post("/api/training/staff/teachers/import", json={
             "college": COLLEGE, "default_password": "NewStaff2026!",
             "rows": [{"username": "t02", "display_name": "甲"}, {"username": "t03", "display_name": "乙"}]})
@@ -153,20 +168,20 @@ class QuotaTests(unittest.TestCase):
         self._login("admin01", "AdminPass1!")
         first = self._set_quota(20, 300)
         self.assertEqual(first.status_code, 200, first.text)
-        state = first.json()["quota"]
+        state = first.json()
         self.assertTrue(state["configured"])
         self.assertEqual(state["revision"], 1)
         # 旧 revision 409
-        self.assertEqual(self.client.patch("/api/training/staff/org/quota", json={
-            "college": COLLEGE, "teacher_quota": 20, "student_quota": 300,
+        self.assertEqual(self.client.put(f"/api/universities/{COLLEGE}/capacity", json={
+            "teacher_quota": 20, "student_quota": 300,
             "revision": 0}).status_code, 409)
         # 低于当前用量 422
-        self.assertEqual(self.client.patch("/api/training/staff/org/quota", json={
-            "college": COLLEGE, "teacher_quota": 20, "student_quota": 2,
+        self.assertEqual(self.client.put(f"/api/universities/{COLLEGE}/capacity", json={
+            "teacher_quota": 20, "student_quota": 2,
             "revision": state["revision"]}).status_code, 422)
         # 越界 422
-        self.assertEqual(self.client.patch("/api/training/staff/org/quota", json={
-            "college": COLLEGE, "teacher_quota": 0, "student_quota": 300,
+        self.assertEqual(self.client.put(f"/api/universities/{COLLEGE}/capacity", json={
+            "teacher_quota": 0, "student_quota": 300,
             "revision": state["revision"]}).status_code, 422)
         # 第二次调整后留痕两条，记录新旧值与操作人
         self._set_quota(30, 400)
@@ -177,7 +192,7 @@ class QuotaTests(unittest.TestCase):
         self.assertIsNone(final["history"][-1]["old_student_quota"])   # 首次：无旧值
         self.assertEqual(final["history"][0]["old_student_quota"], 300)
         self.assertEqual(final["history"][0]["new_student_quota"], 400)
-        self.assertEqual(final["history"][0]["changed_by_name"], "管理员")
+        self.assertEqual(final["history"][0]["changed_by_name"], "平台")
 
     def test_quota_permissions(self):
         self._login("teacher01", "TeacherPass1!")

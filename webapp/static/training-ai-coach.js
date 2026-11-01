@@ -1,0 +1,943 @@
+/* AI 备课助手 / 学生任务卡。
+   使用统一登录身份，挂载到“课程与作业”视图，不依赖 training-staff.js 或 training-portal.js 的内部状态。 */
+"use strict";
+(() => {
+  const $ = (id, root = document) => root.querySelector("#" + CSS.escape(id));
+  const el = (tag, cls, text) => {
+    const node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = String(text);
+    return node;
+  };
+  const button = (label, act, cls = "", key = "ac") => {
+    const classes = new Set(["btn", "ac-button", ...cls.split(/\s+/).filter(Boolean)]);
+    if (!classes.has("pdf")) classes.add("re");
+    const node = el("button", [...classes].join(" "), label);
+    node.type = "button";
+    if (act) node.dataset[key] = act;
+    return node;
+  };
+  const controlField = (control) => {
+    const wrapper = el("div", "field");
+    wrapper.append(control);
+    return wrapper;
+  };
+
+  function injectStyle() {
+    if ($("ac-coach-style")) return;
+    const style = el("style");
+    style.id = "ac-coach-style";
+    style.textContent = ".ac-opt{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0}"
+      + ".ac-opt>input[type=text]{flex:1;min-width:160px}"
+      + ".ac-opt>input[type=radio],.ac-opt>input[type=checkbox]{width:auto;margin:0}"
+      + "#ai-coach-card .row,#ai-student-card .row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}"
+      + "#ai-coach-card .row>div{flex:1 1 160px;min-width:150px}"
+      + "#ai-coach-card select,#ai-coach-card input,#ai-student-card select{width:100%;box-sizing:border-box}"
+      + "#ai-coach-card .ac-opt>input[type=radio],#ai-coach-card .ac-opt>input[type=checkbox]"
+      + ",#ai-student-card .ac-opt>input{width:auto;flex:0 0 auto}"
+      + "#ai-coach-card .row>div[style*='0 0 auto']{flex:0 0 auto}"
+      + "#ai-coach-card h3,#ai-student-card h3{margin:18px 0 6px}"
+      + "#ai-coach-card .data-item>input,#ai-coach-card .data-item>textarea,#ai-coach-card .data-item>div>textarea{width:100%;box-sizing:border-box;margin-bottom:6px}"
+      + ".ac-block{display:block;padding:10px 0;border-top:1px solid rgba(127,127,127,.18)}"
+      + ".ac-block>.row{display:flex;gap:10px;align-items:flex-end}"
+      + "#ac-results{width:min(1100px,calc(100vw - 48px));max-width:none;max-height:calc(100dvh - 48px);margin:auto;padding:0;overflow:hidden;border:1px solid var(--line,#c7d2de);border-radius:20px;background:var(--card,#fff);color:var(--ink,#25334a);box-shadow:0 24px 80px #0005;overflow-wrap:anywhere}"
+      + "#ac-results[open]{display:flex;flex-direction:column}#ac-results:not([open]){display:none}"
+      + "#ac-results::backdrop{background:rgba(15,23,42,.48);backdrop-filter:blur(4px)}"
+      + "#ac-results .ac-results-header{display:flex;align-items:flex-start;gap:20px;padding:20px 24px;border-bottom:1px solid var(--line,#c7d2de);flex-shrink:0}"
+      + "#ac-results .ac-results-header h3{flex:1;min-width:0;margin:0;align-self:center}"
+      + "#ac-results .ac-results-header button{flex:0 0 auto}"
+      + "#ac-results-body{padding:16px 24px;overflow-y:scroll;min-height:0;overscroll-behavior:contain;scrollbar-gutter:stable}"
+      + "#ac-results .ac-result-question{margin:0 0 16px;padding:18px;border:1px solid var(--line,#c7d2de);border-radius:14px;background:var(--card,#fff)}"
+      + "#ac-results .ac-result-question h4{margin:0 0 12px;font-size:16px;line-height:1.6}"
+      + "#ac-results .ac-result-options{padding-left:24px;margin:0 0 12px;line-height:1.8}"
+      + "#ac-results .ac-result-groups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px}"
+      + "#ac-results .ac-result-group{min-width:0;padding:12px;border:1px solid var(--line,#c7d2de);border-radius:10px;background:rgba(127,127,127,.035)}"
+      + "#ac-results .ac-result-group summary{display:flex;align-items:center;gap:8px;list-style:none;cursor:pointer}#ac-results .ac-result-group summary::-webkit-details-marker{display:none}"
+      + "#ac-results .ac-result-group summary::before{content:'▸';color:var(--ink-2,#64748b);font-size:16px}#ac-results .ac-result-group[open] summary::before{content:'▾'}"
+      + "#ac-results .ac-result-group[open] summary{margin-bottom:8px}#ac-results .ac-result-group summary span{display:inline-block;padding:3px 9px;border-radius:7px;font-size:13px;font-weight:600;line-height:1.5}"
+      + "#ac-results .ac-result-correct summary span{color:#137956;background:rgba(16,185,129,.12)}#ac-results .ac-result-incorrect summary span{color:var(--danger,#b42318);background:rgba(239,68,68,.10)}"
+      + "#ac-results .ac-result-unknown{grid-column:1/-1}#ac-results .ac-result-unknown summary span{color:var(--ink-2,#64748b);background:rgba(127,127,127,.12)}"
+      + "#ac-results .ac-result-names{max-height:104px;min-height:40px;overflow-y:scroll;overscroll-behavior:contain;scrollbar-gutter:stable;list-style:none;margin:0;padding:0 8px 0 0;line-height:1.8;overflow-wrap:anywhere}"
+      + "#ac-results-body,#ac-results .ac-result-names{scrollbar-width:thin;scrollbar-color:var(--line,#aab8c6) transparent}"
+      + "#ac-results-body::-webkit-scrollbar,#ac-results .ac-result-names::-webkit-scrollbar{width:7px}#ac-results-body::-webkit-scrollbar-thumb,#ac-results .ac-result-names::-webkit-scrollbar-thumb{background:var(--line,#aab8c6);border-radius:8px}"
+      + "html:has(#ac-results[open]),body:has(#ac-results[open]){overflow:hidden}"
+      + "@media(max-width:600px){#ac-results{width:calc(100vw - 24px);max-height:calc(100dvh - 24px);border-radius:16px}#ac-results .ac-results-header{padding:16px;gap:12px}#ac-results-body{padding:12px}#ac-results .ac-result-question{padding:12px}#ac-results .ac-result-groups{gap:8px}#ac-results .ac-result-group{padding:8px}}"
+      + "#ai-coach-card textarea,#ai-student-card textarea{width:100%;box-sizing:border-box}"
+      + "#ai-coach-card{padding:24px;min-width:0;box-sizing:border-box}"
+      + "#ai-coach-card .ac-heading{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}"
+      + "#ai-coach-card .ac-heading h2{margin:0;min-width:0}"
+      + "#ai-coach-card .ac-source{margin:16px 0}"
+      + "#ai-coach-card .ac-controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:end}"
+      + "#ai-coach-card .ac-controls>.field{min-width:0;margin:0}"
+      + "#ai-coach-card .ac-controls :is(input,select){height:48px;min-width:0}"
+      + "#appMain #ai-coach-card #ac-file{display:block;min-width:0;min-height:44px;height:auto;padding:0;border:0;border-radius:0;background:transparent;box-shadow:none;font:inherit;color:var(--ink-2)}"
+      + "#appMain #ai-coach-card #ac-file::file-selector-button{min-height:44px;padding:9px 16px;margin-right:12px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink);font:inherit;cursor:pointer}"
+      + "#ai-coach-card .ac-source-hint{display:block;margin:6px 0 0;font-size:13px;color:var(--ink-2)}"
+      + "#ai-coach-card .ac-generate-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin:20px 0 12px}"
+      + "#ai-coach-card .ac-generate-actions p{flex:1 1 220px;margin:0}"
+      + "#appMain #ai-coach-card .ac-generate{min-height:48px;padding:12px 24px;font-size:17px;font-weight:600;white-space:nowrap}"
+      + "#ai-coach-card .ac-generate:disabled{opacity:.65;cursor:wait}"
+      + "#ai-coach-card .ac-button,#ai-student-card .ac-button{min-height:44px;box-sizing:border-box;padding:10px 18px;font-size:14px;font-weight:500;line-height:22px;white-space:normal}"
+      + "#ai-coach-card .ac-draft-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin-top:20px;padding-top:18px;border-top:1px solid var(--line)}"
+      + "#ai-coach-card .ac-draft-actions .ac-discard{margin-left:auto}"
+      + "#ai-coach-card .ac-draft-actions .pdf{font-weight:600}"
+      + "#ai-coach-card .ac-item-actions{display:flex;align-items:center;flex-wrap:wrap;gap:12px;margin:10px 0 4px}"
+      + "#ai-coach-card .ac-item-actions .muted{flex:1 1 240px;min-width:0;margin:0;overflow-wrap:anywhere}"
+      + "#ai-coach-card .ac-item-actions .ac-button{flex:0 0 auto}"
+      + "#ai-coach-card .ac-block>.field{margin:8px 0}"
+      + "#ai-coach-card .ac-opt>.field{flex:1;min-width:160px;margin:0}"
+      + "@media(max-width:760px){#ai-coach-card{padding:18px}#ai-coach-card .ac-controls{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}"
+      + "#ai-coach-card .ac-class-field{grid-column:1/-1}"
+      + "#ai-coach-card .ac-generate-actions{align-items:stretch}"
+      + "#ai-coach-card .ac-generate-actions p{flex-basis:100%}"
+      + "#appMain #ai-coach-card .ac-generate{width:100%;white-space:normal}"
+      + "#ai-coach-card .ac-draft-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}"
+      + "#ai-coach-card .ac-draft-actions .ac-button{width:100%;min-width:0}"
+      + "#ai-coach-card .ac-draft-actions .ac-discard{grid-column:1/-1;justify-self:start;width:auto;margin-left:0}}";
+    document.head.append(style);
+  }
+  let booted = false;
+  let role = null;
+  let staff = null;
+  let student = null;
+
+  async function api(path, options = {}) {
+    const response = await fetch(path, {credentials: "same-origin", ...options});
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.detail || `请求失败（${response.status}）`);
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  }
+  const post = (path, body) => api(path, {
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body),
+  });
+
+  function host() {
+    const panel = $("trainingPanel");
+    if (panel) return {node: panel, classroom: true};
+    const app = $("app-view");
+    return app ? {node: app, classroom: false} : null;
+  }
+
+  function mount(card) {
+    const box = host();
+    if (!box) return false;
+    if (box.classroom) {
+      card.dataset.classroomView = "tasks";
+      box.node.prepend(card);
+      const panel = $("universityPanel");
+      if (panel?.dataset.kind) {
+        card.classList.toggle("university-view-hidden", panel.dataset.view !== "tasks");
+      }
+    } else {
+      card.dataset.universityView = "tasks";
+      box.node.append(card);
+    }
+    return true;
+  }
+
+  /* ---------------------------- 教师：AI 备课 ---------------------------- */
+  function staffCard() {
+    const card = el("section", "card");
+    card.id = "ai-coach-card";
+    const heading = el("div", "ac-heading");
+    heading.append(el("h2", null, "AI 备课助手：把教学想法变成学生任务"), button("刷新任务", "refresh", "small"));
+    card.append(
+      heading,
+      el("p", "muted", "把备课时写的想法或讲义贴进来（也可载入 .md / .txt），AI 会拆成知识点和客观题。"
+        + "生成后必须由你逐题核对、修改，点“发布给学生”之后学生才能看到；AI 内容不会写入考纲知识点库。"),
+    );
+    const briefRow = el("div", "row");
+    const briefCell = el("div", "field");
+    briefCell.style.flex = "1";
+    const label = el("label", null, "教学想法 / 备课材料");
+    label.htmlFor = "ac-brief";
+    const area = el("textarea");
+    area.id = "ac-brief";
+    area.rows = 7;
+    area.placeholder = "例如：这节课讲增值税一般计税方法，重点是销项税额与进项税额的确定。学生常把不得抵扣的进项税记错，要强调用于集体福利、个人消费的部分不能抵……";
+    briefCell.append(label, area);
+    briefRow.append(briefCell);
+    card.append(briefRow);
+
+    const controls = el("div", "ac-controls");
+    const fileCell = el("div", "ac-source");
+    const fileLabel = el("label", null, "或载入本地讲义");
+    fileLabel.htmlFor = "ac-file";
+    const file = el("input");
+    file.type = "file";
+    file.id = "ac-file";
+    file.accept = ".txt,.md,.markdown,text/plain,text/markdown";
+    file.setAttribute("aria-describedby", "ac-file-hint");
+    const fileHint = el("span", "ac-source-hint", "支持 .txt、.md 文档，最大 200KB；载入的文字会添加到上方材料中。");
+    fileHint.id = "ac-file-hint";
+    fileCell.append(fileLabel, file, fileHint);
+
+    const classCell = el("div", "field ac-class-field");
+    const classLabel = el("label", null, "发布到班级");
+    classLabel.htmlFor = "ac-class";
+    const classes = el("select");
+    classes.id = "ac-class";
+    classes.append(new Option("全机构学生", ""));
+    classCell.append(classLabel, classes);
+
+    const countCell = el("div", "field");
+    const countLabel = el("label", null, "题目数量");
+    countLabel.htmlFor = "ac-count";
+    const count = el("input");
+    count.type = "number";
+    count.id = "ac-count";
+    count.min = "3";
+    count.max = "20";
+    count.value = "5";
+    countCell.append(countLabel, count);
+
+    const kindCell = el("div", "field");
+    const kindLabel = el("label", null, "题型");
+    kindLabel.htmlFor = "ac-kinds";
+    const kinds = el("select");
+    kinds.id = "ac-kinds";
+    kinds.append(new Option("单选", "single"), new Option("单选 + 多选", "single,multiple"), new Option("多选", "multiple"));
+    kindCell.append(kindLabel, kinds);
+
+    const goCell = el("div", "ac-generate-actions");
+    goCell.append(el("p", "muted", "先生成练习题，核对后再发布给学生。"), button("AI 生成练习题", "generate", "btn pdf primary ac-generate"));
+    controls.append(classCell, countCell, kindCell);
+    card.append(fileCell, controls, goCell);
+
+    const status = el("div", "muted");
+    status.id = "ac-status";
+    status.setAttribute("role", "status");
+    const draftBox = el("div");
+    draftBox.id = "ac-draft";
+    const listBox = el("div");
+    listBox.id = "ac-tasks";
+    const resultsBox = el("dialog");
+    resultsBox.id = "ac-results";
+    resultsBox.setAttribute("aria-labelledby", "ac-results-title");
+    const resultsHeader = el("div", "ac-results-header");
+    const resultsTitle = el("h3", null, "答题详情");
+    resultsTitle.id = "ac-results-title";
+    const closeResultsButton = button("关闭", "close-results", "small");
+    closeResultsButton.setAttribute("aria-label", "关闭答题详情");
+    closeResultsButton.autofocus = true;
+    resultsHeader.append(resultsTitle, closeResultsButton);
+    const resultsBody = el("div");
+    resultsBody.id = "ac-results-body";
+    resultsBody.setAttribute("aria-live", "polite");
+    resultsBox.append(resultsHeader, resultsBody);
+    resultsBox.addEventListener("cancel", event => {
+      event.preventDefault();
+      closeResults();
+    });
+    resultsBox.addEventListener("close", () => {
+      staff.resultsRequest += 1;
+      resultsBody.replaceChildren();
+    });
+    resultsBox.addEventListener("click", event => {
+      if (event.target === resultsBox) closeResults();
+    });
+    card.append(status, draftBox, listBox, resultsBox);
+
+    card.addEventListener("click", event => {
+      const act = event.target.closest("button[data-ac]")?.dataset.ac;
+      if (act) staffAction(act, event.target.closest("button"));
+    });
+    card.addEventListener("change", event => staffChange(event));
+    card.addEventListener("input", event => staffInput(event));
+    file.addEventListener("change", () => loadFile(file, area, status));
+    return card;
+  }
+
+  function loadFile(input, area, status) {
+    const picked = input.files?.[0];
+    if (!picked) return;
+    if (picked.size > 200 * 1024) {
+      status.className = "error";
+      status.textContent = "文档超过 200KB，请节选主要内容后再载入。";
+      input.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result || "").trim();
+      if (!text) {
+        status.className = "error";
+        status.textContent = "这个文件没有可读取的文字。";
+        return;
+      }
+      area.value = area.value.trim() ? `${area.value.trim()}\n\n${text}` : text;
+      status.className = "muted";
+      status.textContent = `已载入 ${picked.name}（${area.value.length} 字）。`;
+    };
+    reader.readAsText(picked, "utf-8");
+    input.value = "";
+  }
+
+  function setStatus(text, error = false) {
+    const node = $("ac-status");
+    if (!node) return;
+    node.className = error ? "error" : "muted";
+    node.textContent = text;
+  }
+
+  function staffChange(event) {
+    const target = event.target;
+    if (target.matches("#ac-draft [data-kp-field], #ac-draft [data-q-field]")) {
+      syncDraft(target);
+    } else if (target.matches("#ac-draft input[data-answer]")) {
+      syncAnswer(target);
+    }
+  }
+
+  function staffInput(event) {
+    const target = event.target;
+    if (target.matches("#ac-draft [data-kp-field], #ac-draft [data-q-field]")) syncDraft(target);
+  }
+
+  function syncDraft(node) {
+    if (!staff?.draft) return;
+    const value = node.type === "checkbox" ? node.checked : node.value;
+    if (node.dataset.kpField && node.dataset.kp !== undefined) {
+      staff.draft.knowledge_points[Number(node.dataset.kp)][node.dataset.kpField] = value;
+    }
+    if (node.dataset.qField && node.dataset.q !== undefined) {
+      const q = staff.draft.questions[Number(node.dataset.q)];
+      if (node.dataset.opt !== undefined) {
+        q.options[Number(node.dataset.opt)].text = value;
+      } else {
+        q[node.dataset.qField] = value;
+      }
+    }
+  }
+
+  function syncAnswer(node) {
+    const q = staff?.draft?.questions[Number(node.dataset.q)];
+    if (!q) return;
+    const key = node.dataset.answer;
+    if (q.kind === "single") {
+      q.answers = node.checked ? [key] : [];
+    } else if (node.checked) {
+      q.answers = [...new Set([...q.answers, key])].sort();
+    } else {
+      q.answers = q.answers.filter(item => item !== key);
+    }
+    paintDraft();
+  }
+
+  function paintDraft() {
+    const box = $("ac-draft");
+    if (!box) return;
+    box.replaceChildren();
+    if (!staff?.draft) return;
+    const draft = staff.draft;
+    const head = el("div", "row");
+    const titleCell = el("div", "field");
+    titleCell.style.flex = "1";
+    const titleLabel = el("label", null, "任务标题（学生看到的）");
+    titleLabel.htmlFor = "ac-title";
+    const title = el("input");
+    title.id = "ac-title";
+    title.value = draft.title;
+    title.addEventListener("input", () => { draft.title = title.value; });
+    titleCell.append(titleLabel, title);
+    head.append(titleCell);
+    box.append(head, el("h3", null, `知识点（${draft.knowledge_points.length} 条，随任务下发，不进考纲库）`));
+    draft.knowledge_points.forEach((kp, index) => {
+      const item = el("div", "ac-block");
+      const name = el("input");
+      name.value = kp.name;
+      name.dataset.kp = index;
+      name.dataset.kpField = "name";
+      name.setAttribute("aria-label", `知识点 ${index + 1} 名称`);
+      const summary = el("textarea");
+      summary.rows = 2;
+      summary.value = kp.summary;
+      summary.dataset.kp = index;
+      summary.dataset.kpField = "summary";
+      summary.setAttribute("aria-label", `知识点 ${index + 1} 要点`);
+      const line = el("div", "row");
+      const diffCell = el("div", "field");
+      const diff = el("select");
+      diff.dataset.kp = index;
+      diff.dataset.kpField = "difficulty";
+      diff.setAttribute("aria-label", `知识点 ${index + 1} 难度`);
+      for (const level of ["基础", "进阶", "拓展"]) diff.append(new Option(level, level));
+      diff.value = kp.difficulty || "基础";
+      diffCell.append(diff);
+      const remove = button("删除这条知识点", "remove-kp");
+      remove.dataset.kp = index;
+      line.append(diffCell, remove);
+      item.append(controlField(name), controlField(summary), line);
+      if (kp.source_quote) item.append(el("p", "muted", `材料原句：${kp.source_quote}`));
+      box.append(item);
+    });
+    box.append(el("h3", null, `题目（${draft.questions.length} 道）`));
+    draft.questions.forEach((q, index) => box.append(questionEditor(q, index)));
+    const actions = el("div", "ac-draft-actions");
+    actions.append(button("保存草稿", "save"), button("发布给学生", "publish", "pdf primary"),
+                   button("丢弃这份草稿", "discard", "ac-discard"));
+    box.append(actions);
+  }
+
+  function questionEditor(q, index) {
+    const item = el("div", "ac-block");
+    const meta = el("p", "muted", `第 ${index + 1} 题 · ${q.kind === "single" ? "单选" : "多选"}`
+      + (q.kp ? ` · ${q.kp}` : ""));
+    const stem = el("textarea");
+    stem.rows = 2;
+    stem.value = q.stem;
+    stem.dataset.q = index;
+    stem.dataset.qField = "stem";
+    stem.setAttribute("aria-label", `第 ${index + 1} 题题干`);
+    item.append(meta, controlField(stem));
+    q.options.forEach((option, optIndex) => {
+      const line = el("div", "ac-opt");
+      const pick = el("input");
+      pick.type = q.kind === "single" ? "radio" : "checkbox";
+      pick.name = `ac-answer-${index}`;
+      pick.dataset.q = index;
+      pick.dataset.answer = option.key;
+      pick.value = option.key;
+      pick.checked = q.answers.includes(option.key);
+      const text = el("input");
+      text.type = "text";
+      text.value = option.text;
+      text.dataset.q = index;
+      text.dataset.opt = optIndex;
+      text.dataset.qField = "option";
+      text.setAttribute("aria-label", `第 ${index + 1} 题选项 ${option.key}`);
+      const key = el("strong", null, `${option.key}. `);
+      line.append(pick, key, controlField(text));
+      item.append(line);
+    });
+    const why = el("textarea");
+    why.rows = 2;
+    why.value = q.explanation || "";
+    why.placeholder = "解析（提交后学生可见）";
+    why.dataset.q = index;
+    why.dataset.qField = "explanation";
+    why.setAttribute("aria-label", `第 ${index + 1} 题解析`);
+    item.append(controlField(why));
+    const footer = el("div", "ac-item-actions");
+    if (q.source_quote) footer.append(el("p", "muted", `材料原句：${q.source_quote}`));
+    const remove = button("删除这道题", "remove-q");
+    remove.dataset.q = index;
+    footer.append(remove);
+    item.append(footer);
+    return item;
+  }
+
+  function collectTask(publish) {
+    const draft = staff.draft;
+    if (!draft) return null;
+    const brief = $("ac-brief")?.value.trim() || "";
+    const payload = {
+      title: (draft.title || "").trim(),
+      brief,
+      class_id: $("ac-class")?.value || null,
+      knowledge_points: draft.knowledge_points.map(kp => ({
+        name: kp.name.trim(), summary: (kp.summary || "").trim(),
+        difficulty: kp.difficulty || "基础", source_quote: kp.source_quote || "",
+      })).filter(kp => kp.name),
+      questions: draft.questions.map(q => ({
+        kp: q.kp || "", kind: q.kind, stem: q.stem.trim(),
+        options: q.options.map(o => ({key: o.key, text: (o.text || "").trim()})),
+        answers: q.answers, explanation: (q.explanation || "").trim(),
+        source_quote: q.source_quote || "",
+      })),
+      publish,
+    };
+    if (!payload.title) throw new Error("请填写任务标题。");
+    if (!payload.questions.length) throw new Error("至少保留一道题目。");
+    return payload;
+  }
+
+  async function staffAction(act, node) {
+    if (!staff) return;
+    if (act === "refresh") return paintTasks();
+    if (act === "generate") return generate(node);
+    if (act === "remove-kp") {
+      staff.draft.knowledge_points.splice(Number(node.dataset.kp), 1);
+      return paintDraft();
+    }
+    if (act === "remove-q") {
+      staff.draft.questions.splice(Number(node.dataset.q), 1);
+      return paintDraft();
+    }
+    if (act === "discard") {
+      staff.draft = null;
+      $("ac-draft").replaceChildren();
+      return setStatus("已丢弃未保存的草稿。");
+    }
+    if (act === "save" || act === "publish") return persist(act === "publish", node);
+    if (act === "edit") return editTask(node.dataset.task);
+    if (act === "delete") return deleteTask(node.dataset.task, node);
+    if (act === "archive") return archiveTask(node.dataset.task, node);
+    if (act === "restore") return archiveTask(node.dataset.task, node, true);
+    if (act === "results") return openResults(node.dataset.task);
+    if (act === "close-results") return closeResults();
+  }
+
+  async function generate(node) {
+    const brief = $("ac-brief")?.value.trim() || "";
+    if (brief.length < 20) return setStatus("教学想法至少写 20 字，AI 才有材料可以拆解。", true);
+    const kindValue = $("ac-kinds")?.value || "single";
+    node.disabled = true;
+    node.textContent = "正在生成练习题…";
+    node.setAttribute("aria-busy", "true");
+    setStatus("AI 正在拆解知识点与题目，通常需要十几秒…");
+    try {
+      const draft = await post("/api/teaching/ai-tasks/draft", {
+        brief,
+        question_count: Number($("ac-count")?.value) || 5,
+        kinds: kindValue.split(","),
+      });
+      staff.draft = {
+        id: null, title: draft.title || "", class_id: null, model: draft.model || "",
+        knowledge_points: draft.knowledge_points || [], questions: draft.questions || [],
+      };
+      paintDraft();
+      setStatus(`已生成 ${draft.knowledge_points.length} 条知识点、${draft.questions.length} 道题（模型：${draft.model || "未知"}）。请逐题核对后再发布。`);
+    } catch (error) {
+      setStatus(error.message, true);
+    } finally {
+      node.disabled = false;
+      node.textContent = "AI 生成练习题";
+      node.removeAttribute("aria-busy");
+    }
+  }
+
+  async function persist(publish, node) {
+    let payload;
+    try {
+      payload = collectTask(publish);
+    } catch (error) {
+      return setStatus(error.message, true);
+    }
+    if (!payload) return;
+    node.disabled = true;
+    setStatus(publish ? "正在发布…" : "正在保存草稿…");
+    try {
+      const saved = staff.draft.id
+        ? await api(`/api/teaching/ai-tasks/${staff.draft.id}`, {
+          method: "PUT", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
+        })
+        : await post("/api/teaching/ai-tasks", payload);
+      staff.draft.id = saved.id;
+      staff.draft.title = saved.title;
+      setStatus(publish ? "已发布，学生端“课程任务”里可以看到这份任务。" : "草稿已保存，学生看不到。");
+      await paintTasks();
+      if (publish) {
+        staff.draft = null;
+        $("ac-draft").replaceChildren();
+      }
+    } catch (error) {
+      setStatus(error.message, true);
+    } finally {
+      node.disabled = false;
+    }
+  }
+
+  async function editTask(id) {
+    try {
+      const data = await api(`/api/teaching/ai-tasks/${id}`);
+      staff.draft = {
+        id: data.id, title: data.title, class_id: data.class_id, model: data.model,
+        knowledge_points: data.knowledge_points, questions: data.questions,
+      };
+      const brief = $("ac-brief");
+      if (brief) brief.value = data.brief || brief.value;
+      const classSelect = $("ac-class");
+      if (classSelect) classSelect.value = data.class_id || "";
+      paintDraft();
+      setStatus(`正在编辑「${data.title}」。`);
+      $("ac-draft").scrollIntoView({behavior: "smooth", block: "start"});
+    } catch (error) {
+      setStatus(error.message, true);
+    }
+  }
+
+  async function deleteTask(id, node) {
+    if (!window.confirm("删除这份草稿？删除后无法恢复。")) return;
+    node.disabled = true;
+    try {
+      await api(`/api/teaching/ai-tasks/${id}`, {method: "DELETE"});
+      setStatus("草稿已删除。");
+      await paintTasks();
+    } catch (error) {
+      setStatus(error.message, true);
+    } finally {
+      node.disabled = false;
+    }
+  }
+
+  async function archiveTask(id, node, published = false) {
+    if (!window.confirm(published ? "恢复后学生可再次查看任务，原有提交记录保留。确认恢复？"
+      : "归档后学生将不再看到这份任务，已提交的记录保留。确认归档？")) return;
+    node.disabled = true;
+    try {
+      await api(`/api/teaching/ai-tasks/${id}/publish`, {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({published}),
+      });
+      setStatus(published ? "任务已恢复。" : "任务已归档。");
+      await paintTasks();
+    } catch (error) {
+      setStatus(error.message, true);
+    } finally {
+      node.disabled = false;
+    }
+  }
+
+  async function paintTasks(refreshBoard = true) {
+    const box = $("ac-tasks");
+    if (!box) return;
+    box.replaceChildren();
+    if (document.getElementById("task-board-card") && window.tpTrainingTasks) {
+      if (refreshBoard) await window.tpTrainingTasks.refresh();
+      return;
+    }
+    let items = [];
+    try {
+      items = (await api("/api/teaching/ai-tasks")).items || [];
+      if (document.getElementById("task-board-card") && window.tpTrainingTasks) return;
+    } catch (error) {
+      box.append(el("p", "error", `任务列表读取失败：${error.message}`));
+      return;
+    }
+    const head = el("h3", null, `我布置的任务（${items.length}）`);
+    box.append(head);
+    if (!items.length) {
+      box.append(el("p", "muted", "还没有布置过任务。生成草稿并发布后，这里会显示完成情况。"));
+      return;
+    }
+    for (const item of items) box.append(createTaskRow(item));
+  }
+
+  function createTaskRow(item) {
+    const statusText = {draft: "草稿（学生不可见）", published: "进行中", archived: "已归档"};
+    const row = el("div", "data-item tb-row");
+    const info = el("div");
+    info.append(el("strong", null, item.title),
+      el("p", "muted", `课堂练习 · ${statusText[item.status] || item.status} · ${item.question_count} 题 · 已提交 `
+        + `${item.submitted}/${item.expected} 人` + (item.mean_score === null ? "" : ` · 平均 ${item.mean_score} 分`)));
+    const actions = el("div", "row");
+    if (item.status !== "draft") {
+      const results = button("查看答题详情", "results");
+      results.dataset.task = item.id;
+      actions.append(results);
+    }
+    if (item.status === "draft") {
+      const edit = button("编辑草稿", "edit");
+      edit.dataset.task = item.id;
+      actions.append(edit);
+      const remove = button("删除", "delete");
+      remove.dataset.task = item.id;
+      actions.append(remove);
+    }
+    if (item.status === "published") {
+      const archive = button("归档", "archive");
+      archive.dataset.task = item.id;
+      actions.append(archive);
+    }
+    if (item.status === "archived") {
+      const restore = button("恢复任务", "restore");
+      restore.dataset.task = item.id;
+      actions.append(restore);
+    }
+    row.append(info, actions);
+    row.addEventListener("click", event => {
+      const node = event.target.closest("button[data-ac]");
+      if (!node) return;
+      event.stopPropagation();
+      staffAction(node.dataset.ac, node);
+    });
+    return row;
+  }
+
+  function closeResults() {
+    staff.resultsRequest += 1;
+    $("ac-results-body").replaceChildren();
+    $("ac-results").close();
+  }
+
+  async function openResults(id) {
+    const dialog = $("ac-results"), box = $("ac-results-body");
+    const request = ++staff.resultsRequest;
+    $("ac-results-title").textContent = "答题详情";
+    box.replaceChildren(el("p", "muted", "正在读取答题详情…"));
+    box.scrollTop = 0;
+    if (!dialog.open) dialog.showModal();
+    try {
+      const data = await api(`/api/teaching/ai-tasks/${id}/submissions`);
+      if (request !== staff.resultsRequest || !dialog.open || !box.isConnected) return;
+      $("ac-results-title").textContent = `${data.task.title} · 答题分析`;
+      box.replaceChildren();
+      box.append(el("p", "muted", `共 ${data.task.questions.length} 题 · 已提交 ${data.items.length} 人`));
+      if (!data.items.length) box.append(el("p", "muted", "暂无学生提交。"));
+      const submissions = data.items.map(record => ({name: record.student_name || record.username,
+        answers: Object.fromEntries(record.detail.map(answer => [answer.question_id, answer]))}));
+      data.task.questions.forEach((question, position) => {
+        const item = el("section", "ac-result-question");
+        item.append(el("h4", null, `第 ${position + 1} 题（${question.kind === "single" ? "单选" : "多选"}）${question.stem}`));
+        const options = el("ul", "ac-result-options");
+        for (const option of question.options) options.append(el("li", null, `${option.key}. ${option.text}`));
+        item.append(options, el("p", "ok", `正确答案：${question.answers.join("、")}`));
+        if (question.explanation) item.append(el("p", "muted", `解析：${question.explanation}`));
+        const groups = {correct: [], incorrect: [], unknown: []};
+        for (const record of submissions) {
+          const answer = record.answers[question.id];
+          const outcome = answer?.correct === true ? "correct" : answer?.correct === false ? "incorrect" : "unknown";
+          groups[outcome].push(record.name);
+        }
+        const lists = el("div", "ac-result-groups");
+        for (const [outcome, label] of [["correct", "答对"], ["incorrect", "答错"], ["unknown", "待核对"]]) {
+          const names = groups[outcome];
+          if (outcome === "unknown" && !names.length) continue;
+          const group = el("details", `ac-result-group ac-result-${outcome}`);
+          group.dataset.question = question.id;
+          group.dataset.outcome = outcome;
+          const summary = el("summary");
+          summary.append(el("span", null, `${label} ${names.length} 人`));
+          group.append(summary);
+          const roster = el("ul", "ac-result-names");
+          roster.id = `ac-roster-${question.id}-${outcome}`;
+          roster.tabIndex = 0;
+          roster.setAttribute("aria-label", `第 ${position + 1} 题${label}学生名单`);
+          for (const name of names) roster.append(el("li", null, name));
+          if (!names.length) roster.append(el("li", "muted", "暂无"));
+          group.append(roster);
+          lists.append(group);
+        }
+        item.append(lists);
+        box.append(item);
+      });
+    } catch (error) {
+      if (request === staff.resultsRequest && dialog.open && box.isConnected) {
+        box.replaceChildren(el("p", "error", `答题详情读取失败：${error.message}`));
+      }
+    }
+  }
+
+  async function renderStaff(container) {
+    injectStyle();
+    const card = staffCard();
+    if (!container.classroom) card.dataset.universityView = "tasks";
+    staff = {draft: null, resultsRequest: 0};
+    if (!mount(card)) return;
+    try {
+      const classes = await api("/api/classes");
+      const select = $("ac-class");
+      for (const item of classes) select.append(new Option(item.name, item.id));
+    } catch (error) {
+      setStatus(`班级列表读取失败：${error.message}`, true);
+    }
+    await paintTasks(false);
+  }
+
+  /* ---------------------------- 学生：任务作答 ---------------------------- */
+  function studentCard() {
+    const card = el("section", "card");
+    card.id = "ai-student-card";
+    card.append(
+      el("h2", null, "老师布置的学习任务"),
+      el("p", "muted", "老师用 AI 把课堂内容整理成知识点和练习，发布后出现在这里。作答提交后由系统判分并给出解析。"),
+    );
+    const list = el("div");
+    list.id = "at-list";
+    const detail = el("div");
+    detail.id = "at-detail";
+    card.append(list, detail);
+    card.addEventListener("click", event => {
+      const act = event.target.closest("button[data-at]")?.dataset.at;
+      if (!act) return;
+      const id = event.target.closest("button").dataset.task;
+      if (act === "open") openTask(id);
+      if (act === "submit") submitTask(id, event.target.closest("button"));
+      if (act === "close") {
+        $("at-detail").replaceChildren();
+        student.current = null;
+      }
+    });
+    return card;
+  }
+
+  async function paintStudentTasks() {
+    const box = $("at-list");
+    if (!box) return;
+    box.replaceChildren();
+    let items = [];
+    try {
+      items = (await api("/api/teaching/ai-tasks")).items || [];
+    } catch (error) {
+      box.append(el("p", "error", `任务读取失败：${error.message}`));
+      return;
+    }
+    if (!items.length) {
+      box.append(el("p", "muted", "暂时没有老师布置的任务。可以先做“税务案例训练与刷题”。"));
+      return;
+    }
+    for (const item of items) {
+      const row = el("div", "data-item");
+      const info = el("div");
+      const state = item.score === null ? "未作答" : `已提交 · ${item.score} 分`;
+      info.append(el("strong", null, item.title),
+        el("p", "muted", `${item.question_count} 题 · ${state}`));
+      const open = button(item.score === null ? "开始作答" : "查看结果与解析", "open", "", "at");
+      open.dataset.task = item.id;
+      row.append(info, open);
+      box.append(row);
+    }
+  }
+
+  async function openTask(id) {
+    const box = $("at-detail");
+    box.replaceChildren(el("p", "muted", "正在读取任务…"));
+    try {
+      const data = await api(`/api/teaching/ai-tasks/${id}`);
+      student.current = data;
+      paintStudentDetail(data);
+      box.scrollIntoView({behavior: "smooth", block: "start"});
+    } catch (error) {
+      box.replaceChildren(el("p", "error", error.message));
+    }
+  }
+
+  function paintStudentDetail(data) {
+    const box = $("at-detail");
+    box.replaceChildren();
+    const done = data.submission;
+    box.append(el("h3", null, data.title));
+    if (done) {
+      box.append(el("p", "ok", `你的得分：${done.score} / 100（${new Date(done.submitted_at).toLocaleString()}）`));
+    }
+    if (data.knowledge_points.length) {
+      box.append(el("h4", null, "本次知识点"));
+      const list = el("ul");
+      for (const kp of data.knowledge_points) {
+        const li = el("li", null, `${kp.name}（${kp.difficulty}）：${kp.summary || "—"}`);
+        list.append(li);
+      }
+      box.append(list);
+    }
+    const detail = done ? Object.fromEntries(done.detail.map(row => [row.question_id, row])) : null;
+    data.questions.forEach((q, index) => {
+      const item = el("div", "ac-block");
+      item.append(el("p", null, `第 ${index + 1} 题（${q.kind === "single" ? "单选" : "多选"}）${q.stem}`));
+      for (const option of q.options) {
+        const line = el("label", "ac-opt");
+        const pick = el("input");
+        pick.type = q.kind === "single" ? "radio" : "checkbox";
+        pick.name = `at-${q.id}`;
+        pick.value = option.key;
+        pick.dataset.question = q.id;
+        if (done) {
+          const picked = detail[q.id]?.picked || [];
+          pick.checked = picked.includes(option.key);
+          pick.disabled = true;
+        }
+        line.append(pick, el("span", null, ` ${option.key}. ${option.text}`));
+        item.append(line);
+      }
+      if (detail?.[q.id]) {
+        const row = detail[q.id];
+        item.append(el("p", row.correct ? "ok" : "error",
+          `${row.correct ? "答对" : "答错"} · 正确答案：${row.answers.join("")}`));
+        if (row.explanation) item.append(el("p", "muted", `解析：${row.explanation}`));
+      }
+      box.append(item);
+    });
+    const actions = el("div", "row");
+    if (!done) {
+      const submit = button("提交作答", "submit", "primary", "at");
+      submit.dataset.task = data.id;
+      actions.append(submit);
+    }
+    actions.append(button("收起", "close", "", "at"));
+    box.append(actions);
+  }
+
+  async function submitTask(id, node) {
+    const data = student.current;
+    if (!data) return;
+    const answers = {};
+    for (const q of data.questions) {
+      const picked = [...document.querySelectorAll(`#at-detail input[data-question="${CSS.escape(q.id)}"]:checked`)]
+        .map(input => input.value);
+      if (q.kind === "single" && picked.length > 1) {
+        window.alert(`第 ${q.position} 题是单选题，只能选一个选项。`);
+        return;
+      }
+      answers[q.id] = picked;
+    }
+    const blank = data.questions.filter(q => !answers[q.id].length).length;
+    if (blank && !window.confirm(`还有 ${blank} 题没有作答，未作答按 0 分计。确定提交？`)) return;
+    node.disabled = true;
+    try {
+      await post(`/api/teaching/ai-tasks/${id}/submit`, {answers});
+      await openTask(id);
+      await paintStudentTasks();
+    } catch (error) {
+      window.alert(error.message);
+      node.disabled = false;
+    }
+  }
+
+  async function renderStudent(container) {
+    injectStyle();
+    student = {current: null};
+    const card = studentCard();
+    if (!container.classroom) card.dataset.universityView = "tasks";
+    if (!mount(card)) return;
+    await paintStudentTasks();
+  }
+
+  async function init() {
+    const box = host();
+    if (!box) return false;
+    const who = typeof currentUser === "undefined" ? null : currentUser;
+    if (!who) return false;
+    const studentRole = who.education_role === "student" || who.role === "student";
+    const teacherRole = ["teacher", "org_admin"].includes(who.role) || who.education_role === "teacher";
+    if (studentRole) {
+      role = "student";
+      await renderStudent(box);
+    } else if (teacherRole) {
+      role = "staff";
+      await renderStaff(box);
+    } else {
+      return false;
+    }
+    return true;
+  }
+
+  window.tpAICoach = {createTaskRow, useTaskBoard() {
+    if (document.getElementById("task-board-card")) $("ac-tasks")?.replaceChildren();
+  }};
+
+  let attempts = 0;
+  function tryBoot() {
+    if (booted) return;
+    if (typeof currentUser === "undefined" || !currentUser) return;
+    const box = host();
+    if (!box) return;
+    if (box.node.id === "app-view" && box.node.hidden) return;
+    booted = true;
+    init().then(ok => {
+      if (!ok) booted = false;
+    }).catch(() => {
+      booted = false;
+      // 仅在已登录后的数据加载失败时重试；登录前不发送请求。
+      if (attempts++ < 20) window.setTimeout(tryBoot, 1500);
+    });
+  }
+
+  new MutationObserver(tryBoot).observe(document.documentElement, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"],
+  });
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", tryBoot);
+  else tryBoot();
+})();

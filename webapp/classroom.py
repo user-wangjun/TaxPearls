@@ -30,7 +30,10 @@ def now():
 def deadline(value):
     if value is None:
         return None
-    parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    try:
+        parsed = datetime.fromisoformat(value) if isinstance(value, str) else value
+    except ValueError:
+        raise ClassroomError("截止时间格式无效。") from None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise ClassroomError("截止时间必须明确时区。")
     return parsed.astimezone(UTC).isoformat()
@@ -72,13 +75,28 @@ def migrate(db):
         db.execute('ALTER TABLE training_assignment_settings ADD COLUMN revision INTEGER NOT NULL DEFAULT 1')
 
 
+def task_availability(db, kind, subject_id):
+    row = db.execute("SELECT open_at,archived_at FROM training_task_settings WHERE subject_kind=? AND subject_id=?",
+                     (kind,subject_id)).fetchone()
+    return dict(row) if row else {"open_at":None,"archived_at":None}
+
+
 def decorate(db, item):
+    from webapp.training_tasks import task_state
     row = db.execute("SELECT * FROM training_assignment_settings WHERE assignment_id=?", (item["id"],)).fetchone()
     item.update({"class_id":None,"paper_id":None,"position":1,"points":100,"deadline_at":None,"revision":1})
     if row:
         item.update({k:v for k,v in dict(row).items() if k != "assignment_id"})
-    item["deadline_passed"] = bool(item["deadline_at"] and now() >= datetime.fromisoformat(item["deadline_at"]))
-    item["can_submit"] = bool(item["published"] and not item["deadline_passed"])
+    moment = now()
+    item["deadline_passed"] = bool(item["deadline_at"] and moment >= datetime.fromisoformat(item["deadline_at"]))
+    policy = task_availability(db, "paper" if item["paper_id"] else "assignment", item["paper_id"] or item["id"])
+    item.update(policy)
+    item["can_submit"] = task_state(item["published"], bool(item["archived_at"]),
+                                    item["open_at"], item["deadline_at"], at=moment) == "published"
+    course = db.execute("""SELECT c.id,c.name FROM university_assignment_courses ac
+        JOIN course c ON c.id=ac.course_id JOIN university_organizations o ON o.college=c.college
+        WHERE ac.assignment_id=? AND o.org_id=?""", (item['id'],item['org_id'])).fetchone()
+    item.update(course_id=course['id'] if course else None, course_name=course['name'] if course else None)
     return item
 
 
@@ -87,7 +105,7 @@ def can_access(db, item, user):
         return False
     if user["role"] == "teacher":
         return item["created_by"] == user["id"] and bool(audit_row(db, item["audit_id"], user))
-    if user["role"] != "student" or not item["published"] or item["target_student_id"] not in (None,user["id"]):
+    if user["role"] != "student" or not item["published"] or item.get("archived_at") or item["target_student_id"] not in (None,user["id"]):
         return False
     return not item.get("class_id") or bool(db.execute(
         "SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?", (item["class_id"],user["id"])
@@ -103,6 +121,8 @@ def check_submission(db, assignment_id, user):
         raise ClassroomError("作业不存在。",404)
     if item["deadline_passed"]:
         raise ClassroomError("已到截止时间，不能提交或覆盖已有成绩；仍可查阅已获授权作业。",409)
+    if not item["can_submit"]:
+        raise ClassroomError("作业尚未开放，不能提交或覆盖已有成绩。",409)
 
 
 def owned_class(db, class_id, user):
@@ -114,13 +134,27 @@ def owned_class(db, class_id, user):
     return dict(row)
 
 
-def validate_students(db, student_ids, org_id):
+def validate_students(db, student_ids, org_id, class_id=None):
     if len(set(student_ids)) != len(student_ids):
         raise ClassroomError("名册不能重复添加同一学生。")
     for sid in student_ids:
         row = db.execute("SELECT role,org_id,active FROM users WHERE id=?", (sid,)).fetchone()
         if not row or row["role"] != "student" or row["org_id"] != org_id or not row["active"]:
             raise ClassroomError("名册只能选择本机构的有效学生账号。")
+        # Existing duplicate memberships can be removed without rewriting history.
+        # Only new memberships are blocked; the caller holds BEGIN IMMEDIATE.
+        if class_id and db.execute(
+                "SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?",
+                (class_id, sid)).fetchone():
+            continue
+        assigned = db.execute("""SELECT c.name FROM training_class_members m
+            JOIN training_classes c ON c.id=m.class_id
+            WHERE m.student_id=? AND c.org_id=? ORDER BY c.created_at,c.id LIMIT 1""",
+            (sid, org_id)).fetchone()
+        if assigned:
+            person = db.execute("SELECT display_name FROM users WHERE id=?", (sid,)).fetchone()
+            raise ClassroomError(f"学生“{person['display_name']}”已在“{assigned['name']}”，"
+                                 "请先从原班级移出，再加入新班级；历史提交会保留。", 409)
 
 
 def set_assignment_settings(db, assignment_id, user, class_id=None, deadline_at=None,
@@ -156,6 +190,7 @@ class PaperItem(StrictBody):
 
 class PaperBody(StrictBody):
     title: str = Field(min_length=1,max_length=200)
+    course_id: str | None = Field(default=None,min_length=1,max_length=200)
     class_id: str | None = Field(default=None,min_length=1,max_length=64)
     deadline_at: AwareDatetime | None = None
     published: bool = False
@@ -186,9 +221,17 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
     @app.get("/api/classes/students")
     def students(session: str | None = Cookie(default=None,alias=cookie_name)):
         who = user(session,True)
-        return response([{k:person[k] for k in ('id','username','display_name')}
-                         for person in store_provider().list_users(who['org_id'], actor=who)
-                         if person['role']=='student' and person['active']])
+        people = [{k:person[k] for k in ('id','username','display_name')}
+                  for person in store_provider().list_users(who['org_id'], actor=who)
+                  if person['role']=='student' and person['active']]
+        with store_provider().connect() as db:
+            current_actor(db, who, {'teacher'})
+            memberships = {}
+            for row in db.execute("""SELECT m.student_id,c.id,c.name FROM training_class_members m
+                    JOIN training_classes c ON c.id=m.class_id WHERE c.org_id=? ORDER BY c.created_at,c.id""",
+                    (who['org_id'],)):
+                memberships.setdefault(row['student_id'], []).append({'id':row['id'], 'name':row['name']})
+        return response([person | {'classes':memberships.get(person['id'], [])} for person in people])
 
     @app.get("/api/classes")
     def classes(session: str | None = Cookie(default=None,alias=cookie_name)):
@@ -272,7 +315,7 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
                 item=owned_class(db,class_id,who)
                 if item['revision']!=body.revision:
                     raise ClassroomError("班级名册已变化，请刷新后重试。",409)
-                validate_students(db,body.student_ids,who['org_id'])
+                validate_students(db,body.student_ids,who['org_id'],class_id)
                 db.execute("UPDATE training_classes SET name=?,revision=revision+1 WHERE id=?",(clean_title(body.name),class_id))
                 db.execute("DELETE FROM training_class_members WHERE class_id=?",(class_id,))
                 db.executemany("INSERT INTO training_class_members VALUES (?,?)",[(class_id,s) for s in body.student_ids])
@@ -285,7 +328,8 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
         row=db.execute("SELECT * FROM training_papers WHERE id=? AND org_id=?",(paper_id,who['org_id'])).fetchone()
         if not row or (who['role']=='teacher' and row['owner_id']!=who['id']):
             raise ClassroomError("试卷不存在。",404)
-        if who['role']=='student' and (not row['published'] or (row['class_id'] and not db.execute("SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?",(row['class_id'],who['id'])).fetchone())):
+        policy = task_availability(db,'paper',paper_id)
+        if who['role']=='student' and (not row['published'] or policy['archived_at'] or (row['class_id'] and not db.execute("SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?",(row['class_id'],who['id'])).fetchone())):
             raise ClassroomError("试卷不存在。",404)
         return dict(row)
 
@@ -319,17 +363,23 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
         item['items']=[dict(r) for r in rows]
         item['deadline_passed']=bool(item['deadline_at'] and now()>=datetime.fromisoformat(item['deadline_at']))
         if who['role']=='student':
-            earned=Decimal(0);completed=0
+            from webapp.training_submissions import result_visible
+            earned=Decimal(0);completed=0;results_visible=True
             for question in item['items']:
                 sub=db.execute("SELECT score,adjusted_score FROM submissions WHERE assignment_id=? AND student_id=?",(question['id'],who['id'])).fetchone()
                 question['score']=None
                 if sub:
-                    completed+=1;question['score']=sub['adjusted_score'] if sub['adjusted_score'] is not None else sub['score']
-                    earned+=Decimal(str(question['score']))*Decimal(str(question['points']))/100
+                    completed+=1
+                    visible,_=result_visible(db,question['id'],who['id'])
+                    if visible:
+                        question['score']=sub['adjusted_score'] if sub['adjusted_score'] is not None else sub['score']
+                        earned+=Decimal(str(question['score']))*Decimal(str(question['points']))/100
+                    else:
+                        results_visible=False
             total=sum((Decimal(str(r['points'])) for r in rows),Decimal(0))
             item['progress']={'completed':completed,'case_count':len(rows),'total_points':float(total),
-                              'earned_points':float(earned.quantize(Decimal('.01'),rounding=ROUND_HALF_UP)),
-                              'score':float((earned*100/total).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)) if rows and completed==len(rows) else None}
+                              'earned_points':float(earned.quantize(Decimal('.01'),rounding=ROUND_HALF_UP)) if results_visible else None,
+                              'score':float((earned*100/total).quantize(Decimal('.01'),rounding=ROUND_HALF_UP)) if rows and completed==len(rows) and results_visible else None}
         return item
 
     @app.get("/api/papers")
@@ -383,6 +433,9 @@ def register(app, store_provider, user_for_session, allow, synthetic, cookie_nam
                     aid=secrets.token_hex(12)
                     db.execute("INSERT INTO assignments VALUES (?,?,?,?,?,?,?,?,?,?)",(aid,who['org_id'],f"{body.title.strip()} · 第{position}题",question.audit_id,who['id'],None,json.dumps(question.weights,allow_nan=False),question.false_positive_penalty,int(body.published),now().isoformat()))
                     set_assignment_settings(db,aid,who,body.class_id,due,pid,position,question.points)
+                    if body.course_id:
+                        from webapp.university_workspace import bind_assignment_course
+                        bind_assignment_course(db,who,aid,body.course_id,body.class_id)
                 repo._log(db,who,'create_paper','paper',pid,f"cases={len(body.items)};published={body.published}")
             return {'id':pid,'revision':1}
         return checked(create)

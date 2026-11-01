@@ -203,6 +203,84 @@ class OrgStructureTests(unittest.TestCase):
                                    json={"term_id": term_new, "name": "会计2701"})
         self.assertEqual(renamed.status_code, 200, renamed.text)
 
+    # ---- 专业层级（FR-U01 待补） ---------------------------------------------
+
+    def test_major_crud_protection_and_class_binding(self):
+        """专业 CRUD：重复名 409、挂院系、班级挂专业展示、引用禁删 409、归档过滤、克隆继承。"""
+        self._login_teacher()
+        # 教师只读：写 403、读 200
+        self.assertEqual(self.client.post("/api/training/staff/org/majors", json={
+            "college": COLLEGE, "name": "越权专业"}).status_code, 403)
+        listed = self.client.get(f"/api/training/staff/org/majors?college={COLLEGE}").json()
+        self.assertEqual(listed["majors"], [])
+        self._login_admin()
+        dep_id = self.client.post("/api/training/staff/org/departments", json={
+            "college": COLLEGE, "name": "会计学院"}).json()["department"]["id"]
+        res = self.client.post("/api/training/staff/org/majors", json={
+            "college": COLLEGE, "name": "大数据与会计", "department_id": dep_id})
+        self.assertEqual(res.status_code, 200, res.text)
+        major = res.json()["major"]
+        self.assertEqual(major["department_id"], dep_id)
+        listed = {m["id"]: m for m in self.client.get(
+            f"/api/training/staff/org/majors?college={COLLEGE}").json()["majors"]}
+        self.assertEqual(listed[major["id"]]["department_name"], "会计学院")
+        # 同院校重复名 409；跨院校同名允许
+        self.assertEqual(self.client.post("/api/training/staff/org/majors", json={
+            "college": COLLEGE, "name": "大数据与会计"}).status_code, 409)
+        other = training_portal_module.create_major(self.store, "其他职业学院", "大数据与会计")
+        self.assertTrue(other["id"])
+        # 改挂院系 + 改名
+        dep2 = self.client.post("/api/training/staff/org/departments", json={
+            "college": COLLEGE, "name": "智能学院"}).json()["department"]["id"]
+        patched = self.client.patch(f"/api/training/staff/org/majors/{major['id']}",
+                                    json={"name": "会计大数据", "department_id": dep2}).json()["major"]
+        self.assertEqual(patched["name"], "会计大数据")
+        self.assertEqual(patched["department_id"], dep2)
+        # 班级挂专业：列表回显专业名；按学期重建继承专业
+        term_id = self.client.post("/api/training/staff/org/terms", json={
+            "college": COLLEGE, "name": "2026-2027-1", "is_current": True}).json()["term"]["id"]
+        cls = self.client.post("/api/training/staff/org/classes", json={
+            "college": COLLEGE, "name": "会计2601",
+            "department_id": dep_id, "major_id": major["id"], "term_id": term_id}).json()["class"]
+        row = {c["name"]: c for c in self.client.get(
+            f"/api/training/staff/org/classes?college={COLLEGE}").json()["classes"]}["会计2601"]
+        self.assertEqual(row["major_id"], major["id"])
+        self.assertEqual(row["major_name"], "会计大数据")
+        # 被引用专业禁删 409；归档后默认列表不显示；班级仍可正常对齐在读人数
+        self.assertEqual(self.client.delete(
+            f"/api/training/staff/org/majors/{major['id']}").status_code, 409)
+        self.assertEqual(self.client.patch(f"/api/training/staff/org/majors/{major['id']}",
+                                           json={"archived": True}).status_code, 200)
+        visible = self.client.get(
+            f"/api/training/staff/org/majors?college={COLLEGE}&include_archived=false"
+        ).json()["majors"]
+        self.assertEqual(visible, [])
+        # 克隆到新学期继承专业（含已归档专业的元数据）
+        term2 = self.client.post("/api/training/staff/org/terms", json={
+            "college": COLLEGE, "name": "2026-2027-2"}).json()["term"]["id"]
+        clone = self.client.post(f"/api/training/staff/org/classes/{cls['id']}/clone",
+                                 json={"term_id": term2}).json()["clone"]["class"]
+        self.assertEqual(clone["major_id"], major["id"])
+        # 未被引用的专业可删；班级换绑到空（清除专业，含克隆班级）
+        freed = self.client.patch(f"/api/training/staff/org/classes/{cls['id']}",
+                                  json={"major_id": ""}).json()["class"]
+        self.assertIsNone(freed["major_id"])
+        self.client.patch(f"/api/training/staff/org/classes/{clone['id']}",
+                          json={"major_id": ""})
+        self.assertEqual(self.client.delete(
+            f"/api/training/staff/org/majors/{major['id']}").status_code, 200)
+
+    def test_major_cross_college_reference_rejected(self):
+        self._login_admin()
+        other_dep = training_portal_module.create_department(self.store, "其他职业学院", "外校院系")
+        res = self.client.post("/api/training/staff/org/majors", json={
+            "college": COLLEGE, "name": "跨境专业", "department_id": other_dep["id"]})
+        self.assertEqual(res.status_code, 422, res.text)
+        other_major = training_portal_module.create_major(self.store, "其他职业学院", "外校专业")
+        res = self.client.post("/api/training/staff/org/classes", json={
+            "college": COLLEGE, "name": "会计2601", "major_id": other_major["id"]})
+        self.assertEqual(res.status_code, 422, res.text)
+
     def test_cross_college_reference_rejected(self):
         self._login_admin()
         other_term = training_portal_module.create_term(self.store, "其他职业学院", "X-2026-1")["id"]
@@ -217,6 +295,10 @@ class OrgStructureTests(unittest.TestCase):
             "college": COLLEGE, "name": "T"}).status_code, 401)
         self.assertEqual(self.client.post("/api/training/staff/org/classes", json={
             "college": COLLEGE, "name": "C"}).status_code, 401)
+        self.assertEqual(self.client.get(
+            f"/api/training/staff/org/majors?college={COLLEGE}").status_code, 401)
+        self.assertEqual(self.client.post("/api/training/staff/org/majors", json={
+            "college": COLLEGE, "name": "M"}).status_code, 401)
 
 
 if __name__ == "__main__":

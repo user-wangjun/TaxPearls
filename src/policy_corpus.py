@@ -9,12 +9,12 @@ import json
 from pathlib import Path
 import re
 import sqlite3
+from src import policy_metadata
 
 
 FORMAT = "policy-corpus-v1"
-PARSER_VERSION = 2
-TAX_TYPES = {"增值税": "VAT", "个人所得税": "PIT", "企业所得税": "EIT",
-             "征管通用": "TAX_ADMIN", "会计规范": "ACCOUNTING", "社保依据": "SOCIAL_INSURANCE"}
+PARSER_VERSION = 3
+TAX_TYPES = policy_metadata.TAX_TYPES
 NUM = "一二三四五六七八九十百零〇两0123456789"
 ARTICLE = re.compile(rf"(?m)^[\t 　]*(第[{NUM}]+条)")
 HEADING = re.compile(rf"(?m)^[\t 　]*(第[{NUM}]+[章节])[^\n]*$")
@@ -186,9 +186,10 @@ def prepare(manifest_path, document_ids=None):
                   "issuer": annotation.get("issuer") or "发布机关待核实", "tax_type": TAX_TYPES[classification],
                   "publish_date": annotation.get("publish_date"),
                   "effective_from": item.get("version_effective_from"), "effective_to": end,
-                  "region_code": "CN", "source_url": item["source_url"], "raw_file_path": str(raw_path),
+                  "region_code": policy_metadata.region(item.get('region_code') or 'CN'), "source_url": item["source_url"], "raw_file_path": str(raw_path),
                   "file_sha256": item["raw_sha256"], "version": version,
                   "fetched_at": item["fetched_at"], "validity_status": "unverified"}
+        policy.update(policy_metadata.prepare(item))
         bundle["Policy"].append(policy)
         summary = {"document_id": key, "policy_id": pid, "classification": classification,
                    "tax_type": policy["tax_type"], "domain": item.get("domain"), "legal_level": item.get("legal_level"),
@@ -202,9 +203,19 @@ def prepare(manifest_path, document_ids=None):
             if evidence.get("text_path"):
                 remember(evidence["text_path"], evidence["text_sha256"])
 
-        def add_text(text_data, relative, checksum, raw_relative, raw_checksum, *, prefix="", attachment=False, amending=False):
+        def add_text(text_data, relative, checksum, raw_relative, raw_checksum, *, prefix="", attachment=False,
+                     amending=False, structure_review=None):
             text = text_data.decode("utf-8-sig")
-            pieces = segments(text, amending=amending, prefix=prefix)
+            if structure_review:
+                if (structure_review.get('kind') not in {'reference_guide', 'amendment_comparison_table'}
+                        or structure_review.get('text_sha256') != checksum
+                        or structure_review.get('review_status') != 'needs_review'
+                        or not structure_review.get('reason')):
+                    raise ValueError('整段参考资料留存须有绑定原文哈希的结构复核记录。')
+                pieces = [{'label': prefix + '未可靠分条参考正文', 'kind': 'unresolved',
+                           'start': 0, 'end': len(text), 'parent_label': None}]
+            else:
+                pieces = segments(text, amending=amending, prefix=prefix)
             ids_by_label = {s["label"]: pid + ":" + s["label"] for s in pieces}
             prior_count = sum(c["policy_id"] == pid for c in bundle["Clause"])
             for index, part in enumerate(pieces, prior_count + 1):
@@ -237,7 +248,8 @@ def prepare(manifest_path, document_ids=None):
             summary["sources"].append(source)
 
         add_text(text_bytes, item["text_path"], item["text_sha256"], item["raw_path"], item["raw_sha256"],
-                 amending=item.get("document_kind") == "amending_decision")
+                 amending=item.get("document_kind") == "amending_decision",
+                 structure_review=item.get('source_structure_review'))
         attachment_urls = {a.get("source_url") for a in item.get("attachments", [])}
         if any(asset["source_url"] not in attachment_urls for asset in item.get("embedded_assets", [])):
             raise ValueError("正文内嵌资源尚未留存，不能声称原文收集完整。")
@@ -250,7 +262,8 @@ def prepare(manifest_path, document_ids=None):
                         "reason": "修订决定及细则的PDF复本已留存；已按同页面HTML全文整理，不重复建立同文条款。"})
                 else:
                     add_text(content, attachment["text_path"], attachment["text_sha256"],
-                             attachment["path"], attachment["sha256"], prefix=f"附件{index}/", attachment=True)
+                             attachment["path"], attachment["sha256"], prefix=f"附件{index}/", attachment=True,
+                             structure_review=attachment.get('source_structure_review'))
             else:
                 summary["deferred_attachments"].append({"path": attachment["path"],
                     "reason": "官方DOC附件原件已保留，表格/样式尚未人工核验，不自动转换为计算条件。"})
@@ -288,7 +301,10 @@ def prepare(manifest_path, document_ids=None):
 def import_plan(db, plan, originals_dir, *, rule_ids=None):
     """Retain every original and atomically import bounded candidate batches."""
     from webapp import policy_graph as pg
+    from src.policy_paths import database_directory, resolve_path, stored_path
     destination = Path(originals_dir).resolve()
+    base = database_directory(db)
+    stored_path(db, destination)  # Reject a non-portable destination before creating any files.
     rows = json.loads(json.dumps(plan["bundle"], ensure_ascii=False))
     created, retained = [], {}
     if not db.in_transaction:
@@ -307,7 +323,7 @@ def import_plan(db, plan, originals_dir, *, rule_ids=None):
             for kind in ('raw', 'text'):
                 relative, retained_path = saved[kind + '_path'], saved['retained_' + kind + '_path']
                 expected_hash = plan['files'][relative]['sha256']
-                if sha(Path(retained_path).read_bytes()) != expected_hash:
+                if sha(resolve_path(retained_path, base).read_bytes()) != expected_hash:
                     raise ValueError('既有留存原文哈希不一致，不能沿用。')
                 prior_paths[relative] = retained_path
             prior_locations[clause['clause_id']] = old['source_location']
@@ -333,12 +349,12 @@ def import_plan(db, plan, originals_dir, *, rule_ids=None):
                 with target.open("xb") as output:
                     output.write(data)
                 created.append(target)
-            retained[relative] = str(target)
+            retained[relative] = stored_path(db, target)
         for row in rows["Policy"]:
             suffix = Path(row["raw_file_path"]).suffix.lower()
             old = db.execute('SELECT raw_file_path FROM Policy WHERE policy_id=?', (row['policy_id'],)).fetchone()
-            row["raw_file_path"] = old['raw_file_path'] if old else str(destination / (row["file_sha256"] + suffix))
-            if sha(Path(row['raw_file_path']).read_bytes()) != row['file_sha256']:
+            row["raw_file_path"] = old['raw_file_path'] if old else stored_path(db, destination / (row["file_sha256"] + suffix))
+            if sha(resolve_path(row['raw_file_path'], base).read_bytes()) != row['file_sha256']:
                 raise ValueError('既有政策原文哈希不一致，不能沿用。')
         # source_location records include both original relative coordinates and
         # retained paths, so they remain traceable if the collection moves.

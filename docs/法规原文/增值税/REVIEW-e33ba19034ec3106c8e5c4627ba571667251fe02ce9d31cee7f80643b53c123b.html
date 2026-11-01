@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>全球法规网-中国商务法规</title>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+    <meta name="renderer" content="webkit">
+    <meta name="keywords" content="your keywords">
+    <meta name="description" content="your description">
+    <meta name="author" content="hl,haolei@ec.com.cn">
+    <meta name="robots" content="index,follow">
+    <link rel="stylesheet" href="css/style.css" />
+	<script type="text/javascript" src="js/jquery-1.7.2.min.js"></script>
+	<script type="text/javascript" src="js/script.js"></script>
+    <!--[if IE]>
+    	<script src="js/html5.js"></script>
+    <![endif]-->
+</head>
+<body class="laws">
+	<header class="header">
+		<nav class="nav blank clearfix">
+	<!--div class="u-logo1"><img src="img/logo1.png" alt=""></div-->
+	
+	<ul class="nav01_ul">
+		<li>
+			<a href="/claw/index.shtml">中国法规</a>|
+			<ul class="nav02_ul">
+				<li><a href="/claw/index.shtml">商务法规</a></li>
+				<li><a href="/pact/index.shtml">中外条约</a></li>
+			</ul>
+		</li>
+		<li><a href="/page/list/nations.html">各国法规</a>|
+			<ul class="nav02_ul">
+				<li><a href="/page/list/nations.html">境外法规</a></li>
+				<li><a href="/page/list/organizations.html">国际条约</a></li>
+			</ul>
+		</li>
+		<li><a href="/jwfg/index.shtml">境外法规检索</a>|
+		</li>
+		<!--<li><a href="http://www.mofcom.gov.cn/article/ckzn/index.shtml">出口指南</a>&lt;!&ndash; | &ndash;&gt;-->
+		<li><a href="https://www.mofcom.gov.cn/ckzn/">出口指南</a><!-- | -->
+		</li>
+<!-- 		<li><a href="/tsfy/index.shtml">图说方圆</a></li> -->
+		<li class="last"><a href="/">首页</a></li>
+	</ul>
+</nav>
+
+<!-- Matomo -->
+<script type="text/javascript">
+//If used is logged-in then call 'setUserId'
+//$userId variable must be set by the server when the user has successfully authenticated to your app.
+var _paq = window._paq || [];
+	
+  /* tracker methods like "setCustomDimension" should be called before "trackPageView" */
+  _paq.push(['trackPageView']);
+  _paq.push(['enableLinkTracking']);
+  _paq.push(['enableHeartBeatTimer']);
+  (function() { 
+    var u="https://analysis.mofcom.gov.cn/";
+    _paq.push(['setTrackerUrl', u+'matomo.php']);
+    _paq.push(['setSiteId', '137']);
+    var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0];
+    g.type='text/javascript'; g.async=true; g.defer=true; g.src=u+'matomo.js'; s.parentNode.insertBefore(g,s);
+  })();
+</script>
+<!-- End Matomo Code -->
+	</header>
+	
+
+
+
+
+
+<script type="text/javascript">
+$(function(){
+	setReviseToolBar();
+	setAssociateToolbar();
+});
+function setReviseToolBar(){
+	$.ajax({
+		url:"/nflaw/front/www/claw/reviseCount?id=1125",
+		type:"get",
+		success:function(result){
+			if(!!result&&result>0){
+				$("#reviseToolbar").show();
+			}
+		}
+	});
+}
+
+function setAssociateToolbar(){
+	$.ajax({
+		url:"/nflaw/front/www/claw/associateCount?id=1125",
+		type:"get",
+		success:function(result){
+			if(!!result&&result>0){
+				$("#associateToolbar").show();
+			}
+		}
+	});
+}
+/* function doSubmitReviseForm(){
+	$("#clawForm").attr("action","/claw/clawRevise.shtml");
+	$("#clawForm").submit();
+}
+function doSubmitAssociateForm(){
+	$("#clawForm").attr("action","/claw/clawAssociate.shtml");
+	$("#clawForm").submit();
+} */
+function doSubmitKeySearch(){
+	if($("#keyword").val()==''){
+		alert("请输入关键字！");
+		$("#keyword").focus();
+		return false;
+	}else if($("#keyword").val().length>100){
+		alert("关键字 不能超过100位字符！");
+		$("#keyword").focus();
+		return false;
+	}else{
+		$("#keySearchForm").submit();
+	}
+}
+</script>
+<section class="search blank">
+	<div class="mt20 mb30 clearfix">
+		<div class="logo fl">
+			<img src="img/logo.png" alt="" />
+		</div>
+		<div class="search_box fr">
+			<div class="clearfix">
+				<form id="keySearchForm" name="keySearchForm" method="get" action="/claw/keySearchList.shtml">
+					<span class="btn_search_show fl">中国商务法规</span>
+					<input class="txt_search fl" type="text" name="keyword" id="keyword">
+					<input class="btn_search fl" type="button" value="搜索" onclick="doSubmitKeySearch()">
+				</form>
+			</div>
+		</div>
+	</div>
+</section>
+<nav class="navMain blank">
+	<a class="a1" href="http://policy.mofcom.gov.cn/">首页</a>&gt;<a href="/claw/index.shtml"><i>中国商务法规</i></a>&gt;<span class="s1">法规详情</span>
+</nav>
+<section class="main blank">
+	<div class="content mt18 posr">
+		<div class="conBox_01">
+			<h2 class="tit_08">国家发展改革委、国家电监会、国家能源局关于规范电能交易价格管理等有关问题的通知</h2>
+			<section class="con">
+				<h3 class="tit_09">
+					【信息来源：<em>
+					
+					     
+					     北大法宝
+					   
+					   
+					
+					</em>】
+				</h3>
+				<div class="tableBox">
+					<table class="table_01" width="100%">
+						<tr>
+							<td width="50%"><span>【发布部门】</span>国家发展和改革委员会(含原国家发展计划委员会、原国家计划委员会);国家电力监管委员会(已撤销);国家能源局</td>
+							<td width="50%"><span>【发布文号】</span>发改价格[2009]2474号</td>
+						</tr>
+						<tr>
+							<td><span>【效力级别】</span>部门规范性文件</td>
+							<td><span>【时效状态】</span>
+								现行有效
+								
+								
+								
+								
+							</td>
+						</tr>
+						<tr>
+							<td><span>【发布日期】</span>
+								
+									2009-10-11
+								
+							</td>
+							<td><span>【实施日期】</span>
+								
+									2009-10-11
+								
+							</td>
+						</tr>
+						<tr>
+							<td><span>【法律话题】</span>
+								
+									
+									社会管理
+								
+							</td>
+							<td><span>【产业领域】</span>
+								
+								
+									资源能源
+								
+								;
+									公共管理
+								
+							</td>
+						</tr>
+							
+					</table>
+				</div>
+				<div class="article">
+					<div class="law_bt0" style="text-align:justify;"><p style="text-align:center;">国家发展改革委、国家电监会、国家能源局关于规范电能交易价格管理等有关问题的通知</p><p><br /></p><p style="text-align:center;">（发改价格[2009]2474号）</p><p><br /></p><p>各省、自治区、直辖市发展改革委、经贸委（经委）、物价局，各区域电监局、城市电监办，国家电网公司、南方电网公司，内蒙古电力公司，华能、大唐、华电、国电、中电投集团公司：</p><p><br /></p><p>　　为进一步规范电能交易价格行为，维护正常的市场交易秩序，促进电力资源优化配置，现就有关问题通知如下：</p><p><br /></p><p>　　一、关于发电企业与电网企业的交易价格</p><p><br /></p><p>　　（一）发电机组进入商业运营后，除跨省、跨区域电能交易及国家另有规定的以外，其上网电量一律执行政府价格主管部门制定的上网电价。</p><p><br /></p><p>　　（二）发电机组进入商业运营前，其调试运行期上网电价按照当地燃煤发电机组脱硫标杆上网电价的一定比例执行。其中，水电按照50%执行，火电、核电按照80%执行；水电以外的可再生能源发电机组自并网发电之日起执行价格主管部门批复的上网电价。电网企业据此支付购电费，并计入购电成本。</p><p><br /></p><p>　　（三）发电企业启动调试阶段或由于自身原因停运向电网购买电量时，其价格执行当地目录电价表中的大工业类电度电价标准。</p><p><br /></p><p>　　（四）燃煤发电机组安装脱硫设施、具备在线监测功能且运行正常的，已经环保部门验收合格的，自环保部门验收合格之日起执行脱硫加价；环保部门不能按时验收的，由省级价格主管部门商环保部门通知电网企业，自发电企业向环保部门递交验收申请之日起30个工作日后执行脱硫加价；经环保部门验收不合格的，相应扣减已执行的脱硫加价。发电企业向环保部门递交验收申请时应抄送省级价格主管部门和电力监管机构，并抄录电能表起始表示数。</p><p><br /></p><p>　　（五）经政府有关部门批准的替代发电或发电权交易中，发电企业按照合同或协议约定的交易电量和价格进行结算。</p><p><br /></p><p>　　二、关于跨省、跨区域电能交易价格</p><p><br /></p><p>　　（一）跨省、跨区域电能交易的受电价格由送电价格、输电价格（费用）和输电损耗构成。</p><p><br /></p><p>　　（二）跨省、跨区域电能交易国家已规定价格的，要严格按照国家规定的价格执行。国家尚未规定价格的，在送电、受电地区省级价格主管部门、电力监管机构和电力管理部门的指导下，由送受双方参考送端电网平均上网电价和受端电网平均购电电价协商确定厂网间结算电价。其中，送电省（区、市）电网企业的输电价格（含损耗）原则上不得超过每千瓦时3分钱。</p><p><br /></p><p>　　（三）跨省、跨区域电能临时交易的送电价格按照上述原则确定。紧急情况及事故支援交易，事先交易各方有约定的，按照约定价格进行结算；事先没有约定的，原则上按照购电方所在电网燃煤机组标杆上网电价上浮20%确定。紧急情况及事故交易免交输电费。</p><p><br /></p><p>　　（四）除国家规定的跨省、跨区域电能交易外，电网企业之间不得以降低发电企业上网电价为目的，在同一时点相互进行没有电能物理流量的虚假交易和接力送电。</p><p><br /></p><p>　　（五）受电省（区、市）电网企业购外省电量的电价与本省平均购电价有差异的，纳入本省销售电价方案进行平衡。</p><p><br /></p><p>　　（六）省级电网企业每月汇总本省的跨省、跨区域电能交易情况，并于每月15日前将上一月度的交易情况报省级价格主管部门、电力管理部门和电力监管机构。国家电网公司、南方电网公司将季度、年度跨省、跨区域交易情况，报国家发展改革委、国家电监会和国家能源局。各电网公司应当在每月20日前，向各利益相关方公布上一月度的交易电量、送电价格、输电费用、输电损耗、购电来源、售电去向等交易情况。</p><p><br /></p><p>　　（七）电力企业要保留跨省、跨区域电能交易的详细调度、交易记录，包括交易电量、价格、输电费用、输电损耗、购电来源、售电去向、联络线关口计量数据等内容，接受政府有关部门和电力监管机构的监督检查。</p><p><br /></p><p>　　三、关于电网企业与终端用户之间的交易价格</p><p><br /></p><p>　　（一）电网企业对电力用户的销售电价，要严格按照国家发展改革委颁布的电价标准执行。各级政府和电网企业不得自行提高或降低电力用户销售电价，不得自行以大用户直购电（或直供电）等名义实行电价优惠。</p><p><br /></p><p>　　（二）各地要按照《国务院办公厅转发发展改革委关于完善差别电价政策意见的通知》（国办发[2006]77号）和《国家发展改革委、财政部、电监会关于进一步贯彻落实差别电价政策有关问题的通知》（发改价格[2007]2655号）要求，继续加大差别电价贯彻落实力度。要加强对高耗能企业的动态监管，及时更新执行差别电价的企业名单，确保差别电价政策执行到位。</p><p><br /></p><p>　　（三）拥有自备电厂的企业，应在发电机端加装电能量计量表计，自用电量由政府有关部门和电力监管机构核定，并按照国发[2007]2号文件规定交纳国家规定的三峡工程建设基金、农网还贷资金、城市公用事业附加费、可再生能源电价附加、水库移民后期扶持资金等政府性基金及附加，并由当地电网企业负责代征并上缴。拥有自备电厂并与公用电网连接的企业，应按规定支付系统备用费。</p><p><br /></p><p>　　四、其他事项</p><p><br /></p><p>　　（一）现有办法和规定与本通知不一致的，按本通知规定执行。</p><p><br /></p><p>　　（二）政府价格主管部门、电力监管机构依法对电能交易价格执行情况进行监督检查。</p><p><br /></p><p style="text-align:right;">　　国家发展改革委</p><p style="text-align:right;">　　国家电监会</p><p style="text-align:right;">　　国家能源局</p><p><br /></p><p style="text-align:right;">　　二○○九年十月十一日</p><br /></div>
+						
+						<br/>
+						<font color="#B22222">免责声明：本网站提供的法规来源于数据提供单位或网络，网站不对法规内容的准确性负责，请务必与正式文本核对后使用。网站访问者因使用或无法使用本网站提供的法规所造成的直接或间接损失，本网站不承担任何责任。禁止用户对本网站信息进行自动化采集。</font>
+						</div>
+				</div>
+			</section>
+		
+		</div>
+	</div>
+</section>
+<form action="" method="get" id="clawForm">
+	<input type="hidden" name="id" value="1125"/>
+	<input type="hidden" name="title" value="国家发展改革委、国家电监会、国家能源局关于规范电能交易价格管理等有关问题的通知"/>
+	<input type="hidden" name="clawUrl" value=""/>
+</form>
+<div id="global-toolbar">
+  <div class="toolbar-wrap wrap">
+	<div class="toolbar">
+	  <div class="toolbar-tabs tab">
+		<!-- div class="toolbar-tab tbar-tab-word" onclick=""><i class="tab-ico"></i><em class="tab-text">修订对照<br />下载</em></div 
+		-->
+	  </div>
+	  <div class="toolbar-footer">
+		<div class="toolbar-tab tbar-tab-top">
+			<a href="#"><i class="tab-ico"></i><em class="footer-tab-text">顶部</em></a>
+		</div>
+	  </div>
+	</div>
+  </div>
+</div>
+	<footer class="footer mt30">
+				<section class="blank clearfix">
+			<dl class="nav_03 clearfix">
+				<dd>主办单位：中华人民共和国商务部</dd>
+				<dd>技术支持：中国国际电子商务中心</dd>
+				<dd>邮箱：global-law@ec.com.cn</dd>
+				<dd>客户服务：010-67801039</dd>
+				
+			</dl>
+			<dl class="nav_03 clearfix">
+				<dd>网站管理：商务部电子商务和信息化司</dd>
+			
+					<dd>网站标识码bm22000001</dd>
+					<dd><a href="https://beian.miit.gov.cn/" target="_blank"  onclick="if(confirm('您访问的链接即将离开“中华人民共和国商务部”政府网站，是否继续？')==false)return false;">京ICP备05004093号-1</a><br><a href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11040102700091" target="_blank"  onclick="if(confirm('您访问的链接即将离开“中华人民共和国商务部”政府网站，是否继续？')==false)return false;"><img src="/law/img/footer-img03.png">京公网安备11040102700091号</a></dd>
+					
+			</dl>
+			<dl class="nav_03 cur clearfix">
+			
+				<dd style="width:200px">
+					<span id="_span_jiucuo" style="display: inline-block; margin-top: 13px;">
+						<!-- <script id="_jiucuo_" sitecode='bm22000001' src='http://pucha.kaipuyun.cn/exposure/jiucuo.js'></script> -->
+					<a class="ft-jiucuo-link ediAssetsTextCon" href="https://zfwzgl.www.gov.cn/exposure/jiucuo.html?site_code=bm22000001&amp;url=http%3A%2F%2Fwww.mofcom.gov.cn/" target="_blank"><img style="margin: 0px; border: 0px currentColor; border-image: none; cursor: pointer;" src="https://zfwzgl.www.gov.cn/exposure/images/jiucuo.png?v=bm22000001"></a>
+					</span>
+					<a href="//bszs.conac.cn/sitename?method=show&id=0726B28348831856E053012819AC9312" target="_blank" onclick="if(confirm('您访问的链接即将离开“中华人民共和国商务部”政府网站，是否继续？')==false)return false;">
+						<img src="http://dcs.conac.cn/image/red.png">
+					</a>
+				</dd>
+			</dl>
+			
+		</section>
+	</footer>
+	<script type="text/javascript">
+	
+	$(function(){
+		var article = $(".article").html();
+		if(null==article||''==article||article.length<20){
+			window.location.href="/index.shtml"
+		}
+	})
+	
+		/** scroll 浮层
+		$(window).scroll(function(){
+			var ht = $(this).scrollTop();
+			if(ht>210){
+				boxLeft();
+				$(".conBox_01,#toolbar_box").addClass("cur");
+			}else{
+				$(".conBox_01,#toolbar_box").removeClass("cur").removeAttr("style");
+			}
+		});***/
+	</script>
+</body>
+</html>

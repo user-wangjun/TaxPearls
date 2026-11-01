@@ -68,6 +68,27 @@ class PolicyCorpusTests(unittest.TestCase):
         self.assertEqual("".join(c["content"] for c in clauses), text)
         self.assertTrue(all(c["extraction_status"] == "needs_review" for c in clauses))
 
+    def test_local_multitax_metadata_survives_preparation_and_candidate_import(self):
+        path, value = self.manifest('第一条 合成跨税种地方规定。\n')
+        item = value['documents'][0]
+        item.update(region_code='CN-GD', tax_types=['增值税', '土地增值税'],
+                    scope={'included_regions': ['CN-GD'], 'excluded_regions': ['CN-GD-SZ']},
+                    date_evidence={'effective_from': {'value': '2026-01-01', 'evidence': '原文日期线索', 'review_status': 'needs_review'}},
+                    source_metadata={'content_gaps': ['附件待复核']})
+        plan = corpus.prepare(self.write(value))
+        policy = plan['bundle']['Policy'][0]
+        self.assertEqual(policy['region_code'], 'CN-GD')
+        self.assertEqual(json.loads(policy['tax_types_json']), ['VAT', 'LAT'])
+        self.assertEqual(json.loads(policy['scope_json'])['excluded_regions'], ['CN-GD-SZ'])
+        self.assertEqual(json.loads(policy['date_evidence_json']), item['date_evidence'])
+        self.assertEqual(json.loads(policy['source_metadata_json'])['content_gaps'], ['附件待复核'])
+
+    def test_local_policy_jurisdiction_is_not_promoted_to_national(self):
+        _, value = self.manifest("第一条 地方适用条件。\n", classification="个人所得税")
+        value['documents'][0]['region_code'] = 'CN-HI'
+        policy = corpus.prepare(self.write(value))['bundle']['Policy'][0]
+        self.assertEqual(policy['region_code'], 'CN-HI')
+
     def test_first_chapter_and_repeated_sections_have_correct_parent(self):
         text = "第一章 总则\n第一节 范围\n第一条 测试。\n第二章 监督\n第一节 范围\n第二条 测试。\n"
         path, _ = self.manifest(text)
@@ -163,6 +184,24 @@ class PolicyCorpusTests(unittest.TestCase):
                 path, _ = self.manifest(text)
                 with self.assertRaisesRegex(ValueError, "条号"):
                     corpus.prepare(path)
+
+    def test_explicit_reference_structure_review_preserves_quotes_without_inventing_articles(self):
+        text = '工程参考资料：依照所引通知\n第四条的规定执行。'
+        path, value = self.manifest(text)
+        with self.assertRaises(ValueError):
+            corpus.prepare(path)
+        review = {'kind': 'reference_guide', 'text_sha256': value['documents'][0]['text_sha256'],
+                  'review_status': 'needs_review', 'reason': '所引条号不属于参考指南自身条款。'}
+        value['documents'][0]['source_structure_review'] = review
+        plan = corpus.prepare(self.write(value))
+        self.assertEqual(len(plan['bundle']['Clause']), 1)
+        self.assertEqual(plan['bundle']['Clause'][0]['content'], text)
+        self.assertEqual(plan['bundle']['Clause'][0]['extraction_status'], 'needs_review')
+        for field, invalid in [('text_sha256', 'wrong-hash'), ('kind', 'complete_regulation'), ('review_status', 'approved')]:
+            modified = deepcopy(value)
+            modified['documents'][0]['source_structure_review'][field] = invalid
+            with self.assertRaises(ValueError):
+                corpus.prepare(self.write(modified))
 
     def test_repeated_announcement_sections_stay_one_unresolved_body(self):
         text = "一、通知\n二、内容\n一、另一文件\n"

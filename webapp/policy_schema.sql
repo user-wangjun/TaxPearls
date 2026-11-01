@@ -145,6 +145,22 @@ CREATE INDEX IF NOT EXISTS idx_relation_source ON Relationship(from_type, from_i
 CREATE INDEX IF NOT EXISTS idx_relation_target ON Relationship(to_type, to_id, relation_type);
 CREATE INDEX IF NOT EXISTS idx_policy_region_time ON Policy(region_code, effective_from, effective_to);
 
+-- Local human review evidence is separate from the eight transferable graph node types.
+-- A reviewed coverage window is not a policy's legal expiry date.
+CREATE TABLE IF NOT EXISTS PolicyReview (
+  review_id TEXT PRIMARY KEY,
+  policy_id TEXT NOT NULL REFERENCES Policy(policy_id),
+  file_sha256 TEXT NOT NULL,
+  clause_snapshots_json TEXT NOT NULL CHECK(json_valid(clause_snapshots_json)),
+  end_kind TEXT NOT NULL CHECK(end_kind IN ('unknown','fixed','unfixed')),
+  coverage_start TEXT,
+  coverage_end TEXT,
+  evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),
+  reviewed_by TEXT NOT NULL,
+  reviewed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_policy_review_coverage ON PolicyReview(policy_id, coverage_start, coverage_end);
+
 -- 程序规则（不是SQL自动执行）：
 -- A. 所有AI抽取的规则/关系先candidate，经过来源/时间/条件/例外审验才approved。
 -- B. 评估器必须支持 TRUE、FALSE、UNKNOWN，缺数据不等于FALSE。

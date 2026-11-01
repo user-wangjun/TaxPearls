@@ -42,8 +42,24 @@ class MistakeBookTests(unittest.TestCase):
         response = self.client.post('/api/assignments', json={'title': '<img src=x onerror=alert(1)>错题案例',
             'audit_id': self.audit, 'class_id': self.cid, 'published': True})
         self.assertEqual(response.status_code, 200, response.text)
-        self.aid = response.json()['id']
+        self.aid = self.allow_free_retake(response.json()['id'])
         self.login(self.student)
+
+
+    def allow_free_retake(self, aid):
+        """这些用例验证的是历史「重交覆盖」口径，显式选择自由重交。
+
+        2026-10-22 起默认改为「必须教师退回才能订正」；本文件断言的是覆盖后的
+        统计/画像/错题口径，所以在这里显式保留自由重交，不混用两种语义。
+        """
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO training_task_settings
+                            (subject_kind,subject_id,org_id,retake_policy,updated_at)
+                          VALUES ('assignment',?,?,'free','2026-01-01T00:00:00+00:00')
+                          ON CONFLICT(subject_kind,subject_id)
+                          DO UPDATE SET retake_policy='free'""",
+                       (aid, self.teacher['org_id']))
+        return aid
 
     def tearDown(self):
         self.client.__exit__(None, None, None)

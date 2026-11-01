@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>绑定飞书 · TaxPearls</title><link rel="stylesheet" href="/feishu-connect.css"></head>
+<body><main>
+<a class="brand" href="/">TaxPearls · 税海拾珠</a><h1>连接你的飞书账户</h1>
+<p id="intro">用飞书扫一扫打开助手，再点击助手发来的“绑定账户”。</p>
+<p id="status" role="status" aria-live="polite">正在读取绑定服务状态…</p>
+<section id="entry" hidden><img id="qr" width="240" height="240" alt="用飞书扫描，打开 TaxPearls 助手"><p><a id="bot-link" href="#">在飞书中打开助手</a></p><p class="muted">扫码打开会话不会自动绑定。请在机器人内点击绑定，再确认你的 TaxPearls 账号。</p></section>
+<section id="login" hidden><h2>登录 TaxPearls</h2><p class="muted">请使用要绑定的企业账号登录。此处沿用网站登录规则。</p><form id="login-form"><label>邮箱或用户名<input id="username" autocomplete="username" maxlength="254" required></label><label>密码<input id="password" type="password" autocomplete="current-password" required></label><button type="submit">登录</button></form></section>
+<section id="account" hidden><h2>当前 TaxPearls 账号</h2><dl><dt>账号</dt><dd id="account-name"></dd><dt>姓名</dt><dd id="account-display"></dd><dt>机构</dt><dd id="account-org"></dd></dl><button class="secondary" id="switch" type="button">切换账号</button></section>
+<section id="claim" hidden><h2>确认绑定</h2><p>确认后，请回到原飞书私聊，再点击“确认绑定”。两边确认后才会生效。</p><button id="confirm" type="button">使用当前账号继续绑定</button></section>
+<section id="waiting" hidden><h2>等待飞书确认</h2><p>请回到原来的飞书私聊，核对账号提示后点击“确认绑定”。</p><button id="cancel" class="secondary" type="button">取消本次绑定</button><button id="refresh" class="secondary" type="button">刷新状态</button></section>
+<section id="bindings" hidden><h2>已连接的账户</h2><div id="binding-list"></div></section>
+<p class="muted" id="expiry"></p><p class="muted">绑定不会增加账号权限；通知订阅与任务操作将单独接入。</p>
+</main><script src="/feishu-connect.js"></script></body></html>

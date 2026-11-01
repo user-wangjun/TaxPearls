@@ -83,7 +83,10 @@ def catalog(settings, logs):
     ]}
 
 
-def temporary(settings, provider, key, model):
+def temporary(settings, provider, key, model, base_url=''):
+    if provider == 'custom':
+        return AISettings(enabled=True, api_key=key, base_url=base_url.strip().rstrip('/'),
+                          model=model, json_mode=True, disable_thinking=False, vision=False)
     if provider == 'configured':
         return replace(settings, enabled=True, api_key=key, backup_api_keys=(),
                        model=model or settings.model)

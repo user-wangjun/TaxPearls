@@ -12,6 +12,7 @@ import re
 import sqlite3
 
 from src import tax_conditions as conditions
+from src.policy_paths import database_directory, resolve_path, stored_path
 
 
 IDS = {"Policy": "policy_id", "Clause": "clause_id", "TaxRule": "rule_id", "Entity": "entity_id",
@@ -34,7 +35,8 @@ RELATIONS = {
     "INTERPRETS": {("Policy", "Policy"), ("Clause", "Clause")},
     "SUPPLEMENTS": {("Policy", "Policy"), ("Clause", "Clause")},
 }
-JSON_FIELDS = {"condition_logic_json", "trigger_logic_json", "source_filter_json", "execution_json"}
+JSON_FIELDS = {"condition_logic_json", "trigger_logic_json", "source_filter_json", "execution_json",
+               "tax_types_json", "scope_json", "date_evidence_json", "source_metadata_json"}
 RELATION_LABELS = {"HAS_CLAUSE": "包含条款", "HAS_SUBCLAUSE": "下级条款", "SAME_SOURCE_URL": "同来源的独立快照", "DERIVES_RULE": "规定依据", "PROVIDES_CONTEXT": "政策背景",
                    "APPLIES_TO": "适用主体", "USES_METRIC": "使用指标", "HAS_CONDITION": "判断条件",
                    "HAS_EXCEPTION": "例外情形", "SOURCE_CLAUSE": "原文来源", "AMENDS": "修订",
@@ -53,7 +55,9 @@ def migrate(db):
     """Additive/idempotent, also upgrades a database created with the supplied v1 SQL."""
     db.executescript(Path(__file__).with_name("policy_schema.sql").read_text(encoding="utf-8-sig"))
     additions = {
-        "Policy": {"version": "TEXT NOT NULL DEFAULT '1'", "supersedes_id": "TEXT REFERENCES Policy(policy_id)"},
+        "Policy": {"version": "TEXT NOT NULL DEFAULT '1'", "supersedes_id": "TEXT REFERENCES Policy(policy_id)",
+                   **{name: f'TEXT CHECK({name} IS NULL OR json_valid({name}))' for name in
+                      ('tax_types_json', 'scope_json', 'date_evidence_json', 'source_metadata_json')}},
         "Clause": {"version": "TEXT NOT NULL DEFAULT '1'", "supersedes_id": "TEXT REFERENCES Clause(clause_id)"},
         "TaxRule": {"rule_code": "TEXT", "version": "TEXT NOT NULL DEFAULT '1'", "fingerprint": "TEXT",
                     "execution_json": "TEXT CHECK(execution_json IS NULL OR json_valid(execution_json))",
@@ -190,11 +194,13 @@ def _verified_source(db, clause_id):
             or not policy.get("raw_file_path")):
         raise ValueError("政策原件、效力、条款位置或提取复核尚未完成。")
     try:
-        raw = Path(policy["raw_file_path"]).read_bytes()
-    except OSError:
+        raw = resolve_path(policy["raw_file_path"], database_directory(db)).read_bytes()
+    except (OSError, ValueError):
         raise ValueError("政策原件不可读取。") from None
     if hashlib.sha256(raw).hexdigest() != policy["file_sha256"]:
         raise ValueError("政策原件哈希发生变化，请新增版本复核。")
+    from src.policy_paths import check_clause_source
+    check_clause_source(clause, database_directory(db))
 
 
 def import_bundle(db, bundle, *, _defer_rule_validation=False):
@@ -224,6 +230,9 @@ def import_bundle(db, bundle, *, _defer_rule_validation=False):
                         raise ValueError("导入只能创建候选，不能携带审核结果。")
                 if table == "TaxRule" and row.get("execution_json"):
                     raise ValueError("执行器快照只能由现有规则适配器产生。")
+                if table == 'Policy':
+                    from src.policy_metadata import validate
+                    validate(row)
                 if table == 'TaxRule' and row.get('conversion_json'):
                     raise ValueError('规则转换凭据只能由已验证的转换器产生。')
                 if table == "Condition" and row.get("right_kind") == "literal" and not isinstance(row.get("right_literal"), str):
@@ -284,7 +293,8 @@ def approve_rule(db, rule_id, reviewer):
     return get(db, "TaxRule", rule_id)
 
 
-def verify_source(db, policy_id, *, issuer, validity_status, effective_from, effective_to, clause_ids):
+def verify_source(db, policy_id, *, issuer, validity_status, effective_from, effective_to, clause_ids,
+                  reviewer=None, end_kind='unknown', coverage_start=None, coverage_end=None, evidence=None):
     """Explicit human source review, separate from AI extraction and rule approval."""
     if not db.in_transaction:
         db.execute("BEGIN IMMEDIATE")
@@ -300,11 +310,28 @@ def verify_source(db, policy_id, *, issuer, validity_status, effective_from, eff
     if any(c["policy_id"] != policy_id or not c.get("source_location") for c in clauses):
         raise ValueError("复核条款须属于本政策且有原文定位。")
     try:
-        actual_hash = hashlib.sha256(Path(policy["raw_file_path"]).read_bytes()).hexdigest()
-    except (OSError, TypeError):
+        actual_hash = hashlib.sha256(resolve_path(policy["raw_file_path"], database_directory(db)).read_bytes()).hexdigest()
+    except (OSError, TypeError, ValueError):
         raise ValueError("原件不可读取。") from None
     if actual_hash != policy.get("file_sha256"):
         raise ValueError("原件哈希不一致，须新增版本。")
+    from src.policy_paths import check_clause_source
+    for clause in clauses:
+        check_clause_source(clause, database_directory(db))
+    coverage = coverage_start is not None or coverage_end is not None or end_kind != 'unknown'
+    if end_kind not in {'unknown', 'fixed', 'unfixed'}:
+        raise ValueError('终止日期类型无效。')
+    if coverage:
+        if (not isinstance(reviewer, str) or not reviewer.strip() or not coverage_start or not coverage_end
+                or not isinstance(evidence, dict) or not all(isinstance(evidence.get(k), str) and evidence[k].strip()
+                                                           for k in ('source_url', 'quote'))):
+            raise ValueError('期间复核须有审核人、完整覆盖区间及来源和原文依据。')
+        _dates({'effective_from': coverage_start, 'effective_to': coverage_end})
+        if (coverage_start < effective_from or coverage_end > date.today().isoformat()
+                or effective_to and coverage_end > effective_to
+                or end_kind == 'unfixed' and (effective_to or validity_status != 'in_force')
+                or end_kind == 'fixed' and not effective_to):
+            raise ValueError('复核期间或终止日期类型与政策状态不一致，不能预先证明未来期间。')
     changes = dict(issuer=issuer.strip(), validity_status=validity_status,
                    effective_from=effective_from, effective_to=effective_to)
     if policy["validity_status"] != "unverified" and any(policy[k] != v for k, v in changes.items()):
@@ -313,13 +340,25 @@ def verify_source(db, policy_id, *, issuer, validity_status, effective_from, eff
                (*changes.values(), datetime.now(timezone.utc).isoformat(), policy_id))
     for cid in clause_ids:
         db.execute("UPDATE Clause SET extraction_status='verified' WHERE clause_id=?", (cid,))
-    return {"policy_id": policy_id, "verified_clauses": clause_ids, "validity_status": validity_status}
+    review_id = None
+    if reviewer:
+        from src.policy_metadata import clause_identity
+        stamp = datetime.now(timezone.utc).isoformat()
+        record = {'policy_id': policy_id, 'file_sha256': policy['file_sha256'],
+                  'clause_snapshots_json': canonical({c['clause_id']: clause_identity(c) for c in clauses}),
+                  'end_kind': end_kind, 'coverage_start': coverage_start, 'coverage_end': coverage_end,
+                  'evidence_json': canonical(evidence or {}), 'reviewed_by': reviewer, 'reviewed_at': stamp}
+        review_id = fingerprint(record)
+        db.execute('INSERT INTO PolicyReview VALUES (?,?,?,?,?,?,?,?,?,?)', (review_id, *record.values()))
+    return {"policy_id": policy_id, "verified_clauses": clause_ids, "validity_status": validity_status,
+            'review_id': review_id}
 
 
 def import_corpus(db, manifest_path, document_ids, originals_dir):
     """Import selected, already collected originals; collection is never legal approval."""
     manifest_path = Path(manifest_path).resolve()
     root, destination = manifest_path.parent, Path(originals_dir).resolve()
+    stored_path(db, destination)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
     if not document_ids or len(set(document_ids)) != len(document_ids):
         raise ValueError("须明确选择不重复的政策文档 ID。")
@@ -353,7 +392,7 @@ def import_corpus(db, manifest_path, document_ids, originals_dir):
                 "policy_id": pid, "title": item["title"], "document_no": item.get("document_no"),
                 "issuer": item.get("issuer") or "发布机关待核实", "tax_type": item.get("classification", "待分类"),
                 "publish_date": item.get("publish_date"), "effective_from": item.get("version_effective_from"),
-                "source_url": item["source_url"], "raw_file_path": str(retained), "file_sha256": item["raw_sha256"],
+                "source_url": item["source_url"], "raw_file_path": stored_path(db, retained), "file_sha256": item["raw_sha256"],
                 "version": item["raw_sha256"], "validity_status": "unverified"})
             matches = list(re.finditer(r"(?m)^((?:第[一二三四五六七八九十百零〇两\d]+条)|(?:[一二三四五六七八九十百]+、))[\s　]*", text_bytes.decode("utf-8-sig")))
             text = text_bytes.decode("utf-8-sig")
@@ -379,7 +418,24 @@ def import_corpus(db, manifest_path, document_ids, originals_dir):
 
 def sync_rules(db, rules):
     """Bridge existing executable rules by stable ID + version + exact content hash."""
-    if not db.in_transaction:
+    from src.rule_conversion import compile_rule
+    rules = list(rules)
+    selected = {}
+    required = []
+    for rule in rules:
+        digest = fingerprint(asdict(rule))
+        record_id = f"{rule.id}@{rule.version}:{digest[:16]}"
+        selected[record_id] = rule.id
+        required.extend([record_id, compile_rule(rule)['rule_id']])
+    own_transaction = not db.in_transaction
+    if own_transaction:
+        db.execute('BEGIN')
+    if all(db.execute('SELECT 1 FROM TaxRule WHERE rule_id=?', (key,)).fetchone() for key in required):
+        return selected
+    # Normal graph requests keep a read snapshot, without occupying Store's
+    # process-wide writer lock while assembling the large public catalog.
+    if own_transaction:
+        db.rollback()
         db.execute("BEGIN IMMEDIATE")
     selected = {}
     for rule in rules:
@@ -411,7 +467,7 @@ def sync_rules(db, rules):
     return selected
 
 
-def graph(db, selected=None):
+def graph(db, selected=None, *, node_ids=None, focus_first=False):
     """Public definitions only. Audit graphs continue using their frozen findings."""
     selected = selected or {}
     from src.models import Rule
@@ -424,11 +480,45 @@ def graph(db, selected=None):
             if db.execute('SELECT 1 FROM TaxRule WHERE rule_id=?',(rid,)).fetchone():
                 converted[old]=rid
     selected={**selected,**{rid:selected[old] for old,rid in converted.items()}}
+    def rows(table):
+        sql = f'SELECT * FROM "{table}"'
+        if node_ids is None:
+            return db.execute(sql + f' ORDER BY {IDS[table]}')
+        prefix = table + ':'
+        keys = {key[len(prefix):] for key in node_ids if key.startswith(prefix)}
+        if table == 'TaxRule':
+            keys.update(key for key, public_id in selected.items() if public_id in node_ids)
+        if not keys:
+            return []
+        return db.execute(sql + f' WHERE {IDS[table]} IN ({",".join("?" for _ in keys)})'
+                          + f' ORDER BY {IDS[table]}', list(keys))
     active_rules=set(converted.values())|{r['rule_id'] for r in db.execute('SELECT rule_id FROM TaxRule WHERE execution_json IS NULL AND conversion_json IS NULL')}
     active_metrics={r['to_id'] for r in db.execute("SELECT from_id,to_id FROM Relationship WHERE from_type='TaxRule' AND to_type='Metric' AND relation_type='USES_METRIC'") if r['from_id'] in active_rules}
+    partial = False
+    if focus_first:
+        first = next((row['rule_id'] for row in db.execute(
+            'SELECT rule_id, execution_json IS NOT NULL AS executable, conversion_json IS NOT NULL AS converted '
+            'FROM TaxRule ORDER BY rule_id')
+            if row['rule_id'] not in converted
+            and not (row['converted'] and selected and row['rule_id'] not in selected)
+            and not (row['executable'] and row['rule_id'] not in selected)), None)
+        if first is not None:
+            neighbors = {('TaxRule', first)}
+            for row in db.execute(
+                    "SELECT from_type,from_id,to_type,to_id FROM Relationship "
+                    "WHERE (from_type='TaxRule' AND from_id=?) OR (to_type='TaxRule' AND to_id=?)",
+                    (first, first)):
+                neighbors.update([(row['from_type'], row['from_id']), (row['to_type'], row['to_id'])])
+            for table in ('Condition', 'Exception'):
+                neighbors.update((table, row[IDS[table]]) for row in db.execute(
+                    f'SELECT {IDS[table]} FROM "{table}" WHERE rule_id=?', (first,)))
+            node_ids = {selected.get(key, f'{table}:{key}') if table == 'TaxRule'
+                        else f'{table}:{key}' for table, key in neighbors}
+            partial = True
     nodes, identifiers = [], {}
+    resolutions = None
     for table in KINDS:
-        for source in db.execute(f'SELECT * FROM "{table}" ORDER BY {IDS[table]}'):
+        for source in rows(table):
             row = dict(source)
             record_id = row[IDS[table]]
             if table=='TaxRule' and record_id in converted:
@@ -451,7 +541,21 @@ def graph(db, selected=None):
                 node["source"] = row["source_url"]
                 node["review_status"] = "unverified" if row["validity_status"] == "unverified" else "source_recorded"
             if table == "Clause":
-                node["requirement"] = row["content"]
+                from src.public_policy_package import citation_view, citation_resolutions
+                if resolutions is None:
+                    location = row.get('source_location') or {}
+                    if isinstance(location, str):
+                        try:
+                            location = json.loads(location)
+                        except json.JSONDecodeError:
+                            location = {}
+                    if isinstance(location, dict) and location.get('text_sha256'):
+                        resolutions = citation_resolutions()
+                citation = citation_view(row, get(db, 'Policy', row['policy_id']), resolutions=resolutions)
+                node['content'] = citation['text']
+                node["requirement"] = citation['text']
+                if citation.get('citation_corrections'):
+                    node['citation_corrected'] = True
                 node["source"] = row.get("source_location") or "待核实"
             if table == "Metric":
                 node["requirement"] = row.get("definition") or "指标映射待配置"
@@ -484,7 +588,15 @@ def graph(db, selected=None):
             identifiers[(table, record_id)] = node["id"]
             nodes.append(node)
     edges = []
-    for item in db.execute("SELECT * FROM Relationship ORDER BY relationship_id"):
+    if node_ids is None:
+        relations = db.execute("SELECT * FROM Relationship ORDER BY relationship_id")
+    else:
+        keys = {key for _, key in identifiers}
+        placeholders = ','.join('?' for _ in keys)
+        relations = db.execute(f'SELECT * FROM Relationship WHERE from_id IN ({placeholders}) '
+                               f'AND to_id IN ({placeholders}) ORDER BY relationship_id',
+                               [*keys, *keys]) if keys else []
+    for item in relations:
         row = dict(item)
         source, target = identifiers.get((row["from_type"], row["from_id"])), identifiers.get((row["to_type"], row["to_id"]))
         if source and target:
@@ -498,7 +610,7 @@ def graph(db, selected=None):
             edges.append({"source": source, "target": target, "label": RELATION_LABELS[label], "relation_type": label, "structural": True})
             seen.add((source, target, label))
     for table in ("Clause", "Condition", "Exception"):
-        for row in db.execute(f'SELECT * FROM "{table}"'):
+        for row in (db.execute(f'SELECT * FROM "{table}"') if node_ids is None else rows(table)):
             if table == "Clause":
                 link("Policy", row["policy_id"], table, row[IDS[table]], "HAS_CLAUSE")
             else:
@@ -509,8 +621,11 @@ def graph(db, selected=None):
                             link(table, row[IDS[table]], "Metric", row[field], "USES_METRIC")
                 if row["source_clause_id"]:
                     link("Clause", row["source_clause_id"], table, row[IDS[table]], "SOURCE_CLAUSE")
-    return {"schema_version": 1, "nodes": nodes, "edges": edges, "audit_id": None,
-            "boundary": "候选知识仅供查看；只有明确审核的版本可进入三态条件试算。现有审计结论仍使用原执行器。"}
+    result = {"schema_version": 1, "nodes": nodes, "edges": edges, "audit_id": None,
+              "boundary": "候选知识仅供查看；只有明确审核的版本可进入三态条件试算。现有审计结论仍使用原执行器。"}
+    if partial:
+        result['partial'] = True
+    return result
 
 
 def evaluate_rule(db, rule_id, facts, *, start, end, region, entities=()):

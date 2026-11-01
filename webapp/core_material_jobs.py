@@ -145,7 +145,7 @@ def fingerprint(meta, options, snapshot):
     })).hexdigest()
 
 
-def submit(store, user, task_id, revision, *, ai=False, payload=None, uploads=None, retry_job=None):
+def submit(store, user, task_id, revision, *, ai=False, payload=None, uploads=None, retry_job=None, vat_review=None):
     """Retained originals, core snapshot and queue admission commit atomically."""
     from webapp.core_inputs import latest
     view = batches.read(store, user, task_id, current_only=True)
@@ -171,6 +171,8 @@ def submit(store, user, task_id, revision, *, ai=False, payload=None, uploads=No
               and payload['source_options'].get(doc['id'], {}).get('corrections_fingerprint') == correction_fingerprint(doc)}
     if legacy:
         snapshot['legacy_review_bases'] = legacy
+    if vat_review is not None:
+        snapshot['vat_review'] = deepcopy(vat_review)
     job_id = secrets.token_hex(16)
     budget_id = job_id
     if retry_job:
@@ -179,6 +181,8 @@ def submit(store, user, task_id, revision, *, ai=False, payload=None, uploads=No
         if not old or old['state'] != 'failed' or revision != (old['result_revision'] or old['input_revision']):
             raise AccessDenied('任务或材料版本已变化，请重新读取。', 409)
         old_snapshot = json.loads(batches._open(old['input_cipher'], batches._context(user['org_id'], task_id, 'job_input', retry_job)))
+        if vat_review is None and 'vat_review' in old_snapshot:
+            snapshot['vat_review'] = old_snapshot['vat_review']
         if old_snapshot.get('kind') != 'core' or old_snapshot != snapshot:
             # A different parser profile needs an explicit new prepare, with a new budget.
             raise InputError('解析或模型配置已变化，请使用重新整理资料。')
@@ -206,6 +210,8 @@ def submit(store, user, task_id, revision, *, ai=False, payload=None, uploads=No
             files = batches._files(db, batch, user, uploads, prepared=prepared)
             batches._event(db, batch, user, 'supplement', {'files': files, 'previous_revision': revision})
         input_revision = batches._save_revision(db, batch, user, 'analysis', payload, cipher=cipher)
+        from webapp import core_record_index
+        core_record_index.index_payload(db, batch, payload, input_revision)
         db.execute("UPDATE material_jobs SET state='superseded',finished_at=? WHERE batch_id=? AND state='queued'", (batches.members.now(), task_id))
         db.execute('''INSERT INTO material_jobs
             (id,org_id,batch_id,input_revision,actor_id,actor_role,state,available_at,created_at,input_cipher,budget_id,kind)
@@ -405,13 +411,28 @@ def run(store, job, snapshot, config):
         documents = dispatch_files(store, job, snapshot, payload, metas, frozen, file_limit)
     documents = [apply_review(payload, meta, deepcopy(doc)) for meta, doc in zip(metas, documents)]
     result = aggregate(payload, documents)
+    if 'vat_review' in snapshot:
+        from src import vat_reconciliation as vat
+        checked = vat.make_review(result, snapshot['vat_review'], job['actor_id'], batches.members.now())
+        result.setdefault('check_reviews', {})[vat.RULE] = checked
+        if vat.RULE in result.get('tax_checks', {}):
+            result['tax_checks'][vat.RULE]['stale'] = True
+    # Cross-task deduplication is prepared before sealing; a final signature
+    # check prevents concurrent historical changes from publishing an old view.
+    from webapp import core_record_index
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        batch = queue.check_claim(db, job)
+        core_record_index.compare(db, batch, queue.actor(job), result, persist=False)
     batches.prepare_revision(result)
     cipher = batches._seal(batches._json(result), batches._context(job['org_id'],job['batch_id'],'revision:analysis',job['input_revision'] + 1))
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         batch = queue.check_claim(db, job)
         batches._require_active_core(db, batch)
+        core_record_index.require_current(db, batch, queue.actor(job), result, persist=False)
         result_revision = batches._save_revision(db,batch,queue.actor(job),'analysis',result,job_id=job['id'],cipher=cipher)
+        core_record_index.index_payload(db, batch, result, result_revision)
         partial = any(failed(d) for d in documents)
         db.execute("UPDATE material_jobs SET state=?,failure_code=?,result_revision=?,lease_token=NULL,lease_until=NULL,finished_at=? WHERE id=?",
                    ('failed' if partial else 'done','partial_files' if partial else None,result_revision,batches.members.now(),job['id']))

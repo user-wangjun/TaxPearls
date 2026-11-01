@@ -35,6 +35,43 @@ class ClassroomTests(unittest.TestCase):
         self.class_id=self.client.post('/api/classes',json={'name':'审计一班','student_ids':[self.student['id']]}).json()['id']
         self.future=datetime(2032,1,1,tzinfo=UTC)
 
+
+    def allow_free_retake(self, aid):
+        """本套件验证的是提交/复核/日志的回滚与计数，不是订正闸门口径。
+
+        2026-10-22 起默认「必须教师退回才能订正」，这里显式保留自由重交，
+        避免把两种语义混在同一个用例里。
+        """
+        with self.store.connect() as db:
+            # 组卷题目按试卷的策略走，命中的任务对象可能是 paper 而不是 assignment
+            row = db.execute("SELECT paper_id FROM training_assignment_settings WHERE assignment_id=?",
+                             (aid,)).fetchone()
+            subjects = [('assignment', aid)]
+            if row and row['paper_id']:
+                subjects.append(('paper', row['paper_id']))
+            for kind, subject in subjects:
+                db.execute("""INSERT INTO training_task_settings
+                                (subject_kind,subject_id,org_id,retake_policy,updated_at)
+                              VALUES (?,?,?,'free','2026-01-01T00:00:00+00:00')
+                              ON CONFLICT(subject_kind,subject_id)
+                              DO UPDATE SET retake_policy='free'""",
+                           (kind, subject, self.teacher['org_id']))
+        return aid
+
+    def open_answers_after_submit(self, kind, subject_id):
+        """本套件断言的是提交回执里的机器分，显式选「交后即可看」。
+
+        2026-10-22 起默认 after_due（截止后才开放答案与解析），而这里的作业截止
+        在 2032 年；不显式放开，提交回执里的分数会被策略挡掉。
+        """
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO training_task_settings
+                            (subject_kind,subject_id,org_id,answer_release,updated_at)
+                          VALUES (?,?,?,'after_submit','2026-01-01T00:00:00+00:00')
+                          ON CONFLICT(subject_kind,subject_id)
+                          DO UPDATE SET answer_release='after_submit'""",
+                       (kind, subject_id, self.teacher['org_id']))
+
     def tearDown(self):
         self.client.__exit__(None,None,None);module.store=self.old;self.tmp.cleanup();self.env.stop()
 
@@ -65,15 +102,17 @@ class ClassroomTests(unittest.TestCase):
         return self.client.post('/api/assignments/'+aid+'/submit',json={'selected_rule_ids':answers})
 
     def test_teaching_mutations_and_logs_commit_or_roll_back_together(self):
+        unassigned = self.store.create_user('classroom-unassigned', self.password, '未分班学生', 'student', 'school-a')
         pid = self.paper(True)
         aid = self.paper_cases(pid)[0]['id']
         single_body = {'title': '独立作业', 'audit_id': self.cases[0]['audit_id'], 'published': True}
         single = self.client.post('/api/assignments', json=single_body).json()['id']
         self.login(self.student)
         self.assertEqual(self.submit(aid, []).status_code, 200)
+        self.allow_free_retake(aid)
         submission = self.store.get_submission(aid, self.student['id'])['id']
         operations = [
-            (self.teacher, 'post', '/api/classes', {'name': '新班', 'student_ids': [self.other['id']]}, 'create_class'),
+            (self.teacher, 'post', '/api/classes', {'name': '新班', 'student_ids': [unassigned['id']]}, 'create_class'),
             (self.teacher, 'put', '/api/classes/' + self.class_id,
              {'name': '改班', 'student_ids': [self.other['id']], 'revision': 1}, 'update_class'),
             (self.teacher, 'post', '/api/papers',
@@ -117,7 +156,10 @@ class ClassroomTests(unittest.TestCase):
     def test_class_roster_teacher_ownership_student_privacy_and_role_guard(self):
         roster=self.client.get('/api/classes/students').json()
         self.assertEqual({p['id'] for p in roster},{self.student['id'],self.other['id']})
-        self.assertTrue(all(set(p)=={'id','username','display_name'} for p in roster))
+        self.assertTrue(all(set(p)=={'id','username','display_name','classes'} for p in roster))
+        self.assertEqual(next(p for p in roster if p['id']==self.student['id'])['classes'],
+                         [{'id':self.class_id,'name':'审计一班'}])
+        self.assertEqual(next(p for p in roster if p['id']==self.other['id'])['classes'], [])
         self.assertEqual(self.client.get('/api/classes').json()[0]['students'][0]['id'],self.student['id'])
         self.login(self.other_teacher)
         self.assertEqual(self.client.get('/api/classes').json(),[])
@@ -129,6 +171,70 @@ class ClassroomTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/classes',json={'name':'非法'}).status_code,403)
         self.login(self.other);self.assertEqual(self.client.get('/api/classes').json(),[])
         self.login(self.foreign);self.assertEqual(self.client.get('/api/classes').json(),[])
+
+    def test_class_rejects_new_duplicate_memberships_atomically(self):
+        original = self.client.get('/api/classes').json()
+        with self.store.connect() as db:
+            logs = db.execute("SELECT count(*) FROM audit_log WHERE action='create_class'").fetchone()[0]
+        response = self.client.post('/api/classes', json={
+            'name':'重复班级', 'student_ids':[self.other['id'], self.student['id']]})
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn('审计一班', response.json()['detail'])
+        self.assertEqual(self.client.get('/api/classes').json(), original)
+        with self.store.connect() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM audit_log WHERE action='create_class'").fetchone()[0], logs)
+        target = self.client.post('/api/classes', json={'name':'目标班','student_ids':[]}).json()['id']
+        response = self.client.put('/api/classes/'+target, json={
+            'name':'不应改名','revision':1,'student_ids':[self.other['id'],self.student['id']]})
+        self.assertEqual(response.status_code, 409, response.text)
+        with self.store.connect() as db:
+            self.assertEqual(tuple(db.execute('SELECT name,revision FROM training_classes WHERE id=?', (target,)).fetchone()), ('目标班',1))
+            self.assertEqual(db.execute('SELECT count(*) FROM training_class_members WHERE class_id=?', (target,)).fetchone()[0], 0)
+        self.login(self.other_teacher)
+        response = self.client.post('/api/classes', json={'name':'其他教师班','student_ids':[self.student['id']]})
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertEqual(self.client.get('/api/classes').json(), [])
+
+    def test_class_move_requires_removal_and_keeps_submission_history(self):
+        pid = self.paper(True)
+        aid = self.paper_cases(pid)[0]['id']
+        self.login(self.student)
+        self.assertEqual(self.submit(aid, []).status_code, 200)
+        before = self.store.get_submission(aid, self.student['id'])
+        self.login(self.teacher)
+        removed = self.client.put('/api/classes/'+self.class_id, json={
+            'name':'审计一班','revision':1,'student_ids':[]})
+        self.assertEqual(removed.status_code, 200, removed.text)
+        added = self.client.post('/api/classes', json={'name':'创新1班','student_ids':[self.student['id']]})
+        self.assertEqual(added.status_code, 200, added.text)
+        self.assertEqual(self.store.get_submission(aid, self.student['id']), before)
+        self.login(self.student)
+        self.assertEqual([c['name'] for c in self.client.get('/api/classes').json()], ['创新1班'])
+
+    def test_legacy_duplicate_memberships_can_be_repaired_without_forced_removal(self):
+        target = self.client.post('/api/classes', json={'name':'创新1班','student_ids':[]}).json()['id']
+        with self.store.connect() as db:
+            db.execute('INSERT INTO training_class_members VALUES (?,?)', (target,self.student['id']))
+        # Renaming an existing class does not silently move or drop old members.
+        unchanged = self.client.put('/api/classes/'+target, json={
+            'name':'创新1班','revision':1,'student_ids':[self.student['id']]})
+        self.assertEqual(unchanged.status_code, 200, unchanged.text)
+        removed = self.client.put('/api/classes/'+self.class_id, json={
+            'name':'会计5班','revision':1,'student_ids':[]})
+        self.assertEqual(removed.status_code, 200, removed.text)
+        roster = self.client.get('/api/classes/students').json()
+        self.assertEqual(next(p for p in roster if p['id']==self.student['id'])['classes'],
+                         [{'id':target,'name':'创新1班'}])
+
+    def test_concurrent_class_creation_cannot_double_assign_a_student(self):
+        def create(name):
+            return self.client.post('/api/classes', json={'name':name,'student_ids':[self.other['id']]}).status_code
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            statuses = list(executor.map(create, ['并发甲班','并发乙班']))
+        self.assertEqual(sorted(statuses), [200,409])
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM training_class_members WHERE student_id=?',
+                                        (self.other['id'],)).fetchone()[0], 1)
 
     def test_class_validation_revision_and_atomic_replacement(self):
         url='/api/classes/'+self.class_id
@@ -158,7 +264,9 @@ class ClassroomTests(unittest.TestCase):
         self.assertEqual([self.store.get_audit(c['audit_id']) for c in self.cases],snapshots)
 
     def test_weighted_paper_progress_scores_and_reviewed_scores(self):
-        pid=self.paper(True);items=self.paper_cases(pid);self.login(self.student)
+        pid=self.paper(True);items=self.paper_cases(pid)
+        self.open_answers_after_submit('paper',pid)
+        self.login(self.student)
         self.assertIsNone(self.client.get('/api/papers/'+pid).json()['progress']['score'])
         first=self.submit(items[0]['id'],self.cases[0]['metadata']['standard_answer'])
         self.assertEqual(first.json()['score'],100)
@@ -500,7 +608,8 @@ class ClassroomTests(unittest.TestCase):
         self.assertIn('text/javascript',script.headers['content-type'])
         self.assertIn('createTrainingClassroom',script.text)
         page=self.client.get('/').text
-        self.assertIn('src="/classroom.js?',page)
+        self.assertNotIn('src="/classroom.js?',page)
+        self.assertIn('load("classroom.js")',self.client.get('/console.js').text)
         for control in ['classRoster','paperDraft','paperDetail','paperClass','assignmentDeadline','exerciseDeadlineStatus']:
             self.assertIn('id="'+control+'"',page)
 

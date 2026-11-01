@@ -168,7 +168,9 @@ def resolve_metric(metric, processing, task):
                 return {**unknown, "reason": "筛选所需字段未核实。"}
             if any(record[k] not in v if isinstance(v, list) else record[k] != v for k, v in filters.items()):
                 continue
-            if record.get("duplicate_of"):
+            if record.get("dedup_conflict"):
+                return {**unknown, "reason": "同一业务记录存在未解决的版本冲突。"}
+            if record.get("duplicate_of") or record.get("dedup_superseded"):
                 continue
             if source_kind == "invoice_detail":
                 day = date.fromisoformat(record["issue_date"])

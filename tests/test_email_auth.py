@@ -109,7 +109,7 @@ class EmailAuthTests(unittest.TestCase):
 
     def test_invite_email_and_purpose_cannot_be_swapped(self):
         link=self.member_link();delivery=self.issue(invite_code=link['code'])
-        founder=self.store.create_invite_code(self.root,'另一个机构',5)
+        founder=self.store.create_invite_code(self.root,'另一个机构',5, org_type="enterprise")
         with self.assertRaisesRegex(ValueError,'不一致'):self.register(delivery,founder['code'])
         proof=email_auth.redeem_magic(self.store,delivery['token'],self.browser)['proof']
         with self.assertRaises(ValueError):self.register({**delivery,'email':'other@example.com'},proof=proof)

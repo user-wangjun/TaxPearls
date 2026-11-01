@@ -1,0 +1,739 @@
+"""课程任务主链：两类任务统一成一份清单，并旁挂任务级策略。
+
+设计约束（与《高校端教学端重设计方案》一致）：
+- **不新建并行任务系统**。任务对象仍是既有 ``assignments``（单案例作业）与
+  ``training_papers``（组卷）。本模块只在旁边挂一层策略，不复制截止时间、
+  班级、课程——它们分别由 ``training_assignment_settings`` /
+  ``training_papers`` / ``university_assignment_courses`` 持有，避免双份真相。
+- 旁挂表 ``training_task_settings`` 只存既有表上没有的东西：开放时间、提交次数、
+  答案开放策略、归档时间。
+- 学生可见性由服务端判定：未发布、已归档、跨机构、非本班一律 404，不做
+  "前端隐藏"式的保护。答案同理，按 ``answer_release`` 判定后才下发。
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import secrets
+from datetime import UTC, datetime
+from functools import wraps
+from typing import Any, Callable, Literal
+
+from fastapi import Cookie, HTTPException
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, ConfigDict, Field
+
+from webapp.access import current_actor
+
+KINDS = ("assignment", "paper")
+ANSWER_RELEASE = ("after_submit", "after_due", "manual")
+
+
+class TaskError(ValueError):
+    def __init__(self, message: str, status: int = 422):
+        super().__init__(message)
+        self.status = status
+
+
+def now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def migrate(db) -> None:
+    db.executescript("""
+        CREATE TABLE IF NOT EXISTS training_task_settings (
+            subject_kind TEXT NOT NULL CHECK (subject_kind IN ('assignment','paper')),
+            subject_id TEXT NOT NULL,
+            org_id TEXT NOT NULL,
+            open_at TEXT,                              -- 开放时间（空=发布即可用）
+            submit_limit INTEGER NOT NULL DEFAULT 1 CHECK (submit_limit BETWEEN 1 AND 9),
+            answer_release TEXT NOT NULL DEFAULT 'after_due'
+                CHECK (answer_release IN ('after_submit','after_due','manual')),
+            answer_released_at TEXT,                   -- 教师手工开放答案的时间
+            archived_at TEXT,                          -- 归档时间（不删除学生记录）
+            updated_by TEXT REFERENCES users(id),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (subject_kind, subject_id)
+        );
+        -- 任务级冻结快照：发布/首次下发时把材料、规则快照与策略固化成一份，
+        -- 之后公共知识更新不影响已发布任务与历史成绩（设计方案 §5.3）。
+        CREATE TABLE IF NOT EXISTS training_task_version (
+            id TEXT PRIMARY KEY,
+            subject_kind TEXT NOT NULL CHECK (subject_kind IN ('assignment','paper')),
+            subject_id TEXT NOT NULL,
+            org_id TEXT NOT NULL,
+            material_sha256 TEXT NOT NULL,      -- 材料（案例账套/生成材料）指纹
+            rules_json TEXT NOT NULL,           -- [{"assignment_id","rule_codes":[..],"rule_snapshot_ids":[..]}]
+            content_version_id TEXT REFERENCES training_content_version(id),
+            answer_release TEXT NOT NULL,
+            fingerprint TEXT NOT NULL,          -- 上述内容的 sha256，同指纹不重复建版本
+            frozen_by TEXT REFERENCES users(id),
+            frozen_at TEXT NOT NULL,
+            UNIQUE(subject_kind, subject_id, fingerprint)
+        );
+        CREATE INDEX IF NOT EXISTS idx_training_task_version_subject
+            ON training_task_version(subject_kind, subject_id, frozen_at DESC);
+    """)
+    # 注意：training_submission_version 的 task_version_id 列在
+    # training_submissions.migrate 里补（它建表，且本模块在它之前执行）。
+
+
+# --------------------------------------------------------------------------- 读取工具
+
+def _settings(db, kind: str, subject_id: str) -> dict[str, Any]:
+    row = db.execute(
+        "SELECT * FROM training_task_settings WHERE subject_kind=? AND subject_id=?",
+        (kind, subject_id),
+    ).fetchone()
+    base = {"open_at": None, "submit_limit": 1, "correction_limit": 1,
+            "retake_policy": "teacher_return", "answer_release": "after_due",
+            "answer_released_at": None, "archived_at": None, "updated_at": None}
+    if row:
+        base.update({k: row[k] for k in base if k in row.keys()})
+    return base
+
+
+def _class_scope(db, org_id: str, class_id: str | None) -> int:
+    """应提交人数：有班级按班级名册，无班级按本机构在职学生。"""
+    if class_id:
+        row = db.execute(
+            """SELECT COUNT(*) c FROM training_class_members m JOIN users u ON u.id=m.student_id
+               WHERE m.class_id=? AND u.org_id=? AND u.active=1""",
+            (class_id, org_id),
+        ).fetchone()
+    else:
+        row = db.execute("SELECT COUNT(*) c FROM users WHERE role='student' AND active=1 AND org_id=?", (org_id,)).fetchone()
+    return int(row["c"] if row else 0)
+
+
+def _course(db, subject_kind: str, subject_ids: list[str]) -> tuple[str | None, str | None]:
+    if not subject_ids:
+        return None, None
+    marks = ",".join("?" for _ in subject_ids)
+    row = db.execute(
+        f"""SELECT c.id,c.name FROM university_assignment_courses ac
+            JOIN course c ON c.id=ac.course_id
+            WHERE ac.assignment_id IN ({marks}) ORDER BY c.name LIMIT 1""",
+        tuple(subject_ids),
+    ).fetchone()
+    return (row["id"], row["name"]) if row else (None, None)
+
+
+# --------------------------------------------------------------------------- 冻结快照
+
+def _rule_snapshot_ids(db, rule_codes: list[str]) -> list[str]:
+    from webapp import teaching_units
+    ids = []
+    for code in rule_codes:
+        snapshot_id = teaching_units.rule_snapshot_id(db, code)
+        if snapshot_id:
+            ids.append(snapshot_id)
+    return ids
+
+
+def subject_assignments(db, kind: str, subject_id: str) -> list[str]:
+    """任务覆盖的作业 id：单案例作业是它自己，组卷是它的每道题。"""
+    if kind == "assignment":
+        return [subject_id]
+    rows = db.execute(
+        "SELECT assignment_id FROM training_assignment_settings WHERE paper_id=? ORDER BY position",
+        (subject_id,),
+    ).fetchall()
+    return [row["assignment_id"] for row in rows]
+
+
+def freeze(db, who: dict[str, Any], kind: str, subject_id: str) -> dict[str, Any] | None:
+    """发布/首次下发时冻结内容版本；内容没变就不新建版本（同指纹幂等）。
+
+    ``fingerprint`` 覆盖材料指纹、每道题的规则快照 id、内容版本与答案策略。
+    公共知识后续更新会改变下一次计算出的快照 id，于是产生新版本，而已经
+    按旧版本提交的记录仍指向旧版本 —— 这就是「旧任务与旧分数不漂移」的落点。
+    """
+    assignment_ids = subject_assignments(db, kind, subject_id)
+    if not assignment_ids:
+        return None
+    marks = ",".join("?" for _ in assignment_ids)
+    rules: list[dict[str, Any]] = []
+    materials: list[str] = []
+    for row in db.execute(
+        f"""SELECT a.id,a.audit_id,a.weights_json,a.false_positive_penalty,f.findings_json,
+                   g.metadata_sha256
+            FROM assignments a LEFT JOIN audits f ON f.id=a.audit_id
+            LEFT JOIN generated_exercises g ON g.audit_id=a.audit_id
+            WHERE a.id IN ({marks}) ORDER BY a.id""",
+        tuple(assignment_ids),
+    ).fetchall():
+        # findings_json 由行工厂解密为明文（拓扑写入前是脱敏结构，只取 rule id）
+        try:
+            parsed = json.loads(row["findings_json"] or "[]")
+        except (TypeError, ValueError):
+            parsed = []
+        codes = sorted({f.get("rule", {}).get("id") if isinstance(f.get("rule"), dict) else f.get("id")
+                        for f in parsed if isinstance(f, dict)} - {None})
+        rules.append({"assignment_id": row["id"], "rule_codes": codes,
+                      "rule_snapshot_ids": _rule_snapshot_ids(db, codes)})
+        materials.append(row["metadata_sha256"] or "")
+    # 内容版本取全库最新的启用版本：证书不按机构分区，任务侧只记「发布当时用的是哪一版」
+    content_version = db.execute(
+        """SELECT id FROM training_content_version WHERE status='active'
+           ORDER BY created_at DESC, id LIMIT 1""").fetchone()
+    sett = _settings(db, kind, subject_id)
+    body = {"materials": materials, "rules": rules,
+            "content_version_id": content_version["id"] if content_version else None,
+            "answer_release": sett["answer_release"]}
+    fingerprint = hashlib.sha256(
+        json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+    found = db.execute(
+        "SELECT * FROM training_task_version WHERE subject_kind=? AND subject_id=? AND fingerprint=?",
+        (kind, subject_id, fingerprint),
+    ).fetchone()
+    if found:
+        return _version_payload(found)
+    version_id = secrets.token_hex(12)
+    material_sha = hashlib.sha256("".join(materials).encode()).hexdigest()
+    db.execute(
+        """INSERT INTO training_task_version
+             (id,subject_kind,subject_id,org_id,material_sha256,rules_json,content_version_id,
+              answer_release,fingerprint,frozen_by,frozen_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (version_id, kind, subject_id, who["org_id"], material_sha,
+         json.dumps(rules, ensure_ascii=False), body["content_version_id"],
+         sett["answer_release"], fingerprint, who["id"], now()),
+    )
+    return _version_payload(db.execute("SELECT * FROM training_task_version WHERE id=?",
+                                       (version_id,)).fetchone())
+
+
+def _version_payload(row) -> dict[str, Any]:
+    item = dict(row)
+    item["rules"] = json.loads(item.pop("rules_json") or "[]")
+    return item
+
+
+def ensure_frozen(db, who: dict[str, Any], kind: str, subject_id: str) -> dict[str, Any] | None:
+    """已发布任务必须有冻结版本；历史上先发布后加本功能的任务在首次读取时补冻。"""
+    row = db.execute(
+        "SELECT * FROM training_task_version WHERE subject_kind=? AND subject_id=?"
+        " ORDER BY frozen_at DESC, rowid DESC LIMIT 1", (kind, subject_id)).fetchone()
+    if row:
+        return _version_payload(row)
+    task_published = (
+        db.execute("SELECT published FROM assignments WHERE id=?", (subject_id,)).fetchone()
+        if kind == "assignment" else
+        db.execute("SELECT published FROM training_papers WHERE id=?", (subject_id,)).fetchone())
+    if not task_published or not task_published["published"]:
+        return None
+    return freeze(db, who, kind, subject_id)
+
+
+def task_version(db, kind: str, subject_id: str) -> dict[str, Any] | None:
+    row = db.execute(
+        "SELECT * FROM training_task_version WHERE subject_kind=? AND subject_id=?"
+        " ORDER BY frozen_at DESC, rowid DESC LIMIT 1", (kind, subject_id)).fetchone()
+    return _version_payload(row) if row else None
+
+
+def drift(db, kind: str, subject_id: str) -> dict[str, Any]:
+    """冻结后公共知识是否已更新：只提示，不自动轮换（设计方案 §5.3）。"""
+    frozen = task_version(db, kind, subject_id)
+    if not frozen:
+        return {"frozen": False, "changed_rules": [], "note": "任务发布后自动冻结内容版本。"}
+    changed: list[str] = []
+    for entry in frozen["rules"]:
+        current = _rule_snapshot_ids(db, entry["rule_codes"])
+        if current != entry["rule_snapshot_ids"]:
+            changed.extend(code for code in entry["rule_codes"])
+    return {"frozen": True, "frozen_at": frozen["frozen_at"],
+            "content_version_id": frozen["content_version_id"],
+            "changed_rules": sorted(set(changed)),
+            "note": ("公共知识已有更新，本任务仍按发布时的冻结版本判定；如需采用新口径请新建任务。"
+                     if changed else "与发布时冻结的规则快照一致。")}
+
+
+def task_state(published: bool, archived: bool, open_at: str | None, due_at: str | None,
+               *, at: datetime | None = None) -> str:
+    """Shared availability for task cards and classroom read/write endpoints."""
+    if archived:
+        return "archived"
+    if not published:
+        return "draft"
+    moment = at if at is not None else datetime.fromisoformat(now())
+    if open_at and moment < datetime.fromisoformat(open_at):
+        return "scheduled"
+    if due_at and moment >= datetime.fromisoformat(due_at):
+        return "closed"
+    return "published"
+
+
+def _progress(db, assignment_ids: list[str], student_id: str | None) -> dict[str, int]:
+    if not assignment_ids:
+        return {"submitted": 0, "reviewed": 0}
+    marks = ",".join("?" for _ in assignment_ids)
+    if student_id:
+        row = db.execute(
+            f"""SELECT COUNT(*) c,
+                       SUM(CASE WHEN adjusted_score IS NOT NULL THEN 1 ELSE 0 END) r
+                FROM submissions WHERE student_id=? AND assignment_id IN ({marks})""",
+            (student_id, *assignment_ids),
+        ).fetchone()
+    else:
+        row = db.execute(
+            f"""SELECT COUNT(*) c, SUM(reviewed) r FROM (
+                  SELECT student_id,
+                         CASE WHEN COUNT(DISTINCT CASE WHEN adjusted_score IS NOT NULL THEN assignment_id END)=?
+                              THEN 1 ELSE 0 END reviewed
+                  FROM submissions WHERE assignment_id IN ({marks})
+                  GROUP BY student_id HAVING COUNT(DISTINCT assignment_id)=?)""",
+            (len(assignment_ids), *assignment_ids, len(assignment_ids)),
+        ).fetchone()
+    return {"submitted": int(row["c"] or 0), "reviewed": int(row["r"] or 0)}
+
+
+def answers_open(release: str, released_at: str | None, due_at: str | None, submitted: bool) -> bool:
+    """答案与解析是否已对学生开放。任务卡与作业结果页共用这一份口径。
+
+    ``after_due`` 且任务没有截止时间时按「交后即可看」处理：沿用历史口径，
+    避免教师只建了作业、没设截止就把学生已交的成绩藏起来。
+    """
+    if release == "manual":
+        return bool(released_at)
+    if release == "after_submit":
+        return bool(submitted)
+    if not due_at:
+        return bool(submitted)
+    return now() >= due_at
+
+
+def _answers_visible(task: dict[str, Any], who: dict[str, Any]) -> bool:
+    if who["role"] == "teacher":
+        return True
+    return answers_open(task["answer_release"], task["answer_released_at"],
+                        task["due_at"], bool(task["fully_submitted"]))
+
+
+# --------------------------------------------------------------------------- 视图
+
+
+def _my_state(db, assignment_ids: list[str], student_id: str) -> dict[str, Any]:
+    """学生本人的订正进度：取最“需要他动手”的那个状态。"""
+    from webapp import training_submissions
+    # 越靠前越需要学生动手；done 放最后，避免一份卷里只交了一题就显示已完成
+    order = ["returned", "pending_review", "submitted", "in_progress", "not_started", "done"]
+    picked = None
+    can_submit = False
+    for assignment_id in assignment_ids:
+        state = training_submissions.progress(db, assignment_id, student_id)
+        can_submit = can_submit or state["can_submit"]
+        if picked is None or order.index(state["status"]) < order.index(picked["status"]):
+            picked = state
+    if picked is None:
+        return {"my_status": "not_started", "my_return_reason": None,
+                "my_attempts": 0, "my_corrections": 0, "can_submit": False}
+    return {"my_status": picked["status"], "my_return_reason": picked["return_reason"],
+            "my_attempts": int(picked["attempts"]), "my_corrections": int(picked["corrections"]),
+            "can_submit": can_submit}
+
+def _assignment_task(db, row, who) -> dict[str, Any]:
+    sett = _settings(db, "assignment", row["id"])
+    due_at = row["deadline_at"]
+    submitted_mine = 0
+    if who["role"] == "student":
+        sub = db.execute(
+            "SELECT adjusted_score FROM submissions WHERE assignment_id=? AND student_id=?",
+            (row["id"], who["id"]),
+        ).fetchone()
+        submitted_mine = 1 if sub else 0
+        reviewed = 1 if sub and sub["adjusted_score"] is not None else 0
+    else:
+        counts = _progress(db, [row["id"]], None)
+        submitted_mine, reviewed = counts["submitted"], counts["reviewed"]
+    course_id, course_name = _course(db, "assignment", [row["id"]])
+    class_name = None
+    if row["class_id"]:
+        found = db.execute("SELECT name FROM training_classes WHERE id=?", (row["class_id"],)).fetchone()
+        class_name = found["name"] if found else None
+    task = {
+        "kind": "assignment", "id": row["id"], "title": row["title"], "task_type": "single",
+        "course_id": course_id, "course_name": course_name,
+        "class_id": row["class_id"], "class_name": class_name,
+        "published": bool(row["published"]), "open_at": sett["open_at"], "due_at": due_at,
+        "state": task_state(bool(row["published"]), bool(sett["archived_at"]), sett["open_at"], due_at),
+        "submit_limit": int(sett["submit_limit"]),
+        "correction_limit": int(sett["correction_limit"]),
+        "retake_policy": sett["retake_policy"],
+        "answer_release": sett["answer_release"], "answer_released_at": sett["answer_released_at"],
+        "expected": _class_scope(db, who["org_id"], row["class_id"]),
+        "submitted_total": submitted_mine if who["role"] == "teacher" else None,
+        "submitted_mine": submitted_mine if who["role"] == "student" else 0,
+        "reviewed_total": reviewed if who["role"] == "teacher" else None,
+        "mine_reviewed": reviewed if who["role"] == "student" else 0,
+        "question_count": 1, "total_points": 100.0,
+    }
+    task["fully_submitted"] = task["submitted_mine"] >= 1
+    if who["role"] == "student":
+        task.update(_my_state(db, [row["id"]], who["id"]))
+    task["answers_visible"] = _answers_visible(task, who)
+    task["can_submit"] = task["state"] == "published" and task.get("can_submit", False)
+    return task
+
+
+def _paper_task(db, row, who) -> dict[str, Any]:
+    sett = _settings(db, "paper", row["id"])
+    items = db.execute(
+        "SELECT assignment_id,position,points FROM training_assignment_settings WHERE paper_id=? ORDER BY position",
+        (row["id"],),
+    ).fetchall()
+    ids = [i["assignment_id"] for i in items]
+    counts = _progress(db, ids, who["id"] if who["role"] == "student" else None)
+    if who["role"] == "student":
+        submitted_mine = min(counts["submitted"], len(ids)) if ids else 0
+        reviewed = counts["reviewed"]
+    else:
+        submitted_mine, reviewed = 0, counts["reviewed"]
+    course_id, course_name = _course(db, "paper", ids)
+    class_name = None
+    if row["class_id"]:
+        found = db.execute("SELECT name FROM training_classes WHERE id=?", (row["class_id"],)).fetchone()
+        class_name = found["name"] if found else None
+    due_at = row["deadline_at"]
+    task = {
+        "kind": "paper", "id": row["id"], "title": row["title"], "task_type": "paper",
+        "course_id": course_id, "course_name": course_name,
+        "class_id": row["class_id"], "class_name": class_name,
+        "published": bool(row["published"]), "open_at": sett["open_at"], "due_at": due_at,
+        "state": task_state(bool(row["published"]), bool(sett["archived_at"]), sett["open_at"], due_at),
+        "submit_limit": int(sett["submit_limit"]),
+        "correction_limit": int(sett["correction_limit"]),
+        "retake_policy": sett["retake_policy"],
+        "answer_release": sett["answer_release"], "answer_released_at": sett["answer_released_at"],
+        "question_count": len(ids), "total_points": float(sum(float(i["points"]) for i in items)),
+        "expected": _class_scope(db, who["org_id"], row["class_id"]),
+        "submitted_total": counts["submitted"] if who["role"] == "teacher" else None,
+        "submitted_mine": submitted_mine,
+        "reviewed_total": reviewed if who["role"] == "teacher" else None,
+        "mine_reviewed": reviewed if who["role"] == "student" else 0,
+    }
+    # 组卷按题提交，整份"已提交"以全部题目都已作答为准
+    task["fully_submitted"] = bool(ids) and submitted_mine >= len(ids)
+    if who["role"] == "student":
+        task.update(_my_state(db, ids, who["id"]))
+    task["answers_visible"] = _answers_visible(task, who)
+    task["can_submit"] = task["state"] == "published" and task.get("can_submit", False)
+    return task
+
+
+def _owned_assignment(db, who, subject_id: str):
+    row = db.execute("SELECT * FROM assignments WHERE id=? AND org_id=?", (subject_id, who["org_id"])).fetchone()
+    if not row:
+        raise TaskError("任务不存在。", 404)
+    if who["role"] == "teacher" and row["created_by"] != who["id"]:
+        raise TaskError("任务不存在。", 404)
+    return row
+
+
+def _owned_paper(db, who, subject_id: str):
+    row = db.execute("SELECT * FROM training_papers WHERE id=? AND org_id=?", (subject_id, who["org_id"])).fetchone()
+    if not row:
+        raise TaskError("任务不存在。", 404)
+    if who["role"] == "teacher" and row["owner_id"] != who["id"]:
+        raise TaskError("任务不存在。", 404)
+    return row
+
+
+def _subject_row(db, who, kind: str, subject_id: str):
+    if kind == "assignment":
+        row = _owned_assignment(db, who, subject_id)
+        item = db.execute("SELECT * FROM training_assignment_settings WHERE assignment_id=?", (subject_id,)).fetchone()
+        data = dict(row)
+        data["class_id"] = item["class_id"] if item else None
+        data["deadline_at"] = item["deadline_at"] if item else None
+        data["paper_id"] = item["paper_id"] if item else None
+        return data
+    return dict(_owned_paper(db, who, subject_id))
+
+
+def list_tasks(db, who: dict[str, Any]) -> list[dict[str, Any]]:
+    """教师看自己创建的任务；学生看已发布、未归档、且在范围内的任务。"""
+    tasks: list[dict[str, Any]] = []
+    if who["role"] == "teacher":
+        for row in db.execute(
+            "SELECT a.*,s.class_id,s.paper_id,s.deadline_at FROM assignments a "
+            "LEFT JOIN training_assignment_settings s ON s.assignment_id=a.id "
+            "WHERE a.org_id=? AND a.created_by=? AND (s.paper_id IS NULL) ORDER BY a.created_at DESC",
+            (who["org_id"], who["id"]),
+        ).fetchall():
+            tasks.append(_assignment_task(db, dict(row), who))
+        for row in db.execute(
+            "SELECT * FROM training_papers WHERE org_id=? AND owner_id=? ORDER BY created_at DESC",
+            (who["org_id"], who["id"]),
+        ).fetchall():
+            tasks.append(_paper_task(db, dict(row), who))
+    else:
+        rows = db.execute(
+            """SELECT a.*,s.class_id,s.paper_id,s.deadline_at FROM assignments a
+               LEFT JOIN training_assignment_settings s ON s.assignment_id=a.id
+               WHERE a.org_id=? AND a.published=1 AND (a.target_student_id IS NULL OR a.target_student_id=?)
+                 AND (s.paper_id IS NULL)
+                 AND (s.class_id IS NULL OR EXISTS(SELECT 1 FROM training_class_members m
+                      WHERE m.class_id=s.class_id AND m.student_id=?))
+               ORDER BY a.created_at DESC""",
+            (who["org_id"], who["id"], who["id"]),
+        ).fetchall()
+        for row in rows:
+            tasks.append(_assignment_task(db, dict(row), who))
+        papers = db.execute(
+            """SELECT p.* FROM training_papers p
+               WHERE p.org_id=? AND p.published=1
+                 AND (p.class_id IS NULL OR EXISTS(SELECT 1 FROM training_class_members m
+                      WHERE m.class_id=p.class_id AND m.student_id=?))
+               ORDER BY p.created_at DESC""",
+            (who["org_id"], who["id"]),
+        ).fetchall()
+        for row in papers:
+            tasks.append(_paper_task(db, dict(row), who))
+    live = [t for t in tasks if not (who["role"] == "student" and t["state"] == "archived")]
+    live.sort(key=lambda t: (t["state"] == "archived", t["due_at"] or "9999"))
+    return live
+
+
+def detail(db, who: dict[str, Any], kind: str, subject_id: str) -> dict[str, Any]:
+    if kind not in KINDS:
+        raise TaskError("任务类型不正确。", 404)
+    row = _subject_row(db, who, kind, subject_id)
+    if kind == "assignment":
+        if row.get("paper_id"):
+            raise TaskError("这是组卷题目，请打开所属试卷。", 409)
+        task = _assignment_task(db, row, who)
+    else:
+        task = _paper_task(db, row, who)
+    if who["role"] == "student":
+        if not task["published"] or task["state"] in {"draft", "archived"}:
+            raise TaskError("任务不存在。", 404)
+        if task["class_id"]:
+            member = db.execute(
+                "SELECT 1 FROM training_class_members WHERE class_id=? AND student_id=?",
+                (task["class_id"], who["id"]),
+            ).fetchone()
+            if not member and row.get("target_student_id") != who["id"]:
+                raise TaskError("任务不存在。", 404)
+    # 已发布任务必须带冻结版本；从没发布过的草稿不冻结（内容还在改）
+    if task["published"]:
+        owner = who if who["role"] == "teacher" else {
+            "id": row["created_by"] if kind == "assignment" else row["owner_id"],
+            "org_id": task.get("org_id") or who["org_id"]}
+        task["frozen"] = ensure_frozen(db, owner, kind, subject_id)
+        task["version_drift"] = drift(db, kind, subject_id)
+    else:
+        task["frozen"] = None
+        task["version_drift"] = {"frozen": False, "changed_rules": [],
+                                 "note": "草稿尚未发布，发布时自动冻结内容版本。"}
+    return task
+
+
+def preview(db, who: dict[str, Any], kind: str, subject_id: str) -> dict[str, Any]:
+    """教师预览学生视角：结构与学生看到的一致，答案仅教师可见。"""
+    task = detail(db, who, kind, subject_id)
+    student_view = dict(task)
+    student_view["submitted_mine"] = 0
+    student_view["can_submit"] = task["state"] == "published"
+    student_view["answers_visible"] = bool(task["answer_release"] == "after_submit")
+    student_view["preview"] = True
+    if kind == "paper":
+        items = db.execute(
+            """SELECT a.id,a.title,s.position,s.points FROM training_assignment_settings s
+               JOIN assignments a ON a.id=s.assignment_id WHERE s.paper_id=? ORDER BY s.position""",
+            (subject_id,),
+        ).fetchall()
+        student_view["questions"] = [dict(r) for r in items]
+    else:
+        student_view["questions"] = [{"id": task["id"], "title": task["title"], "position": 1,
+                                      "points": 100.0}]
+    return {"task": student_view, "answers_included": True,
+            "note": "预览内容仅教师可见；学生端到开放时间且满足答案策略后才显示结果。"}
+
+
+def update_settings(db, who: dict[str, Any], kind: str, subject_id: str, body) -> dict[str, Any]:
+    from webapp import classroom
+    task = detail(db, who, kind, subject_id)
+    if who["role"] != "teacher":
+        raise TaskError("只有任课教师可以调整任务设置。", 403)
+    if task["state"] == "archived":
+        raise TaskError("已归档任务不能改设置，请新建任务。", 409)
+    if body.submit_limit != 1:
+        raise TaskError("多次提交需要提交版本记录，随订正流程一起开放；当前仅支持限交 1 次。", 409)
+    if body.answer_release not in ANSWER_RELEASE:
+        raise TaskError("答案开放方式不正确。")
+    try:
+        open_at = classroom.deadline(body.open_at)
+    except classroom.ClassroomError as exc:
+        raise TaskError(str(exc)) from None
+    if open_at and task["due_at"] and open_at >= task["due_at"]:
+        raise TaskError("开放时间必须早于截止时间。")
+    previous = _settings(db, kind, subject_id)
+    previous_open = previous["open_at"]
+    if previous_open:
+        try:
+            previous_open = classroom.deadline(previous_open)
+        except classroom.ClassroomError:
+            pass
+    if kind == "assignment":
+        has_submissions = db.execute("SELECT 1 FROM submissions WHERE assignment_id=? LIMIT 1", (subject_id,)).fetchone()
+    else:
+        has_submissions = db.execute("""SELECT 1 FROM submissions s
+            JOIN training_assignment_settings a ON a.assignment_id=s.assignment_id WHERE a.paper_id=? LIMIT 1""",
+            (subject_id,)).fetchone()
+    if has_submissions and (open_at != previous_open
+                            or body.submit_limit != previous["submit_limit"]):
+        raise TaskError("已有学生作答，排期和提交次数不能再改；需要调整请归档后新建任务，保留原记录。", 409)
+    db.execute(
+        """INSERT INTO training_task_settings
+             (subject_kind,subject_id,org_id,open_at,submit_limit,correction_limit,retake_policy,answer_release,updated_by,updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)
+           ON CONFLICT(subject_kind,subject_id) DO UPDATE SET
+             open_at=excluded.open_at, submit_limit=excluded.submit_limit,
+             correction_limit=excluded.correction_limit, retake_policy=excluded.retake_policy,
+             answer_release=excluded.answer_release, updated_by=excluded.updated_by,
+             updated_at=excluded.updated_at""",
+        (kind, subject_id, who["org_id"], open_at, body.submit_limit,
+         body.correction_limit, body.retake_policy, body.answer_release, who["id"], now()),
+    )
+    return detail(db, who, kind, subject_id)
+
+
+def release_answers(db, who: dict[str, Any], kind: str, subject_id: str) -> dict[str, Any]:
+    task = detail(db, who, kind, subject_id)
+    if who["role"] != "teacher":
+        raise TaskError("只有任课教师可以开放答案。", 403)
+    if task["answer_release"] != "manual":
+        raise TaskError("该任务的答案按策略自动开放，不需要手工开放。", 409)
+    db.execute(
+        """INSERT INTO training_task_settings (subject_kind,subject_id,org_id,answer_release,answer_released_at,updated_by,updated_at)
+           VALUES (?,?,?,'manual',?,?,?)
+           ON CONFLICT(subject_kind,subject_id) DO UPDATE SET
+             answer_released_at=excluded.answer_released_at,
+             updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+        (kind, subject_id, who["org_id"], now(), who["id"], now()),
+    )
+    return detail(db, who, kind, subject_id)
+
+
+def set_archived(db, who: dict[str, Any], kind: str, subject_id: str, archived: bool) -> dict[str, Any]:
+    task = detail(db, who, kind, subject_id)
+    if who["role"] != "teacher":
+        raise TaskError("只有任课教师可以归档任务。", 403)
+    if not archived and task["state"] != "archived":
+        raise TaskError("该任务未归档。", 409)
+    archived_at = now() if archived else None
+    db.execute(
+        """INSERT INTO training_task_settings (subject_kind,subject_id,org_id,archived_at,updated_by,updated_at)
+           VALUES (?,?,?,?,?,?)
+           ON CONFLICT(subject_kind,subject_id) DO UPDATE SET
+             archived_at=excluded.archived_at, updated_by=excluded.updated_by, updated_at=excluded.updated_at""",
+        (kind, subject_id, who["org_id"], archived_at, who["id"], now()),
+    )
+    if kind == "assignment":
+        db.execute("UPDATE teaching_case_task SET archived_at=? WHERE assignment_id=?", (archived_at, subject_id))
+    return detail(db, who, kind, subject_id)
+
+
+# --------------------------------------------------------------------------- 接口
+
+class SettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    open_at: str | None = None
+    submit_limit: int = Field(default=1, ge=1, le=9)
+    correction_limit: int = Field(default=1, ge=0, le=5)
+    retake_policy: Literal["teacher_return", "free"] = "teacher_return"
+    answer_release: Literal["after_submit", "after_due", "manual"] = "after_due"
+
+
+class ArchiveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    archived: bool = True
+
+
+def register(app, store_provider: Callable[[], Any], user_fn: Callable[..., dict], cookie_name: str) -> None:
+    def response(value: Any) -> JSONResponse:
+        return JSONResponse(value, headers={"Cache-Control": "private, no-store"})
+
+    def guarded(handler):
+        @wraps(handler)
+        def wrapper(*args, **kwargs):
+            try:
+                return handler(*args, **kwargs)
+            except TaskError as exc:
+                raise HTTPException(exc.status, str(exc)) from None
+        return wrapper
+
+    def actor(session: str | None) -> dict[str, Any]:
+        user = user_fn(session)
+        if user["role"] not in {"teacher", "student"}:
+            raise HTTPException(403, "当前账号没有课程任务权限。")
+        return user
+
+    def write(session: str | None, handler):
+        user = actor(session)
+        repo = store_provider()
+        with repo.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            current_actor(db, user, {"teacher"})
+            value = handler(db, user)
+            repo._log(db, user, "update_task_settings", "task", f"{value['kind']}:{value['id']}", value["state"])
+        return response(value)
+
+    @app.get("/api/training/tasks")
+    @guarded
+    def tasks(session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
+        user = actor(session)
+        with store_provider().connect() as db:
+            db.execute("BEGIN")
+            current_actor(db, user, {"teacher", "student"})
+            return response({"items": list_tasks(db, user),
+                             "scope": "教师只看到本人创建的任务；学生只看到已发布、未归档且在自己班级内的任务。"})
+
+    @app.get("/api/training/tasks/{kind}/{subject_id}")
+    @guarded
+    def one(kind: str, subject_id: str, session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
+        user = actor(session)
+        with store_provider().connect() as db:
+            db.execute("BEGIN")
+            current_actor(db, user, {"teacher", "student"})
+            return response(detail(db, user, kind, subject_id))
+
+    @app.get("/api/training/tasks/{kind}/{subject_id}/preview")
+    @guarded
+    def preview_one(kind: str, subject_id: str, session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
+        user = actor(session)
+        if user["role"] != "teacher":
+            raise HTTPException(403, "只有教师可以预览学生视角。")
+        with store_provider().connect() as db:
+            db.execute("BEGIN")
+            current_actor(db, user, {"teacher"})
+            return response(preview(db, user, kind, subject_id))
+
+    @app.put("/api/training/tasks/{kind}/{subject_id}/settings")
+    @guarded
+    def settings(kind: str, subject_id: str, body: SettingsBody,
+                 session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
+        def handler(db, user):
+            value = update_settings(db, user, kind, subject_id, body)
+            value["frozen"] = freeze(db, user, kind, subject_id)   # 答案策略属于冻结内容
+            value["version_drift"] = drift(db, kind, subject_id)
+            return value
+        return write(session, handler)
+
+    @app.post("/api/training/tasks/{kind}/{subject_id}/answers/release")
+    @guarded
+    def release(kind: str, subject_id: str, session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
+        return write(session, lambda db, user: release_answers(db, user, kind, subject_id))
+
+    @app.post("/api/training/tasks/{kind}/{subject_id}/archive")
+    @guarded
+    def archive(kind: str, subject_id: str, body: ArchiveBody,
+                session: str | None = Cookie(default=None, alias=cookie_name)) -> Any:
+        def handler(db, user):
+            value = set_archived(db, user, kind, subject_id, body.archived)
+            value["frozen"] = task_version(db, kind, subject_id)
+            value["version_drift"] = drift(db, kind, subject_id)
+            return value
+        return write(session, handler)

@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from openpyxl import load_workbook
 
-from src import core_materials
+from src import core_materials, core_dedup
 from src.settings import AISettings
 from tests import test_core_inputs as fixtures
 from tests.test_core_inputs import book
@@ -95,7 +95,11 @@ class CoreConcurrencyTests(unittest.TestCase):
         self.assertTrue(all(d['records'][0]['field_sources']['declared_value']['position'] for d in result['documents']))
         # Arrival order and dedup/source aggregation stay deterministic.
         self.assertEqual([d['name'] for d in result['documents']],['one.xlsx','two.xlsx','three.xlsx','four.xlsx'])
-        self.assertEqual(len(result['processing']['records']),2)
+        # Main retains duplicate rows for traceability; only the two effective
+        # business rows participate in calculations.
+        records = result['processing']['records']
+        self.assertEqual(len(records),8)
+        self.assertEqual(sum(core_dedup.usable(record) for record in records),2)
         self.assertTrue(any(i['code']=='duplicate_file' for i in result['processing']['notices']))
 
     def test_partial_failure_retry_reuses_success_and_configuration_invalidates_cache(self):

@@ -343,6 +343,61 @@ class ProbeAPITests(unittest.TestCase):
                 self.assertEqual(response.status_code,422,response.text); self.assertNotIn(SECRET,response.text)
             run.assert_not_called()
 
+    def test_custom_temporary_endpoint_and_model_are_isolated_and_not_saved(self):
+        self.login(self.root)
+        body={'operation':'health','provider':'custom','api_key':SECRET,
+              'base_url':' https://custom.example/v1/ ','model':'custom-model'}
+        outcome={'operation':'health','status':'ok','message':'检测成功'}
+        with patch.object(ai_probes,'run',return_value=outcome) as run:
+            response=self.client.post('/api/admin/ai-keys/probe',json=body)
+            self.assertEqual(response.status_code,200,response.text)
+            target=run.call_args.args[0]
+            self.assertEqual(target.base_url,'https://custom.example/v1')
+            self.assertEqual(target.model,'custom-model')
+            self.assertEqual(target.api_keys,(SECRET,))
+            self.assertFalse(target.disable_thinking)
+            self.assertEqual(target.reasoning_effort,'')
+        logs=json.dumps(self.store.list_logs(self.root))
+        self.assertNotIn(SECRET,logs); self.assertNotIn('custom.example',logs)
+        self.assertEqual(len(self.client.get('/api/admin/ai-keys').json()['keys']),2)
+        with patch.object(ai_probes,'run',return_value={'operation':'balance','status':'unsupported'}) as run:
+            body.update(operation='balance',model='',balance_protocol='credit_grants')
+            self.assertEqual(self.client.post('/api/admin/ai-keys/probe',json=body).status_code,200)
+            self.assertEqual(run.call_args.args[2],'credit_grants')
+            self.assertEqual(run.call_args.args[0].model,'')
+
+    def test_invalid_custom_endpoints_never_send_credentials_or_fall_back(self):
+        self.login(self.root)
+        body={'operation':'health','provider':'custom','api_key':SECRET,
+              'base_url':'https://custom.example/v1','model':'custom-model'}
+        key=self.client.get('/api/admin/ai-keys').json()['keys'][0]['id']
+        with patch.object(ai_probes,'run') as run:
+            for change in [{'base_url':''},{'base_url':' '},{'model':''},
+                           {'base_url':'http://private.example/v1'},
+                           {'base_url':'https://host.example/v1?secret=x'},
+                           {'base_url':'https://host.example/chat/completions'},
+                           {'base_url':'https://user:pass@host.example/v1'},
+                           {'provider':'configured'},{'provider':'deepseek'},
+                           {'key_id':key,'api_key':'','provider':'configured','model':''}]:
+                response=self.client.post('/api/admin/ai-keys/probe',json={**body,**change})
+                self.assertEqual(response.status_code,422,response.text)
+                self.assertNotIn(SECRET,response.text)
+            run.assert_not_called()
+
+    def test_custom_key_can_be_saved_and_reopened_without_configured_defaults(self):
+        self.login(self.root)
+        body={'name':'自定义服务','provider':'custom','api_key':'synthetic-custom-key',
+              'base_url':'https://custom.example/v1/','model':'custom-model','usages':[]}
+        for change in [{'base_url':''},{'model':''}]:
+            self.assertEqual(self.client.post('/api/admin/ai-keys',json={**body,**change}).status_code,422)
+        response=self.client.post('/api/admin/ai-keys',json=body)
+        self.assertEqual(response.status_code,200,response.text)
+        row=next(row for row in self.client.get('/api/admin/ai-keys').json()['keys'] if row['name']==body['name'])
+        self.assertEqual(row['base_url'],'https://custom.example/v1')
+        self.assertEqual(row['model'],'custom-model')
+        self.assertFalse(row['disable_thinking'])
+        self.assertNotIn(body['api_key'],json.dumps(row))
+
     def test_role_revocation_during_probe_discards_sensitive_result(self):
         self.login(self.root)
         key=self.client.get('/api/admin/ai-keys').json()['keys'][0]['id']

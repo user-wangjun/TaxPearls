@@ -5,7 +5,9 @@ import * as THREE from './vendor/three.module.mjs';
 export async function mountOcean(canvas,{holdOpening=false}={}) {
 // Yield between CPU preparation and GPU submissions so the HTML form stays
 // interactive. A task boundary also works when requestAnimationFrame is paused.
-const yieldTask=()=>new Promise(resolve=>setTimeout(resolve,0));
+// scheduler.yield keeps input responsive without the nested-timer 4ms floor.
+// Older browsers retain the existing task-boundary fallback.
+const yieldTask=()=>globalThis.scheduler?.yield ? globalThis.scheduler.yield() : new Promise(resolve=>setTimeout(resolve,0));
 const startupStart=performance.now();
 await yieldTask();
 const reduced=matchMedia('(prefers-reduced-motion: reduce)');
@@ -144,21 +146,43 @@ float cloudVisibility(vec3 p){
 const noiseVoxels=new Uint8Array(64*64*64*2),features=new Float32Array(8*8*8*3);
 let featureSeed=0x4f1bbcd9;
 for(let i=0;i<features.length;i++){featureSeed^=featureSeed<<13;featureSeed^=featureSeed>>>17;featureSeed^=featureSeed<<5;features[i]=(featureSeed>>>0)/4294967296;}
+async function prepareNoiseSource(){
 let noiseSeed=0x9e3779b9;
 const noiseStart=performance.now();
-for(let z=0;z<64;z++){
- for(let y=0;y<64;y++)for(let x=0;x<64;x++){
- const index=((z*64+y)*64+x)*2;noiseSeed^=noiseSeed<<13;noiseSeed^=noiseSeed>>>17;noiseSeed^=noiseSeed<<5;noiseVoxels[index]=noiseSeed>>>24;
- const cx=x>>3,cy=y>>3,cz=z>>3,fx=x/8-cx,fy=y/8-cy,fz=z/8-cz;let distance=3.;
+// Keep the random channel in its original voxel order. For the cellular
+// channel, each 8x8x8 cell shares the same 27 neighbouring feature points.
+// Reuse squared axis distances instead of recalculating them for every voxel.
+// Float64 intermediates preserve the original JavaScript rounding exactly.
+for(let index=0;index<noiseVoxels.length;index+=2){noiseSeed^=noiseSeed<<13;noiseSeed^=noiseSeed>>>17;noiseSeed^=noiseSeed<<5;noiseVoxels[index]=noiseSeed>>>24;}
+const nearest=new Float64Array(512),xs=new Float64Array(8),ys=new Float64Array(8),zs=new Float64Array(8),xy=new Float64Array(64);
+// A synchronous cell kernel can be optimized independently of async yields.
+function fillNoiseCell(cx,cy,cz){
+ nearest.fill(3.);
  for(let dz=-1;dz<=1;dz++)for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
   const point=((((cz+dz)&7)*8+((cy+dy)&7))*8+((cx+dx)&7))*3;
-  const px=dx+features[point]-fx,py=dy+features[point+1]-fy,pz=dz+features[point+2]-fz;
-  distance=Math.min(distance,px*px+py*py+pz*pz);
- }noiseVoxels[index+1]=Math.round(Math.max(0,1.-Math.sqrt(distance))*255);
+  for(let i=0;i<8;i++){
+   const px=dx+features[point]-i/8,py=dy+features[point+1]-i/8,pz=dz+features[point+2]-i/8;
+   xs[i]=px*px;ys[i]=py*py;zs[i]=pz*pz;
+  }
+  for(let y=0;y<8;y++)for(let x=0;x<8;x++)xy[y*8+x]=xs[x]+ys[y];
+  for(let z=0;z<8;z++)for(let i=0;i<64;i++){
+   const index=z*64+i,distance=xy[i]+zs[z];
+   if(distance<nearest[index])nearest[index]=distance;
+  }
  }
- if(z%4===3)await yieldTask();
+ for(let z=0;z<8;z++)for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+  const index=(((cz*8+z)*64+cy*8+y)*64+cx*8+x)*2+1;
+  noiseVoxels[index]=Math.round(Math.max(0,1.-Math.sqrt(nearest[z*64+y*8+x]))*255);
+ }
+}
+let sliceStart=performance.now();
+for(let cz=0;cz<8;cz++)for(let cy=0;cy<8;cy++)for(let cx=0;cx<8;cx++){
+ fillNoiseCell(cx,cy,cz);
+ // Bound each CPU slice even on slower devices; fast devices need fewer yields.
+ if(performance.now()-sliceStart>=4){await yieldTask();sliceStart=performance.now();}
 }
 state.startup.noiseMs=performance.now()-noiseStart;
+}
 const cloudNoise=new THREE.Data3DTexture(noiseVoxels,64,64,64);cloudNoise.format=THREE.RGFormat;
 cloudNoise.minFilter=cloudNoise.magFilter=THREE.LinearFilter;cloudNoise.wrapS=cloudNoise.wrapT=cloudNoise.wrapR=THREE.RepeatWrapping;cloudNoise.unpackAlignment=1;cloudNoise.needsUpdate=true;
 // Quadratic elevation mapping allocates more pixels to the visible horizon.
@@ -377,7 +401,19 @@ fragmentShader:`uniform float uTime,uGlow;uniform mat4 uInvProjection,uCameraWor
 // world-space grid stretched across distant glints and produced visible facets.
 const gridX=360,gridY=240;
 await yieldTask();
-const waterGeometry=new THREE.PlaneGeometry(2,2,gridX,gridY),positions=waterGeometry.attributes.position;
+// This shader uses only projected positions. Allocate the final typed buffers
+// directly instead of building PlaneGeometry's unused normals/UVs and large
+// temporary number arrays. Keep its original vertex and triangle order.
+const waterGeometry=new THREE.BufferGeometry();
+const positions=new THREE.BufferAttribute(new Float32Array((gridX+1)*(gridY+1)*3),3);
+const waterIndices=new Uint32Array(gridX*gridY*6);
+for(let row=0,index=0;row<gridY;row++)for(let column=0;column<gridX;column++){
+ const a=row*(gridX+1)+column,b=a+gridX+1,c=b+1,d=a+1;
+ waterIndices[index++]=a;waterIndices[index++]=b;waterIndices[index++]=d;
+ waterIndices[index++]=b;waterIndices[index++]=c;waterIndices[index++]=d;
+}
+waterGeometry.setAttribute('position',positions);waterGeometry.setIndex(new THREE.BufferAttribute(waterIndices,1));
+await yieldTask();
 function updateOceanGrid(){
  camera.updateMatrixWorld();const m=camera.matrixWorld.elements,tan=Math.tan(camera.fov*Math.PI/360);
  const horizon=m[9]/(tan*m[5])-.012;
@@ -390,7 +426,8 @@ function updateOceanGrid(){
   positions.setXYZ(i,camera.position.x+dx*travel,0,camera.position.z+dz*travel);
  }positions.needsUpdate=true;
 }
-updateOceanGrid();
+// resize() fills the projected positions before any compile or draw; an
+// additional initial projection would repeat the same 87,001-vertex work.
 const water=new THREE.Mesh(waterGeometry,new THREE.ShaderMaterial({uniforms:shared,side:THREE.DoubleSide,
 vertexShader:`uniform float uTime,uWave;varying vec3 vWorld;varying vec2 vBase;${waveCode}
 void main(){vBase=position.xz;vWorld=pointAt(vBase);vWorld.y*=1.-smoothstep(180.,420.,length(vBase));gl_Position=projectionMatrix*modelViewMatrix*vec4(vWorld,1.);}`,
@@ -504,7 +541,7 @@ void main(){float distance=length(uCamera-vWorld);
 // Tax records make up the ocean's visual texture: broad pages in front,
 // overlapping source streams in the middle and many records near the horizon.
 const sourceTypes=['账簿明细','增值税发票','纳税申报表','资金流水'];
-function makeRecordTexture(kind,serial=kind*17+28){
+function makeRecordTexture(kind,serial=kind*17+28,texture=new THREE.CanvasTexture(null)){
  // Fewer rows with tall glyphs compensate the grazing surface perspective.
  // Double-resolution canvas avoids losing fine strokes before projection.
  const c=document.createElement('canvas');c.width=2048;c.height=1280;const g=c.getContext('2d');g.scale(2,2);
@@ -525,10 +562,11 @@ function makeRecordTexture(kind,serial=kind*17+28){
   text(['7,716.00','2,174.40','522.96','9,367.44'][(entry+kind)%4],755,y,'700 36px Consolas, monospace','#ffffff',2.1);
   g.strokeStyle='rgba(113,151,174,.28)';g.beginPath();g.moveTo(52,y+25);g.lineTo(972,y+25);g.stroke();
  }
- const texture=new THREE.CanvasTexture(c);texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=Math.min(16,renderer.capabilities.getMaxAnisotropy());return texture;
+ texture.image=c;texture.needsUpdate=true;texture.colorSpace=THREE.SRGBColorSpace;texture.anisotropy=Math.min(16,renderer.capabilities.getMaxAnisotropy());return texture;
 }
-const recordTextures=[];
-for(let kind=0;kind<sourceTypes.length;kind++){recordTextures.push(makeRecordTexture(kind));await yieldTask();}
+// Reserve stable texture identities for the scene's uniforms. Paint their
+// canvas sources after shader compilation has been submitted to the driver.
+const recordTextures=sourceTypes.map(()=>new THREE.CanvasTexture(null));
 const recordDefinitions=[
  [-3.8,1.0,4.5,0,-.10,.74],[2.7,-.3,4.2,1,.09,.72],[-.2,-7.7,3.6,2,-.06,.58],
  [-7.2,-8,3.4,3,.12,.50],[6.7,-9.5,3.6,0,-.09,.50],[-3.9,-16,3.3,1,.05,.42],
@@ -733,7 +771,7 @@ vec3 sampleColor(vec2 uv){vec3 c=texture2D(uTexture,uv).rgb;
  vec3 glare=c*(max(0.,luminance-1.5)/max(luminance,.0001))*min(1.,6./max(luminance,.0001));
  return mix(c,glare,uThreshold);}
 void main(){vec3 c=sampleColor(vUv)*.227027;c+=sampleColor(vUv+uStep*1.384615)*.316216;c+=sampleColor(vUv-uStep*1.384615)*.316216;c+=sampleColor(vUv+uStep*3.230769)*.070270;c+=sampleColor(vUv-uStep*3.230769)*.070270;gl_FragColor=vec4(c,1.);}`});
-  /* ACES fitted approximation by Stephen Hill, adapted from BakingLab/ACES.hlsl
+  /* @license ACES fitted approximation by Stephen Hill, adapted from BakingLab/ACES.hlsl
    * https://github.com/TheRealMJP/BakingLab/blob/master/BakingLab/ACES.hlsl
    * MIT License - Copyright (c) 2016 MJP
    * Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -806,6 +844,13 @@ async function preparePrograms(){
  quad.material=composite;renderer.setRenderTarget(null);renderer.compile(postScene,postCamera);await yieldTask();
  // Three's double-sided transparent materials compile two variants but its
  // compileAsync checks only the current one. Await both before first use.
+ // CPU texture generation can overlap the driver's asynchronous compilation.
+ // Fill every reserved source before texture uploads or the first draw. Keep
+ // the sources on context restoration instead of generating them again.
+ if(!recordTextures[0].image){
+  await prepareNoiseSource();
+  for(let kind=0;kind<sourceTypes.length;kind++){makeRecordTexture(kind,undefined,recordTextures[kind]);await yieldTask();}
+ }
  const programs=renderer.info.programs;
  while(true){
   if(renderer.getContext().isContextLost())throw new Error('Ocean context lost during shader preparation');
@@ -813,8 +858,13 @@ async function preparePrograms(){
   await new Promise(resolve=>setTimeout(resolve,10));
  }
  // Uniform/attribute reflection is also lazy in this bundled Three version.
- // Spread those driver queries over tasks after compilation has completed.
- for(const program of programs){program.getUniforms();program.getAttributes();await yieldTask();}
+ // Keep queries in short slices rather than scheduling a task for every
+ // already-cached program. Slow driver queries still yield to input promptly.
+ let reflectionStart=performance.now();
+ for(const program of programs){
+  program.getUniforms();program.getAttributes();
+  if(performance.now()-reflectionStart>=4){await yieldTask();reflectionStart=performance.now();}
+ }
  // Upload large canvas textures separately instead of during the first draw.
  for(const texture of [...recordTextures,streamTexture,clueTexture,cloudNoise]){renderer.initTexture(texture);await yieldTask();}
 }
@@ -823,6 +873,13 @@ async function prepareFirstFrame(){
  updateSheetPose();await yieldTask();updateSkyCache();await yieldTask();
  if(state.lost)throw new Error('Ocean context lost during first-frame preparation');
  draw();
+ // Begin the same bounded sky work in a task now, rather than waiting for
+ // another display refresh. Input still gets a task boundary before it runs.
+ if(state.openingHeld&&!state.skyReady){
+  await yieldTask();
+  if(state.lost)throw new Error('Ocean context lost during first-frame preparation');
+  if(state.active&&!document.hidden){prepareOpeningSky();if(state.skyReady)draw();}
+ }
 }
 function coverFrame(){const scale=Math.max(innerWidth/referenceView.width,innerHeight/referenceView.height),width=referenceView.width*scale,height=referenceView.height*scale;return {width,height,x:(innerWidth-width)/2,y:(innerHeight-height)/2};}
 function setGlassPanel(rect,radius=22){
@@ -833,7 +890,11 @@ function setGlassPanel(rect,radius=22){
 }
 function resize(){selectReferenceView();renderer.setPixelRatio(Math.min(1,Math.sqrt(1500000/(referenceView.width*referenceView.height))));renderer.setSize(referenceView.width,referenceView.height,false);camera.aspect=referenceView.width/referenceView.height;camera.updateProjectionMatrix();updateOceanGrid();shared.uSunDirection.value.copy(fixedSunDirection);shared.uClearDirection.value.copy(shared.uSunDirection.value);fitRecords();const size=renderer.getDrawingBufferSize(new THREE.Vector2());target.setSize(size.x,size.y);shared.uResolution.value.copy(size);composite.uniforms.uGlassPixelRatio.value=size.y/coverFrame().height;bloomA.setSize(Math.ceil(size.x/4),Math.ceil(size.y/4));bloomB.setSize(Math.ceil(size.x/4),Math.ceil(size.y/4));points.material.uniforms.uPixelRatio.value=renderer.getPixelRatio();for(const item of harvestInstances)item.uniforms.uPixelRatio.value=renderer.getPixelRatio();if(state.ready&&!state.lost&&state.active)draw();}
 addEventListener('resize',resize);resize();
-function draw(){updateMaterialFlow();updateWaveCache();updateSheetPose();updateSkyCache();renderer.setClearColor(0x050f25,1);renderer.setRenderTarget(target);renderer.render(scene,camera);
+function draw(){updateMaterialFlow();updateWaveCache();updateSheetPose();updateSkyCache();
+// Keep preparing caches while the poster covers this pose. The water and
+// post-processing are needed only once the full-quality sky can be revealed.
+if(state.openingHeld&&!state.skyReady){state.ready=true;return;}
+renderer.setClearColor(0x050f25,1);renderer.setRenderTarget(target);renderer.render(scene,camera);
 quad.material=blur;blur.uniforms.uTexture.value=target.texture;blur.uniforms.uThreshold.value=1;blur.uniforms.uStep.value.set(2/target.width,0);renderer.setRenderTarget(bloomA);renderer.render(postScene,postCamera);
 blur.uniforms.uTexture.value=bloomA.texture;blur.uniforms.uThreshold.value=0;blur.uniforms.uStep.value.set(0,1/bloomA.height);renderer.setRenderTarget(bloomB);renderer.render(postScene,postCamera);
 blur.uniforms.uTexture.value=bloomB.texture;blur.uniforms.uStep.value.set(1/bloomB.width,0);renderer.setRenderTarget(bloomA);renderer.render(postScene,postCamera);
@@ -841,13 +902,31 @@ blur.uniforms.uTexture.value=bloomB.texture;blur.uniforms.uStep.value.set(1/bloo
 
 quad.material=composite;renderer.setRenderTarget(null);renderer.render(postScene,postCamera);state.frames++;state.ready=true;}
 let previous=performance.now(),fpsTime=previous,fpsFrames=0,frameId=0,motionRampStart=NaN;
+function prepareOpeningSky(){
+ const sliceStart=performance.now();
+ for(let strip=0;strip<32&&!state.skyReady;strip++){
+  updateSkyCache();
+  if(performance.now()-sliceStart>=4)break;
+ }
+}
 function animate(now){
  frameId=0;if(!state.active||document.hidden||state.lost||!state.ready||((state.paused||state.openingHeld)&&state.skyReady))return;
- if(now-previous<1000/60-.5){frameId=requestAnimationFrame(animate);return;}
+ if(!(state.openingHeld&&!state.skyReady)&&now-previous<1000/60-.5){frameId=requestAnimationFrame(animate);return;}
  const delta=Math.max(0,Math.min((now-previous)/1000,.05));previous=now;
+ // The poster still covers this opening pose. Build only the sky here;
+ // redrawing the water and post-processing for every strip wastes hidden work.
+ // Queue up to thirty-two strips, with a four-millisecond CPU budget per frame.
+ // Slow devices yield sooner; resolution, cloud samples and live updates stay
+ // unchanged. This removes idle frame waits on devices that submit quickly.
+ if(state.openingHeld&&!state.skyReady){
+  state.startup.skyWarmupFrames=(state.startup.skyWarmupFrames||0)+1;
+  prepareOpeningSky();
+  if(state.skyReady)draw();
+  frameId=requestAnimationFrame(animate);return;
+ }
  // Hold the opening pose while the full sky is prepared. It matches the
  // static first-frame posters, so revealing WebGL starts from the same scene.
- const progress=Number.isFinite(motionRampStart)?Math.min(1,Math.max(0,(now-motionRampStart)/1200)):1;
+ const progress=Number.isFinite(motionRampStart)?Math.min(1,Math.max(0,(now-motionRampStart)/600)):1;
  const motionGain=progress*progress*(3-2*progress);
  if(holdOpening&&!state.openingHeld)composite.uniforms.uGlassStrength.value=motionGain;
  if(!state.paused&&!state.openingHeld&&state.startup.skyReadyMs!==undefined)state.time+=delta*state.speed*motionGain;shared.uTime.value=state.time;draw();fpsFrames++;

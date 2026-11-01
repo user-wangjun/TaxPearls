@@ -133,20 +133,15 @@ def _baseline_label(db, cert_id: str, year: int) -> str:
 def ensure_active_version(db, cert_id: str, rules: list[Any]) -> Any:
     """返回当前 active 版本；没有则建立仿真基线版本（须在 BEGIN IMMEDIATE 事务内调用）。"""
     active = resolve_active_version(db, cert_id)
+    if active:
+        if not active['rules_snapshot_json']:
+            raise _portal_error("当前教学版本缺少规则快照，请联系平台更新教学资源后再开始练习。", 409)
+        return active
+    if db.execute('SELECT 1 FROM training_content_version WHERE certificate_id=?', (cert_id,)).fetchone():
+        raise _portal_error("当前证书没有启用的教学版本，请联系平台更新教学资源后再开始练习。", 409)
     rule_ids = linked_rule_ids(db, cert_id)
     snapshot = json.dumps([asdict(r) for r in sorted(rules, key=lambda r: r.id)],
                           ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-    if active:
-        covered = json.loads(active['rule_ids_json'] or '[]')
-        snapshot_matches = active['rules_snapshot_json'] == snapshot
-        if (active['rules_digest'] == _pack_digest(covered, rules)
-                and set(rule_ids) <= set(covered) and snapshot_matches):
-            return active
-        # Never retrofit an old content version with today's rules. New work
-        # receives a new version; existing attempts keep their original version.
-        db.execute("UPDATE training_content_version SET status='retired', updated_at=? WHERE id=?",
-                   (_now(), active['id']))
-        rule_ids = sorted((set(rule_ids) | set(covered)) & {r.id for r in rules})
     year = _today_cst().year
     now = _now()
     version_id = str(uuid.uuid4())
@@ -157,6 +152,7 @@ def ensure_active_version(db, cert_id: str, rules: list[Any]) -> Any:
         (version_id, cert_id, _baseline_label(db, cert_id, year), year,
          _pack_digest(rule_ids, rules), json.dumps(rule_ids, ensure_ascii=False), now, now))
     db.execute('UPDATE training_content_version SET rules_snapshot_json=? WHERE id=?', (snapshot, version_id))
+    _save_knowledge(db, version_id, rules, rule_ids)
     return db.execute("SELECT * FROM training_content_version WHERE id=?", (version_id,)).fetchone()
 
 
@@ -172,21 +168,56 @@ def attempt_rules(db, row, fallback):
     return fallback
 
 
-def _payload(db, row) -> dict[str, Any]:
+def _save_knowledge(db, version_id, rules, rule_ids):
+    from webapp.knowledge_sync import rule_references
+    snapshot = json.dumps(rule_references(db, rules, set(rule_ids)), ensure_ascii=False, sort_keys=True)
+    db.execute('UPDATE training_content_version SET knowledge_snapshot_json=? WHERE id=?', (snapshot, version_id))
+
+
+def teaching_rules(db, version, fallback):
+    """Restore the complete grading catalog frozen at publication."""
+    return attempt_rules(db, {'content_version_id': version['id']}, fallback) if version else fallback
+
+
+def update_status(db, version, rules):
+    from webapp.knowledge_sync import rule_references
+    from src.policy_paths import evidence_identity
+    covered = set(json.loads(version['rule_ids_json'] or '[]'))
+    linked = set(linked_rule_ids(db, version['certificate_id']))
+    saved = {r.id: r for r in teaching_rules(db, version, [])}
+    current = {r.id: r for r in rules}
+    changed = sorted(rid for rid in covered & linked
+                     if rid not in saved or rid not in current or asdict(saved[rid]) != asdict(current[rid]))
+    knowledge = rule_references(db, rules, covered & linked)
+    frozen_knowledge = json.loads(version['knowledge_snapshot_json'] or '[]')
+    frozen_knowledge = [r for r in frozen_knowledge if r['rule_code'] in covered & linked]
+    evidence_changed = (not version['knowledge_snapshot_json'] or
+                        evidence_identity(frozen_knowledge) != evidence_identity(knowledge))
+    pending = bool(changed or covered != linked or evidence_changed)
+    return {'pending': pending, 'changed_rule_ids': changed,
+            'added_rule_ids': sorted(linked - covered), 'removed_rule_ids': sorted(covered - linked),
+            'evidence_changed': evidence_changed,
+            'notice': ('公共知识或课程关联已有更新；当前练习继续使用已发布版本。平台将在核对后更新教学资源。'
+                       if pending else None)}
+
+
+def _payload(db, row, rules=None) -> dict[str, Any]:
     return dict(row) | {
         "rule_ids": json.loads(row["rule_ids_json"] or "[]"),
         "source_type_label": SOURCE_LABELS.get(row["source_type"], row["source_type"]),
+        "knowledge_update": update_status(db, row, rules) if rules is not None and row['status'] == 'active' else None,
     }
 
 
 def list_versions(store, cert_id: str) -> list[dict[str, Any]]:
+    rules = load_rules(store)
     with store.connect() as db:
         if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
             raise _portal_error("证书不存在。", 404)
         rows = db.execute(
             "SELECT * FROM training_content_version WHERE certificate_id=?"
             " ORDER BY created_at DESC", (cert_id,)).fetchall()
-        return [_payload(db, r) for r in rows]
+        return [_payload(db, r, rules) for r in rows]
 
 
 def create_version(store, staff: dict, cert_id: str, *, label: str, source_type: str = "simulated",
@@ -197,10 +228,7 @@ def create_version(store, staff: dict, cert_id: str, *, label: str, source_type:
         raise _portal_error("版本标签不能为空。")
     if source_type not in SOURCE_TYPES:
         raise _portal_error("题源类型必须是 simulated / real / recall / mock。")
-    if source_type != "simulated":
-        raise _portal_error(
-            f"{SOURCE_LABELS[source_type]}接入暂缓：须先获得授权并建立审核流程，"
-            "当前仅开放规则仿真题，生成题不冒充真题。")
+    from webapp.training_source_auth import require_authorization
     if year is None:
         year = _today_cst().year
     try:
@@ -214,6 +242,12 @@ def create_version(store, staff: dict, cert_id: str, *, label: str, source_type:
         db.execute("BEGIN IMMEDIATE")
         if not db.execute("SELECT 1 FROM certificate WHERE id=?", (cert_id,)).fetchone():
             raise _portal_error("证书不存在。", 404)
+        # 真题/回忆/模拟题版本发布须有生效授权（决策三：授权先行），授权文号写入依据留痕。
+        if source_type != "simulated":
+            auth = require_authorization(db, cert_id, source_type)
+            auth_mark = f"授权文号 {auth['auth_no']}"
+            if auth_mark not in source_ref:
+                source_ref = f"{source_ref}（{auth_mark}）"
         if db.execute("SELECT 1 FROM training_content_version WHERE certificate_id=? AND label=?",
                       (cert_id, label)).fetchone():
             raise _portal_error(f"版本标签 {label} 在该证书下已存在。", 409)
@@ -242,6 +276,7 @@ def create_version(store, staff: dict, cert_id: str, *, label: str, source_type:
         db.execute('UPDATE training_content_version SET rules_snapshot_json=? WHERE id=?',
                    (json.dumps([asdict(r) for r in sorted(rules, key=lambda r: r.id)],
                                ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str), version_id))
+        _save_knowledge(db, version_id, rules, final_ids)
         row = db.execute("SELECT * FROM training_content_version WHERE id=?", (version_id,)).fetchone()
         return _payload(db, row)
 
@@ -271,6 +306,22 @@ class VersionCreate(BaseModel):
     source_ref: str = ""
     note: str = ""
     rule_ids: list[str] | None = None
+
+
+def public_content_operator(store, session):
+    """Public teaching content belongs to platform maintenance, not school staff."""
+    user = store.user_for_token(session)
+    if not user:
+        raise HTTPException(401, "公共教学内容由平台统一维护，请使用平台管理员账号。")
+    if user["role"] != "platform_admin":
+        raise HTTPException(403, "公共教学内容由平台统一维护，教师和高校管理员仅可选用。")
+    from webapp.access import current_actor
+    with store.connect() as db:
+        current_actor(db, user, {"platform_admin"})
+    store.log(user, "access_public_teaching_maintenance", "teaching_content", "shared")
+    # Legacy author columns reference college_user, so platform attribution stays
+    # in the platform audit log rather than inventing a teaching identity.
+    return {"id": None, "platform_user_id": user["id"]}
 
 
 def register(app, store_provider: Callable[[], Any]) -> None:
@@ -307,8 +358,8 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/certificates/{cert_id}/content-versions")
     @guarded
     def staff_version_create(cert_id: str, body: VersionCreate,
-                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                             session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"content_version": create_version(
             store_provider(), who, cert_id, label=body.label, source_type=body.source_type,
             year=body.year, source_ref=body.source_ref, note=body.note, rule_ids=body.rule_ids)})
@@ -316,6 +367,6 @@ def register(app, store_provider: Callable[[], Any]) -> None:
     @app.post("/api/training/staff/content-versions/{version_id}/retire")
     @guarded
     def staff_version_retire(version_id: str,
-                             session: str | None = Cookie(default=None, alias=STAFF_COOKIE)) -> Response:
-        who = staff(session)
+                             session: str | None = Cookie(default=None, alias="taxpearls_session")) -> Response:
+        who = public_content_operator(store_provider(), session)
         return response({"content_version": retire_version(store_provider(), who, version_id)})

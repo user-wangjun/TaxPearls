@@ -42,7 +42,7 @@ function createAIKeyProbes({api, el, $, user}) {
       (info.can_enable && info.can_disable === false ? " 必须开启思考，不能关闭。" : "");
   }
   const usages = [["extraction","材料提取兜底"],["knowledge","知识问答"],
-    ["report","风险解读与报告"],["tutor","教学答疑"]];
+    ["report","风险解读与报告"],["tutor","教学答疑与备课出题"]];
   function usageName(values) { return values.length ? values.map(value=>usages.find(item=>item[0]===value)?.[1] || value).join("、") : "仅检测"; }
   function usageChoices(container, values=[], name="") {
     container.replaceChildren();
@@ -55,8 +55,11 @@ function createAIKeyProbes({api, el, $, user}) {
     }
     const only = el("label", "probe-only-detection"), toggle = el("input"); toggle.type="checkbox"; toggle.checked=!values.length;
     only.append(toggle,el("span",null,"仅检测（不参与业务调用）"));
-    const update = () => { for (const box of fields.querySelectorAll("input")) box.disabled=toggle.checked; };
-    toggle.addEventListener("change", update); update();
+    // Business choices remain clickable even when this key is detection-only.
+    fields.addEventListener("change", () => { toggle.checked=!fields.querySelectorAll("input:checked").length; });
+    toggle.addEventListener("change", () => {
+      if (toggle.checked) for (const box of fields.querySelectorAll("input")) box.checked=false;
+    });
     container.append(fields,only);
     return () => toggle.checked ? [] : [...fields.querySelectorAll("input:checked")].map(box=>box.value);
   }
@@ -65,6 +68,9 @@ function createAIKeyProbes({api, el, $, user}) {
     revision++;
     $("aiKeyCards").replaceChildren();
     $("aiTemporaryKey").value = "";
+    $("aiTemporaryURL").value = "";
+    $("aiTemporaryProvider").value = "configured";
+    temporaryAddress();
     $("aiTemporaryResult").replaceChildren();
     $("aiKeyStatus").textContent = "";
     $("aiKeyAddForm").reset();
@@ -247,7 +253,17 @@ function createAIKeyProbes({api, el, $, user}) {
     modelCapabilities = {}; capabilityCredential = "";
     renderReasoning();
   }
-  for (const id of ["aiKeyAddURL", "aiKeyAddSecret"]) $(id).addEventListener("input", () => { clearModels(); renderReasoning("default"); });
+  for (const id of ["aiKeyAddURL", "aiKeyAddSecret"]) $(id).addEventListener("input", () => {
+    if (id === "aiKeyAddURL") $("aiKeyAddProvider").value = addressPreset($(id).value);
+    clearModels(); renderReasoning("default");
+  });
+  function addressPreset(value) {
+    const url = value.trim().replace(/\/+$/, "");
+    if (url === (defaults.default_base_url || "").replace(/\/+$/, "")) return "configured";
+    if (url === "https://api.deepseek.com") return "deepseek";
+    if (url === "https://openrouter.ai/api/v1") return "openrouter";
+    return "custom";
+  }
   function closeModelChoices() {
     $("aiKeyModelChoices").hidden = true;
     $("aiKeyAddModel").setAttribute("aria-expanded", "false");
@@ -329,6 +345,7 @@ function createAIKeyProbes({api, el, $, user}) {
     $("btnSaveAIKey").textContent = key ? "保存修改" : "加入密钥";
     $("aiKeyAddName").value = key?.name || "";
     $("aiKeyAddURL").value = key?.base_url || defaults.default_base_url || "";
+    $("aiKeyAddProvider").value = addressPreset($("aiKeyAddURL").value);
     $("aiKeyAddModel").value = key?.model || defaults.default_model || "";
     editorUsages = usageChoices($("aiKeyAddUsage"),key?.usages || [],"ai-business-usage");
     $("aiKeyEditProtocol").value = key?.balance_protocol || "auto";
@@ -348,9 +365,10 @@ function createAIKeyProbes({api, el, $, user}) {
   $("aiKeyAddProvider").addEventListener("change", () => {
     clearModels();
     const provider = $("aiKeyAddProvider").value;
-    $("aiKeyAddURL").value = provider === "deepseek" ? "https://api.deepseek.com" : provider === "openrouter" ? "https://openrouter.ai/api/v1" : defaults.default_base_url || "";
+    $("aiKeyAddURL").value = provider === "deepseek" ? "https://api.deepseek.com" : provider === "openrouter" ? "https://openrouter.ai/api/v1" : provider === "configured" ? defaults.default_base_url || "" : "";
     $("aiKeyAddModel").value = provider === "deepseek" ? "deepseek-flash" : provider === "configured" ? defaults.default_model || "" : "";
     renderReasoning("default");
+    if (provider === "custom") $("aiKeyAddURL").focus();
   });
   $("btnRevealAIKey").addEventListener("click", async () => {
     if (!editing || adding) return;
@@ -393,10 +411,20 @@ function createAIKeyProbes({api, el, $, user}) {
     } catch (err) { if (user()?.id === owner && token === editorEpoch) $("aiKeyAddStatus").textContent = "保存失败：" + err.message; }
     finally { adding = false; $("btnFetchAIModels").disabled = false; $("btnSaveAIKey").disabled = false; $("btnCancelAIKey").disabled = false; }
   });
+  function temporaryAddress() {
+    const custom = $("aiTemporaryProvider").value === "custom";
+    $("aiTemporaryURLField").hidden = !custom;
+    $("aiTemporaryURL").disabled = !custom;
+    $("aiTemporaryURL").required = custom;
+  }
   $("aiTemporaryProvider").addEventListener("change", () => {
+    temporaryAddress();
     $("aiTemporaryModel").value = $("aiTemporaryProvider").value === "deepseek" ? "deepseek-flash" : "";
     $("aiTemporaryResult").replaceChildren();
   });
+  for (const id of ["aiTemporaryURL", "aiTemporaryModel", "aiTemporaryProtocol"]) {
+    $(id).addEventListener(id === "aiTemporaryProtocol" ? "change" : "input", () => $("aiTemporaryResult").replaceChildren());
+  }
   for (const operation of ["health", "balance"]) {
     const button = $(operation === "health" ? "btnTemporaryHealth" : "btnTemporaryBalance");
     button.addEventListener("click", () => {
@@ -404,6 +432,14 @@ function createAIKeyProbes({api, el, $, user}) {
       if (!key) { $("aiTemporaryResult").replaceChildren(el("p", "probe-failed", "请先填写临时密钥。")); return; }
       const body = {operation, api_key:key, provider:$("aiTemporaryProvider").value,
         model:$("aiTemporaryModel").value.trim(), balance_protocol:$("aiTemporaryProtocol").value};
+      if (body.provider === "custom") {
+        $("aiTemporaryURL").value = $("aiTemporaryURL").value.trim();
+        if (!$("aiTemporaryURL").reportValidity()) return;
+        body.base_url = $("aiTemporaryURL").value;
+      }
+      if (operation === "health" && body.provider !== "configured" && !body.model) {
+        $("aiTemporaryResult").replaceChildren(el("p", "probe-failed", "请先填写模型名称。")); return;
+      }
       $("aiTemporaryKey").value = ""; probe(body, $("aiTemporaryResult"), button, operation);
     });
   }

@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>全球法规网-中国商务法规</title>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+    <meta name="renderer" content="webkit">
+    <meta name="keywords" content="your keywords">
+    <meta name="description" content="your description">
+    <meta name="author" content="hl,haolei@ec.com.cn">
+    <meta name="robots" content="index,follow">
+    <link rel="stylesheet" href="css/style.css" />
+	<script type="text/javascript" src="js/jquery-1.7.2.min.js"></script>
+	<script type="text/javascript" src="js/script.js"></script>
+    <!--[if IE]>
+    	<script src="js/html5.js"></script>
+    <![endif]-->
+</head>
+<body class="laws">
+	<header class="header">
+		<nav class="nav blank clearfix">
+	<!--div class="u-logo1"><img src="img/logo1.png" alt=""></div-->
+	
+	<ul class="nav01_ul">
+		<li>
+			<a href="/claw/index.shtml">中国法规</a>|
+			<ul class="nav02_ul">
+				<li><a href="/claw/index.shtml">商务法规</a></li>
+				<li><a href="/pact/index.shtml">中外条约</a></li>
+			</ul>
+		</li>
+		<li><a href="/page/list/nations.html">各国法规</a>|
+			<ul class="nav02_ul">
+				<li><a href="/page/list/nations.html">境外法规</a></li>
+				<li><a href="/page/list/organizations.html">国际条约</a></li>
+			</ul>
+		</li>
+		<li><a href="/jwfg/index.shtml">境外法规检索</a>|
+		</li>
+		<!--<li><a href="http://www.mofcom.gov.cn/article/ckzn/index.shtml">出口指南</a>&lt;!&ndash; | &ndash;&gt;-->
+		<li><a href="https://www.mofcom.gov.cn/ckzn/">出口指南</a><!-- | -->
+		</li>
+<!-- 		<li><a href="/tsfy/index.shtml">图说方圆</a></li> -->
+		<li class="last"><a href="/">首页</a></li>
+	</ul>
+</nav>
+
+<!-- Matomo -->
+<script type="text/javascript">
+//If used is logged-in then call 'setUserId'
+//$userId variable must be set by the server when the user has successfully authenticated to your app.
+var _paq = window._paq || [];
+	
+  /* tracker methods like "setCustomDimension" should be called before "trackPageView" */
+  _paq.push(['trackPageView']);
+  _paq.push(['enableLinkTracking']);
+  _paq.push(['enableHeartBeatTimer']);
+  (function() { 
+    var u="https://analysis.mofcom.gov.cn/";
+    _paq.push(['setTrackerUrl', u+'matomo.php']);
+    _paq.push(['setSiteId', '137']);
+    var d=document, g=d.createElement('script'), s=d.getElementsByTagName('script')[0];
+    g.type='text/javascript'; g.async=true; g.defer=true; g.src=u+'matomo.js'; s.parentNode.insertBefore(g,s);
+  })();
+</script>
+<!-- End Matomo Code -->
+	</header>
+	
+
+
+
+
+
+<script type="text/javascript">
+$(function(){
+	setReviseToolBar();
+	setAssociateToolbar();
+});
+function setReviseToolBar(){
+	$.ajax({
+		url:"/nflaw/front/www/claw/reviseCount?id=1755",
+		type:"get",
+		success:function(result){
+			if(!!result&&result>0){
+				$("#reviseToolbar").show();
+			}
+		}
+	});
+}
+
+function setAssociateToolbar(){
+	$.ajax({
+		url:"/nflaw/front/www/claw/associateCount?id=1755",
+		type:"get",
+		success:function(result){
+			if(!!result&&result>0){
+				$("#associateToolbar").show();
+			}
+		}
+	});
+}
+/* function doSubmitReviseForm(){
+	$("#clawForm").attr("action","/claw/clawRevise.shtml");
+	$("#clawForm").submit();
+}
+function doSubmitAssociateForm(){
+	$("#clawForm").attr("action","/claw/clawAssociate.shtml");
+	$("#clawForm").submit();
+} */
+function doSubmitKeySearch(){
+	if($("#keyword").val()==''){
+		alert("请输入关键字！");
+		$("#keyword").focus();
+		return false;
+	}else if($("#keyword").val().length>100){
+		alert("关键字 不能超过100位字符！");
+		$("#keyword").focus();
+		return false;
+	}else{
+		$("#keySearchForm").submit();
+	}
+}
+</script>
+<section class="search blank">
+	<div class="mt20 mb30 clearfix">
+		<div class="logo fl">
+			<img src="img/logo.png" alt="" />
+		</div>
+		<div class="search_box fr">
+			<div class="clearfix">
+				<form id="keySearchForm" name="keySearchForm" method="get" action="/claw/keySearchList.shtml">
+					<span class="btn_search_show fl">中国商务法规</span>
+					<input class="txt_search fl" type="text" name="keyword" id="keyword">
+					<input class="btn_search fl" type="button" value="搜索" onclick="doSubmitKeySearch()">
+				</form>
+			</div>
+		</div>
+	</div>
+</section>
+<nav class="navMain blank">
+	<a class="a1" href="http://policy.mofcom.gov.cn/">首页</a>&gt;<a href="/claw/index.shtml"><i>中国商务法规</i></a>&gt;<span class="s1">法规详情</span>
+</nav>
+<section class="main blank">
+	<div class="content mt18 posr">
+		<div class="conBox_01">
+			<h2 class="tit_08">财政部、国家税务总局关于印发《农业产品征税范围注释》的通知</h2>
+			<section class="con">
+				<h3 class="tit_09">
+					【信息来源：<em>
+					
+					   
+					   
+					   	北大法宝
+					   
+					
+					</em>】
+				</h3>
+				<div class="tableBox">
+					<table class="table_01" width="100%">
+						<tr>
+							<td width="50%"><span>【发布部门】</span>财政部;国家税务总局</td>
+							<td width="50%"><span>【发布文号】</span>财税字[1995]52号</td>
+						</tr>
+						<tr>
+							<td><span>【效力级别】</span>部门规范性文件</td>
+							<td><span>【时效状态】</span>
+								现行有效
+								
+								
+								
+								
+							</td>
+						</tr>
+						<tr>
+							<td><span>【发布日期】</span>
+								
+									1995-06-15
+								
+							</td>
+							<td><span>【实施日期】</span>
+								
+									1995-07-01
+								
+							</td>
+						</tr>
+						<tr>
+							<td><span>【法律话题】</span>
+								
+									
+									税务
+								
+							</td>
+							<td><span>【产业领域】</span>
+								
+								
+									农林牧渔
+								
+							</td>
+						</tr>
+							
+					</table>
+				</div>
+				<div class="article">
+					<div class="law_bt0" style="text-align:center;">财政部&nbsp;国家税务总局</div><p><br /></p><div class="law_bt1" style="text-align:center;">关于印发《农业产品征税范围注释》的通知</div><p><br /></p><div class="law_bt2" style="text-align:center;">（1995年6月15日&nbsp;财税字［1995］52号）</div><p><br /><br />各省、自治区、直辖市和计划单列市财政厅（局）、国家税务局：<br />&nbsp;&nbsp;根据《财政部、国家税务总局关于调整农业产品增值税税率和若干项目征免增值税的通知》（财税字［1994］004号）的规定，从1994年5月1日起，农业产品增值税税率已由17％调整为13％。现将《农业产品征税范围注释》（以下简称注释）印发给你们，并就有关问题明确如下：<br /><br />&nbsp;一、《中华人民共和国增值税暂行条例》第十六条所列免税项目的第一项所称的“农业生产者销售的自产农业产品”，是指直接从事植物的种植、收割和动物的饲养、捕捞的单位和个人销售的注释所列的自产农业产品；对上述单位和个人销售的外购的农业产品，以及单位和个人外购农业产品生产、加工后销售的仍然属于注释所列的农业产品，不属于免税的范围，应当按照规定税率征收增值税。<br /><br />&nbsp;二、农业生产者用自产的茶青再经筛分、风选、拣剔、碎块、干澡、匀堆等工序精制而成的精制茶，不得按照农业生产者销售的自产农业产品免税的规定执行，应当按照规定的税率征税。<br />&nbsp;&nbsp;本通知从1995年7月1日起执行，原各地国家税务局规定的农业产品范围同时废止。<br />&nbsp;&nbsp;附件：《农业产品征税范围注释》<br />抄送：各省、自治区、直辖市和计划单列市地方税务局，沈阳、长春、哈尔滨、南<br />&nbsp;&nbsp;&nbsp;京、武汉、广州、成都、西安市国家税务局、地方税务局，财政部驻各省、<br />&nbsp;&nbsp;&nbsp;自治区、直辖市、计划单列市财政监察专员办事处<br /><br />附件：<br /><br />&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;农业产品征税范围注释<br /><br />&nbsp;&nbsp;农业产品是指种植业、养殖业、林业、牧业、水产业生产的各种植物、动物的初级产品。农业产品的征税范围包括：<br /><br />&nbsp;一、植物类<br />&nbsp;&nbsp;植物类包括人工种植和天然生长的各种植物的初级产品。具体征税范围为：<br />&nbsp;&nbsp;（一）粮食<br />&nbsp;&nbsp;粮食是指各种主食食科植物果实的总称。本货物的征税范围包括小麦、稻谷、玉米、高梁、谷子和其他杂粮（如：大麦、燕麦等），以及经碾磨、脱壳等工艺加工后的粮食（如：面粉，米，玉米面、渣等）。<br />&nbsp;&nbsp;切面、饺子皮、馄饨皮、面皮、米粉等粮食复制品，也属于本货物的征税范围。<br />&nbsp;&nbsp;以粮食为原料加工的速冻食品、方便面、副食品和各种熟食品，不属于本货物的征税范围。<br />&nbsp;&nbsp;（二）蔬菜<br />&nbsp;&nbsp;蔬菜是指可作副食的草本、木本植物的总称。本货物的征税范围包括各种蔬菜、菌类植物和少数可作副食的木科植物。<br />&nbsp;&nbsp;经晾晒、冷藏、冷冻、包装、脱水等工序加工的蔬菜、腌菜、咸菜、酱菜和盐渍蔬菜等，也属于本货物的征税范围。<br />&nbsp;&nbsp;各种蔬菜罐头（罐头是指以金属罐、玻璃瓶和其他材料包装，经排气密封的各种食品。下同）不属于本货物的征税范围。<br />&nbsp;&nbsp;（三）烟叶<br />&nbsp;&nbsp;烟叶是指各种烟草的叶片和经过简单加工的叶片。本货物的征税范围包括晒烟叶、晾烟叶和初烤烟叶。<br />&nbsp;&nbsp;1．晒烟叶。是指利用太阳能露天晒制的烟叶。<br />&nbsp;&nbsp;2．晾烟叶。是指在晾房内自然干燥的烟叶。<br />&nbsp;&nbsp;3．初烤烟叶。是指烟草种植者直接烤制的烟叶。不包括专业复烤厂烤制的复烤烟叶。<br />&nbsp;&nbsp;（四）茶叶<br />&nbsp;&nbsp;茶叶是指从茶树上采摘下来的鲜叶和嫩芽（即茶青），以及经吹干、揉拌、发酵、烘干等工序初制的茶。本货物的征收范围包括各种毛茶（如红毛茶、绿毛茶、乌龙毛茶、白毛茶、黑毛茶等）。<br />&nbsp;&nbsp;精制茶、边销茶及掺兑各种药物的茶和茶饮料，不属于本货物的征税范围。<br />&nbsp;&nbsp;（五）园艺植物<br />&nbsp;&nbsp;园艺植物是指可供食用的果实，如水果、果干（如荔枝干、桂园干、葡萄干等）、干果、果仁、果用瓜（如甜瓜、西瓜、哈密瓜等），以及胡椒、花椒、大料、咖啡豆等。<br />&nbsp;&nbsp;经冷冻、冷藏、包装等工序加工的园艺植物，也属于本货物的征税范围。<br />&nbsp;&nbsp;各种水果罐头，果脯，密饯，炒制的果仁、坚果，碾磨后的园艺植物（如胡椒粉、花椒粉等），不属于本货物的征税范围。<br />&nbsp;&nbsp;（六）药用植物<br />&nbsp;&nbsp;药用植物是指用作中药原药的各种植物的根、茎、皮、叶、花、果实等。<br />&nbsp;&nbsp;利用上述药用植物加工制成的片、丝、块、段等中药饮片，也属于本货物的征税范围。<br />&nbsp;&nbsp;中成药不属于本货物的征税范围。<br />&nbsp;&nbsp;（七）油料植物<br />&nbsp;&nbsp;油料植物是指主要用作榨取油脂的各种植物的根、茎、叶、果实、花或者胚芽组织等初级产品，如菜子（包括芥菜子）、花生、大豆、葵花子、蓖麻子、芝麻子、胡麻子、茶子、桐子、橄榄仁、棕榈仁、棉籽等。<br />&nbsp;&nbsp;提取芳香油的芳香油料植物，也属于本货物的征税范围。<br />&nbsp;&nbsp;（八）纤维植物<br />&nbsp;&nbsp;纤维植物是指利用其纤维作纺织、造纸原料或者绳索的植物，如棉（包括籽棉、皮棉、絮棉）、大麻、黄麻、槿麻、苎麻、苘麻、亚麻、罗布麻、蕉麻、剑麻等。<br />&nbsp;&nbsp;棉短绒和麻纤维经脱胶后的精干（洗）麻，也属于本货物的征税范围。<br />&nbsp;&nbsp;（九）糖料植物<br />&nbsp;&nbsp;糖料植物是指主要用作制糖的各种植物，如甘蔗、甜菜等。<br />&nbsp;&nbsp;（十）林业产品<br />&nbsp;&nbsp;林业产品是指乔木、灌木和竹类植物，以及天然树脂、天然橡胶。林业产品的征税范围包括：<br />&nbsp;&nbsp;1．原木。是指将砍伐倒的乔木去其枝芽、梢头或者皮的乔木、灌木，以及锯成一定长度的木段。<br />&nbsp;&nbsp;锯材不属于本货物的征税范围。<br />&nbsp;&nbsp;2．原竹。是指将砍倒的竹去其枝、梢或者叶的竹类植物，以及锯成一定长度的竹段。<br />&nbsp;&nbsp;3．天然树脂。是指木科植物的分泌物，包括生漆、树脂和树胶，如松脂、桃胶、樱胶、阿拉伯胶、古巴胶和天然橡胶（包括乳胶和干胶）等。<br />&nbsp;&nbsp;4．其他林业产品。是指上述列举林业产品以外的其他各种林业产品，如竹笋、笋干、棕竹、棕榈衣、树枝、树叶、树皮、藤条等。<br />&nbsp;&nbsp;盐水竹笋也属于本货物的征税范围。<br />&nbsp;&nbsp;竹笋罐头不属于本货物的征税范围。<br />&nbsp;&nbsp;（十一）其他植物<br />&nbsp;&nbsp;其他植物是指除上述列举植物以外的其他各种人工种植和野生的植物，如树苗、花卉、植物种子、植物叶子、草、麦秸、豆类、薯类、藻类植物等。<br />&nbsp;&nbsp;干花、干草、薯干、干制的藻类植物，农业产品的下脚料等，也属于本货物的征税范围。<br /><br />&nbsp;二、动物类<br />&nbsp;&nbsp;动物类包括人工养殖和天然生长的各种动物的初级产品。具体征税范围为：<br />&nbsp;&nbsp;（一）水产品<br />&nbsp;&nbsp;水产品是指人工放养和人工捕捞的鱼、虾、蟹、鳖、贝类、棘皮类、软体类、腔肠类、海兽类动物。本货物的征税范围包括鱼、虾、蟹、鳖、贝类、棘皮类、软体类、肠类、海兽类、鱼苗（卵）、虾苗、蟹苗、贝苗（秧），以及经冷冻、冷藏、盐渍等防腐处理和包装的水产品。<br />&nbsp;&nbsp;干制的鱼、虾、蟹、贝类、棘皮类、软体类、腔肠类，如干鱼、干虾、干虾仁、干贝等，以及未加工成工艺品的贝壳、珍珠，也属于本货物的征税范围。<br />&nbsp;&nbsp;熟制的水产品和各类水产品的罐头，不属于本货物的征税范围。<br />&nbsp;&nbsp;（二）畜牧产品<br />&nbsp;&nbsp;畜牧产品是指人工饲养、繁殖取得和捕获的各种畜禽。本货物的征税范围包括：<br />&nbsp;&nbsp;1．兽类、禽类和爬行类动物，如牛、马、猪、羊、鸡、鸭等。<br />&nbsp;&nbsp;2．兽类、禽类和爬行类动物的肉产品，包括整块或者分割的鲜肉、冷藏或者冷冻肉、盐渍肉，兽类、禽类和爬行类动物的内脏、头、尾、碲等组织。<br />&nbsp;&nbsp;各种兽类、禽类和爬行类动物的肉类生制品，如腊肉、腌肉、熏肉等，也属于本货物的征税范围。<br />&nbsp;&nbsp;各种肉类罐头、肉类熟制品，不属于本货物的征税范围。<br />&nbsp;&nbsp;3．蛋类产品。是指各种禽类动物和爬行类动物的卵，包括鲜蛋、冷藏蛋。<br />&nbsp;&nbsp;经加工的咸蛋、松花蛋、腌制的蛋等，也属于本货物的征税范围。<br />&nbsp;&nbsp;各种蛋类的罐头不属于本货物的征税范围。<br />&nbsp;&nbsp;4．鲜奶。是指各种哺乳类动物的乳汁和经净化、杀菌等加工工序生产的乳汁。<br />&nbsp;&nbsp;用鲜奶加工的各种奶制品，如酸奶、奶酪、奶油等，不属于本货物的征税范围。<br />&nbsp;&nbsp;（三）动物皮张<br />&nbsp;&nbsp;动物皮张是指从各种动物（兽类、禽类和爬行类动物）身上直接剥取的，未经柔制的生皮、生皮张。<br />&nbsp;&nbsp;将生皮、生皮张用清水、盐水或者防腐药水浸泡、刮里、脱毛、晒干或者熏干，未经柔制的，也属于本货物的征税范围。<br />&nbsp;&nbsp;（四）动物毛绒<br />&nbsp;&nbsp;动物毛绒是指未经洗净的各种动物的毛发、绒毛和羽毛。<br />&nbsp;&nbsp;洗净毛、洗净绒等不属于本货物的征税范围。<br />&nbsp;&nbsp;（五）其他动物组织<br />&nbsp;&nbsp;其他动物组织是指上述列举以外的兽类、禽类、爬行类动物的其他组织，以及昆虫类动物。<br />&nbsp;&nbsp;1．蚕茧。包括鲜茧和干茧，以及茧蛹。<br />&nbsp;&nbsp;2．天然蜂蜜。是指采集的未经加工的天然蜂蜜、鲜蜂王浆等。<br />&nbsp;&nbsp;3．动物树脂，如虫胶等。<br />&nbsp;&nbsp;4．其他动物组织，如动物骨、壳、兽角、动物血液、动物分泌物、蚕种等。</p> 
+						
+						<br/>
+						<font color="#B22222">免责声明：本网站提供的法规来源于数据提供单位或网络，网站不对法规内容的准确性负责，请务必与正式文本核对后使用。网站访问者因使用或无法使用本网站提供的法规所造成的直接或间接损失，本网站不承担任何责任。禁止用户对本网站信息进行自动化采集。</font>
+						</div>
+				</div>
+			</section>
+		
+		</div>
+	</div>
+</section>
+<form action="" method="get" id="clawForm">
+	<input type="hidden" name="id" value="1755"/>
+	<input type="hidden" name="title" value="财政部、国家税务总局关于印发《农业产品征税范围注释》的通知"/>
+	<input type="hidden" name="clawUrl" value="https://picpolicy.mofcom.gov.cn/claw/201610/chl_13758.doc"/>
+</form>
+<div id="global-toolbar">
+  <div class="toolbar-wrap wrap">
+	<div class="toolbar">
+	  <div class="toolbar-tabs tab">
+		<!-- div class="toolbar-tab tbar-tab-word" onclick=""><i class="tab-ico"></i><em class="tab-text">修订对照<br />下载</em></div 
+		
+			<div class="toolbar-tab tbar-tab-word" onclick="window.open('https://picpolicy.mofcom.gov.cn/claw/201610/chl_13758.doc')"><i class="tab-ico"></i><em class="tab-text">WORD<br />版本下载</em></div>
+	 	-->
+	  </div>
+	  <div class="toolbar-footer">
+		<div class="toolbar-tab tbar-tab-top">
+			<a href="#"><i class="tab-ico"></i><em class="footer-tab-text">顶部</em></a>
+		</div>
+	  </div>
+	</div>
+  </div>
+</div>
+	<footer class="footer mt30">
+				<section class="blank clearfix">
+			<dl class="nav_03 clearfix">
+				<dd>主办单位：中华人民共和国商务部</dd>
+				<dd>技术支持：中国国际电子商务中心</dd>
+				<dd>邮箱：global-law@ec.com.cn</dd>
+				<dd>客户服务：010-67801039</dd>
+				
+			</dl>
+			<dl class="nav_03 clearfix">
+				<dd>网站管理：商务部电子商务和信息化司</dd>
+			
+					<dd>网站标识码bm22000001</dd>
+					<dd><a href="https://beian.miit.gov.cn/" target="_blank"  onclick="if(confirm('您访问的链接即将离开“中华人民共和国商务部”政府网站，是否继续？')==false)return false;">京ICP备05004093号-1</a><br><a href="http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11040102700091" target="_blank"  onclick="if(confirm('您访问的链接即将离开“中华人民共和国商务部”政府网站，是否继续？')==false)return false;"><img src="/law/img/footer-img03.png">京公网安备11040102700091号</a></dd>
+					
+			</dl>
+			<dl class="nav_03 cur clearfix">
+			
+				<dd style="width:200px">
+					<span id="_span_jiucuo" style="display: inline-block; margin-top: 13px;">
+						<!-- <script id="_jiucuo_" sitecode='bm22000001' src='http://pucha.kaipuyun.cn/exposure/jiucuo.js'></script> -->
+					<a class="ft-jiucuo-link ediAssetsTextCon" href="https://zfwzgl.www.gov.cn/exposure/jiucuo.html?site_code=bm22000001&amp;url=http%3A%2F%2Fwww.mofcom.gov.cn/" target="_blank"><img style="margin: 0px; border: 0px currentColor; border-image: none; cursor: pointer;" src="https://zfwzgl.www.gov.cn/exposure/images/jiucuo.png?v=bm22000001"></a>
+					</span>
+					<a href="//bszs.conac.cn/sitename?method=show&id=0726B28348831856E053012819AC9312" target="_blank" onclick="if(confirm('您访问的链接即将离开“中华人民共和国商务部”政府网站，是否继续？')==false)return false;">
+						<img src="http://dcs.conac.cn/image/red.png">
+					</a>
+				</dd>
+			</dl>
+			
+		</section>
+	</footer>
+	<script type="text/javascript">
+	
+	$(function(){
+		var article = $(".article").html();
+		if(null==article||''==article||article.length<20){
+			window.location.href="/index.shtml"
+		}
+	})
+	
+		/** scroll 浮层
+		$(window).scroll(function(){
+			var ht = $(this).scrollTop();
+			if(ht>210){
+				boxLeft();
+				$(".conBox_01,#toolbar_box").addClass("cur");
+			}else{
+				$(".conBox_01,#toolbar_box").removeClass("cur").removeAttr("style");
+			}
+		});***/
+	</script>
+</body>
+</html>
