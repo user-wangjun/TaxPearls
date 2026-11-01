@@ -5,13 +5,53 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   let checkFoldScope=null,checkPage=0;const checkFolds=new Map(),CHECK_PAGE_SIZE=5;
   let reportState=null;
   let formOwner = user()?.id, clients=[], scopeDirty=false, attempted=false;
-  const uploadStates=new Map(),uploadViews=new Map(),waitingUploads=[];
+  const uploadStates=new Map(),uploadViews=new Map(),fileDetails=new Map(),waitingUploads=[];
   let activeUpload=null,uploadRun=null,currentUpload=null,uploadsPaused=false;
+  let jobPoll=null;
+  const resumeKey=()=>"taxpearls-core-input-task:"+user()?.id;
+  function rememberTask(id){try{if(id)globalThis.sessionStorage?.setItem(resumeKey(),id);else globalThis.sessionStorage?.removeItem(resumeKey());}catch{}}
+  const activeJob=()=>current?.jobs?.find(job=>["queued","running"].includes(job.state));
+  const fileJob=fileId=>current?.jobs?.[0]?.files?.find(file=>file.file_id===fileId);
+  async function refreshProcessing(){
+    const owner=user()?.id,ticket=generation,id=current?.id,revision=current?.revision;
+    if(!id||busy||activeUpload||dirty||scopeDirty)return;
+    const status=await api(base+"/"+encodeURIComponent(id)+"/jobs");
+    if(owner!==user()?.id||ticket!==generation||id!==current?.id||revision!==current?.revision)return;
+    const pending=status.jobs.some(job=>["queued","running"].includes(job.state));
+    if(status.revision!==revision||!pending){
+      const result=await api(base+"/"+encodeURIComponent(id));
+      if(owner!==user()?.id||ticket!==generation||id!==current?.id||revision!==current?.revision||busy||dirty||scopeDirty)return;
+      current=result;
+      if(!activeJob())for(const [kind,state] of uploadStates){if(state.phase==="processing"){
+        const failures=(current.jobs?.[0]?.files||[]).filter(file=>file.state==="failed"&&current.source_options[file.file_id]?.material_type===kind);
+        uploadStatus(kind,{phase:failures.length?"error":"done",percent:failures.length?null:100,text:failures.length?`${failures.length} 份处理失败，原件和其他成功结果已保存，可重试失败文件。`:"文件处理完成，结果已保存，请核对来源与内容。"});
+      }}
+      scopeWrite();render();
+      if(!activeJob())void history().catch(()=>{});
+    }else{current.jobs=status.jobs;render();}
+    taskControls(false);
+  }
+  function scheduleProcessing(){
+    clearTimeout(jobPoll);jobPoll=null;
+    if(!activeJob()||uploadRun)return;
+    jobPoll=setTimeout(async()=>{try{await refreshProcessing();}catch(error){if(current)$("coreActionStatus").textContent="进度读取失败，可重新读取任务："+error.message;}finally{scheduleProcessing();}},1000);
+  }
+  function renderJobProgress(){
+    const root=$("coreTaskResult"),job=current?.jobs?.[0];
+    let status=root.querySelector?.(".core-job-progress");
+    if(!status){status=el("div","core-job-progress");root.append(status);}
+    status.replaceChildren();if(!job)return;
+    const labels={queued:"排队中",running:"处理中",done:"成功",failed:"失败，可重试",superseded:"版本已变化，请重新整理"};
+    const summary=el("p","material-note",`材料处理：${labels[job.state]||job.state}`);summary.setAttribute("role","status");status.append(summary);
+    for(const file of job.files||[]){const name=current.source_options[file.file_id]?.original_name||file.file_id;status.append(el("p","muted",`${name} · ${labels[file.state]||file.state}${file.reused?" · 已复用有效结果":""}`));}
+    if(job.state==="failed")status.append(button("重试失败文件",()=>action(()=>api(base+"/"+current.id+"/jobs/"+job.id+"/retry",json({expected_revision:current.revision})),true)));
+  }
   function paintUpload(kind){
     const view=uploadViews.get(kind);if(!view)return;
     const state=uploadStates.get(kind),count=waitingUploads.filter(item=>item.kind===kind).reduce((n,item)=>n+item.files.length,0);
     view.root.hidden=!state&&!count;view.root.dataset.phase=state?.phase||"waiting";
     view.text.textContent=state?.text||"等待前一批资料处理完成。";
+    view.bar.hidden=state?.phase==="review"||state?.phase==="error";
     if(state?.percent===null)view.bar.removeAttribute("value");else view.bar.value=state?.percent||0;
     view.waiting.hidden=!count;view.waiting.textContent=count?`${uploadsPaused?"已暂停，等待上传":"等待上传"} ${count} 份（尚未发送）`:"";
     view.controls.hidden=!count;view.resume.hidden=!uploadsPaused;
@@ -21,10 +61,11 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     uploadStates.set(kind,state);paintUpload(kind);
   }
   function taskControls(locked){
+    locked=locked||!!activeJob();
     $("coreTaskForm").disabled=locked;
     $("coreTaskForm").querySelectorAll("button,input,select").forEach(n=>{n.disabled=locked||!!current?.completion&&n.id!=="coreCreateTask";});
     $("coreTaskResult").querySelectorAll("fieldset,button,input,select").forEach(n=>{
-      n.disabled=locked?!(n.coreUploadPicker&&uploadRun||n.coreUploadQueueControl):!!n.corePageDisabled;
+      n.disabled=locked?!(n.coreUploadPicker&&(uploadRun||activeJob())||n.coreUploadQueueControl):!!n.corePageDisabled;
     });
   }
   function clearWaiting(kind){
@@ -52,10 +93,17 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
         },true,true);
         if(!valid())return;
         item.finish(!!ok);currentUpload=null;
+        // Continue revision-changing uploads only after the reducer has committed.
+        // Saved jobs keep running and can be recovered after a page refresh.
+        while(ok&&valid()&&activeJob()){
+          taskControls(true);await new Promise(resolve=>setTimeout(resolve,400));
+          if(valid())await refreshProcessing();
+        }
         if(!ok)uploadsPaused=waitingUploads.length>0;
         paintUploads();if(!ok)break;
       }
-    }finally{if(uploadRun===run){uploadRun=null;currentUpload=null;taskControls(busy);paintUploads();}}
+    }catch(error){uploadsPaused=waitingUploads.length>0;showError("处理状态未确认，请重新读取任务："+error.message);}
+    finally{if(uploadRun===run){uploadRun=null;currentUpload=null;taskControls(busy);paintUploads();scheduleProcessing();}}
   }
   function queueUpload(kind,files){
     if(!files.length||!current||!enabled())return;
@@ -63,7 +111,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     if(dirty){showError("请先保存资料口径核对，再补传资料。");return;}
     const pending=[...waitingUploads.flatMap(item=>item.files),...(currentUpload&&!currentUpload.received?currentUpload.files:[])];
     if(files.some(file=>!file.size||file.size>10*1024*1024)){showError("单份文件须非空且不超过 10MB。");return;}
-    if((current.files||[]).length+pending.length+files.length>20){showError("已保存、正在上传和等待上传的文件合计不能超过 20 份。");return;}
+    if((current.files||[]).filter(file=>!file.deleted_at).length+pending.length+files.length>20){showError("已保存、正在上传和等待上传的文件合计不能超过 20 份。");return;}
     if([...pending,...files].reduce((n,file)=>n+file.size,0)>50*1024*1024){showError("正在上传和等待上传的文件合计不能超过 50MB。");return;}
     const result=new Promise(finish=>waitingUploads.push({kind,files,finish,received:false}));
     paintUploads();void drainUploads();return result;
@@ -74,7 +122,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const update=state=>{if(valid())uploadStatus(kind,state);};
     update({phase:"uploading",percent:0,text:`正在上传 ${count} 个文件 · 0%`});
     return new Promise((resolve,reject)=>{
-      const request=new XMLHttpRequest();activeUpload=request;request.open("POST",url);
+      const request=new XMLHttpRequest();activeUpload=request;request.open("POST",url);request.setRequestHeader("Prefer","respond-async");
       const failed=message=>{if(activeUpload===request)activeUpload=null;update({phase:"error",percent:0,text:message});reject(new Error(message));};
       request.upload.onprogress=event=>{
         const percent=event.lengthComputable&&event.total>0?Math.min(100,Math.floor(event.loaded/event.total*100)):null;
@@ -89,7 +137,9 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
         }
         if(!result||typeof result.id!=="string"||!result.task||!result.processing){failed("处理结果不完整，请重新读取任务核对。");return;}
         if(activeUpload===request)activeUpload=null;
-        update({phase:"done",percent:100,text:`${count} 个文件已上传，解析结果已返回，请核对下方资料。`});resolve(result);
+        if(result.jobs?.some(job=>["queued","running"].includes(job.state))){update({phase:"processing",percent:null,text:`${count} 个原件已保存，已进入处理队列。`});resolve(result);return;}
+        const pending=result.upload_review?.pending_files||[];
+        update({phase:pending.length?"review":"done",percent:pending.length?null:100,text:pending.length?`原件已保存；${pending.join("、")} 尚待识别或类别、来源核对，不能视为该类资料已确认。`:`${count} 个文件已保存并返回识别候选，请核对下方材料类别、内容和期间。`});resolve(result);
       };
       request.onerror=()=>failed("连接中断，上传结果未确认，请重新读取任务核对后再重试。");
       request.onabort=()=>failed("上传已中断，请重新读取任务核对。");
@@ -168,8 +218,12 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     if(event.shiftKey&&event.target===cancel){event.preventDefault();confirm.focus();}
     else if(!event.shiftKey&&event.target===confirm){event.preventDefault();cancel.focus();}
   });
-  function confirmDelete(name){
+  function confirmDelete(name,file=false){
     if(deleteDecision)return Promise.resolve(false);
+    $("coreDeleteTitle").textContent=file?"删除上传材料":"删除本次任务";
+    $("coreDeletePrompt").textContent=file?"确认删除材料":"确认永久删除任务";
+    $("coreDeleteDescription").textContent=file?"此文件原件将被删除，并从当前任务中移除其解析记录；删除后无法再下载原件。":"上传原件、解析与核对历史、任务内报告将一并删除，无法在本系统恢复。";
+    $("coreDeleteBackupNote").textContent=file?"已有报告和历史核对记录保留，受影响的检查需重检；备份及下载副本不受影响。":"企业档案和其他任务保留；已有备份及下载副本不受影响。";
     $("coreDeleteTaskName").textContent=name;deleteDialog.returnValue="";
     return new Promise(resolve=>{deleteDecision=resolve;deleteDialog.showModal();});
   }
@@ -607,19 +661,20 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   const enabled = () => ["org_admin", "accountant"].includes(user()?.role);
   const states = {needs_completion:"待补充或核对",ready_for_analysis:"资料已就绪，可继续核查",parsing:"正在解析"};
   const kinds = {account_balance:"科目余额表",vat_declaration:"增值税申报表",invoice_detail:"发票明细"};
+  const materialNames={...kinds,supporting_material:"额外材料"};
   const json = value => ({method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(value)});
   const button = (text, fn) => {const n=el("button","btn re",text);n.type="button";n.onclick=fn;return n;};
   function clearScope(){regionTaskId=null;$("coreRegion").value="";$("coreRegion").setAttribute("aria-invalid","false");for(const id of Object.values(scopeIds))$(id).value="";rangeKind.value="custom";writePeriodInputs("");syncRange();$("coreClient").value="";scopeDirty=attempted=false;displayErrors({});}
-  function reset() {reportState=null;checkFolds.clear();checkFoldScope=null;checkPage=0;checkProgress=null;$("coreCheckResult").replaceChildren();$("coreCheckResult").hidden=true;$("coreActionStatus").replaceChildren();generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");if(identityDialog.open)identityDialog.close("cancel");displayErrors({});renderIdentityCandidates();clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreArchivedTasks").replaceChildren();$("coreArchivedTasks").hidden=true;taskControls(false);if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
+  function reset() {clearTimeout(jobPoll);jobPoll=null;reportState=null;checkFolds.clear();checkFoldScope=null;checkPage=0;checkProgress=null;$("coreCheckResult").replaceChildren();$("coreCheckResult").hidden=true;$("coreActionStatus").replaceChildren();generation++;activeUpload?.abort();activeUpload=null;currentUpload?.finish(false);waitingUploads.splice(0).forEach(item=>item.finish(false));uploadRun=currentUpload=null;uploadsPaused=false;uploadStates.clear();uploadViews.clear();fileDetails.clear();current=null;busy=dirty=scopeDirty=attempted=false;closeCalendar();if(deleteDialog.open)deleteDialog.close("cancel");if(identityDialog.open)identityDialog.close("cancel");displayErrors({});renderIdentityCandidates();clients=[];$("coreClient").replaceChildren();$("coreTaskResult").replaceChildren();$("coreTaskHistory").replaceChildren();$("coreArchivedTasks").replaceChildren();$("coreArchivedTasks").hidden=true;taskControls(false);if(formOwner!==user()?.id||!enabled())clearScope();formOwner=user()?.id;}
   async function action(fn, saving=false, uploading=false) {
     if(busy||!enabled())return;
     if(waitingUploads.length&&!uploading){showError("还有等待上传的文件，请先继续上传或清除待上传文件。");return;}
     if((dirty||scopeDirty&&current)&&!saving){showError("存在未保存的资料口径核对，请先保存后再补传、创建或读取任务。");return;}
     busy=true;taskControls(true);$("coreActionStatus").textContent="正在处理，请稍候…";
     const owner=user()?.id, ticket=generation, previousId=current?.id;
-    try {const result=await fn();if(owner===user()?.id&&ticket===generation&&enabled()){if(previousId!==result.id){attempted=false;uploadStates.clear();}current=result;dirty=false;scopeWrite();render();$("coreActionStatus").textContent="";taskControls(true);history().catch(error=>{if(owner===user()?.id&&ticket===generation)$("coreActionStatus").textContent="任务已更新，但历史列表未能刷新："+error.message;});return true;}}
+    try {const result=await fn();if(owner===user()?.id&&ticket===generation&&enabled()){if(previousId!==result.id){attempted=false;uploadStates.clear();}current=result;rememberTask(result.id);dirty=false;scopeWrite();render();$("coreActionStatus").textContent="";taskControls(true);history().catch(error=>{if(owner===user()?.id&&ticket===generation)$("coreActionStatus").textContent="任务已更新，但历史列表未能刷新："+error.message;});return true;}}
     catch(error){if(owner===user()?.id&&ticket===generation){$("coreActionStatus").textContent=error.message;if(checkProgress?.id===current?.id&&!checkProgress.complete){checkProgress.error=error.message;}showError(error.message);}}
-    finally{if(ticket===generation){busy=false;taskControls(false);renderChecks();}}
+    finally{if(ticket===generation){busy=false;taskControls(false);renderChecks();scheduleProcessing();}}
   }
   async function removeCurrent(){
     if(busy||!current||user()?.role!=="org_admin")return;
@@ -632,9 +687,20 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       const result=await api(base+"/"+encodeURIComponent(id),{...json({expected_revision:revision,confirm:true}),method:"DELETE"});
       if(ticket!==generation||owner!==user()?.id||current?.id!==id)return;
       if(result.deleted!==true||result.id!==id)throw new Error("任务删除未完成，请重新读取后核对。");
-      current=null;dirty=false;clearScope();render();$("coreTaskHistory").replaceChildren();await history();
+      rememberTask(null);current=null;dirty=false;clearScope();render();$("coreTaskHistory").replaceChildren();await history();
     }catch(error){if(ticket===generation&&owner===user()?.id)showError(error.message);}
     finally{if(ticket===generation){busy=false;$("coreTaskForm").disabled=false;$("coreTaskResult").querySelectorAll("fieldset,button,input,select").forEach(n=>n.disabled=!!n.corePageDisabled);}}
+  }
+  async function removeFile(fileId,name){
+    if(busy||!current||current.completion||user()?.role!=="org_admin")return;
+    if(dirty||scopeDirty){showError("请先保存资料和检查区间，再删除材料。");return;}
+    if(waitingUploads.length){showError("请先处理或清除等待上传的文件，再删除材料。");return;}
+    const owner=user()?.id,ticket=generation,id=current.id,revision=current.revision;
+    const approved=await confirmDelete(name,true);
+    if(!approved||busy||ticket!==generation||owner!==user()?.id||current?.id!==id||user()?.role!=="org_admin")return;
+    if(current.revision!==revision){showError("任务版本已变化，请重新读取后再删除材料。");return;}
+    const ok=await action(()=>api(base+"/"+encodeURIComponent(id)+"/files/"+encodeURIComponent(fileId),{...json({expected_revision:revision,confirm:true}),method:"DELETE"}));
+    if(ok&&ticket===generation&&owner===user()?.id){uploadStates.clear();paintUploads();}
   }
   $("coreCreateTask").onclick=()=>{if(dirty){showError("请先保存资料口径核对。");return;}attempted=false;displayErrors({});return action(()=>api(base,json({...scopeRead(),client_id:$("coreClient").value||null})),true);};
   function select(label, choices, value, caption=label) {
@@ -643,17 +709,40 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   }
   function field(label, type, value, caption=label) {const wrap=el("label",type==="checkbox"?"core-check":"field"),input=el("input");input.type=type;input.value=value||"";input.setAttribute("aria-label",label);if(type==="checkbox")wrap.append(input,el("span","",caption));else{wrap.append(el("span","",caption),input);}return {wrap,input};}
   // Format decimal strings without passing through Number (invoice identifiers and amounts can be long).
-  function amount(value) {if(value===null||value===undefined||value==="")return "待识别";return String(value).replace(/^([-+]?\d+)(\.\d+)?$/,(_,whole,fraction)=>whole.replace(/\B(?=(\d{3})+(?!\d))/g,",")+(fraction||""));}
-  function recordTable(doc, options, reviewed, statuses, directions, prepared) {
+  function amount(value) {if(value===null||value===undefined||value==="")return "待识别";if(typeof value==="object")return "借方 "+amount(value.debit)+" / 贷方 "+amount(value.credit);return String(value).replace(/^([-+]?\d+)(\.\d+)?$/,(_,whole,fraction)=>whole.replace(/\B(?=(\d{3})+(?!\d))/g,",")+(fraction||""));}
+  function recordTable(doc, options, reviewed, statuses, directions, prepared, corrections) {
     const wrap=el("div","core-records"),scroll=el("div","core-table-scroll"),table=el("table","core-record-table"),head=el("thead"),header=el("tr"),body=el("tbody");
     const invoice=doc.material_type==="invoice_detail",editable=invoice&&doc.name.toLowerCase().endsWith(".pdf");
+    if(doc.material_type==="vat_declaration")table.className+=" core-vat-table";
     const columns=invoice?[["票号 / 来源","invoice_no"],["开票日期","issue_date"],["购销方向","direction"],["不含税金额","amount_excluding_tax"],["税额","tax_amount"],["价税合计","amount_including_tax"]]:doc.material_type==="account_balance"?[["科目 / 来源","account_name"],["期初余额","opening_balance"],["本期借方","current_debit"],["本期贷方","current_credit"],["期末余额","closing_balance"]]:[["项目 / 来源","item_label"],["申报金额","declared_value"]];
     if(invoice&&!editable)columns.push(["红蓝字状态","red_letter_status"],["作废状态","void_status"]);
     const numeric=new Set(["amount_excluding_tax","tax_amount","amount_including_tax","opening_balance","current_debit","current_credit","closing_balance","declared_value"]);
     const labels=[...columns.map(([name])=>name),...(editable?["红蓝字状态","作废状态"]:[])];
     for(const [index,name] of labels.entries()){const th=el("th",numeric.has(columns[index]?.[1])?"core-number":"",name);th.setAttribute("scope","col");header.append(th);}head.append(header);table.append(head,body);table.setAttribute("aria-label",doc.name+" 解析候选记录");scroll.append(table);wrap.append(scroll);
     const rows=doc.records.map(record=>{
-      const row=el("tr");
+      const row=el("tr"),fields=[],source=el("details","core-record-source");
+      source.append(el("summary","","查看来源"),el("p","muted",record.source_position||"来源位置待识别"));
+      if(Object.keys(record.manual_corrections||{}).length)source.append(el("p","muted","人工修正已保存；原件和原识别值保留。"));
+      const invalidate=()=>{dirty=true;reviewed.input.checked=false;reviewed.updateState();};
+      function inlineField(key,caption,side=null){
+        const extracted=Object.hasOwn(record.parsed_values||{},key)?record.parsed_values[key]:record[key];
+        const original=(side?extracted?.[side]:extracted)??"",saved=(side?record[key]?.[side]:record[key])??"";
+        const label=caption+(side?(side==="debit"?"（借方）":"（贷方）"):""),input=el("input","core-cell-input");
+        const display=value=>value===""||value===null||value===undefined?"":numeric.has(key)?amount(value):String(value);
+        input.type=key==="issue_date"?"date":"text";input.value=display(saved);input.placeholder="待识别";
+        input.setAttribute("aria-label",doc.name+" · "+record.source_position+" "+label+"修正");input.title="对照原件直接修改，保存核对后生效";
+        if(numeric.has(key))input.inputMode="decimal";
+        const read=()=>numeric.has(key)?input.value.replace(/[,，]/g,""):input.value;
+        const proof=el("p","muted"),refreshProof=()=>{proof.replaceChildren(el("span","",label+" · 原识别值："),el("span","",display(original)||"未识别"));
+          if(String(saved)!==String(original))proof.append(el("span",""," · 已保存修正："),el("span","",display(saved)||"留空"));
+          if(read()!==String(saved))proof.append(el("span",""," · 未保存修正："),el("span","",display(read())||"留空"));};
+        input.addEventListener("focus",()=>{if(numeric.has(key)){input.value=read();input.select?.();}});
+        input.addEventListener("blur",()=>{input.value=display(read());});
+        input.addEventListener("input",()=>{invalidate();refreshProof();});source.append(proof);refreshProof();
+        const info=record.field_sources?.[key],quote=info?.extracted_source?.quote||info?.quote;
+        if(quote)source.append(el("p","muted","识别引文："+quote));
+        fields.push({key,side,input,original,read,restore:()=>{input.value=display(original);refreshProof();}});return input;
+      }
       for(const [index,[name,key]] of columns.entries()){
         const value=record[key],cell=el("td",numeric.has(key)?"core-number":"");cell.setAttribute("data-label",name);
         if(key==="direction"){
@@ -663,9 +752,18 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
           choice.input.className="core-direction-select";choice.input.title="默认自动判断；可仅核对本条发票，保存后生效。";
           choice.input.addEventListener("change",()=>{dirty=true;reviewed.input.checked=false;reviewed.updateState();});
           cell.append(choice.wrap);directions.push({id:record.id,input:choice.input});
+        }else if(doc.parse_fingerprint&&(numeric.has(key)||["invoice_no","issue_date","account_name","item_label"].includes(key))){
+          const caption=({invoice_no:"票号",account_name:"科目名称",item_label:"申报项目"})[key]||name;
+          if(value&&typeof value==="object")for(const side of ["debit","credit"]){const label=el("label","core-cell-balance");label.append(el("span","",side==="debit"?"借方":"贷方"),inlineField(key,caption,side));cell.append(label);}
+          else cell.append(inlineField(key,caption));
         }else cell.append(el("span","",numeric.has(key)?amount(value):value===null||value===undefined||value===""?"待识别":String(value)));
-        if(index===0){const source=el("details","core-record-source");source.append(el("summary","","查看来源"),el("p","muted",record.source_position||"来源位置待识别"));if(invoice)source.append(el("p","muted",`销售方税号：${record.seller_tax_no||"待识别"}`),el("p","muted",`购买方税号：${record.buyer_tax_no||"待识别"}`));cell.append(source);}row.append(cell);
+        if(index===0)cell.append(source);row.append(cell);
       }
+      if(doc.parse_fingerprint){
+        const extra=invoice?[["销售方税号","seller_tax_no"],["购买方税号","buyer_tax_no"]]:doc.material_type==="account_balance"?[["科目编码","account_code"]]:[["栏次编码","item_key"],["金额栏次","column_scope"]];
+        for(const [caption,key] of extra){const label=el("label","core-cell-source-field");label.append(el("span","",caption),inlineField(key,caption));source.append(label);}
+        source.append(button("恢复本条识别值",()=>{for(const f of fields)f.restore();invalidate();}));corrections.push({id:record.id,fields});
+      }else source.append(el("p","material-note","此材料为旧版识别结果，请先点击下方“保存核对并重新整理资料”，完成后即可在表格中修改。"));
       if(editable){
         const prefix=doc.name+" · "+record.source_position+" · "+(record.invoice_no||"票号待核对"),confirmed=options.invoice_statuses?.[record.id]||{},parsed=record.parsed_invoice_statuses||record;
         const red=select(prefix+" 红蓝字状态",[["","待核实"],["蓝字","蓝字"],["红字","红字"]],confirmed.red_letter_status||parsed.red_letter_status,"");
@@ -678,25 +776,65 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     function draw(){body.replaceChildren(...rows.slice(page*size,(page+1)*size));description.textContent=rows.length?`${page*size+1}–${Math.min((page+1)*size,rows.length)} / ${rows.length} 条 · 第 ${page+1} / ${pages} 页`:"尚未识别到记录，请查看来源说明并核对原件。";previous.disabled=previous.corePageDisabled=page===0;next.disabled=next.corePageDisabled=page>=pages-1;}
     pager.append(description);if(pages>1)pager.append(previous,next);wrap.append(pager);draw();return wrap;
   }
+  function uploadControl(kind,name){
+    const pick=el("input");pick.type="file";pick.multiple=true;
+    pick.accept=kind==="supporting_material"?".xlsx,.xls,.csv,.tsv,.pdf,.png,.jpg,.jpeg,.tif,.tiff":kind==="invoice_detail"?".xlsx,.xls,.xml,.pdf":".xlsx,.xls,.pdf";pick.setAttribute("aria-label",name+"上传");
+    pick.coreUploadPicker=true;pick.onchange=()=>{const files=Array.from(pick.files);pick.value="";return queueUpload(kind,files);};
+    const status=el("div","core-upload-status"),bar=el("progress"),statusText=el("p");status.hidden=true;status.dataset.phase="idle";
+    bar.max=100;bar.value=0;bar.setAttribute("aria-label",name+"文件传输进度");statusText.setAttribute("role","status");statusText.setAttribute("aria-live","polite");
+    const waiting=el("p","core-upload-waiting"),controls=el("div","core-upload-queue-actions"),resume=button("读取任务并继续上传",resumeUploads),remove=button("清除待上传",()=>clearWaiting(kind));
+    waiting.setAttribute("role","status");resume.coreUploadQueueControl=remove.coreUploadQueueControl=true;controls.append(resume,remove);
+    status.append(bar,statusText,waiting,controls);uploadViews.set(kind,{root:status,bar,text:statusText,waiting,controls,resume});paintUpload(kind);
+    const upload=el("div","core-upload-control");pick.disabled=busy&&!uploadRun;upload.append(pick,status);
+    return upload;
+  }
+  function uploadedFiles(kind,name){
+    const files=(current.files||[]).filter(file=>!file.deleted_at&&(current.source_options[file.id]?.material_type||current.documents.find(doc=>doc.id===file.id)?.material_type)===kind);
+    const wrap=el("div","core-uploaded-files");wrap.append(el("p","muted",`已上传 ${files.length} 份。`));
+    if(!files.length)return wrap;
+    const list=el("ul");list.setAttribute("aria-label",name+"已上传文件");
+    for(const file of files){
+      const doc=current.documents.find(item=>item.id===file.id),options=current.source_options[file.id]||{},filename=options.original_name||doc?.name||file.name;
+      const row=el("li"),title=el("p","core-uploaded-name",filename),actions=el("div","core-uploaded-actions");
+      const processing=fileJob(file.id),labels={queued:"排队中",running:"处理中",failed:"处理失败，可重试",superseded:"任务版本已变化"};
+      const state=options.excluded?"已排除":labels[processing?.state]||(!doc?"待解析":doc.issues?.length?"处理成功，待核对":options.source_reviewed?"处理成功，已人工核对":"处理成功，待核对");
+      row.append(title,el("p","muted",`${file.size?Math.max(1,Math.ceil(file.size/1024))+" KB · ":""}${state}`));
+      if(doc){const inspect=button("查看解析",()=>{const detail=fileDetails.get(file.id);if(!detail)return;detail.open=true;checkFolds.set("document:"+file.id,true);detail.children[0]?.focus?.();detail.scrollIntoView?.({block:"start",behavior:"smooth"});});inspect.setAttribute("aria-label","查看解析："+filename);actions.append(inspect);}
+      const href=base+"/"+encodeURIComponent(current.id)+"/originals/"+encodeURIComponent(file.id);
+      if(/\.(pdf|png|jpe?g)$/i.test(filename)){const preview=el("a","btn re","查看原件");preview.href=href+"?preview=true";preview.target="_blank";preview.rel="noopener noreferrer";actions.append(preview);}
+      const download=el("a","btn re","下载");download.href=href;download.setAttribute("aria-label","下载材料："+filename);actions.append(download);
+      if(user()?.role==="org_admin"){const remove=button("删除",()=>removeFile(file.id,filename));remove.setAttribute("aria-label","删除材料："+filename);remove.className+=" core-uploaded-delete";actions.append(remove);}
+      row.append(actions);list.append(row);
+    }
+    wrap.append(list);return wrap;
+  }
   function render() {
-    uploadViews.clear();
+    uploadViews.clear();fileDetails.clear();
     const root=$("coreTaskResult");root.replaceChildren();renderIdentityCandidates();renderChecks();if(!current)return;
+    renderJobProgress();
     const task=current.task,p=current.processing,prepared=new Map(p.records.map(r=>[r.id,r])),parsedCount=current.documents.reduce((sum,d)=>sum+d.records.length,0),scopePending=Object.keys(current.scope_errors||{}).length>0;
     const rangeLabels={month:"按月",quarter:"按季度",year:"按年度",custom:"自定义起止日"};
     root.append(el("h3","",`${task.company_name||"待识别企业"} · ${task.tax_no||"税号待填写"}`),el("p","muted",`${task.start_date||"起始日待确认"} 至 ${task.end_date||"终止日待确认"} · ${rangeLabels[task.range_kind||current.range_kind]||""}`),
       el("p",p.status==="ready_for_analysis"?"":"material-note",states[p.status]||p.status),el("p","muted",Object.keys(current.tax_checks||{}).length?"检查结果见上方；资料更新后需重新检查。":"资料已保存。核对后点击开始检查，自动检索依据并进行 AI 辅助分析。"));
     if(current.completion){
       const archived=current.completion;
+      const actions=el("div","core-actions");
+      actions.append(button("重新打开任务",()=>action(()=>api(base+"/"+encodeURIComponent(current.id)+"/reopen",json({expected_revision:current.revision})))),
+        button("重新读取任务",()=>action(()=>api(base+"/"+encodeURIComponent(current.id)))));
       root.append(el("p","material-note",`已完成并归档 · 报告 V${archived.report_version} · ${archiveTime(archived.completed_at)}`),
         el("p","muted","本次任务已结束，材料与报告已保留。归档不代表检查通过；需要补传或重检时请先重新打开任务。"),
-        button("重新打开任务",()=>action(()=>api(base+"/"+encodeURIComponent(current.id)+"/reopen",json({expected_revision:current.revision})))),
-        button("重新读取任务",()=>action(()=>api(base+"/"+encodeURIComponent(current.id)))));
-      for(const doc of current.documents){const link=el("a","btn re","下载原件 · "+doc.name);link.href=base+"/"+encodeURIComponent(current.id)+"/originals/"+encodeURIComponent(doc.id);root.append(link);}
+        actions);
+      if(current.documents.length){
+        const originals=el("section","core-archive-originals"),links=el("div","core-archive-downloads");
+        originals.append(el("h4","","已保留的原件"));
+        for(const doc of current.documents){const link=el("a","btn re","下载原件 · "+doc.name);link.href=base+"/"+encodeURIComponent(current.id)+"/originals/"+encodeURIComponent(doc.id);links.append(link);}
+        originals.append(links);root.append(originals);
+      }
       return;
     }
     const actions=el("div","core-actions");actions.append(button("重新读取任务",()=>action(()=>api(base+"/"+current.id))));
     actions.append(button("保存企业与检查区间",()=>{if(dirty){showError("请先保存资料口径核对，再保存企业与检查区间。");return;}return action(()=>saveScope(),true);}));
-    const next=button("开始检查",startCheck);actions.append(next);root.append(actions,el("p","muted","点击开始检查后，自动检索知识依据、整理材料上下文并调用已配置的 AI，在本页展示结果。"));
+    const next=button("开始检查",startCheck);actions.append(next);root.append(el("p","muted","开始检查前，请确保各资料栏上传的文件与对应资料类型一致。"),actions,el("p","muted","点击开始检查后，自动检索知识依据、整理材料上下文并调用已配置的 AI，在本页展示结果。"));
     if(user()?.role==="org_admin"){const remove=button("删除本次任务",removeCurrent);remove.style.color="var(--red,#b42318)";actions.append(remove);}
     const origins=task.scope_origins||{};for(const [key,origin] of Object.entries(origins))if(origin.kind==="file"&&["company_name","tax_no"].includes(key))root.append(el("p","muted",`${{company_name:"企业名称",tax_no:"税号"}[key]}已从文件读取：${(origin.sources||[]).map(s=>`${current.documents.find(d=>d.id===s.file_id)?.name||s.file_id} · ${s.position}`).join("；")}，请核对后开始检查。`));
     displayErrors(attempted?current.scope_errors||{}:Object.fromEntries(Object.entries(current.scope_errors||{}).filter(([key])=>scopeRead()[key])));
@@ -706,22 +844,18 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     for(const [kind,name] of Object.entries(kinds)) {
       const card=el("section","material-card");card.append(el("h4","",name+"（必传）"));
       card.append(el("p","muted",kind==="account_balance"?"Excel / PDF 科目汇总余额；不是逐笔明细账。":kind==="vat_declaration"?"Excel / PDF 主表及适用附表，可多文件合并期间。":"Excel / PDF 发票 / 数电 XML，须覆盖进销项；按开具日期统计。"));
-      const pick=el("input");pick.type="file";pick.multiple=true;pick.accept=kind==="invoice_detail"?".xlsx,.xls,.xml,.pdf":".xlsx,.xls,.pdf";pick.setAttribute("aria-label",name+"上传");
-      pick.coreUploadPicker=true;pick.onchange=()=>{const files=Array.from(pick.files);pick.value="";return queueUpload(kind,files);};
-      const status=el("div","core-upload-status"),bar=el("progress"),statusText=el("p");status.hidden=true;status.dataset.phase="idle";
-      bar.max=100;bar.value=0;bar.setAttribute("aria-label",name+"文件传输进度");statusText.setAttribute("role","status");statusText.setAttribute("aria-live","polite");
-      const waiting=el("p","core-upload-waiting"),controls=el("div","core-upload-queue-actions"),resume=button("读取任务并继续上传",resumeUploads),remove=button("清除待上传",()=>clearWaiting(kind));
-      waiting.setAttribute("role","status");resume.coreUploadQueueControl=remove.coreUploadQueueControl=true;controls.append(resume,remove);
-      status.append(bar,statusText,waiting,controls);uploadViews.set(kind,{root:status,bar,text:statusText,waiting,controls,resume});paintUpload(kind);
-      const upload=el("div","core-upload-control");pick.disabled=busy&&!uploadRun;upload.append(pick,status);
-      card.append(upload,el("p","muted",`已保存 ${current.documents.filter(d=>d.material_type===kind).length} 份。`));slots.append(card);
+      card.append(uploadControl(kind,name),uploadedFiles(kind,name));slots.append(card);
     }
     root.append(slots);
+    const supporting=el("section","core-supporting");supporting.setAttribute("aria-label","额外材料（选传）");
+    supporting.append(el("h4","","额外材料（选传）"),el("p","muted","补充合同、凭证、业务说明等佐证材料，归入当前任务。支持 PDF、Excel、CSV/TSV 和图片，可多次追加。"),
+      uploadControl("supporting_material","额外材料"),uploadedFiles("supporting_material","额外材料"),el("p","muted","额外材料不替代上方三类核心资料；补传后请核对内容并重新检查。"));
+    root.append(supporting);
     const excluded=(current.files||[]).filter(file=>current.source_options[file.id]?.excluded&&!file.deleted_at);
     if(excluded.length){const box=el("section","material-card");box.append(el("h4","","已排除的资料（原件保留，可恢复）"));for(const file of excluded){const options=current.source_options[file.id];box.append(el("p","muted",options.original_name),button("恢复资料："+options.original_name,()=>action(()=>api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,source_options:{[file.id]:{excluded:false,ocr:true}},mapping_mode:"ai"})))));}root.append(box);}
     const review=el("fieldset");review.disabled=busy;
     review.addEventListener("input",()=>{dirty=true;});review.addEventListener("change",()=>{dirty=true;});
-    review.append(el("legend","","资料口径核对"),el("p","muted","仅填写已核实的信息，留空沿用文件识别值。填写的是人工确认信息，不会改写原件或声称文件已经证明。一个文件的统一口径会应用到其所有工作表。所有材料须在所选检查区间内；区间外或日期无法识别的记录会保留原值与来源位置，但不纳入本次检查。"));
+    review.append(el("legend","","资料口径核对"),el("p","muted","一致的文件识别信息会自动填入，请对照原件核对，发现错误可直接修改。表格单元格留空表示缺失，不当作零。人工修正不改写原件，原识别值保留在“查看来源”。一个文件的统一口径会应用到其所有工作表。所有材料须在所选检查区间内；区间外或日期无法识别的记录会保留原值与来源位置，但不纳入本次检查。"));
     const applicable=field("本期适用附表名称（以分号分隔）","text",(task.applicable_forms||[]).join("；"));
     const scopeKnown=field("已核实本期适用附表清单（如无适用附表，也须明确确认）","checkbox","");scopeKnown.input.checked=task.applicable_forms!==null;
     const formScope=el("details","core-metadata");formScope.append(el("summary","","申报附表适用范围（核对申报表时填写）"),applicable.wrap,scopeKnown.wrap);
@@ -729,13 +863,25 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     const editors=[];
     for(const doc of current.documents){
       const card=el("details","core-document"),options=current.source_options[doc.id]||{},meta=options.confirmed_metadata||{};
+      fileDetails.set(doc.id,card);
       const foldKey="document:"+doc.id;card.open=checkFolds.get(foldKey)===true;
-      const heading=el("summary","core-document-heading");heading.append(el("span","core-file-name",doc.name),el("span","core-file-state",`${kinds[doc.material_type]} · ${doc.records.length} 条候选 · ${options.source_reviewed?"已人工核对":"待核对"}`));card.append(heading);
+      const heading=el("summary","core-document-heading"),supporting=doc.material_type==="supporting_material";
+      heading.append(el("span","core-file-name",doc.name),el("span","core-file-state",`${materialNames[doc.material_type]} · ${supporting?(doc.excerpts||[]).length+" 处文字来源":doc.records.length+" 条候选"} · ${options.source_reviewed?"已人工核对":"待核对"}`));card.append(heading);
       const syncFold=()=>{checkFolds.set(foldKey,card.open);heading.setAttribute("aria-expanded",String(card.open));};
       heading.onclick=event=>{event.preventDefault();card.open=!card.open;syncFold();};
       card.addEventListener("toggle",event=>{if(event.target===card&&card.isConnected)syncFold();});syncFold();
       const content=el("div","core-document-body"),download=el("a","btn re","下载原件");download.href=base+"/"+current.id+"/originals/"+doc.id;content.append(download);card.append(content);
-      const metadata=el("details","core-metadata");metadata.append(el("summary","","文件口径与排除设置（选填）"),el("p","muted","留空沿用识别值；统一口径应用到本文件所有记录，混合期间请保留原识别值。"));
+      if(supporting){
+        content.append(el("p","muted","以下为原件文字或 OCR 候选，仅作佐证线索；请核对内容、关联企业及检查期间。"));
+        const reviewed=field(doc.name+" 已对照原件核实额外材料内容与本次任务的关联","checkbox","","已对照原件核实内容与本次任务的关联");reviewed.input.checked=!!options.source_reviewed;
+        const exclude=field(doc.name+" 排除此资料（原件与历史版本保留）","checkbox","","排除此资料（原件与历史版本保留）");exclude.input.checked=!!options.excluded;
+        reviewed.input.addEventListener("change",()=>{heading.children[1].textContent=`额外材料 · ${(doc.excerpts||[]).length} 处文字来源 · ${reviewed.input.checked?"已人工核对":"待核对"}`;});
+        content.append(reviewed.wrap,exclude.wrap);
+        for(const excerpt of doc.excerpts||[]){const source=el("details");source.append(el("summary","",excerpt.source_position+(excerpt.origin==="ocr_candidate"?" · OCR 候选":"")),el("p","core-supporting-text",excerpt.text));content.append(source);}
+        for(const problem of doc.issues||[])content.append(el("p","material-note",[problem.message,problem.source_position].filter(Boolean).join(" · ")));
+        content.append(el("p","core-checksum",`SHA-256 ${doc.sha256}`));review.append(card);editors.push({id:doc.id,exclude,reviewed,supporting:true});continue;
+      }
+      const metadata=el("details","core-metadata");metadata.append(el("summary","","文件口径与排除设置（选填）"),el("p","muted","已自动填入一致的识别信息，已有人工修改优先保留，请核对。混合或未识别的字段不统一填入，留空沿用各条记录的识别值。"));
       const grid=el("div","material-company"+(doc.material_type==="invoice_detail"?" core-invoice-metadata":""));
       const unit=select(doc.name+" 确认单位",[["","沿用识别值"],["元","元"],["千元","千元"],["万元","万元"],["亿元","亿元"]],meta.unit,"金额单位");
       const start=field(doc.name+" 确认覆盖起始日","date",meta.period_start,"覆盖起始日"),end=field(doc.name+" 确认覆盖终止日","date",meta.period_end,"覆盖终止日");
@@ -744,17 +890,32 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       const exclude=field(doc.name+" 排除此资料（原件与历史版本保留）","checkbox","","排除此资料（原件与历史版本保留）");exclude.input.checked=!!options.excluded;metadata.append(grid,exclude.wrap);content.append(metadata);
       const reviewed=field(doc.name+" 已对照原页核实提取候选的字段、金额、购销方和所属期","checkbox","","已对照原页核实字段、金额、购销方和所属期");reviewed.input.checked=!!options.source_reviewed;
       reviewed.updateState=()=>{heading.children[1].textContent=`${kinds[doc.material_type]} · ${doc.records.length} 条候选 · ${reviewed.input.checked?"已人工核对":"待核对"}`;};reviewed.input.addEventListener("change",reviewed.updateState);
-      const statuses=[],directions=[];
+      const originalParts=doc.parts.map(part=>({...part,...part.parsed_metadata}));
+      const metadataLabels=[];
+      for(const [key,label,valid,apply] of [
+        ["unit","单位",value=>["元","千元","万元","亿元"].includes(value),value=>{if(!meta.unit)unit.input.value=value;}],
+        ["period","期间",value=>Array.isArray(value)&&value.length===2&&value.every(d=>/^\d{4}-\d{2}-\d{2}$/.test(d))&&value[0]<=value[1],value=>{if(!meta.period_start&&!meta.period_end)[start.input.value,end.input.value]=value;}],
+        ...(doc.material_type==="vat_declaration"?[["form_type","表单类型",value=>["main","supplement"].includes(value),value=>{if(!meta.form_type)form.input.value=value;}]]:[])
+      ]){
+        const values=new Map();let missing=false;
+        for(const part of originalParts){const value=part[key];if(valid(value))values.set(JSON.stringify(value),value);else missing=true;}
+        if(values.size===1&&!missing){
+          const value=[...values.values()][0];apply(value);
+          metadataLabels.push(label+"："+(Array.isArray(value)?value.join(" 至 "):({main:"主表",supplement:"附表"}[value]||value)));
+        }else metadataLabels.push(label+"："+(values.size>1?"多个识别值，不统一填入":values.size?"部分来源未识别，不统一填入":"未识别"));
+      }
+      metadata.append(el("p","muted","原识别信息 · "+metadataLabels.join("；")));
+      const statuses=[],directions=[],corrections=[];
       if(doc.material_type==="invoice_detail"&&doc.name.toLowerCase().endsWith(".pdf")){
         content.append(el("p","material-note","票面未记载的红蓝字、作废状态须逐票核实；留空会保留资料缺口。单张发票不能证明整期进销项齐全。"));
       }
-      content.append(el("p","muted","金额按解析候选的原单位展示，不在此处换算或汇总；单位及来源口径见下方详情。"),recordTable(doc,options,reviewed,statuses,directions,prepared));
-      if(doc.ocr_candidate||doc.pdf_candidate)content.append(reviewed.wrap);
+      content.append(el("p","muted","可直接修改表格中的项目和金额，金额保持原单位。原识别值及人工修正见“查看来源”；修改后请重新勾选核对并保存。"),recordTable(doc,options,reviewed,statuses,directions,prepared,corrections));
+      content.append(reviewed.wrap);
       for(const f of [unit,start,end,form])f.input.addEventListener("change",()=>{reviewed.input.checked=false;reviewed.updateState();});
       const parts=el("details"),summary=el("summary","","识别到的来源口径");parts.append(summary);
       parts.append(el("p","core-checksum",`SHA-256 ${doc.sha256}`));
-      for(const part of doc.parts)parts.append(el("p","muted",`${part.name} · ${{main:"主表",supplement:"附表"}[part.form_type]||"表单类型待核对"} · ${part.period?.join(" 至 ")||"期间未识别"} · ${part.unit||"单位未识别"}`));content.append(parts);
-      review.append(card);editors.push({id:doc.id,unit,start,end,form,exclude,reviewed,statuses,directions});
+      for(const part of originalParts)parts.append(el("p","muted",`${part.name} · ${{main:"主表",supplement:"附表"}[part.form_type]||"表单类型待核对"} · ${part.period?.join(" 至 ")||"期间未识别"} · ${part.unit||"单位未识别"}`));content.append(parts);
+      review.append(card);editors.push({id:doc.id,unit,start,end,form,exclude,reviewed,statuses,directions,corrections,fingerprint:doc.parse_fingerprint});
     }
     review.append(formScope);
     let readPolicy=null;
@@ -764,8 +925,9 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
       panel.append(el("p","muted",`目录来源核对截至 ${policyCatalog.checked_as_of}；政策条件与本任务资料版本绑定，单独复核，不替代知识图谱的规则审核。`));
       if(current.policy_error)panel.append(el("p","material-note",current.policy_error));
     }
-    const save=button("保存核对并重新整理资料",()=>{const policyInput=readPolicy?.();return action(async()=>{if(scopeDirty)await saveScope();const options={};for(const e of editors)options[e.id]={excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:true,invoice_directions:Object.fromEntries(e.directions.filter(d=>d.input.value).map(d=>[d.id,d.input.value])),invoice_statuses:Object.fromEntries(e.statuses.map(s=>[s.id,{red_letter_status:s.red.input.value,void_status:s.voided.input.value}])),confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value}};
-      return api(base+"/"+current.id+"/prepare",json({expected_revision:current.revision,applicable_forms:scopeKnown.input.checked?applicable.input.value.split(/[;；]/).map(s=>s.trim()).filter(Boolean):null,source_options:options,mapping_mode:"ai",...(readPolicy?{policy_input:policyInput}:{})}));},true);});review.append(save);root.append(review);
+    function readCorrections(e){const records={};for(const row of e.corrections){const values={};for(const f of row.fields){if(f.side){values[f.key]??={};values[f.key][f.side]=f.read();}else values[f.key]=f.read();}for(const key of Object.keys(values)){const fields=row.fields.filter(f=>f.key===key);if(fields.every(f=>f.read()===String(f.original)))delete values[key];}if(Object.keys(values).length)records[row.id]=values;}return records;}
+    const save=button("保存核对并重新整理资料",()=>{const policyInput=readPolicy?.();return action(async()=>{if(scopeDirty)await saveScope();const options={};for(const e of editors)options[e.id]=e.supporting?{excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:true}:{excluded:e.exclude.input.checked,source_reviewed:e.reviewed.input.checked,ocr:true,...(e.fingerprint?{record_corrections:readCorrections(e),corrections_fingerprint:e.fingerprint}:{}),invoice_directions:Object.fromEntries(e.directions.filter(d=>d.input.value).map(d=>[d.id,d.input.value])),invoice_statuses:Object.fromEntries(e.statuses.map(s=>[s.id,{red_letter_status:s.red.input.value,void_status:s.voided.input.value}])),confirmed_metadata:{unit:e.unit.input.value,period_start:e.start.input.value,period_end:e.end.input.value,form_type:e.form.input.value}};
+      return api(base+"/"+current.id+"/prepare",{...json({expected_revision:current.revision,applicable_forms:scopeKnown.input.checked?applicable.input.value.split(/[;；]/).map(s=>s.trim()).filter(Boolean):null,source_options:options,mapping_mode:"ai",...(readPolicy?{policy_input:policyInput}:{})}),headers:{"Content-Type":"application/json","Prefer":"respond-async"}});},true);});review.append(save);root.append(review);
     const problems=el("section","enterprise-feedback"+(p.issues.length?" blocking":""));problems.append(el("h4","",scopePending?"资料缺口与冲突（待核对检查范围）":`资料缺口与冲突（${p.issues.length}）`));if(scopePending)problems.append(el("p","","企业或检查区间尚未完整，资料完整性与区间冲突检查尚未完成；请先补全并保存范围。"));
     const issueGroups=new Map();for(const item of p.issues){const key=JSON.stringify([item.code,item.message]);if(!issueGroups.has(key))issueGroups.set(key,[]);issueGroups.get(key).push(item);}
     for(const items of issueGroups.values()){
@@ -776,7 +938,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     if(p.notices.length){const notes=el("details");notes.append(el("summary","",`来源说明（${p.notices.length}）`));for(const n of p.notices)notes.append(el("p","muted",n.message+(n.source_position?" · "+n.source_position:"")));root.append(notes);}
   }
   async function history(){const owner=user()?.id,ticket=generation,rows=await api(base);if(owner!==user()?.id||ticket!==generation||!enabled())return;const root=$("coreTaskHistory");root.replaceChildren();for(const archived of [false,true]){const group=rows.filter(row=>(row.status==="archived")===archived);if(archived&&!group.length)continue;root.append(el("h3","",archived?"已完成并归档的任务":"继续资料处理任务"));for(const row of group)root.append(button(`${row.task.company_name||"待识别企业"} · ${row.task.start_date||"待确认"} 至 ${row.task.end_date||"待确认"} · ${archived?"已完成并归档":states[row.status]||row.status}`,()=>action(()=>api(base+"/"+row.id))));}}
-  async function refresh(){const active=enabled();if(formOwner!==user()?.id){reset();clearScope();formOwner=user()?.id;}$("coreInputs").hidden=!active;$("coreLegacyToggle").hidden=!active;if(active){const owner=user()?.id,ticket=generation;if(policyUI()){const config=await api("/api/enterprise/materials/config");if(owner!==user()?.id||ticket!==generation)return;policyCatalog=config.policy_catalog;}const rows=await api("/api/clients");if(owner!==user()?.id||ticket!==generation||!enabled())return;clients=rows;const selected=$("coreClient").value;$("coreClient").replaceChildren();const empty=el("option","","新企业 / 从文件读取");empty.value="";$("coreClient").append(empty);for(const c of clients){const option=el("option","",`${c.name} · ${c.taxpayer_id}`);option.value=c.id;$("coreClient").append(option);}$("coreClient").value=selected;await history();}}
+  async function refresh(){const active=enabled();if(formOwner!==user()?.id){reset();clearScope();formOwner=user()?.id;}$("coreInputs").hidden=!active;if(active){const owner=user()?.id,ticket=generation;if(policyUI()){const config=await api("/api/enterprise/materials/config");if(owner!==user()?.id||ticket!==generation)return;policyCatalog=config.policy_catalog;}const rows=await api("/api/clients");if(owner!==user()?.id||ticket!==generation||!enabled())return;clients=rows;const selected=$("coreClient").value;$("coreClient").replaceChildren();const empty=el("option","","新企业 / 从文件读取");empty.value="";$("coreClient").append(empty);for(const c of clients){const option=el("option","",`${c.name} · ${c.taxpayer_id}`);option.value=c.id;$("coreClient").append(option);}$("coreClient").value=selected;await history();if(!current){let saved;try{saved=globalThis.sessionStorage?.getItem(resumeKey());}catch{}if(saved)await openTask(saved);}}}
   async function openTask(id){return action(()=>api(base+"/"+encodeURIComponent(id)));}
   let archiveRequest=0;
   async function renderArchived(){

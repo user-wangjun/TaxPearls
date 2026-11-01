@@ -42,6 +42,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
       if(failedBatch){slot.ai.validated=false;slot.ai.reason="测试分类批次失败";slot.ai.batches[0].status="failed";}
       (sample.tax_checks??={})[body.rule_id]=slot;return structuredClone(slot);
     }
+    if(options?.method==="DELETE"&&url.includes("/files/")){if(failDelete)throw new Error("测试删除失败");const id=decodeURIComponent(url.split("/").at(-1));sample.files=sample.files.map(file=>file.id===id?{...file,deleted_at:"2026-10-20"}:file);sample.documents=sample.documents.filter(doc=>doc.id!==id);delete sample.source_options[id];sample.revision++;return structuredClone(sample);}
     if(options?.method==="DELETE"){if(failDelete)throw new Error("测试删除失败");return {id:"task",deleted:true};}
     if(failScope&&url.endsWith("/scope"))throw new Error("测试范围保存失败");
     if(fail&&url.endsWith("/prepare"))throw new Error("测试保存失败");return url==="/api/clients"?[{id:"existing",name:"历史企业",taxpayer_id:"91310000123456789A"}]:url==="/api/enterprise/input-tasks"&&!options?(sample.completion?[{id:sample.id,task:sample.task,status:"archived",completion:sample.completion}]:[]):structuredClone(sample);};
@@ -49,6 +50,7 @@ function all(root){return [root,...root.children.flatMap(all)];}
   class UploadRequest {
     constructor(){this.upload={};uploadRequests.push(this);}
     open(method,url){this.method=method;this.url=url;}
+    setRequestHeader(name,value){(this.headers??={})[name]=value;}
     send(body){calls.push({url:this.url,options:{method:this.method,body}});if(!holdUploads)queueMicrotask(()=>this.succeed());}
     succeed(revision=sample.revision){this.upload.onload?.();this.status=200;this.responseText=JSON.stringify({...sample,revision});this.onload();}
     abort(){this.aborted=true;this.onabort?.();}
@@ -107,18 +109,87 @@ function all(root){return [root,...root.children.flatMap(all)];}
   assert.equal(field("进项.pdf 确认发票方向"),undefined,"invoice direction is automatic, with no file-wide selector");
   assert.equal(find("下载标准数据 JSON"),undefined);
   assert.equal(all($("coreTaskResult")).some(n=>n.tag==="pre"),false,"internal record JSON is not rendered");
+  // Populate consistent original metadata automatically; only human edits are overrides.
+  const metadataDoc=sample.documents[1];
+  metadataDoc.parts=[{name:"PDF第1页",unit:"万元",period:["2025-01-01","2025-12-31"],form_type:"unknown",
+    parsed_metadata:{unit:"元",period:["2026-01-01","2026-01-31"],form_type:"unknown"}}];
+  const beforeMetadata=calls.length;await controller.openTask("task");
+  assert.equal(find("填入识别结果"),undefined,"recognition does not require manual import");
+  const metadataReview=field("余额.xlsx 已对照原页核实提取候选的字段、金额、购销方和所属期");
+  assert.equal(field("余额.xlsx 确认单位").value,"元");
+  assert.equal(field("余额.xlsx 确认覆盖起始日").value,"2026-01-01");
+  assert.equal(field("余额.xlsx 确认覆盖终止日").value,"2026-01-31");
+  assert.equal(metadataReview.checked,false,"automatic population never confirms review");
+  assert.ok(calls.slice(beforeMetadata).every(call=>!call.options?.method),"automatic population only reads without OCR or writes");
+  const afterMetadata=calls.length;await controller.openTask("task");assert.ok(calls.length>afterMetadata,"auto population is not an unsaved human edit");
+  fail=true;await find("保存核对并重新整理资料").onclick();fail=false;
+  assert.equal(field("余额.xlsx 确认单位").value,"元","failed save retains imported values");
+  await find("保存核对并重新整理资料").onclick();
+  const importedMetadata=JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).source_options["review-sheet"].confirmed_metadata;
+  assert.equal(importedMetadata.unit,"元");assert.equal(importedMetadata.period_start,"2026-01-01");
+  sample.source_options["review-sheet"].confirmed_metadata={unit:"万元",period_start:"2026-03-01",period_end:"2026-03-31"};
+  sample.source_options["review-sheet"].source_reviewed=true;await controller.openTask("task");
+  assert.equal(field("余额.xlsx 确认单位").value,"万元","saved human unit wins over recognition");
+  assert.equal(field("余额.xlsx 确认覆盖起始日").value,"2026-03-01","saved human dates are preserved");
+  assert.equal(field("余额.xlsx 确认覆盖终止日").value,"2026-03-31");
+  assert.equal(field("余额.xlsx 已对照原页核实提取候选的字段、金额、购销方和所属期").checked,true);
+  sample.source_options["review-sheet"].confirmed_metadata={};sample.source_options["review-sheet"].source_reviewed=false;
+  metadataDoc.parts.push({name:"PDF第2页",unit:"元",period:["2026-02-01","2026-02-28"],form_type:"unknown"});
+  await controller.openTask("task");
+  assert.equal(field("余额.xlsx 确认单位").value,"元");
+  assert.equal(field("余额.xlsx 确认覆盖起始日").value,"","mixed periods are not collapsed into one override");
+  assert.equal(field("余额.xlsx 确认覆盖终止日").value,"");
+  assert.ok(all($("coreTaskResult")).some(n=>/多个识别值/.test(n.textContent||"")));
+  await find("保存核对并重新整理资料").onclick();
+  metadataDoc.parts=[{name:"PDF第1页",unit:null,period:null,form_type:"unknown"}];
+  await controller.openTask("task");assert.equal(field("余额.xlsx 确认单位").value,"");assert.equal(field("余额.xlsx 确认覆盖起始日").value,"","unknown metadata cannot be invented");
+  metadataDoc.parts=[];await controller.openTask("task");
   sample.versions=[{revision:1,kind:"analysis",created_at:"2026-10-17T10:50:18+00:00"},{revision:2,kind:"edit",created_at:"2026-10-17T13:43:30+00:00"}];
   await controller.openTask("task");
   assert.equal(find("版本与操作记录"),undefined,"upload workflow does not display administrative history");
   assert.ok(!all($("coreTaskResult")).some(n=>/版本 \d|analysis|2026-10-17T10:50/.test(n.textContent||"")),"internal versions and raw operations are absent even for an old response");
   assert.equal(find("采用此期间"),undefined);assert.ok(all($("corePeriodCandidates")).find(n=>n.textContent==="查看期间候选"));assert.equal($("coreStart").value,"2026-01-01");assert.equal($("coreEnd").value,"2026-01-31");
-  for(const [kind,label] of [["account_balance","科目余额表"],["vat_declaration","增值税申报表"],["invoice_detail","发票明细"]]){
+  for(const [kind,label] of [["account_balance","科目余额表"],["vat_declaration","增值税申报表"],["invoice_detail","发票明细"],["supporting_material","额外材料"]]){
     const pick=field(label+"上传");pick.files=[new Blob(["synthetic material"])];await pick.onchange();
     const upload=calls.findLast(c=>c.url.endsWith("/files")).options.body;
     assert.equal(upload.get("material_type"),kind);assert.equal(upload.get("mapping_mode"),"ai");
     assert.ok(pick.accept.split(",").includes(".pdf"));assert.equal(upload.get("ocr"),"1");
     assert.equal(field(label+"文件传输进度").value,100);
   }
+  const supporting={id:"extra",name:"合同.pdf",material_type:"supporting_material",sha256:"synthetic-extra",records:[],parts:[],issues:[],
+    excerpts:[{source_id:"supporting:extra:1",source_position:"PDF第1页",text:"<script>document instructions remain source text</script>",origin:"source_text"}]};
+  sample.documents.push(supporting);sample.source_options.extra={original_name:"合同.pdf",source_reviewed:false};await controller.openTask("task");
+  assert.ok(find("额外材料（选传）"));assert.ok(find(supporting.excerpts[0].text),"extra text is rendered through textContent");
+  const extraReview=field("合同.pdf 已对照原件核实额外材料内容与本次任务的关联");extraReview.checked=true;extraReview.listeners.change();
+  all($("coreTaskResult")).find(n=>n.tag==="fieldset").listeners.change();
+  await find("保存核对并重新整理资料").onclick();
+  const extraOptions=JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).source_options.extra;
+  assert.equal(extraOptions.source_reviewed,true);assert.equal(extraOptions.confirmed_metadata,undefined,"extra documents do not receive financial metadata");
+  sample.documents.pop();delete sample.source_options.extra;await controller.openTask("task");
+  sample.documents.push({id:"balance-sides",name:"借贷余额.pdf",material_type:"account_balance",sha256:"synthetic-sides",parts:[],issues:[],records:[
+    {id:"balance-row",account_name:"现金",source_position:"PDF第1页",opening_balance:{debit:"12345.0123",credit:"0"},current_debit:"100",current_credit:"20",closing_balance:{debit:null,credit:"80.0123"},field_sources:{}}
+  ]});sample.source_options["balance-sides"]={};await controller.openTask("task");
+  assert.ok(find("借方 12,345.0123 / 贷方 0"),"debit and credit balances retain exact decimal strings and zero");
+  assert.ok(find("借方 待识别 / 贷方 80.0123"),"unknown side is not displayed as zero");
+  assert.ok(!all($("coreTaskResult")).some(n=>n.textContent==="[object Object]"));
+  sample.documents.pop();delete sample.source_options["balance-sides"];await controller.openTask("task");
+  sample.upload_review={pending_files:["扫描.pdf"]};
+  const pendingPick=field("发票明细上传");pendingPick.files=[new Blob(["unreadable scan"])];await pendingPick.onchange();
+  assert.ok(find("原件已保存；扫描.pdf 尚待识别或类别、来源核对，不能视为该类资料已确认。"));
+  assert.equal(field("发票明细文件传输进度").hidden,true,"review state must not animate as if parsing is still running");
+  assert.equal(pendingPick.disabled,false);delete sample.upload_review;
+  const savedUploadView=structuredClone({files:sample.files,documents:sample.documents,source_options:sample.source_options,revision:sample.revision});
+  sample.files.push({id:"review-pdf",size:4096,deleted_at:null});await controller.openTask("task");
+  assert.ok(all($("coreTaskResult")).some(n=>n.className==="core-uploaded-name"&&n.textContent==="进项.pdf"),"the upload slot shows its file names");
+  field("查看解析：进项.pdf").onclick();
+  assert.equal(all($("coreTaskResult")).find(n=>n.className==="core-document"&&all(n.children[0]).some(child=>child.textContent==="进项.pdf")).open,true);
+  const beforeFileCancel=calls.length,fileCancel=field("删除材料：进项.pdf").onclick();assert.equal($("coreDeleteTitle").textContent,"删除上传材料");assert.match($("coreDeleteDescription").textContent,/原件.*删除/);
+  $("coreDeleteCancel").onclick();await fileCancel;assert.equal(calls.length,beforeFileCancel,"file deletion cancellation sends no request");
+  failDelete=true;const failedFile=field("删除材料：进项.pdf").onclick();$("coreDeleteConfirm").onclick();await failedFile;
+  assert.ok(field("删除材料：进项.pdf"),"a failed delete leaves the file visible");failDelete=false;
+  const successfulFile=field("删除材料：进项.pdf").onclick();$("coreDeleteConfirm").onclick();await successfulFile;
+  const fileDeleteCall=calls.findLast(call=>call.options?.method==="DELETE");assert.match(fileDeleteCall.url,/\/files\/review-pdf$/);assert.deepEqual(JSON.parse(fileDeleteCall.options.body),{expected_revision:savedUploadView.revision,confirm:true});
+  assert.equal(field("删除材料：进项.pdf"),undefined);Object.assign(sample,savedUploadView);await controller.openTask("task");
   // Real transfer events drive the percentage; parsing never pretends to have a percentage.
   holdUploads=true;
   const uploadPick=field("科目余额表上传");uploadPick.files=[new Blob(["progress fixture"])];
@@ -127,14 +198,15 @@ function all(root){return [root,...root.children.flatMap(all)];}
   request.upload.onload();assert.equal(Object.hasOwn(progress,"value"),false);assert.ok(find("文件已传输，正在保存和解析，请稍候……"));
   assert.equal(uploadPick.disabled,false,"file selection stays available during parsing");
   assert.equal(field("增值税申报表上传").disabled,false);assert.equal($("coreTaskForm").disabled,true);
-  const requestCount=uploadRequests.length,queuedPick=field("增值税申报表上传");queuedPick.files=[new Blob(["next batch"])];
+  assert.equal(field("额外材料上传").disabled,false);
+  const requestCount=uploadRequests.length,queuedPick=field("额外材料上传");queuedPick.files=[new Blob(["next batch"])];
   const queued=queuedPick.onchange();uploadPick.files=[new Blob(["another balance"])];const sameKind=uploadPick.onchange();
   assert.equal(uploadRequests.length,requestCount,"new selections wait without concurrent revision writes");
   assert.ok(find("等待上传 1 份（尚未发送）"));
   const unloadEvent={preventDefault(){this.prevented=true;}};pageEvents.beforeunload(unloadEvent);assert.equal(unloadEvent.prevented,true);
   request.succeed(2);await uploading;
   const secondRequest=uploadRequests.at(-1);assert.notEqual(secondRequest,request);
-  assert.equal(calls.at(-1).options.body.get("expected_revision"),"2");assert.equal(calls.at(-1).options.body.get("material_type"),"vat_declaration");
+  assert.equal(calls.at(-1).options.body.get("expected_revision"),"2");assert.equal(calls.at(-1).options.body.get("material_type"),"supporting_material");
   secondRequest.succeed(3);await queued;
   assert.equal(calls.at(-1).options.body.get("expected_revision"),"3");assert.equal(calls.at(-1).options.body.get("material_type"),"account_balance");
   uploadRequests.at(-1).succeed(4);await sameKind;
@@ -388,9 +460,19 @@ function all(root){return [root,...root.children.flatMap(all)];}
   sample.scope_errors={start_date:"请填写检查起始日"};
   sample.documents=[{id:"pdf",name:"销项发票_每页一张.pdf",material_type:"invoice_detail",sha256:"synthetic",pdf_candidate:true,parts:[],records:Array.from({length:12},(_,i)=>({id:"r"+i,invoice_no:"262609010000000000"+String(i).padStart(2,"0"),issue_date:"2026-01-15",source_position:`PDF第${i+1}页/发票票面`,amount_excluding_tax:i?"100.00":"12345678901234567890.0123",tax_amount:"13.00",seller_tax_no:sample.task.tax_no,buyer_tax_no:"OTHER"}))}];
   sample.documents[0].records[11].parsed_invoice_statuses={red_letter_status:"蓝字",void_status:"正常"};
+  sample.documents[0].parse_fingerprint="synthetic-parse-v1";
   sample.source_options.pdf={source_reviewed:true,ocr:true,invoice_statuses:{r11:{red_letter_status:"",void_status:""}}};
   await find("重新读取任务").onclick();
   assert.ok(find("已解析候选 12 条"));assert.ok(find("资料缺口与冲突（待核对检查范围）"));
+  const correctionLabel="销项发票_每页一张.pdf · PDF第1页/发票票面 不含税金额修正";
+  const amountInput=field(correctionLabel);
+  assert.equal(amountInput.value,"12,345,678,901,234,567,890.0123");
+  assert.ok(all($("coreTaskResult")).some(n=>n.tag==="td"&&n["data-label"]==="不含税金额"&&n.children.includes(amountInput)),"amount is edited directly in its existing table cell");
+  assert.equal(all($("coreTaskResult")).some(n=>n.textContent==="修改识别结果"),false,"no separate edit panel");
+  amountInput.listeners.focus();assert.equal(amountInput.value,"12345678901234567890.0123");
+  amountInput.listeners.blur();assert.equal(amountInput.value,"12,345,678,901,234,567,890.0123","formatting preserves exact decimals");
+  field(correctionLabel).value="12345678901234567890.0456";field(correctionLabel).listeners.input();
+  assert.equal(field("销项发票_每页一张.pdf 已对照原页核实提取候选的字段、金额、购销方和所属期").checked,false);
   assert.equal(all($("coreTaskResult")).some(n=>n.tag==="pre"),false);
   assert.equal(field("本期适用附表名称（以分号分隔）").tag,"input");
   assert.ok(all($("coreTaskResult")).some(n=>n.className==="field"));
@@ -401,8 +483,9 @@ function all(root){return [root,...root.children.flatMap(all)];}
   await find("重新读取任务").onclick();assert.equal(documentCard().open,true,"reloading preserves a manually expanded file");
   documentCard().children[0].onclick({preventDefault(){}});assert.equal(documentCard().open,false);
   await find("重新读取任务").onclick();assert.equal(documentCard().open,false,"reloading must not reopen a manually collapsed file");
+  field(correctionLabel).value="12345678901234567890.0456";field(correctionLabel).listeners.input();
   const rows=()=>all($("coreTaskResult")).filter(n=>n.tag==="tbody").flatMap(n=>n.children);
-  assert.equal(rows().length,10);assert.ok(find("26260901000000000000"));assert.equal(find("上一页").disabled,true);
+  assert.equal(rows().length,10);assert.equal(field("销项发票_每页一张.pdf · PDF第1页/发票票面 票号修正").value,"26260901000000000000");assert.equal(find("上一页").disabled,true);
   const firstLabel="销项发票_每页一张.pdf · PDF第1页/发票票面 · 26260901000000000000 红蓝字状态";
   field(firstLabel).value="红字";field(firstLabel).listeners.change();
   const firstDirection=firstLabel.replace(" 红蓝字状态"," 购销方向");
@@ -410,13 +493,18 @@ function all(root){return [root,...root.children.flatMap(all)];}
   field(firstDirection).value="input";field(firstDirection).listeners.change();
   assert.equal(field("销项发票_每页一张.pdf 已对照原页核实提取候选的字段、金额、购销方和所属期").checked,false);
   assert.ok(find("发票明细 · 12 条候选 · 待核对"));
-  find("下一页").onclick();assert.equal(rows().length,2);assert.ok(find("26260901000000000011"));assert.equal(find("下一页").disabled,true);
+  find("下一页").onclick();assert.equal(rows().length,2);assert.equal(field("销项发票_每页一张.pdf · PDF第12页/发票票面 票号修正").value,"26260901000000000011");assert.equal(find("下一页").disabled,true);
   const lastDirection="销项发票_每页一张.pdf · PDF第12页/发票票面 · 26260901000000000011 购销方向";
   field(lastDirection).value="output";field(lastDirection).listeners.change();
   find("上一页").onclick();assert.equal(field(firstLabel).value,"红字");
   assert.equal(field(firstDirection).value,"input","paging retains per-invoice direction edits");
+  field(correctionLabel).listeners.blur();
+  assert.equal(field(correctionLabel).value,"12,345,678,901,234,567,890.0456");
+  fail=true;await find("保存核对并重新整理资料").onclick();
+  assert.equal(field(correctionLabel).value,"12,345,678,901,234,567,890.0456","failed save retains exact correction input");fail=false;
   await find("保存核对并重新整理资料").onclick();
   const statuses=JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).source_options.pdf.invoice_statuses;
+  assert.equal(JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).source_options.pdf.record_corrections.r0.amount_excluding_tax,"12345678901234567890.0456");
   assert.equal(documentCard().open,false,"saving review results does not reopen the first file");
   assert.equal(Object.keys(statuses).length,12);assert.equal(statuses.r0.red_letter_status,"红字");assert.equal(statuses.r10.red_letter_status,"");assert.equal(statuses.r11.red_letter_status,"蓝字");
   assert.deepEqual(JSON.parse(calls.findLast(c=>c.url.endsWith("/prepare")).options.body).source_options.pdf.invoice_directions,{r0:"input",r11:"output"});
