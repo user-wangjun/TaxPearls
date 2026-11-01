@@ -184,16 +184,27 @@ def validate_uploads(uploads, *, wait=False):
             for name, _ in uploads}
 
 
-def _files(db, batch, actor, uploads, payload=None, *, format_checks=None):
-    files = []
+def prepare_files(org_id, batch_id, uploads, format_checks):
+    prepared = []
     for name, raw in uploads:
         file_id = secrets.token_hex(16)
         metadata = {'name': name, 'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest(),
-                    'format_check': (format_checks or {}).get(name)}
+                    'format_check': format_checks.get(name)}
+        prepared.append((file_id, metadata,
+            _seal(_json(metadata), _context(org_id, batch_id, 'metadata', file_id)),
+            _seal(raw, _context(org_id, batch_id, 'original', file_id))))
+    return prepared
+
+
+def _files(db, batch, actor, uploads, payload=None, *, format_checks=None, prepared=None):
+    files = []
+    if prepared is None:
+        prepared = prepare_files(batch['org_id'], batch['id'], uploads, format_checks or {})
+    for file_id, metadata, metadata_cipher, bytes_cipher in prepared:
+        name = metadata['name']
         db.execute('INSERT INTO material_originals VALUES (?,?,?,?,?,?,NULL,NULL)',
                    (file_id, batch['id'], actor['id'], members.now(),
-                    _seal(_json(metadata), _context(batch['org_id'], batch['id'], 'metadata', file_id)),
-                    _seal(raw, _context(batch['org_id'], batch['id'], 'original', file_id))))
+                    metadata_cipher, bytes_cipher))
         files.append({'id': file_id, **metadata})
         if payload is not None:
             incoming = payload.get('_incoming_source_options', {}).get(name)
@@ -301,6 +312,12 @@ def _append(db, batch, actor, kind, payload, *, job_id=None, lifecycle=None):
     if lifecycle in {'complete', 'reopen'}:
         # Lifecycle revisions preserve the exact checked evidence and frozen report.
         return _save_revision(db, batch, actor, kind, payload, job_id=job_id, event_action="core_" + lifecycle)
+    prepare_revision(payload)
+    return _save_revision(db, batch, actor, kind, payload, job_id=job_id)
+
+
+def prepare_revision(payload):
+    """Normalize evidence before sealing; queue reducers call this outside a write."""
     if payload.get('core_task'):
         from src.rule_bindings import restore
         restore(payload)
@@ -309,12 +326,12 @@ def _append(db, batch, actor, kind, payload, *, job_id=None, lifecycle=None):
         mark_stale(payload)
         from webapp.core_reports import summary
         payload['tax_check_summary'] = summary(payload['tax_checks'])
-    return _save_revision(db, batch, actor, kind, payload, job_id=job_id)
 
 
-def _save_revision(db, batch, actor, kind, payload, *, job_id=None, event_action=None):
+def _save_revision(db, batch, actor, kind, payload, *, job_id=None, event_action=None, cipher=None):
     revision = batch['revision'] + 1
-    cipher = _seal(_json(payload), _context(batch['org_id'], batch['id'], 'revision:' + kind, revision))
+    if cipher is None:
+        cipher = _seal(_json(payload), _context(batch['org_id'], batch['id'], 'revision:' + kind, revision))
     db.execute('INSERT INTO material_revisions VALUES (?,?,?,?,?,?)',
                (batch['id'], revision, kind, cipher, actor['id'], members.now()))
     db.execute('UPDATE material_batches SET revision=? WHERE id=?', (revision, batch['id']))
@@ -338,56 +355,67 @@ def append_revision(store, actor, batch_id, expected_revision, kind, payload):
     return revision
 
 
-def read(store, actor, batch_id):
-    """One permission snapshot for metadata, immutable versions and event history."""
+def read(store, actor, batch_id, *, current_only=False):
+    """Snapshot reads and decryption never occupy the SQLite writer."""
+    with store.connect() as db:
+        db.execute('BEGIN')
+        batch = dict(_authorize(db, actor, batch_id))
+        from webapp import material_jobs
+        jobs = material_jobs.listing(db, batch_id)
+        executions = [dict(row) for row in db.execute(
+            'SELECT * FROM material_executions WHERE batch_id=? ORDER BY analysis_revision', (batch_id,))]
+        originals = [dict(row) for row in db.execute(
+            'SELECT * FROM material_originals WHERE batch_id=? ORDER BY uploaded_at,rowid', (batch_id,))]
+        versions = [dict(row) for row in db.execute(
+            'SELECT * FROM material_revisions WHERE batch_id=?' + (' AND revision=?' if current_only else '') + ' ORDER BY revision',
+            (batch_id, batch['revision']) if current_only else (batch_id,))]
+        events = [] if current_only else [dict(row) for row in db.execute(
+            'SELECT * FROM material_events WHERE batch_id=? ORDER BY seq', (batch_id,))]
+    result = {**batch, 'files': [], 'versions': [], 'events': [], 'jobs': jobs, 'executions': executions}
+    for row in originals:
+        metadata = json.loads(_open(row['metadata_cipher'], _context(batch['org_id'], batch_id, 'metadata', row['id'])))
+        result['files'].append({'id': row['id'], **metadata, 'uploaded_by': row['uploaded_by'],
+                                'uploaded_at': row['uploaded_at'], 'deleted_at': row['deleted_at']})
+    for row in versions:
+        payload = json.loads(_open(row['payload_cipher'], _context(batch['org_id'], batch_id, 'revision:' + row['kind'], row['revision'])))
+        result['versions'].append({'revision': row['revision'], 'kind': row['kind'], 'payload': payload,
+                                  'created_by': row['created_by'], 'created_at': row['created_at']})
+    for row in events:
+        detail = json.loads(_open(row['detail_cipher'], _context(batch['org_id'], batch_id, 'event:' + row['action'], row['id'])))
+        result['events'].append({'action': row['action'], 'detail': detail, 'seq': row['seq'],
+                                'job_id': row['job_id'], 'revision': row['revision'], 'system': bool(row['system']),
+                                'actor_id': row['actor_id'], 'created_at': row['created_at']})
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        batch = _authorize(db, actor, batch_id)
-        result = dict(batch)
-        result['files'], result['versions'], result['events'] = [], [], []
-        from webapp import material_jobs
-        result['jobs'] = material_jobs.listing(db,batch_id)
-        result['executions'] = [dict(row) for row in db.execute(
-            'SELECT * FROM material_executions WHERE batch_id=? ORDER BY analysis_revision', (batch_id,))]
-        # Same-second uploads keep arrival order, so later duplicates cannot
-        # replace the original source or reorder invoice summaries on reanalysis.
-        for row in db.execute('SELECT * FROM material_originals WHERE batch_id=? ORDER BY uploaded_at,rowid', (batch_id,)):
-            metadata = json.loads(_open(row['metadata_cipher'],
-                                       _context(batch['org_id'], batch_id, 'metadata', row['id'])))
-            result['files'].append({'id': row['id'], **metadata, 'uploaded_by': row['uploaded_by'],
-                                    'uploaded_at': row['uploaded_at'], 'deleted_at': row['deleted_at']})
-        for row in db.execute('SELECT * FROM material_revisions WHERE batch_id=? ORDER BY revision', (batch_id,)):
-            payload = json.loads(_open(row['payload_cipher'],
-                                      _context(batch['org_id'], batch_id, 'revision:' + row['kind'], row['revision'])))
-            result['versions'].append({'revision': row['revision'], 'kind': row['kind'], 'payload': payload,
-                                       'created_by': row['created_by'], 'created_at': row['created_at']})
-        for row in db.execute('SELECT * FROM material_events WHERE batch_id=? ORDER BY seq', (batch_id,)):
-            detail = json.loads(_open(row['detail_cipher'],
-                                     _context(batch['org_id'], batch_id, 'event:' + row['action'], row['id'])))
-            result['events'].append({'action': row['action'], 'detail': detail, 'seq': row['seq'],
-                                    'job_id': row['job_id'], 'revision': row['revision'], 'system': bool(row['system']),
-                                     'actor_id': row['actor_id'], 'created_at': row['created_at']})
-        _event(db, batch, actor, 'view', {'revision': batch['revision']})
-        return result
+        current = _authorize(db, actor, batch_id)
+        _event(db, current, actor, 'view', {'revision': batch['revision']})
+    return result
 
 
 def original(store, actor, batch_id, file_id, *, purpose='download'):
     if purpose not in {'download', 'read_for_reanalysis'}:
         raise ValueError('Unsupported original access purpose')
     with store.connect() as db:
-        db.execute('BEGIN IMMEDIATE')
-        batch = _authorize(db, actor, batch_id)
+        db.execute('BEGIN')
+        batch = dict(_authorize(db, actor, batch_id))
         row = db.execute('SELECT * FROM material_originals WHERE id=? AND batch_id=?', (file_id, batch_id)).fetchone()
         if not row:
             raise AccessDenied()
-        if row['deleted_at'] is not None:
-            raise AccessDenied('原始材料已删除；历史结果保留，不能再下载原件。', 410)
-        metadata = json.loads(_open(row['metadata_cipher'], _context(batch['org_id'], batch_id, 'metadata', file_id)))
-        raw = _open(row['bytes_cipher'], _context(batch['org_id'], batch_id, 'original', file_id))
-        if hashlib.sha256(raw).hexdigest() != metadata['sha256'] or len(raw) != metadata['size']:
-            raise MaterialStorageError('原始材料指纹或长度不匹配，请核查备份。')
+        row = dict(row)
+    if row['deleted_at'] is not None:
+        raise AccessDenied('原始材料已删除；历史结果保留，不能再下载原件。', 410)
+    metadata = json.loads(_open(row['metadata_cipher'], _context(batch['org_id'], batch_id, 'metadata', file_id)))
+    raw = _open(row['bytes_cipher'], _context(batch['org_id'], batch_id, 'original', file_id))
+    if hashlib.sha256(raw).hexdigest() != metadata['sha256'] or len(raw) != metadata['size']:
+        raise MaterialStorageError('原始材料指纹或长度不匹配，请核查备份。')
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        batch = _authorize(db, actor, batch_id)
+        current = db.execute('SELECT deleted_at FROM material_originals WHERE id=? AND batch_id=?', (file_id, batch_id)).fetchone()
+        if not current or current['deleted_at']:
+            raise AccessDenied('原始材料已删除。', 410)
         _event(db, batch, actor, purpose, {'file_id': file_id})
-        return metadata, raw
+    return metadata, raw
 
 
 def deletion_impact(store, actor, batch_id, file_id):

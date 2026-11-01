@@ -37,6 +37,7 @@ ANALYSIS_PROMPT = (
     "fact_assessment为程序已保存事实，不能改写；风险待核查不能否定已确认差额。"
     "每项type必须严格使用response_constraints.required_type，不得因事实差额为零或已知而改成其他类型。"
     "所有引用必须来自本包，缺少企业事实时source_ids和amounts可为空。政策条款存在时必须引用；没有政策不得编造引用。列出需补材料。"
+    "supporting_materials是额外佐证文字，引用其中source_id并保留其待核实状态；不能替代核心材料、程序指标或认定材料有效。"
 )
 
 def legal_claim(text):
@@ -79,6 +80,7 @@ def validate_answer(answer, package):
     allowed_clauses = {p["clause_id"] for p in evidence}
     facts = {f["metric_id"]: f for f in package["facts"]}
     allowed_sources = {sid for fact in facts.values() for sid in fact["source_ids"]}
+    allowed_sources |= {row["source_id"] for row in package.get("supporting_materials", [])}
     dates = {str(package["task"].get(k)) for k in ("period_start", "period_end")}
     dates |= {str(p.get(k)) for p in evidence for k in ("effective_from", "effective_to") if p.get(k)}
     if set(answer) != {"assessments"} or not isinstance(answer["assessments"], list) or not 1 <= len(answer["assessments"]) <= 8:
@@ -220,6 +222,7 @@ def analyze(package, prior=None):
             calls += 1
         # Validate against the actual transmitted part, not untransmitted evidence.
         transmitted = {**package, "facts": part['facts'], "policy_evidence": part["policy_evidence"], "policy_leads": part["policy_leads"]}
+        transmitted["supporting_materials"] = part.get("supporting_materials", [])
         if part["part_count"] > 1:
             transmitted["bundle_status"] = "needs_review"
         try:
