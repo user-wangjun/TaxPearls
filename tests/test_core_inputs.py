@@ -2,6 +2,7 @@
 
 import base64
 from copy import deepcopy
+from dataclasses import replace
 from io import BytesIO
 import json
 import os
@@ -663,6 +664,7 @@ class CoreParserTests(unittest.TestCase):
             "form_name": "增值税纳税申报表主表",
             "form_type": "main",
             "tax_no": TAX,
+            "tax_no_quote": "纳税人识别号：" + TAX,
             "period_start": "2026-01-01",
             "period_end": "2026-01-31",
             "unit": "元",
@@ -694,6 +696,60 @@ class CoreParserTests(unittest.TestCase):
             doc = core_materials.parse(raw, "扫描.pdf", "vat_declaration", "scan", self.mapper, ocr=True)
         self.assertFalse(doc["records"])
         self.assertIn("ocr_failed", {i["code"] for i in doc["issues"]})
+
+    def test_ocr_disables_inherited_thinking_without_changing_shared_settings(self):
+        from src.settings import AISettings
+        raw = (Path(__file__).parent / "fixtures" / "materials-scanned.pdf").read_bytes()
+        original = AISettings(enabled=True, api_key="synthetic", disable_thinking=False,
+                              reasoning_effort="max", reasoning_protocol="deepseek")
+        self.mapper.settings = original
+        self.mapper.ai = True
+        payloads = []
+
+        def response(opener, request, timeout):
+            payloads.append(json.loads(request.data))
+            return json.dumps({"rows": [], "text": "合成资料"})
+
+        with patch("src.ai_transport._content", side_effect=response):
+            for kind in ("vat_declaration", "account_balance", "invoice_detail", "supporting_material"):
+                core_materials.parse(raw, "扫描.pdf", kind, kind, self.mapper, ocr=True)
+        self.assertEqual(len(payloads), 4)
+        self.assertTrue(all(p.get("thinking") == {"type": "disabled"} for p in payloads))
+        self.assertTrue(all("reasoning_effort" not in p for p in payloads))
+        self.assertEqual(self.mapper.settings, original)
+        # The supported OpenRouter protocol must receive its own disable switch.
+        self.mapper.settings = replace(original, reasoning_protocol="openrouter")
+        with patch("src.ai_transport._content", side_effect=response):
+            core_materials.ocr_page(raw, 1, "router", self.mapper)
+        self.assertEqual(payloads[-1].get("reasoning"), {"effort": "none"})
+
+    def test_ocr_tax_identity_uses_labelled_source_and_never_infers_missing_identity(self):
+        from src.settings import AISettings
+        raw = (Path(__file__).parent / "fixtures" / "materials-scanned.pdf").read_bytes()
+        self.mapper.settings = AISettings(enabled=True, api_key="synthetic")
+        rows = [{"item_label": "销售额", "declared_value": "10.01", "column_scope": "本期数", "quote": "销售额 10.01"}]
+        answer = {"rows": rows, "tax_no": None, "quote": "纳税人识别号：" + TAX}
+        with patch("src.core_materials.chat_content", return_value=json.dumps(answer)):
+            candidate = core_materials.ocr_page(raw, 1, "quoted", self.mapper)
+        self.assertEqual(candidate["metadata"]["tax_nos"], [TAX])
+        self.assertIn(TAX, candidate["metadata"]["quote"])
+        for tax, quote in ((TAX, "税款所属期 2026-01"), (TAX, "税号：" + OTHER),
+                           (None, "税号：无法辨认"), (None, "发票号码：" + TAX)):
+            with self.subTest(tax=tax, quote=quote), patch("src.core_materials.chat_content", return_value=json.dumps(
+                    {"rows": rows, "tax_no": tax, "tax_no_quote": quote, "quote": "合成表头"})):
+                candidate = core_materials.ocr_page(raw, 1, "missing", self.mapper)
+            self.assertEqual(candidate["metadata"]["tax_nos"], [])
+            self.assertEqual(candidate["records"][0]["declared_value"], "10.01")
+            self.assertIn("ocr_identity_missing", {i["code"] for i in candidate["issues"]})
+        # Manual source review may accept task-assigned ownership without
+        # pretending the document independently supplied a tax ID.
+        from webapp.core_material_jobs import apply_review
+        document = {"id": "missing", "material_type": "vat_declaration", "ocr_candidate": True,
+                    "records": candidate["records"], "parts": [candidate["metadata"]], "issues": candidate["issues"]}
+        payload = {"documents": [], "source_options": {"missing": {"source_reviewed": True, "original_name": "扫描.pdf"}}}
+        reviewed = apply_review(payload, {"id": "missing"}, document)
+        self.assertNotIn("ocr_identity_missing", {i["code"] for i in reviewed["issues"]})
+        self.assertEqual(reviewed["parts"][0]["tax_nos"], [])
 
     def test_pdf_invoice_ticket_totals_parties_and_unknown_statuses(self):
         with patch("src.core_materials.chat_content") as model:
@@ -780,7 +836,7 @@ class CoreParserTests(unittest.TestCase):
         balance={"account_name":"现金","opening_balance":"10","current_debit":"100","current_credit":"20","closing_balance":"90"}
         for kind in ["account_balance", "vat_declaration"]:
             raw=grouped_business_pdf(kind,unknown=True)
-            answer={"tax_no":TAX,"period_start":"2026-01-01","period_end":"2026-01-31","unit":"元","quote":"来源表头"}
+            answer={"tax_no":TAX,"tax_no_quote":"税号："+TAX,"period_start":"2026-01-01","period_end":"2026-01-31","unit":"元","quote":"来源表头"}
             if kind=="account_balance":
                 answer["rows"]=[{"fields":balance,"quotes":balance}]
                 field="current_debit"
@@ -867,6 +923,152 @@ class MappingTests(unittest.TestCase):
 
 
 class CoreAPITests(unittest.TestCase):
+    def test_legacy_invoice_records_edit_without_reparse_and_keep_bound_sources(self):
+        task = self.create()
+        url = '/api/enterprise/input-tasks/' + task['id']
+        response = self.client.post(url + '/files', data={'expected_revision': str(task['revision']), 'material_type': 'invoice_detail'},
+            files={'files': ('旧发票.pdf', invoice_pdf())})
+        self.assertEqual(response.status_code, 200, response.text)
+        task = response.json()
+        # Emulate a retained pre-queue revision, with no new parse fingerprint.
+        old = deepcopy(material_batches.read(self.store, self.admin, task['id'])['versions'][-1]['payload'])
+        old['documents'][0].pop('parse_fingerprint', None)
+        material_batches.append_revision(self.store, self.admin, task['id'], task['revision'], 'edit', old)
+        task = self.client.get(url).json()
+        doc = task['documents'][0]
+        self.assertTrue(doc.get('parse_fingerprint', '').startswith('legacy:'), doc.keys())
+        fid, rid = doc['id'], doc['records'][0]['id']
+        original = deepcopy(doc['records'][0])
+        with patch('src.core_materials.parse', side_effect=AssertionError('legacy review must not reparse')) as parser:
+            for edits in ({rid: {'amount_excluding_tax': '120.00', 'amount_including_tax': '133.00'}}, {}):
+                response = self.client.post(url + '/prepare', json={'expected_revision': task['revision'],
+                    'source_options': {fid: {'record_corrections': edits, 'corrections_fingerprint': doc['parse_fingerprint'], 'source_reviewed': True}}})
+                self.assertEqual(response.status_code, 200, response.text)
+                task = response.json()
+                record = task['documents'][0]['records'][0]
+                self.assertEqual(record['amount_excluding_tax'], '120.00' if edits else original['amount_excluding_tax'])
+                self.assertEqual(record['raw_record'], original['raw_record'])
+                if edits:
+                    self.assertEqual(record['parsed_values']['amount_excluding_tax'], original['amount_excluding_tax'])
+                    self.assertEqual(record['field_sources']['amount_excluding_tax']['origin'], 'user_correction')
+                self.assertEqual(self.client.get(url).json()['documents'][0]['records'][0], record)
+            parser.assert_not_called()
+
+    def test_record_corrections_persist_restore_and_keep_extracted_sources(self):
+        task = self.upload(self.create(), "vat_declaration")
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        doc = task["documents"][0]
+        fid, rid = doc["id"], doc["records"][0]["id"]
+        original = deepcopy(doc["records"][0])
+        original_bytes = self.client.get(url + "/originals/" + fid).content
+
+        def save(current, edits, **extra):
+            return self.client.post(url + "/prepare", json={"expected_revision": current["revision"],
+                "source_options": {fid: {"record_corrections": edits,
+                    "corrections_fingerprint": doc["parse_fingerprint"], **extra}}})
+
+        response = save(task, {rid: {"declared_value": "12345678901234567890.0123", "column_scope": "一般项目本期数"}})
+        self.assertEqual(response.status_code, 200, response.text)
+        changed = response.json()
+        record = changed["documents"][0]["records"][0]
+        self.assertEqual(record["declared_value"], "12345678901234567890.0123")
+        self.assertEqual(record["column_scope"], "一般项目本期数")
+        self.assertEqual(record["raw_record"], original["raw_record"])
+        self.assertEqual(record["parsed_values"]["declared_value"], original["declared_value"])
+        self.assertEqual(record["field_sources"]["declared_value"]["origin"], "user_correction")
+        self.assertEqual(record["field_sources"]["declared_value"]["extracted_source"], original["field_sources"]["declared_value"])
+        self.assertFalse(changed["source_options"][fid]["source_reviewed"])
+        self.assertEqual(self.client.get(url).json()["documents"][0]["records"][0], record)
+        with patch("src.core_materials.chat_content", side_effect=AssertionError("no repeated AI")):
+            refreshed = self.client.post(url + "/prepare", json={"expected_revision": changed["revision"]}).json()
+        self.assertEqual(refreshed["documents"][0]["records"][0]["declared_value"], record["declared_value"])
+        stale = save(task, {})
+        self.assertEqual(stale.status_code, 409)
+        restored = save(refreshed, {})
+        self.assertEqual(restored.status_code, 200, restored.text)
+        self.assertEqual(restored.json()["documents"][0]["records"][0]["declared_value"], original["declared_value"])
+        self.assertEqual(restored.json()["documents"][0]["records"][0]["field_sources"], original["field_sources"])
+        self.assertEqual(self.client.get(url + "/originals/" + fid).content, original_bytes)
+
+    def test_record_corrections_reject_foreign_fields_invalid_numbers_and_changed_parse(self):
+        task = self.upload(self.create(), "vat_declaration")
+        doc = task["documents"][0]
+        fid, rid = doc["id"], doc["records"][0]["id"]
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        for edits in ({"foreign": {"declared_value": "1"}}, {rid: {"source_file_id": "foreign"}},
+                      {rid: {"declared_value": 1.2}}, {rid: {"declared_value": "NaN"}},
+                      {rid: {"declared_value": "1e99"}}, {rid: {"item_label": ""}}):
+            with self.subTest(edits=edits):
+                response = self.client.post(url + "/prepare", json={"expected_revision": task["revision"],
+                    "source_options": {fid: {"record_corrections": edits, "corrections_fingerprint": doc["parse_fingerprint"]}}})
+                self.assertEqual(response.status_code, 422, response.text)
+        response = self.client.post(url + "/prepare", json={"expected_revision": task["revision"],
+            "source_options": {fid: {"record_corrections": {rid: {"declared_value": "9.01"}}, "corrections_fingerprint": "obsolete"}}})
+        self.assertEqual(response.status_code, 422, response.text)
+        response = self.client.post(url + "/prepare", json={"expected_revision": task["revision"],
+            "source_options": {fid: {"corrections_fingerprint": "rebind-without-edits"}}})
+        self.assertEqual(response.status_code, 422)
+        self.login(self.foreign)
+        response = self.client.post(url + "/prepare", json={"expected_revision": task["revision"],
+            "source_options": {fid: {"record_corrections": {rid: {"declared_value": "1"}}, "corrections_fingerprint": doc["parse_fingerprint"]}}})
+        self.assertEqual(response.status_code, 404)
+        self.login(self.admin)
+        from webapp.core_material_jobs import apply_review
+        changed = deepcopy(doc)
+        changed["parse_fingerprint"] = "new-parser"
+        payload = {"documents": [doc], "source_options": {fid: {"original_name": doc["name"],
+            "record_corrections": {rid: {"declared_value": "9.01"}}, "corrections_fingerprint": doc["parse_fingerprint"], "source_reviewed": True}}}
+        reviewed = apply_review(payload, {"id": fid}, changed)
+        self.assertEqual(reviewed["records"][0]["declared_value"], doc["records"][0]["declared_value"])
+        self.assertIn("correction_stale", {i["code"] for i in reviewed["issues"]})
+        self.assertFalse(payload["source_options"][fid]["source_reviewed"])
+
+    def test_ocr_correction_confirmation_reuses_ai_and_invoice_totals_still_validate(self):
+        task = self.create()
+        url = "/api/enterprise/input-tasks/" + task["id"]
+        answer = {"form_name": "增值税纳税申报表主表", "form_type": "main", "tax_no": TAX,
+                  "tax_no_quote": "税号：" + TAX, "unit": "元", "period_start": "2026-01-01", "period_end": "2026-01-31",
+                  "rows": [{"item_label": "销售额", "declared_value": "211.83", "column_scope": "本期数", "quote": "销售额 211.83"}]}
+        with patch.dict(os.environ, {"TAXPEARLS_AI_ENABLED": "1", "TAXPEARLS_AI_API_KEY": "synthetic"}), patch("src.core_materials.chat_content", return_value=json.dumps(answer)) as call:
+            response = self.client.post(url + "/files", data={"expected_revision": str(task["revision"]), "material_type": "vat_declaration", "ocr": "1", "mapping_mode": "ai"},
+                files={"files": ("扫描.pdf", (Path(__file__).parent / "fixtures" / "materials-scanned.pdf").read_bytes())})
+            self.assertEqual(response.status_code, 200, response.text)
+            task = response.json()
+            doc = task["documents"][0]
+            fid, rid = doc["id"], doc["records"][0]["id"]
+            for value, reviewed in (("213.83", False), ("213.83", True), ("214.83", False)):
+                change = {"record_corrections": {rid: {"declared_value": value}}, "corrections_fingerprint": doc["parse_fingerprint"]}
+                if reviewed:
+                    change["source_reviewed"] = True
+                response = self.client.post(url + "/prepare", json={"expected_revision": task["revision"], "mapping_mode": "ai", "source_options": {fid: change}})
+                self.assertEqual(response.status_code, 200, response.text)
+                task = response.json()
+                self.assertEqual(task["documents"][0]["records"][0]["declared_value"], value)
+                self.assertEqual(task["source_options"][fid]["source_reviewed"], reviewed)
+                self.assertEqual(task["documents"][0]["records"][0]["requires_source_review"], not reviewed)
+                self.assertEqual(call.call_count, 1)
+        # Corrections must not bypass invoice arithmetic checks.
+        from webapp.core_material_jobs import apply_review, validate_corrections
+        invoice_db, invoice_mapper = mapper()
+        self.addCleanup(invoice_db.close)
+        invoice = core_materials.parse(invoice_pdf(), "票.pdf", "invoice_detail", "ticket", invoice_mapper)
+        invoice['parse_fingerprint'] = 'ticket-v1'
+        rid = invoice['records'][0]['id']
+        edits = validate_corrections(invoice, {rid: {'amount_excluding_tax': '120.00'}})
+        payload = {'documents': [], 'source_options': {'ticket': {'original_name': '票.pdf', 'record_corrections': edits, 'corrections_fingerprint': 'ticket-v1'}}}
+        reviewed = apply_review(payload, {'id': 'ticket'}, invoice)
+        self.assertIn('invoice_total_conflict', {i['code'] for i in reviewed['issues']})
+        balance = core_materials.parse(grouped_business_pdf('account_balance'), '余额.pdf', 'account_balance', 'balance', invoice_mapper)
+        balance['parse_fingerprint'] = 'balance-v1'
+        record = balance['records'][0]
+        values = {'opening_balance': {'debit': '10.0123', 'credit': '0'}}
+        edits = validate_corrections(balance, {record['id']: values})
+        payload = {'documents': [], 'source_options': {'balance': {'original_name': '余额.pdf', 'record_corrections': edits, 'corrections_fingerprint': 'balance-v1'}}}
+        revised = apply_review(payload, {'id': 'balance'}, balance)['records'][0]
+        self.assertEqual(revised['opening_balance'], {'debit': '10.0123', 'credit': '0'})
+        self.assertEqual(revised['opening_balance_debit'], '10.0123')
+        self.assertEqual(revised['field_sources']['opening_balance_debit']['origin'], 'user_correction')
+
     def assert_write_available(self):
         writer = sqlite3.connect(self.store.path, timeout=0.05)
         try:
@@ -947,7 +1149,8 @@ class CoreAPITests(unittest.TestCase):
                         data={"expected_revision": str(task["revision"]), "material_type": "vat_declaration", "mapping_mode": "ai"},
                         files={"files": ("申报.xlsx", book("vat_declaration", alias=alias))})
                 call.assert_called_once()
-                self.assertEqual(response.status_code, 500 if fail else 200, response.text)
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()['jobs'][0]['state'], 'failed' if fail else 'done')
                 with self.store.connect() as db:
                     self.assertEqual(db.execute("SELECT COUNT(*) FROM core_mapping_observations WHERE task_id=?",
                                                 (task["id"],)).fetchone()[0], 4 if fail else 5)
@@ -1494,6 +1697,7 @@ class CoreAPITests(unittest.TestCase):
                 self.assertEqual(mapping.call_args.args[0].api_keys, ("synthetic-extraction",))
                 self.assertEqual(mapping.call_args.args[0].model, "extraction-model")
             answer = json.dumps({"form_name": "增值税纳税申报表主表", "form_type": "main", "tax_no": TAX,
+                "tax_no_quote": "纳税人识别号：" + TAX,
                 "period_start": "2026-01-01", "period_end": "2026-01-31", "unit": "元", "quote": "申报主表",
                 "rows": [{"item_label": "销售额", "item_key": "1", "declared_value": "100.0123",
                           "column_scope": "本期数", "quote": "销售额 100.0123"}]})
@@ -1674,13 +1878,13 @@ class CoreAPITests(unittest.TestCase):
         # All uploads share a timestamp; IDs sort opposite to arrival order.
         # A later duplicate must not replace the earlier source or reorder totals.
         file_ids = iter([letter * 32 for letter in ("f", "e", "d", "c", "0")])
-        retain_files = material_batches._files
+        retain_files = material_batches.prepare_files
 
         def retain_with_ids(*args, **kwargs):
             with patch("webapp.material_batches.secrets.token_hex", side_effect=lambda _: next(file_ids)):
                 return retain_files(*args, **kwargs)
 
-        retain_patch = patch("webapp.material_batches._files", side_effect=retain_with_ids)
+        retain_patch = patch("webapp.material_batches.prepare_files", side_effect=retain_with_ids)
         retain_patch.start()
         self.addCleanup(retain_patch.stop)
         task = self.ready_task()
@@ -1857,7 +2061,7 @@ class CoreAPITests(unittest.TestCase):
         for kind in ["account_balance","vat_declaration"]:
             task=self.create()
             url="/api/enterprise/input-tasks/"+task["id"]
-            answer={"tax_no":TAX,"period_start":"2026-01-01","period_end":"2026-01-31","unit":"元","quote":"来源表头"}
+            answer={"tax_no":TAX,"tax_no_quote":"税号："+TAX,"period_start":"2026-01-01","period_end":"2026-01-31","unit":"元","quote":"来源表头"}
             if kind=="account_balance":
                 answer["rows"]=[{"fields":balance,"quotes":balance}]
             else:
@@ -1911,6 +2115,7 @@ class CoreAPITests(unittest.TestCase):
             "form_name": "增值税纳税申报表主表",
             "form_type": "main",
             "tax_no": TAX,
+            "tax_no_quote": "纳税人识别号：" + TAX,
             "period_start": "2026-01-01",
             "period_end": "2026-01-31",
             "unit": "元",

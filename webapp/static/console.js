@@ -82,7 +82,7 @@ function prepareWorkspacePanel(id) {
   if (preparedPanels.has(id)) return Promise.resolve();
   if (panelPreparations.has(id)) return panelPreparations.get(id);
   const preparation = (async () => {
-    const load = name => loadClientScript("/" + name + "?v=" + (name==="core-inputs.js"?"20261028-review-status-2":"20261029-teaching-names-12"));
+    const load = name => loadClientScript("/" + name + "?v=" + (name==="core-inputs.js"?"20261101-9d061af268bb":"20261029-teaching-names-12"));
     if (["uploadPanel", "auditPanel", "historyPanel", "trainingPanel", "knowledgePanel"].includes(id)) {
       await Promise.all([load("core-inputs.js"), load("enterprise.js")]);
       if (!enterpriseMaterials) {
@@ -937,12 +937,16 @@ async function loadNotifications() {
       const recipients = $("noticeRecipients"); recipients.textContent = "";
       for (const member of members) {
         const row = el("div", "notice-recipient"), events = el("div", "notice-recipient-events");
-        row.append(el("span", "notice-recipient-name", member.display_name + " · " + member.org_id));
+        const identity = el("div", "notice-recipient-identity"), choices = el("div", "notice-recipient-choices"), mail = el("div", "notice-recipient-mail");
+        identity.append(el("span", "notice-recipient-caption muted", "接收人"), el("strong", "notice-recipient-name", member.display_name),
+          el("span", "notice-recipient-organization muted", ({org_admin:"业务管理员",accountant:"会计",teacher:"教师"}[member.role] || "成员") + " · " + member.org_id));
+        choices.append(el("span", "notice-recipient-caption muted", "接收事件"), events);
+        mail.append(el("span", "notice-recipient-caption muted", "邮件状态"), el("span", "notice-recipient-email", member.email_enabled ? "本人已同意邮件" : "本人未开邮件"));
         const inputs = {};
         for (const [key, title] of [["audit_completed","审计完成"],["high_risk","高风险"]]) {
           const label = el("label"); const input = el("input"); input.type = "checkbox"; input.checked = member[key]; inputs[key] = input; label.append(input, document.createTextNode(title)); events.append(label);
         }
-        row.append(events, el("span", "muted notice-recipient-email", member.email_enabled ? "本人已同意邮件" : "本人未开邮件"));
+        row.append(identity, choices, mail);
         const save = el("button", "btn re", "保存接收事件"); save.onclick = () => noticeAction(() => api("/api/notifications/recipients/" + member.id, {method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify({audit_completed:inputs.audit_completed.checked, high_risk:inputs.high_risk.checked, email_enabled:member.email_enabled})}), "接收事件已保存。"); row.append(save); recipients.append(row);
       }
     }

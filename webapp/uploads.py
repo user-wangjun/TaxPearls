@@ -6,6 +6,7 @@ from threading import Lock
 from fastapi import HTTPException
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
+from starlette.concurrency import run_in_threadpool
 
 from src.workbooks import MAX_FILE
 
@@ -41,14 +42,21 @@ async def bounded_stream(request, limit):
 
 
 @asynccontextmanager
-async def multipart(request, *, file_limit=MAX_FILE, total_limit=None, max_files=1, max_fields=1, material_scope=None):
+async def multipart(request, *, file_limit=MAX_FILE, total_limit=None, max_files=1, max_fields=1, material_scope=None,
+                    material_store=None, material_actor=None):
     global _TOTAL
     if not request.headers.get("content-type", "").lower().startswith("multipart/form-data"):
         raise HTTPException(422, "请以文件表单上传材料。")
     form = None
     parser = None
     admitted = False
-    if material_scope is not None:
+    resource_token = None
+    if material_store is not None:
+        from webapp import material_jobs
+        resource_token = await run_in_threadpool(material_jobs.reserve_resource, material_store, material_actor, 'upload')
+        if not resource_token:
+            raise HTTPException(429, '上传名额已满，请稍后重试。')
+    elif material_scope is not None:
         with _LOCK:
             if _TOTAL >= 4 or _ACTIVE.get(material_scope, 0) >= 2:
                 raise HTTPException(429, '上传名额已满，请稍后重试。')
@@ -74,6 +82,8 @@ async def multipart(request, *, file_limit=MAX_FILE, total_limit=None, max_files
                 for file in parser._files_to_close_on_error:
                     file.close()
         finally:
+            if resource_token:
+                await run_in_threadpool(material_jobs.release_resource, material_store, resource_token)
             if admitted:
                 with _LOCK:
                     _TOTAL -= 1

@@ -1393,22 +1393,25 @@ html[data-theme=dark] #appMain #userAdmin .quota-editor input:disabled { color:#
 
 /* Notification recipients keep event choices aligned with their save action. */
 #noticeRecipients { min-width:0; }
-#notificationPanel .notice-recipient { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(112px,max-content) auto; align-items:center; gap:16px; padding:18px 0; border-top:1px solid var(--line); min-width:0; }
-#notificationPanel .notice-recipient-name { min-width:0; overflow-wrap:anywhere; line-height:1.6; }
-#notificationPanel .notice-recipient-events { display:flex; flex-wrap:wrap; align-items:center; gap:12px 20px; min-width:0; }
-#notificationPanel .notice-recipient-events label { display:inline-flex; align-items:center; gap:8px; margin:0; line-height:1.5; white-space:nowrap; cursor:pointer; }
+#notificationPanel .notice-recipient { display:grid; grid-template-columns:minmax(180px,1.2fr) minmax(220px,1fr) minmax(130px,max-content) auto; align-items:start; gap:24px; padding:24px 0; border-top:1px solid var(--line); min-width:0; }
+#notificationPanel .notice-recipient-identity,#notificationPanel .notice-recipient-choices,#notificationPanel .notice-recipient-mail { display:flex; flex-direction:column; gap:8px; min-width:0; }
+#notificationPanel .notice-recipient-caption { font-size:12px; line-height:1.5; }
+#notificationPanel .notice-recipient-name { font-size:15px; font-weight:600; overflow-wrap:anywhere; line-height:1.6; }
+#notificationPanel .notice-recipient-organization { font-size:12px; overflow-wrap:anywhere; line-height:1.6; }
+#notificationPanel .notice-recipient-events { display:flex; flex-wrap:wrap; align-items:center; gap:10px; min-width:0; }
+#notificationPanel .notice-recipient-events label { display:inline-flex; align-items:center; gap:8px; min-height:44px; padding:8px 12px; box-sizing:border-box; border:1px solid var(--line); border-radius:10px; margin:0; font-size:14px; line-height:1.5; white-space:nowrap; cursor:pointer; }
+#notificationPanel .notice-recipient-events label:focus-within { outline:2px solid currentColor; outline-offset:2px; }
 #notificationPanel .notice-recipient-events input { flex:0 0 16px; width:16px; height:16px; margin:0; }
 #notificationPanel .notice-recipient-email { font-size:13px; line-height:1.6; overflow-wrap:anywhere; }
-#notificationPanel .notice-recipient > .btn { margin:0; white-space:normal; }
-@media(max-width:1100px) {
-  #notificationPanel .notice-recipient { grid-template-columns:minmax(0,1fr) auto; gap:12px 16px; }
-  #notificationPanel .notice-recipient-name { grid-column:1/-1; }
-  #notificationPanel .notice-recipient-events,#notificationPanel .notice-recipient-email { grid-column:1; }
-  #notificationPanel .notice-recipient > .btn { grid-column:2; grid-row:2/4; }
+#notificationPanel .notice-recipient > .btn { margin:26px 0 0; min-height:44px; white-space:nowrap; }
+@media(max-width:1200px) {
+  #notificationPanel .notice-recipient { grid-template-columns:minmax(0,1fr) auto auto; gap:20px; }
+  #notificationPanel .notice-recipient-identity { grid-column:1/-1; }
 }
-@media(max-width:600px) {
-  #notificationPanel .notice-recipient { grid-template-columns:minmax(0,1fr); }
-  #notificationPanel .notice-recipient > .btn { grid-column:1; grid-row:auto; width:100%; }
+@media(max-width:700px) {
+  #noticeRecipients { max-height:none; overflow:visible; }
+  #notificationPanel .notice-recipient { grid-template-columns:minmax(0,1fr); gap:18px; }
+  #notificationPanel .notice-recipient > .btn { margin:0; width:100%; }
 }
 
 /* Core evidence preparation stays inside the enterprise upload page. */
@@ -1493,6 +1496,12 @@ html[data-theme=dark] #appMain #userAdmin .quota-editor input:disabled { color:#
 #appMain #coreInputs .core-record-table select.core-direction-select:is(:hover,:focus-visible) { border-color:var(--line); background:var(--card); }
 #coreInputs .core-record-source { margin:6px 0 0; font-size:11px; }
 #coreInputs .core-record-source p { line-height:1.6; }
+#appMain #coreInputs .core-record-table input.core-cell-input { width:100%; min-width:0; height:32px; min-height:32px; padding:4px 6px; box-sizing:border-box; border:1px solid transparent; border-radius:5px; background:transparent; box-shadow:none; color:var(--ink); font:inherit; }
+#appMain #coreInputs .core-record-table input.core-cell-input:is(:hover,:focus-visible) { border-color:var(--line); background:var(--card); }
+#coreInputs .core-number input.core-cell-input { text-align:center; font-variant-numeric:tabular-nums; }
+#coreInputs .core-cell-balance, #coreInputs .core-cell-source-field { display:block; margin:4px 0; }
+#coreInputs .core-record-source p { overflow-wrap:anywhere; }
+#coreInputs .core-vat-table td:first-child { width:80%; max-width:none; }
 #coreInputs .core-pagination { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; margin:12px 0; font-size:12px; }
 #coreInputs .core-pagination > span { margin-right:auto; }
 #coreInputs .core-pagination button { margin:0; }
@@ -1509,6 +1518,7 @@ html[data-theme=dark] #appMain #userAdmin .quota-editor input:disabled { color:#
   #coreInputs .core-record-table tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); border:1px solid var(--line); border-radius:10px; padding:10px; gap:12px; }
   #coreInputs .core-record-table td { display:block; min-width:0; max-width:none; padding:0; border:0; text-align:left; overflow-wrap:anywhere; }
   #coreInputs .core-record-table td:first-child { grid-column:1/-1; min-width:0; max-width:none; }
+  #coreInputs .core-vat-table td:first-child { width:auto; }
   #coreInputs .core-record-table td[data-label="价税合计"] { grid-column:1/-1; }
   #coreInputs .core-record-table td::before { content:attr(data-label); display:block; color:var(--ink-2); font-size:11px; margin-bottom:5px; }
   #coreInputs .core-record-table .core-number { min-width:0; text-align:left; }

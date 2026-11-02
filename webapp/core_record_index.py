@@ -172,9 +172,9 @@ def signature(payload):
                                  for row in payload.get("processing", {}).get("records", [])])
 
 
-def require_current(db, batch, actor, payload):
+def require_current(db, batch, actor, payload, *, persist=True):
     checked = deepcopy(payload)
-    compare(db, batch, actor, checked)
+    compare(db, batch, actor, checked, persist=persist)
     if signature(checked) != signature(payload):
         raise AccessDenied("历史账目或去重版本已变化，请重新读取并核对后再分析。", 409)
 

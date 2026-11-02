@@ -91,7 +91,8 @@ def migrate(db):
 
 
 class Mapper:
-    def __init__(self, db, org_id, task_id, source_hash, *, ai=False, settings=None, observation_transaction=None):
+    def __init__(self, db, org_id, task_id, source_hash, *, ai=False, settings=None, observation_transaction=None,
+                 call_reservation=None, ocr_slot=None):
         self.db, self.org, self.task, self.sha = db, org_id, task_id, source_hash
         self.ai = ai
         self.settings = settings
@@ -99,6 +100,16 @@ class Mapper:
         self.call_limit = 8
         self.promotions = []
         self.observation_transaction = observation_transaction or nullcontext
+        self.call_reservation = call_reservation
+        self.ocr_slot = ocr_slot or nullcontext
+
+    def reserve_call(self):
+        if self.calls >= min(self.call_limit, self.settings.max_calls if self.settings else self.call_limit):
+            return False
+        if self.call_reservation and not self.call_reservation():
+            return False
+        self.calls += 1
+        return True
 
     def resolve(self, kind, headers, context, samples):
         result, unknown = {}, []
@@ -132,8 +143,7 @@ class Mapper:
                 unknown.append(index)
         if unknown and self.ai and self.calls < self.call_limit:
             settings = self.settings if self.settings is not None else AISettings.from_env()
-            if not settings.problem():
-                self.calls += 1
+            if not settings.problem() and self.reserve_call():
                 # Only column shape is sent; no taxpayer identity, invoice IDs or full rows.
                 shapes = {
                     str(i): [self.shape(row[i] if i < len(row) else None) for row in samples[:3]] for i in unknown

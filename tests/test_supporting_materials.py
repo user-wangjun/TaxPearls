@@ -198,7 +198,7 @@ class SupportingAPITests(unittest.TestCase):
             doc["excerpts"][0]["text"] += " newly extracted wording"
             return doc
 
-        with patch("src.core_materials.parse", side_effect=changed):
+        with patch("src.core_materials.parse", side_effect=changed), patch.object(core_materials, 'PARSER_VERSION', 'changed-extractor'):
             response = self.client.post(url, json={"expected_revision": task["revision"]})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertFalse(response.json()["documents"][0]["source_reviewed"])

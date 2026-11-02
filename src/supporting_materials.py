@@ -11,14 +11,13 @@ from PIL import Image, ImageSequence
 from . import material_formats
 from .ai_transport import chat_content, TransportError
 from .input_errors import InputError
-from .settings import AISettings
 from .workbooks import open_workbook
 
 KIND = "supporting_material"
 
 
 def parse(raw, name, file_id, mapper, *, ocr=False):
-    from .core_materials import ALLOWED_FORMATS, PARSER_VERSION, issue
+    from .core_materials import ALLOWED_FORMATS, PARSER_VERSION, PDF_RENDER_LOCK, issue, ocr_settings
     extension = name.rsplit(".", 1)[-1].lower()
     if extension not in ALLOWED_FORMATS[KIND]:
         raise InputError("额外材料支持 PDF、Excel、CSV/TSV 和图片。")
@@ -39,12 +38,15 @@ def parse(raw, name, file_id, mapper, *, ocr=False):
                                    "source_position": position, "text": content, "origin": origin})
 
     def read_image(image, position):
+        with mapper.ocr_slot():
+            return read_image_work(image, position)
+
+    def read_image_work(image, position):
         result["ocr_candidate"] = True
-        settings = mapper.settings if mapper.settings is not None else AISettings.from_env()
-        if not ocr or not mapper.ai or settings.problem() or not settings.vision or mapper.calls >= min(settings.max_calls, mapper.call_limit):
+        settings = ocr_settings(mapper)
+        if not ocr or not mapper.ai or settings.problem() or not settings.vision or not mapper.reserve_call():
             append("", position)
             return
-        mapper.calls += 1
         try:
             image.thumbnail((1800, 1800))
             out = BytesIO()
@@ -72,17 +74,19 @@ def parse(raw, name, file_id, mapper, *, ocr=False):
                 if content.strip():
                     append(content, position)
                 else:
-                    with pypdfium2.PdfDocument(raw) as rendered:
+                    with PDF_RENDER_LOCK, pypdfium2.PdfDocument(raw) as rendered:
                         source = rendered[number - 1]
                         try:
                             bitmap = source.render(scale=min(2, 1800 / max(source.get_size())))
                             try:
-                                with bitmap.to_pil() as image:
-                                    read_image(image, position)
+                                with bitmap.to_pil() as native_image:
+                                    image = native_image.copy()
                             finally:
                                 bitmap.close()
                         finally:
                             source.close()
+                    with image:
+                        read_image(image, position)
     elif extension in material_formats.IMAGE_FORMATS:
         with Image.open(BytesIO(raw)) as image:
             for number, frame in enumerate(ImageSequence.Iterator(image), 1):

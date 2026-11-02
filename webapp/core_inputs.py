@@ -1,30 +1,23 @@
 """Task -> encrypted inputs -> standardized evidence; stops before risk evaluation."""
 
 from copy import deepcopy
-from contextlib import contextmanager
 from datetime import date
 import json
 import secrets
-from threading import BoundedSemaphore
 from urllib.parse import quote
 
 from fastapi import Cookie, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, JSONResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException
 
-from src import core_materials, core_mapping, material_format_guard
+from src import core_materials, material_format_guard
 from src.input_errors import InputError
-from src.settings import AISettings
-from webapp import ai_keys
 from webapp import material_batches as batches
 from webapp.access import AccessDenied, current_actor
 from webapp import members
 from webapp.uploads import multipart
-
-PROCESS_SLOTS = BoundedSemaphore(2)
-
 
 def migrate(db):
     db.execute("CREATE TABLE IF NOT EXISTS core_input_tasks (id TEXT PRIMARY KEY REFERENCES material_batches(id))")
@@ -56,6 +49,8 @@ def delete_task(store, user, task_id, expected_revision):
         if db.execute("SELECT 1 FROM material_jobs WHERE batch_id=? AND state='running'", (task_id,)).fetchone():
             raise AccessDenied("任务正在处理，请处理结束后再删除。", 409)
         db.execute("DELETE FROM material_ai_slots WHERE job_id IN (SELECT id FROM material_jobs WHERE batch_id=?)", (task_id,))
+        db.execute("DELETE FROM material_resource_slots WHERE job_id IN (SELECT id FROM material_jobs WHERE batch_id=?)", (task_id,))
+        db.execute("DELETE FROM material_job_files WHERE job_id IN (SELECT id FROM material_jobs WHERE batch_id=?)", (task_id,))
         for table in ("material_jobs", "material_operations", "core_tax_reports", "material_executions",
                       "material_revisions", "material_events", "material_originals"):
             db.execute(f"DELETE FROM {table} WHERE batch_id=?", (task_id,))
@@ -74,7 +69,7 @@ def delete_task(store, user, task_id, expected_revision):
 
 def delete_file(store, user, task_id, file_id, expected_revision):
     """Remove one original and its current evidence in the same short transaction."""
-    view = batches.read(store, user, task_id)
+    view = batches.read(store, user, task_id, current_only=True)
     payload = deepcopy(latest(view, writable=True))
     if view["revision"] != expected_revision:
         raise AccessDenied("任务版本已变化，请重新读取后再删除材料。", 409)
@@ -97,8 +92,6 @@ def delete_file(store, user, task_id, file_id, expected_revision):
         if batch["revision"] != expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取后再删除材料。", 409)
         batches._require_active_core(db, batch)
-        if db.execute("SELECT 1 FROM material_jobs WHERE batch_id=? AND state='running'", (task_id,)).fetchone():
-            raise AccessDenied("任务正在处理，请处理结束后再删除材料。", 409)
         db.execute("UPDATE material_originals SET bytes_cipher=NULL,deleted_at=?,deleted_by=? WHERE id=? AND batch_id=?",
                    (members.now(), user["id"], file_id, task_id))
         batches._append(db, batch, user, "edit", payload)
@@ -107,6 +100,10 @@ def delete_file(store, user, task_id, file_id, expected_revision):
 
 def project(view):
     value = deepcopy(latest(view))
+    from webapp.core_material_jobs import correction_fingerprint
+    for doc in value.get('documents', []):
+        if doc.get('records'):
+            doc.setdefault('parse_fingerprint', correction_fingerprint(doc))
     # Older drafts may predate range modes. Expose a descriptive kind at the
     # projection level without mutating the signed task payload; the range
     # itself remains the user's selection.
@@ -123,6 +120,11 @@ def project(view):
         "id": view["id"],
         "revision": view["revision"],
         "files": view["files"],
+        "jobs": view["jobs"],
+        "upload_review": {"pending_files": [doc["name"] for doc in value["documents"] if (
+            (doc["material_type"] in core_materials.KINDS and (not doc["records"]
+                or any(record.get("requires_source_review") for record in doc["records"])))
+            or (doc["material_type"] == "supporting_material" and doc.get("issues")))]},
     }
 
 
@@ -335,6 +337,38 @@ def register(app, get_store, get_user, allow, static_dir):
     def detail(task_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):
         return read(actor(session), task_id)
 
+    @app.get("/api/enterprise/input-tasks/{task_id}/jobs")
+    def jobs_status(task_id: str, session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        from webapp import material_jobs
+        return material_jobs.status(get_store(), actor(session), task_id)
+
+    @app.post("/api/enterprise/input-tasks/{task_id}/jobs/{job_id}/retry")
+    async def retry_files(task_id: str, job_id: str, request: Request,
+                          session: str | None = Cookie(default=None, alias="taxpearls_session")):
+        from webapp import core_material_jobs
+        user = actor(session)
+        value = await body(request)
+        if set(value) != {'expected_revision'} or type(value.get('expected_revision')) is not int:
+            raise HTTPException(422, '请提供当前任务版本。')
+        # The saved job mode is part of its retry signature, not fresh consent.
+        view = batches.read(get_store(), user, task_id, current_only=True)
+        latest(view, writable=True)
+        with get_store().connect() as db:
+            row = db.execute('SELECT * FROM material_jobs WHERE id=? AND batch_id=?', (job_id, task_id)).fetchone()
+        if not row:
+            raise AccessDenied()
+        snapshot = json.loads(batches._open(row['input_cipher'], batches._context(user['org_id'], task_id, 'job_input', job_id)))
+        try:
+            new_id = await run_in_threadpool(core_material_jobs.submit, get_store(), user, task_id, value['expected_revision'],
+                                            ai=snapshot['mode']=='ai', retry_job=job_id)
+        except (InputError, ValueError) as exc:
+            raise HTTPException(422, str(exc)) from None
+        from webapp.material_jobs import QueueSettings
+        if not QueueSettings.from_env().enabled:
+            await run_in_threadpool(core_material_jobs.wait, get_store(), user, task_id, new_id, app.state.material_worker)
+            return read(user, task_id)
+        return JSONResponse(read(user, task_id), status_code=202)
+
     @app.delete("/api/enterprise/input-tasks/{task_id}")
     async def remove(task_id: str, request: Request,
                      session: str | None = Cookie(default=None, alias="taxpearls_session")):
@@ -351,7 +385,7 @@ def register(app, get_store, get_user, allow, static_dir):
              session: str | None = Cookie(default=None, alias="taxpearls_session")):
         from src import material_export
 
-        view = batches.read_current(get_store(), actor(session), task_id)
+        view = batches.read(get_store(), actor(session), task_id, current_only=True)
         if view["revision"] != expected_revision:
             raise AccessDenied("任务版本已变化，请重新读取后下载。", 409)
         return material_export.build(latest(view))
@@ -368,212 +402,17 @@ def register(app, get_store, get_user, allow, static_dir):
         await run_in_threadpool(delete_file, get_store(), user, task_id, file_id, value["expected_revision"])
         return read(user, task_id)
 
-    def process(user, task_id, revision, *, ai=False, working_payload=None, vat_review=None):
-        if not PROCESS_SLOTS.acquire(blocking=False):
-            raise AccessDenied("资料整理繁忙，原件已保存，请稍后重新整理。", 429)
-        try:
-            return process_work(user, task_id, revision, ai=ai, working_payload=working_payload, vat_review=vat_review)
-        finally:
-            PROCESS_SLOTS.release()
-
-    def process_work(user, task_id, revision, *, ai=False, working_payload=None, vat_review=None):
+    async def processing_response(request, user, task_id, revision, *, ai=False, payload=None, uploads=None, vat_review=None):
+        from webapp import core_material_jobs as jobs
         store = get_store()
-        view = batches.read_current(store, user, task_id)
-        existing = latest(view, writable=True)
-        payload = deepcopy(existing if working_payload is None else working_payload)
-        if view["revision"] != revision:
-            raise AccessDenied("任务版本已变化，请重新读取。", 409)
-        documents = []
-        calls_remaining = 8
-        settings = ai_keys.apply(AISettings.from_env(), store, usage="extraction")
-        for meta in view["files"]:
-            options = payload["source_options"].get(meta["id"], {})
-            if meta["deleted_at"] or options.get("excluded"):
-                continue
-            if not options.get("material_type"):
-                continue
-            _, raw = batches.original(store, user, task_id, meta["id"], purpose="read_for_reanalysis")
-            with store.connect() as db:
-                @contextmanager
-                def mapping_write():
-                    # Parsing/OCR/model waits run outside transactions. Recheck
-                    # live permission and the source revision at every write.
-                    with db:
-                        db.execute("BEGIN IMMEDIATE")
-                        batch = batches._authorize(db, user, task_id)
-                        if batch["revision"] != revision:
-                            raise AccessDenied("任务版本已变化，请重新读取。", 409)
-                        start = len(mapper.promotions)
-                        yield batch
-                        for promotion in mapper.promotions[start:]:
-                            batches._event(db, batch, user, "mapping_promotion",
-                                           {**promotion, "source_file_id": meta["id"]})
-
-                with db:
-                    db.execute("BEGIN")
-                    batch = batches._authorize(db, user, task_id)
-                    if batch["revision"] != revision:
-                        raise AccessDenied("任务版本已变化，请重新读取。", 409)
-                mapper = core_mapping.Mapper(db, user["org_id"], task_id, meta["sha256"], ai=ai, settings=settings,
-                                             observation_transaction=mapping_write)
-                mapper.call_limit = calls_remaining
-                try:
-                    core_materials.validate_upload_content(raw, options["original_name"], options["material_type"])
-                    previous = next(
-                        (
-                            d
-                            for d in payload["documents"]
-                            if d["id"] == meta["id"]
-                            and d["sha256"] == meta["sha256"]
-                            and d.get("ocr_candidate")
-                            and (d.get("records") or d.get("excerpts"))
-                            and not (d.get("material_type") == "supporting_material" and d.get("issues"))
-                            and d.get("parser_version") == core_materials.PARSER_VERSION
-                        ),
-                        None,
-                    )
-                    if previous:
-                        doc = deepcopy(previous)
-                        for part in doc["parts"]:
-                            part.update(part.get("parsed_metadata", {}))
-                        for record in doc["records"]:
-                            record.update(record.get("source_metadata", {}))
-                    else:
-                        doc = core_materials.parse(
-                            raw,
-                            options["original_name"],
-                            options["material_type"],
-                            meta["id"],
-                            mapper,
-                            ocr=options.get("ocr", False),
-                        )
-                except (InputError, ValueError, OSError) as exc:
-                    doc = {
-                        "id": meta["id"],
-                        "name": options["original_name"],
-                        "sha256": meta["sha256"],
-                        "material_type": options["material_type"],
-                        "records": [],
-                        "parts": [],
-                        "issues": [core_materials.issue("parse_failed", str(exc)[:300], meta["id"])],
-                    }
-                calls_remaining -= mapper.calls
-            if doc["material_type"] == "supporting_material":
-                prior = next((item for item in payload["documents"] if item["id"] == meta["id"]), None)
-                if options.get("source_reviewed") and (
-                    prior is None
-                    or prior.get("excerpts", []) != doc.get("excerpts", [])
-                    or prior.get("parser_version") != doc.get("parser_version")
-                ):
-                    options["source_reviewed"] = False
-                doc["source_reviewed"] = bool(options.get("source_reviewed"))
-                documents.append(doc)
-                continue
-            override = options.get("confirmed_metadata", {})
-            if "direction" in override:
-                # Old file-wide overrides must not replace per-invoice evidence on reprocessing.
-                if override["direction"]:
-                    options["source_reviewed"] = False
-                override = {key: value for key, value in override.items() if key != "direction"}
-                options["confirmed_metadata"] = override
-            needs_review = doc.get("ocr_candidate") or doc.get("pdf_candidate")
-            doc["issues"] = [i for i in doc["issues"] if i["code"] != "invoice_status_missing"]
-            for record in doc["records"]:
-                record.pop("confirmed_metadata", None)
-                record["source_metadata"] = {
-                    k: record.get(k) for k in ["unit", "form_type", "period_start", "period_end", "direction"]
-                }
-                if needs_review:
-                    record["requires_source_review"] = not options.get("source_reviewed", False)
-                if doc["material_type"] == "invoice_detail" and options["original_name"].lower().endswith(".pdf"):
-                    original = record.setdefault("parsed_invoice_statuses", {k: record.get(k) for k in ["red_letter_status", "void_status"]})
-                    record.update(original)
-                    confirmed = options.get("invoice_statuses", {}).get(record["id"], {})
-                    record["confirmed_invoice_statuses"] = confirmed
-                    for key, value in confirmed.items():
-                        if value:
-                            record[key] = value
-                    for key in ["red_letter_status", "void_status"]:
-                        record["value_states"][key] = "present" if record.get(key) else "missing"
-                    if not all(record.get(k) for k in ["red_letter_status", "void_status"]):
-                        doc["issues"].append(core_materials.issue("invoice_status_missing", "票面未证明红蓝字或作废状态，请逐票核实。", meta["id"], record["source_position"]))
-            if needs_review and options.get("source_reviewed"):
-                doc["issues"] = [i for i in doc["issues"] if i["code"] not in {"ocr_review", "pdf_source_review"}]
-                doc["source_reviewed"] = True
-            elif needs_review and not any(i["code"] in {"ocr_review", "pdf_source_review"} for i in doc["issues"]):
-                doc["issues"].append(core_materials.issue("ocr_review", "OCR候选仍须对照原页核对。", meta["id"]))
-                doc["source_reviewed"] = False
-            if override:
-                for part in doc["parts"]:
-                    part["parsed_metadata"] = {k: deepcopy(part[k]) for k in ["unit", "period", "form_type"]}
-                    for field in ["unit", "form_type"]:
-                        if (
-                            override.get(field)
-                            and part.get(field) not in {None, "", "unknown", override[field]}
-                            and not doc.get("ocr_candidate")
-                        ):
-                            doc["issues"].append(
-                                core_materials.issue(
-                                    "metadata_conflict",
-                                    "人工核对与文件识别的" + field + "不一致，请核对原件。",
-                                    meta["id"],
-                                    part["name"],
-                                )
-                            )
-                    if (
-                        override.get("period_start")
-                        and part.get("period")
-                        and part["period"] != [override["period_start"], override["period_end"]]
-                        and not doc.get("ocr_candidate")
-                    ):
-                        doc["issues"].append(
-                            core_materials.issue(
-                                "metadata_conflict",
-                                "人工期间与文件记载期间冲突，请核对原件。",
-                                meta["id"],
-                                part["name"],
-                            )
-                        )
-                    part["metadata_origin"] = "user_confirmation"
-                    if override.get("unit"):
-                        part["unit"] = override["unit"]
-                    if override.get("period_start") and override.get("period_end"):
-                        part["period"] = [override["period_start"], override["period_end"]]
-                    if override.get("form_type"):
-                        part["form_type"] = override["form_type"]
-                for record in doc["records"]:
-                    record["confirmed_metadata"] = dict(override)
-                    for key in ["unit", "form_type"]:
-                        if override.get(key):
-                            record[key] = override[key]
-                    if override.get("period_start") and override.get("period_end"):
-                        record["period_start"], record["period_end"] = override["period_start"], override["period_end"]
-            for record in doc["records"]:
-                direction = options.get("invoice_directions", {}).get(record["id"])
-                if direction and doc["material_type"] == "invoice_detail":
-                    record.setdefault("confirmed_metadata", {})["direction"] = direction
-                    record["direction"] = direction
-            documents.append(doc)
-        core_materials.autofill_scope(payload["task"], documents)
-        for doc in documents:
-            if doc["material_type"] == "invoice_detail":
-                for record in doc["records"]:
-                    extracted = {**record, "direction": record["source_metadata"].get("direction")}
-                    record["automatic_direction"] = core_materials.invoice_direction(extracted, payload["task"].get("tax_no"))
-        payload["documents"] = documents
-        payload["processing"] = core_materials.prepare(payload["task"], documents)
-        if vat_review is not None:
-            from src import vat_reconciliation as vat
-            checked = vat.make_review(payload, vat_review, user['id'], members.now())
-            payload.setdefault('check_reviews', {})[vat.RULE] = checked
-            if vat.RULE in payload.get('tax_checks', {}):
-                payload['tax_checks'][vat.RULE]['stale'] = True
-            from webapp.core_reports import summary
-            payload['tax_check_summary'] = summary(payload.get('tax_checks', {}))
-        if payload.get('policy_input'):
-            from webapp import core_policies
-            core_policies.update(payload)
-        batches.append_revision(store, user, task_id, revision, "edit", payload)
+        job_id = await run_in_threadpool(jobs.submit, store, user, task_id, revision,
+                                         ai=ai, payload=payload, uploads=uploads, vat_review=vat_review)
+        from webapp.material_jobs import QueueSettings
+        if "respond-async" in request.headers.get("prefer", "") and QueueSettings.from_env().enabled:
+            return JSONResponse(read(user, task_id), status_code=202)
+        # Compatibility for existing clients: execute through the same durable
+        # scheduler and database-wide budgets, even when background workers are off.
+        await run_in_threadpool(jobs.wait, store, user, task_id, job_id, app.state.material_worker)
         return read(user, task_id)
 
     @app.post("/api/enterprise/input-tasks/{task_id}/files")
@@ -581,7 +420,7 @@ def register(app, get_store, get_user, allow, static_dir):
         task_id: str, request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")
     ):
         user = actor(session)
-        view = batches.read_current(get_store(), user, task_id)
+        view = batches.read(get_store(), user, task_id, current_only=True)
         payload = deepcopy(latest(view, writable=True))
         try:
             async with multipart(
@@ -590,6 +429,7 @@ def register(app, get_store, get_user, allow, static_dir):
                 max_files=20,
                 max_fields=4,
                 material_scope=user["org_id"],
+                material_store=get_store(), material_actor=user,
             ) as form:
                 kind, raw_revision, mode = (
                     form.get("material_type"),
@@ -637,16 +477,8 @@ def register(app, get_store, get_user, allow, static_dir):
                     key: {"material_type": kind, "original_name": name, "ocr": ocr == "1"}
                     for key, name in names.items()
                 }
-                received_revision = batches.supplement(get_store(), user, task_id, revision, uploads, payload)
-                result = await run_in_threadpool(process, user, task_id, received_revision, ai=mode == "ai")
-                previous_ids = {file["id"] for file in view["files"]}
-                incoming_ids = {file["id"] for file in result["files"]} - previous_ids
-                result["upload_review"] = {"pending_files": [doc["name"] for doc in result["documents"]
-                    if doc["id"] in incoming_ids and (
-                        (doc["material_type"] in core_materials.KINDS and (not doc["records"]
-                            or any(record.get("requires_source_review") for record in doc["records"])))
-                        or (doc["material_type"] == "supporting_material" and doc.get("issues")))]}
-                return result
+            return await processing_response(request, user, task_id, revision, ai=mode == "ai",
+                                             payload=payload, uploads=uploads)
         except (InputError, batches.MaterialStorageError, ValueError) as exc:
             raise HTTPException(422, str(exc)) from None
 
@@ -659,7 +491,7 @@ def register(app, get_store, get_user, allow, static_dir):
         try:
             if set(value) - {"expected_revision", "applicable_forms", "source_options", "mapping_mode", "policy_input", "vat_review"}:
                 raise InputError("请求包含未知字段。")
-            view = batches.read_current(get_store(), user, task_id)
+            view = batches.read(get_store(), user, task_id, current_only=True)
             payload = deepcopy(latest(view, writable=True))
             revision = value.get("expected_revision")
             if type(revision) is not int or revision != view["revision"]:
@@ -680,6 +512,8 @@ def register(app, get_store, get_user, allow, static_dir):
                     "ocr",
                     "invoice_statuses",
                     "invoice_directions",
+                    "record_corrections",
+                    "corrections_fingerprint",
                 }:
                     raise InputError("资料核对项无效。")
                 meta = change.get("confirmed_metadata", {})
@@ -720,6 +554,13 @@ def register(app, get_store, get_user, allow, static_dir):
                 document = next((d for d in payload["documents"] if d["id"] == file_id), None)
                 records = {r["id"]: r for r in document["records"]} if document else {}
                 options = payload["source_options"][file_id]
+                if 'corrections_fingerprint' in change and 'record_corrections' not in change:
+                    raise InputError('识别版本须与人工修正一同提交。')
+                if "record_corrections" in change:
+                    from webapp.core_material_jobs import validate_corrections, correction_fingerprint
+                    if not document or change.get('corrections_fingerprint') != correction_fingerprint(document):
+                        raise InputError('识别版本已变化，请重新读取后修改。')
+                    change['record_corrections'] = validate_corrections(document, change['record_corrections'])
                 directions = change.get("invoice_directions", options.get("invoice_directions", {}))
                 if "invoice_directions" in change and (not isinstance(directions, dict) or (directions and options["material_type"] != "invoice_detail") or set(directions) - set(records)):
                     raise InputError("只能核对当前文件已识别的逐票进销项方向。")
@@ -738,7 +579,8 @@ def register(app, get_store, get_user, allow, static_dir):
                             raise InputError("核对状态与票面识别值冲突，请核对或排除此原件。")
                 if (
                     (meta != options.get("confirmed_metadata", {}) or statuses != options.get("invoice_statuses", {})
-                     or directions != options.get("invoice_directions", {}))
+                     or directions != options.get("invoice_directions", {})
+                     or change.get('record_corrections', options.get('record_corrections', {})) != options.get('record_corrections', {}))
                     and "source_reviewed" not in change
                 ):
                     change["source_reviewed"] = False
@@ -746,6 +588,7 @@ def register(app, get_store, get_user, allow, static_dir):
             mode = value.get("mapping_mode", "local")
             if not isinstance(mode, str) or mode not in {"local", "ai"}:
                 raise InputError("映射方式无效。")
+            review_values = None
             if 'vat_review' in value:
                 from webapp.knowledge_evidence import VATReviewBody
                 from src import vat_reconciliation as vat
@@ -754,12 +597,8 @@ def register(app, get_store, get_user, allow, static_dir):
                 checked = VATReviewBody.model_validate({**value['vat_review'], 'expected_revision': revision})
                 review_values = checked.model_dump(exclude={'expected_revision'})
                 vat.make_review(payload, review_values, user['id'], members.now())
-                # Reparse, bind the reviewed row to the final sources, and save
-                # once. Invalid/foreign mappings cannot partly persist options.
-                return await run_in_threadpool(process, user, task_id, revision, ai=mode == 'ai',
-                                               working_payload=payload, vat_review=review_values)
-            revision = batches.append_revision(get_store(), user, task_id, revision, "edit", payload)
-            return await run_in_threadpool(process, user, task_id, revision, ai=mode == "ai")
+            return await processing_response(request, user, task_id, revision, ai=mode == "ai", payload=payload,
+                                             vat_review=review_values)
         except (InputError, ValueError, batches.MaterialStorageError) as exc:
             raise HTTPException(422, str(exc)) from None
 
@@ -822,7 +661,7 @@ def register(app, get_store, get_user, allow, static_dir):
                 raise InputError("请求包含未知字段。")
             if "confirm" in value and type(value["confirm"]) is not bool:
                 raise InputError("确认标记须为布尔值。")
-            view = batches.read_current(store, user, task_id)
+            view = batches.read(store, user, task_id, current_only=True)
             if value.get("expected_revision") != view["revision"]:
                 raise AccessDenied("任务版本已变化，请重新读取。", 409)
             payload = deepcopy(latest(view, writable=True))
