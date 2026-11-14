@@ -893,11 +893,23 @@ def workspace_styles() -> FileResponse:
 @app.get("/api/dashboard")
 def dashboard(session: str | None = Cookie(default=None, alias=COOKIE_NAME),
               company: str | None = Query(default=None, max_length=200),
-              page: int = Query(default=1, ge=1), page_size: int = Query(default=24, ge=1, le=100)):
+              page: int = Query(default=1, ge=1), page_size: int = Query(default=24, ge=1, le=100),
+              start_date: str | None = Query(default=None, max_length=10),
+              end_date: str | None = Query(default=None, max_length=10)):
     from webapp.dashboard import collect
     user = _user(session)
     _allow(user, "org_admin", "accountant", "teacher")
-    return collect(store, user, company, page, page_size)
+    start = end = None
+    if start_date is not None or end_date is not None:
+        try:
+            if not start_date or not end_date:
+                raise ValueError
+            start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+            if start > end or start.isoformat() != start_date or end.isoformat() != end_date:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(422, "请提供有效的起止日期，起始日期不能晚于终止日期。") from None
+    return collect(store, user, company, page, page_size, start, end)
 
 
 from webapp.org_reports import register as register_org_reports
