@@ -2,6 +2,7 @@
 import json
 
 from webapp.access import audit_scope, current_actor
+from webapp import risk_alerts
 
 
 def collect(store, actor, company=None, page=1, page_size=24):
@@ -40,13 +41,18 @@ def collect(store, actor, company=None, page=1, page_size=24):
             'SELECT a.id,a.company_name,a.taxpayer_id,a.industry,a.period,a.audited_at,a.summary_json,a.client_id'
             + selected_base + ' ORDER BY a.audited_at DESC,a.rowid DESC LIMIT 101', selected_args)]
         records = []
+        context = risk_alerts.rule_context(db) if rows else None
         for row in rows:
             dataset, findings = json.loads(row['dataset_json']), json.loads(row['findings_json'])
+            reviews = risk_alerts.reviews_for(db, row, dataset, findings)
             records.append({**{key:row[key] for key in ('id','company_name','taxpayer_id','industry','period','audited_at','client_id')},
                 'summary':json.loads(row['summary_json']),
+                'alerts': {'pending_count': sum(item['status'] != 'done' for item in reviews.values()),
+                           'rule_updates': risk_alerts.rule_updates(dataset, findings, context)},
                 'metrics':{key:{'value':value['value'],'source':value['source']} for key,value in dataset['metrics'].items()},
                 'risks':[{'id':f['rule']['id'],'name':f['rule']['name'],'severity':f['rule']['severity'],
-                          'category':f['rule']['category'],'status':f['status'],'reason':f['skip_reason']}
+                          'category':f['rule']['category'],'status':f['status'],'reason':f['skip_reason'],
+                          'review': reviews.get(f['rule']['id'])}
                          for f in findings if f['status']!='pass']})
         for row in history:
             row['summary'] = json.loads(row.pop('summary_json'))
