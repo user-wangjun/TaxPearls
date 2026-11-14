@@ -1404,3 +1404,31 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   ctx.prepareWhenIdle();assert.equal(timers.at(-1).delay,0,'Older browsers retain a task boundary');timers.at(-1).fn();assert.equal(mounts,2);
   console.log('Ocean scheduling: prompt first idle start, input quiet interval and workspace-entry cancellation passed.');
 }
+
+// Dashboard range selection commits only complete ranges and supports cross-year selection.
+{
+  const source=fs.readFileSync("webapp/static/workspace.js","utf8");
+  const nodes=new Map();let requests=0;
+  const node=(tag,cls,text="")=>({tag,className:cls,textContent:text,value:"",hidden:true,children:[],listeners:{},
+    setAttribute(name,value){this[name]=value;},append(item){this.children.push(item);},
+    replaceChildren(){this.children=[];},addEventListener(type,fn){this.listeners[type]=fn;},focus(){}});
+  const get=id=>{if(!nodes.has(id))nodes.set(id,node("div"));return nodes.get(id);};
+  const context={$:get,el:node,document:{addEventListener(){}},loadDashboard(){requests++;}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf("function setupDashboardRange(){"),source.indexOf("async function loadDashboard(")),context);
+  const month=value=>{get("dashboardCalendarMonth").value=value;get("dashboardCalendarMonth").listeners.change();};
+  const day=value=>get("dashboardCalendarDays").children.find(n=>n["data-date"]===value);
+  get("dashboardDateRange").onclick();month("2026-12");day("2026-12-28").onclick();
+  assert.equal(requests,0);assert.equal(get("dashboardStart").value,"");
+  get("dashboardCalendarNext").onclick();assert.equal(get("dashboardCalendarMonth").value,"2027-01");
+  day("2027-01-04").onclick();assert.equal(requests,1);
+  assert.equal(get("dashboardStart").value,"2026-12-28");assert.equal(get("dashboardEnd").value,"2027-01-04");
+  day("2027-01-20").onclick();day("2027-01-15").onclick();
+  assert.equal(get("dashboardStart").value,"2027-01-15");assert.equal(get("dashboardEnd").value,"2027-01-20");
+  day("2027-01-01").onclick();get("dashboardCalendarCancel").onclick();
+  assert.equal(requests,2);assert.equal(get("dashboardStart").value,"2027-01-15");
+  get("dashboardDateRange").onclick();get("dashboardCalendarClear").onclick();
+  assert.equal(requests,3);assert.equal(get("dashboardStart").value,"");assert.equal(get("dashboardEnd").value,"");
+  assert.equal(get("dashboardRangeCalendar").hidden,true);
+  console.log("Dashboard range: cross-year selection, reverse order, cancelled drafts and clearing passed.");
+}

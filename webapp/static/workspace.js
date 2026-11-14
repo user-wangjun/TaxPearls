@@ -154,7 +154,7 @@ function enhanceSelect(select){
   refresh();
 }
 enhanceSelect($("dashboardCompany"));
-enhanceSelect($("dashboardPeriod"));
+
 function action(label,fn) { const b=el("button","btn re",label);b.addEventListener("click",fn);return b; }
 async function openAudit(id) { try {renderResult(await api("/api/audits/"+id));} catch(e){showError(e.message);} }
 function startClientUpload(){
@@ -163,6 +163,44 @@ function startClientUpload(){
 }
 $("dashboardUpload").addEventListener("click",()=>isCampusUser()?switchPanel("examPanel"):startClientUpload());
 let dashboardRequest = 0;
+// Match the upload calendar: two clicks, cross-month navigation, reversed dates and clear.
+function setupDashboardRange(){
+  const rangeTrigger=$("dashboardDateRange"),calendar=$("dashboardRangeCalendar"),calendarMonth=$("dashboardCalendarMonth");
+  let calendarYear=0,calendarMonthNumber=0,draftStart="";
+  const pad=n=>String(n).padStart(2,"0"),lastDay=(y,m)=>new Date(Date.UTC(y,m,0)).getUTCDate();
+  function updateRangeDisplay(){
+    const start=$("dashboardStart").value,end=$("dashboardEnd").value;
+    $("dashboardDateRangeText").textContent=start||end?`${start||"待选择起始日"} 至 ${end||"待选择终止日"}`:"全部期间 · 选择起止日期";
+  }
+  function closeCalendar(focus=false){calendar.hidden=true;rangeTrigger.setAttribute("aria-expanded","false");draftStart="";if(focus)rangeTrigger.focus?.();}
+  function renderCalendar(){
+    const year=String(calendarYear).padStart(4,"0"),month=pad(calendarMonthNumber),days=$("dashboardCalendarDays");
+    calendarMonth.value=`${year}-${month}`;days.replaceChildren();
+    const savedStart=$("dashboardStart").value,savedEnd=$("dashboardEnd").value;
+    $("dashboardCalendarHint").textContent=draftStart?`已选 ${draftStart}，请选择终止日期`:savedStart&&savedEnd?`已选 ${savedStart} 至 ${savedEnd}，可重新选择`:"请选择起始日期，再选择终止日期";
+    const first=new Date(0);first.setUTCFullYear(calendarYear,calendarMonthNumber-1,1);
+    for(let i=0;i<(first.getUTCDay()+6)%7;i++){const blank=el("span");blank.setAttribute("aria-hidden","true");days.append(blank);}
+    const start=draftStart||$("dashboardStart").value,end=draftStart?"":$("dashboardEnd").value;
+    for(let d=1;d<=lastDay(calendarYear,calendarMonthNumber);d++){
+      const value=`${year}-${month}-${pad(d)}`,selected=value===start||value===end;
+      const day=el("button",selected?"selected":start&&end&&value>start&&value<end?"in-range":"",String(d));day.type="button";
+      day.setAttribute("data-date",value);day.setAttribute("aria-label",value);day.setAttribute("aria-pressed",String(selected));
+      day.onclick=()=>{if(!draftStart){draftStart=value;renderCalendar();days.querySelector?.(`button[data-date="${value}"]`)?.focus();return;}
+        const [from,to]=[draftStart,value].sort();$("dashboardStart").value=from;$("dashboardEnd").value=to;draftStart="";updateRangeDisplay();renderCalendar();days.querySelector?.(`button[data-date="${value}"]`)?.focus();void loadDashboard();};
+      days.append(day);}}
+  rangeTrigger.onclick=()=>{if(!calendar.hidden){closeCalendar();return;}
+    const start=$("dashboardStart").value,today=new Date();calendarYear=start?Number(start.slice(0,4)):today.getFullYear();calendarMonthNumber=start?Number(start.slice(5,7)):today.getMonth()+1;
+    draftStart="";renderCalendar();calendar.hidden=false;rangeTrigger.setAttribute("aria-expanded","true");calendarMonth.focus?.();};
+  calendarMonth.addEventListener("change",()=>{const [y,m]=calendarMonth.value.split("-").map(Number);if(y>=1&&y<=9999&&m>=1&&m<=12){calendarYear=y;calendarMonthNumber=m;renderCalendar();}});
+  function moveCalendar(offset){const next=(calendarYear-1)*12+calendarMonthNumber-1+offset;if(next<0||next>=9999*12)return;calendarYear=Math.floor(next/12)+1;calendarMonthNumber=next%12+1;renderCalendar();}
+  $("dashboardCalendarPrev").onclick=()=>moveCalendar(-1);$("dashboardCalendarNext").onclick=()=>moveCalendar(1);
+  $("dashboardCalendarCancel").onclick=()=>closeCalendar(true);
+  $("dashboardCalendarClear").onclick=()=>{$("dashboardStart").value=$("dashboardEnd").value="";updateRangeDisplay();closeCalendar(true);void loadDashboard();};
+  calendar.addEventListener("keydown",event=>{if(event.key==="Escape"){event.preventDefault();closeCalendar(true);}});
+  document.addEventListener?.("pointerdown",event=>{if(!calendar.hidden&&!$("dashboardDateRangeField").contains(event.target))closeCalendar();});
+  updateRangeDisplay();
+}
+setupDashboardRange();
 async function loadDashboard(append = false) {
   if(isCampusUser())return loadCampusDashboard();
   const ticket = ++dashboardRequest, userId = currentUser.id;
@@ -171,35 +209,30 @@ async function loadDashboard(append = false) {
   try {
     const company = $("dashboardCompany").value;
     const page = append ? dashboardData.page + 1 : 1;
-    const data = await api("/api/dashboard?page=" + page + (company ? "&company=" + encodeURIComponent(company) : ""));
+    const query=new URLSearchParams({page});
+    if(company)query.set("company",company);
+    if($("dashboardStart").value&&$("dashboardEnd").value){query.set("start_date",$("dashboardStart").value);query.set("end_date",$("dashboardEnd").value);}
+    const data = await api("/api/dashboard?"+query);
     if (ticket !== dashboardRequest || currentUser?.id !== userId) return;
     dashboardData = {...data, records:append ? [...dashboardData.records, ...data.records] : data.records};
     const select=$("dashboardCompany");select.textContent="";
     for (const item of data.companies) option(select,item.key,item.name);
     select.value=data.company;
     if (!data.companies.length) option(select,"","暂无企业数据");
-    updatePeriods();
+    renderDashboard();
   } catch(e){if(ticket===dashboardRequest)body.replaceChildren(el("div","empty","数据加载失败："+e.message),action("重新加载",()=>loadDashboard()));}
 }
 
-function updatePeriods(){
-  const select=$("dashboardPeriod"),previous=select.value;select.textContent="";
-  const rows=dashboardData.records.filter(r=>companyKey(r)===$("dashboardCompany").value);
-  for(const r of rows)option(select,r.period,r.period);
-  if(rows.some(r=>r.period===previous))select.value=previous;
-  if(!rows.length)option(select,"","暂无期间");
-  renderDashboard();
-}
 $("dashboardCompany").addEventListener("change",()=>loadDashboard());
-$("dashboardPeriod").addEventListener("change",renderDashboard);
 function section(title){const s=el("div","sheet");s.append(el("h2",null,title));return s;}
 function renderDashboard(){
   const box=$("dashboardBody");box.textContent="";
   if(dashboardData.has_more) box.append(action("加载更早期间（已载入 "+dashboardData.records.length+" / "+dashboardData.total_periods+"）",()=>loadDashboard(true)));
   if(dashboardData.history_truncated) box.append(el("p","muted","最近审计显示最新 100 次；完整记录可在报告归档中检索。"));
   const rows=dashboardData.records.filter(r=>companyKey(r)===$("dashboardCompany").value);
-  const r=rows.find(r=>r.period===$("dashboardPeriod").value);
-  $("dashboardUpdated").textContent=r?"最近更新 "+r.audited_at:"";
+  const r=rows[0];
+  $("dashboardUpdated").textContent=r?"指标与风险："+r.period+" · 最近更新 "+r.audited_at:"";
+  if(!r&&$("dashboardStart").value){const s=section("所选区间暂无审计数据");s.classList.add("dashboard-empty");s.append(el("p","empty","请选择包含完整审计期间的日期区间，或清空日期查看全部期间。"));box.append(s);return;}
   if(!r){const client=dashboardData.clients.find(c=>c.taxpayer_id===$("dashboardCompany").value),s=section(client?"为该客户完成首次审计":"从第一份企业材料开始");s.classList.add("dashboard-empty");s.append(el("p","empty",client?"客户档案已建立。上传匹配该纳税人识别号的材料后，这里会展示经营指标、风险概况和历史记录。":"上传并完成审计后，这里会展示经营指标、风险概况和历史记录。"),action(client?"上传该客户材料":"上传材料",startClientUpload));box.append(s);return;}
   const kpis=el("div","kpi-grid");
   metricSpecs.forEach(([label,key],i)=>{
@@ -231,7 +264,7 @@ function renderDashboard(){
   if(!r.risks.length)attention.append(el("p","empty","本次检查没有命中或未执行事项。"));box.append(attention);
   const recent=section("最近审计"),history=dashboardData.history.filter(a=>companyKey(a)===companyKey(r));
   for(const row of history.slice(0,6)){const item=el("div","data-item"),txt=el("div");txt.append(el("div",null,row.company_name+" · "+row.period),el("p","muted",row.audited_at+" · 命中 "+row.summary.hit+" 项"));item.append(txt,action("查看报告",()=>openAudit(row.id)));recent.append(item);}box.append(recent);
-  box.append(el("p","source-note","同一企业、同一期间仅取最新成功审计的数据；历史版本仍保留在历史档案中。"));
+  box.append(el("p","source-note","仅展示完整落在所选区间内的审计期间；指标与风险采用区间内最近一次审计，同一期间仅取最新版本。历史版本仍保留在历史档案中。"));
 }
 function renderRiskDistribution(box,record){
   const levels=[
@@ -417,7 +450,7 @@ function emptyChart(title,sub){
   return svg;
 }
 function renderTrend(box,rows){
-  const selected=periodInfo($("dashboardPeriod").value);
+  const selected=rows.length?periodInfo(rows[0].period):null;
   const data=selected?rows.filter(r=>periodInfo(r.period)?.group===selected.group).sort((a,b)=>periodInfo(a.period).order-periodInfo(b.period).order).slice(-8):[];
   if(data.length<2){box.append(emptyChart("暂无可比较的跨期数据","同一企业至少两个相同粒度的明确期间，才能连线比较"));return;}
   const svg=svgNode("svg",{viewBox:"0 0 620 240",class:"chart",role:"img","aria-label":"营业收入与营业成本趋势，单位元"});

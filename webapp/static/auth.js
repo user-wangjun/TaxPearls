@@ -115,7 +115,7 @@ async function enterApp(user) {
       workspaceScripts = Promise.all([
         loadClientScript("/university-workspace.js?v=20261029-student-kp-pages-2"),
         loadClientScript("/console.js?v=20261101-2bb7d3def471")
-      ]).then(() => loadClientScript("/workspace.js?v=risk-alerts-20261115-1"))
+      ]).then(() => loadClientScript("/workspace.js?v=risk-dashboard-20261115-merged"))
         .catch(error => { workspaceScripts = null; throw error; });
     }
     await workspaceScripts;

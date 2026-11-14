@@ -468,7 +468,7 @@
 
 </style>
 <link rel="stylesheet" href="/university.css?v=student-mobile-integration-20261026-19">
-<link rel="stylesheet" href="/workspace.css?v=risk-alerts-20261115-1">
+<link rel="stylesheet" href="/workspace.css?v=risk-dashboard-20261115-merged">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261027-ocean-start-1">
@@ -607,7 +607,18 @@
     </section>
     <section class="panel" id="dashboardPanel">
       <div class="page-head"><div><p class="eyebrow">BUSINESS OVERVIEW</p><h2>工作台</h2><p class="muted">从企业业务数据出发，了解经营表现与税务风险。</p></div><button class="btn pdf" id="dashboardUpload">上传材料 ↗</button></div>
-      <div class="sheet row" id="dashboardFilters"><div class="field"><label for="dashboardCompany">企业</label><select id="dashboardCompany"></select></div><div class="field"><label for="dashboardPeriod">所属期间</label><select id="dashboardPeriod"></select></div><p class="muted" id="dashboardUpdated"></p></div>
+      <div class="sheet row" id="dashboardFilters"><div class="field"><label for="dashboardCompany">企业</label><select id="dashboardCompany"></select></div><div class="field core-range-field" id="dashboardDateRangeField">
+              <label id="dashboardDateRangeLabel" for="dashboardDateRange">所属期间</label>
+              <button id="dashboardDateRange" class="core-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="dashboardRangeCalendar" aria-labelledby="dashboardDateRangeLabel dashboardDateRangeText"><span id="dashboardDateRangeText">全部期间 · 选择起止日期</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg></button>
+              <input id="dashboardStart" type="hidden"><input id="dashboardEnd" type="hidden">
+              <div id="dashboardRangeCalendar" class="core-range-calendar" role="dialog" aria-label="选择所属期间起止日期" hidden>
+                <p id="dashboardCalendarHint" role="status">请选择起始日期</p>
+                <div class="core-calendar-toolbar"><button id="dashboardCalendarPrev" type="button" aria-label="上个月">‹</button><input id="dashboardCalendarMonth" type="month" min="0001-01" max="9999-12" aria-label="日历显示月份"><button id="dashboardCalendarNext" type="button" aria-label="下个月">›</button></div>
+                <div class="core-calendar-week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
+                <div id="dashboardCalendarDays" class="core-calendar-days" role="group" aria-label="日期"></div>
+                <div class="core-calendar-actions"><button id="dashboardCalendarClear" type="button">清空</button><button id="dashboardCalendarCancel" type="button">取消</button></div>
+              </div>
+            </div><p class="muted" id="dashboardUpdated"></p></div>
       <div id="dashboardBody" aria-live="polite"></div>
     </section>
     <section class="panel" id="orgReportPanel">
@@ -1076,7 +1087,7 @@
   </div>
 </footer>
 
-<script defer src="/auth.js?v=risk-alerts-20261115-1"></script>
+<script defer src="/auth.js?v=risk-dashboard-20261115-merged"></script>
 <script defer src="/auth-glass.js?v=20261027-ocean-start-10"></script>
 <div id="toastStack" aria-live="polite"></div>
 </body>

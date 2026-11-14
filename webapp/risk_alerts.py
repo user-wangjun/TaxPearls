@@ -8,7 +8,7 @@ from typing import Literal
 from fastapi import Cookie, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 
-from src import engine, loader, risk_changes, snapshots
+from src import engine, loader, periods, risk_changes, snapshots
 from src.rule_conversion import canonical, period_rules
 from webapp.access import AccessDenied, audit_row, current_actor
 
@@ -59,6 +59,12 @@ def rule_context(db):
 def rule_updates(dataset, findings, context):
     """An update warrants rechecking; it never establishes a new risk."""
     data = snapshots.deserialize_dataset(dataset)
+    try:
+        periods.parse_period(data.company.period, '检测所属期间')
+    except loader.InputError:
+        # Historical custom ranges remain visible in the dashboard. An
+        # unsupported detection period is not evidence that rules changed.
+        return []
     old = {item.rule.id: item for item in snapshots.deserialize_findings(findings)}
     base_rules, histories, enabled = context
     updates = []

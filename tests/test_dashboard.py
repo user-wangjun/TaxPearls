@@ -1,6 +1,7 @@
 from copy import deepcopy
 from contextlib import closing
 from dataclasses import asdict, replace
+from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import sqlite3
@@ -20,6 +21,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DashboardTests(unittest.TestCase):
+    def test_custom_and_legacy_period_bounds(self):
+        from webapp.dashboard import period_bounds
+        self.assertEqual(period_bounds('2026-12-28 至 2027-01-04'),
+                         (date(2026, 12, 28), date(2027, 1, 4)))
+        for label in ['2026-02', '2026年2月', '2026-02-01 至 2026-02-28']:
+            self.assertEqual(period_bounds(label), (date(2026, 2, 1), date(2026, 2, 28)))
+        for label in ['2026-02-30 至 2026-03-01', '2026-03-01 至 2026-02-01', '未知期间']:
+            self.assertIsNone(period_bounds(label))
+
     def test_client_name_does_not_hide_audit_company_name(self):
         from webapp.dashboard import collect
         with TemporaryDirectory() as tmp:
@@ -41,6 +51,31 @@ class DashboardTests(unittest.TestCase):
                 'name': '仿真审计企业（客户档案：模拟商贸企业02（纯合成测试））'}])
             self.assertEqual(result['total_periods'], 8)
             self.assertEqual(len(result['records']), 8)
+            ranged = collect(store, owner, data.company.taxpayer_id, page_size=1,
+                             start_date=date(2026, 1, 1), end_date=date(2026, 2, 28))
+            self.assertEqual(ranged['total_periods'], 2)
+            self.assertEqual(ranged['records'][0]['id'], 'period-2')
+            self.assertTrue(ranged['has_more'])
+            self.assertEqual([r['id'] for r in ranged['history']], ['period-2', 'period-1'])
+            earlier = collect(store, owner, data.company.taxpayer_id, page=2, page_size=1,
+                              start_date=date(2026, 1, 1), end_date=date(2026, 2, 28))
+            self.assertEqual(earlier['records'][0]['id'], 'period-1')
+            self.assertFalse(earlier['has_more'])
+            empty = collect(store, owner, start_date=date(2026, 1, 2), end_date=date(2026, 1, 30))
+            self.assertEqual(empty['records'], [])
+            self.assertEqual(empty['history'], [])
+            self.assertEqual(empty['total_periods'], 0)
+            self.assertEqual(empty['companies'], result['companies'])
+            self.assertEqual(collect(store, outsider, start_date=date(2026, 1, 1),
+                                     end_date=date(2026, 12, 31))['records'], [])
+            custom = deepcopy(data)
+            custom.company.period = '2026-12-28 至 2027-01-04'
+            store.save_audit('custom', owner, customer['id'], custom, findings, summary,
+                             '2027-01-05T12:00:00')
+            cross_year = collect(store, owner, start_date=date(2026, 12, 1), end_date=date(2027, 1, 31))
+            self.assertEqual([r['id'] for r in cross_year['records']], ['custom'])
+            self.assertEqual([r['id'] for r in cross_year['history']], ['custom'])
+            self.assertEqual(cross_year['records'][0]['alerts']['rule_updates'], [])
             self.assertEqual(collect(store, outsider)['companies'], [])
             with store.connect() as db:
                 self.assertEqual(db.execute('SELECT name FROM clients WHERE id=?', (customer['id'],)).fetchone()[0],
@@ -82,6 +117,17 @@ class DashboardTests(unittest.TestCase):
                             body = response.json()
                             self.assertEqual([r["id"] for r in body["records"]], ["next", "new"])
                             self.assertEqual(len(body["history"]), 3)
+                            ranged = client.get('/api/dashboard', params={
+                                'start_date': '2026-01-01', 'end_date': '2026-01-31'}).json()
+                            self.assertEqual([r['id'] for r in ranged['records']], ['new'])
+                            self.assertEqual([r['id'] for r in ranged['history']], ['new', 'old'])
+                            for params in [
+                                {'start_date': '2026-01-01'},
+                                {'end_date': '2026-01-31'},
+                                {'start_date': '2026-02-30', 'end_date': '2026-03-31'},
+                                {'start_date': '2026-02-01', 'end_date': '2026-01-31'},
+                            ]:
+                                self.assertEqual(client.get('/api/dashboard', params=params).status_code, 422)
                             self.assertEqual(body["records"][0]["metrics"]["营业收入"]["value"], str(data.metrics["营业收入"].value))
                             self.assertNotIn("利润表.净利润", body["records"][0]["metrics"])
                         else:
@@ -153,6 +199,19 @@ class RiskAlertTests(unittest.TestCase):
                                           self.body('reviewing', '补充核查', 1))
         self.assertEqual(reopened['status'], 'reviewing')
         self.assertEqual(reopened['revision'], 2)
+
+    def test_date_range_keeps_pending_reviews_with_the_matching_audit(self):
+        later = deepcopy(self.data)
+        later.company.period = '2026-07'
+        self.save('later', later)
+        risk_alerts.save_review(self.store, self.owner, 'original', self.hit.rule.id, self.body())
+        original = collect(self.store, self.owner, start_date=date(2026, 1, 1), end_date=date(2026, 6, 30))
+        selected = collect(self.store, self.owner, start_date=date(2026, 7, 1), end_date=date(2026, 7, 31))
+        total = sum(item.status == 'hit' for item in self.findings)
+        self.assertEqual(original['records'][0]['id'], 'original')
+        self.assertEqual(original['records'][0]['alerts']['pending_count'], total - 1)
+        self.assertEqual(selected['records'][0]['id'], 'later')
+        self.assertEqual(selected['records'][0]['alerts']['pending_count'], total)
 
     def test_reviews_require_authorized_hit_and_completion_note(self):
         for actor in (self.other, self.outsider):
