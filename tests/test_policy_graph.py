@@ -97,6 +97,20 @@ class PolicyGraphTests(unittest.TestCase):
         self.assertTrue(any(e.get("schema_type") == "Relationship" for e in graph["edges"]))
         self.assertFalse(any(n["kind"] in {"company", "risk"} for n in graph["nodes"]))
 
+    def test_sync_of_installed_rule_snapshots_does_not_take_a_write_transaction(self):
+        rules = engine.load_rules(ROOT / 'rules')
+        selected = pg.sync_rules(self.db, rules)
+        self.db.commit()
+        statements = []
+        self.db.set_trace_callback(statements.append)
+        self.assertEqual(pg.sync_rules(self.db, rules), selected)
+        self.assertNotIn('BEGIN IMMEDIATE', statements)
+        self.assertFalse(any(s.startswith(('INSERT', 'UPDATE', 'DELETE')) for s in statements))
+        self.db.commit()
+        changed = replace(rules[0], name=rules[0].name + ' updated')
+        updated = pg.sync_rules(self.db, [changed])
+        self.assertNotEqual(set(updated), {key for key, value in selected.items() if value == changed.id})
+
     def test_candidate_cannot_execute_and_approval_records_reviewer(self):
         self.install()
         self.assertEqual(self.preview()["truth"], "UNKNOWN")
@@ -360,15 +374,17 @@ class PolicyGraphHTTPTests(unittest.TestCase):
             original.write_text("纯合成测试。", encoding="utf-8")
             store = Store(Path(directory) / "test.db")
             store.create_user("platform", "policy-test-2026", "平台", "platform_admin", "platform")
-            with store.connect() as db:
-                original_rules = db.execute("SELECT count(*) FROM TaxRule").fetchone()[0]
             with patch.object(app_module, "store", store), TestClient(app_module.app) as client:
                 client.post("/api/login", json={"username": "platform", "password": "policy-test-2026"})
+                # Startup now installs the bundled public catalog. The operation
+                # under test must preserve that complete baseline on rollback.
+                with store.connect() as db:
+                    original_rules = [tuple(r) for r in db.execute('SELECT * FROM TaxRule ORDER BY rule_id')]
                 with patch.object(store, "_log", side_effect=RuntimeError("test log failure")):
                     with self.assertRaises(RuntimeError):
                         client.post("/api/knowledge/candidates", json={"bundle": demonstration(original)})
                 with store.connect() as db:
-                    self.assertEqual(db.execute("SELECT count(*) FROM TaxRule").fetchone()[0], original_rules)
+                    self.assertEqual([tuple(r) for r in db.execute('SELECT * FROM TaxRule ORDER BY rule_id')], original_rules)
                 self.assertEqual(client.post("/api/knowledge/candidates", json={"bundle": demonstration(original)}).status_code, 200)
                 with patch.object(store, "_log", side_effect=RuntimeError("test log failure")):
                     with self.assertRaises(RuntimeError):

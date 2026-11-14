@@ -163,10 +163,18 @@ def redeem_magic(store, token, browser):
         if row['purpose']=='reset' and not db.execute('SELECT 1 FROM users WHERE email=? AND active=1',(row['email'],)).fetchone():
             raise ValueError(INVALID)
         proof = secrets.token_urlsafe(32)
+        registration = {}
+        if row['purpose']=='register' and row['invite_hash']:
+            invitation = db.execute('SELECT id,code_secret FROM training_invitation_links WHERE token_hash=?',
+                                    (row['invite_hash'],)).fetchone()
+            if invitation:
+                if not invitation['code_secret']:
+                    raise ValueError('请回到邀请页重新获取邮箱验证码。')
+                registration['join_path'] = '/p/' + invitation['code_secret']
         db.execute('UPDATE email_tokens SET magic_used_at=?,proof_hash=? WHERE token_hash=?',
                    (members.now(),digest(proof),row['token_hash']))
         return {'purpose':row['purpose'],'email':row['email'],'proof':proof,
-                'has_invite':bool(row['invite_hash']),'expires_at':row['expires_at']}
+                'has_invite':bool(row['invite_hash']),'expires_at':row['expires_at'], **registration}
 
 
 def reset_password(store, proof, password, browser):

@@ -1,7 +1,9 @@
 """Institution membership and transactional active-seat accounting."""
 from datetime import UTC, datetime
+import ipaddress
+import json
 
-from fastapi import Cookie
+from fastapi import Cookie, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from webapp.access import AccessDenied, current_actor
@@ -52,6 +54,29 @@ def log(db, actor, action, kind, target, detail):
     Store._log(db, actor, action, kind, target, detail)
 
 
+def request_ip(request):
+    # Uvicorn resolves forwarded addresses only for configured trusted proxies.
+    # Never trust a header supplied directly by an arbitrary caller.
+    try:
+        return str(ipaddress.ip_address(request.client.host)) if request.client else None
+    except ValueError:
+        return None
+
+
+def log_quota_change(db, actor, org_id, action, target_id, before, after,
+                     old_revision, new_revision, source_ip, *, college=None):
+    person = db.execute('SELECT id,username,display_name,role FROM users WHERE id=?', (actor['id'],)).fetchone()
+    organization = db.execute('SELECT display_name FROM org_settings WHERE org_id=?', (org_id,)).fetchone()
+    detail = json.dumps({'actor': dict(person), 'organization_id': org_id,
+                         'organization_name': organization[0] if organization else org_id,
+                         'college': college, 'before': before, 'after': after,
+                         'old_revision': old_revision, 'new_revision': new_revision,
+                         'source_ip': source_ip}, ensure_ascii=False)
+    # Same transaction as the quota write: failure to retain evidence aborts it.
+    # audit_log.detail is encrypted by Store._log and survives normal backups.
+    log(db, {**actor, 'org_id': org_id}, action, 'org', target_id, detail)
+
+
 def organizations(store, actor):
     with store.connect() as db:
         db.execute('BEGIN')
@@ -78,15 +103,24 @@ def overview(store, actor, org_id):
             LEFT JOIN member_invitations mi ON mi.id=m.credential_id AND mi.org_id=u.org_id
             WHERE u.org_id=? AND u.role!='platform_admin' ORDER BY u.created_at,u.id''',(org_id,)).fetchall()
         category=db.execute('SELECT org_type FROM org_settings WHERE org_id=?',(org_id,)).fetchone()
-        return {'org_id':org_id,'org_type':category[0] if category else None,'quota':quota(db,org_id),'members':[dict(row) for row in rows]}
+        result = {'org_id':org_id,'org_type':category[0] if category else None,
+                  'quota':quota(db,org_id),'members':[dict(row) for row in rows]}
+        if result['org_type'] == 'university':
+            from webapp.university_members import school_state
+            school = db.execute('SELECT college FROM university_organizations WHERE org_id=?', (org_id,)).fetchone()
+            result['university_quota'] = school_state(db, school['college']) if school else None
+        return result
 
 
-def set_quota(store, actor, org_id, seats, revision):
+def set_quota(store, actor, org_id, seats, revision, *, source_ip=None):
     if type(seats) is not int or not 1<=seats<=200 or type(revision) is not int or revision<0:
         raise AccessDenied('配额须为 1–200 的整数，版本必须有效。',422)
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         authorize(db,actor,org_id,platform_only=True)
+        category = db.execute('SELECT org_type FROM org_settings WHERE org_id=?', (org_id,)).fetchone()
+        if category and category[0] == 'university':
+            raise AccessDenied('高校请分别配置教职工和学生总额度。', 409)
         state=quota(db,org_id)
         if state['revision'] != revision:
             raise AccessDenied('席位配置已变化，请刷新后重试。',409)
@@ -95,7 +129,9 @@ def set_quota(store, actor, org_id, seats, revision):
         db.execute('''INSERT INTO org_quota(org_id,seats,updated_by,updated_at,revision) VALUES (?,?,?,?,1)
             ON CONFLICT(org_id) DO UPDATE SET seats=excluded.seats,updated_by=excluded.updated_by,
                 updated_at=excluded.updated_at,revision=org_quota.revision+1''',(org_id,seats,actor['id'],now()))
-        log(db,{**actor,'org_id':org_id},'set_member_quota','org',org_id,f'seats={seats};revision={revision+1}')
+        log_quota_change(db, actor, org_id, 'set_member_quota', org_id,
+                         {'seats': state['seats']}, {'seats': seats},
+                         state['revision'], revision + 1, source_ip)
         return quota(db,org_id)
 
 
@@ -165,8 +201,9 @@ def register(app, store_provider, user_for_session, cookie_name):
         return overview(store_provider(),user_for_session(session),org_id)
 
     @app.put('/api/members/{org_id}/quota')
-    def change_quota(org_id: str,body: QuotaBody,session: str | None=Cookie(default=None,alias=cookie_name)):
-        return set_quota(store_provider(),user_for_session(session),org_id,body.seats,body.revision)
+    def change_quota(org_id: str,body: QuotaBody,request: Request,session: str | None=Cookie(default=None,alias=cookie_name)):
+        return set_quota(store_provider(),user_for_session(session),org_id,body.seats,body.revision,
+                         source_ip=request_ip(request))
 
     @app.put('/api/members/{org_id}/{user_id}/active')
     def change_active(org_id: str,user_id: str,body: ActiveBody,session: str | None=Cookie(default=None,alias=cookie_name)):

@@ -77,11 +77,14 @@ def build_task_bundle(db, payload, task, rule_id, **options):
         facts = collect(definitions, payload["processing"], payload["task"])
     catalog = [r["id"] for r in payload["processing"].get("records", [])]
     catalog += ["file:" + d["id"] for d in payload.get("documents", [])]
+    from src.supporting_materials import evidence
     return bundle.build(db, task, rule_id, facts, source_catalog=catalog, metric_definitions=definitions,
+                        supporting_materials=evidence(payload),
                         fact_assessment=fact_assessment, **options)
 
 
 def mark_stale(payload):
+    from src.supporting_materials import evidence
     for slot in payload.get("tax_checks", {}).values():
         package = slot.get("bundle", {})
         definitions = package.get("metric_definitions", {})
@@ -92,5 +95,6 @@ def mark_stale(payload):
         scope_changed = slot.get("input_scope", scope) != scope
         period_changed = any(package.get("task", {}).get(key, payload["task"][source]) != payload["task"][source]
                              for key, source in (("period_start", "start_date"), ("period_end", "end_date")))
-        slot["stale"] = scope_changed or period_changed or signature(current) != signature(previous)
+        supporting_changed = evidence(payload) != package.get("supporting_materials", [])
+        slot["stale"] = scope_changed or period_changed or supporting_changed or signature(current) != signature(previous)
     return payload

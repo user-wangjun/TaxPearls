@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+import auth_support
+
 import tempfile
 import unittest
 import uuid
@@ -77,6 +79,7 @@ class KnowledgePointImportTests(unittest.TestCase):
         res = self.client.post("/api/training/staff/auth/login", json={
             "username": "admin1", "password": "staff-pass"})
         self.assertEqual(res.status_code, 200, res.text)
+        auth_support.content_session(self.store, self.client)
 
     def _import_url(self, suffix=""):
         return f"/api/training/staff/certificates/{self.cert}/knowledge-points/import{suffix}"

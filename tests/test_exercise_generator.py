@@ -160,8 +160,37 @@ class ExerciseWebTests(unittest.TestCase):
         _,token=self.store.authenticate(user["username"],self.password)
         self.client.cookies.clear();self.client.cookies.set(module.COOKIE_NAME,token)
 
+    def allow_free_retake(self,aid):
+        """本用例断言的是判分明细（漏检/误报）本身，不是订正闸门口径。
+
+        2026-10-22 起默认「必须教师退回才能重交」，这里显式保留自由重交，
+        好让学生连着交两次来比对两种作答的判分结果。
+        """
+        with self.store.connect() as db:
+            db.execute("""INSERT INTO training_task_settings
+                            (subject_kind,subject_id,org_id,retake_policy,updated_at)
+                          VALUES ('assignment',?,?,'free','2026-01-01T00:00:00+00:00')
+                          ON CONFLICT(subject_kind,subject_id) DO UPDATE SET retake_policy='free'""",
+                       (aid,self.teacher['org_id']))
+        return aid
+
     def generate(self,rule="R-020",**options):
         return self.client.post("/api/exercises",json={"rule_id":rule,"expected_version":"2.0","seed":17,**options})
+
+    def test_generation_without_seed_varies_materials_and_preserves_selected_level(self):
+        body = {"rule_id": "R-020", "expected_version": "2.0", "level": "near", "year": 2026}
+        cases = []
+        with patch("secrets.randbelow", side_effect=[0, 77, 2147483647]):
+            for _ in range(3):
+                response = self.client.post("/api/exercises", json=body)
+                self.assertEqual(response.status_code, 200, response.text)
+                case = response.json()
+                self.assertEqual(case["metadata"]["level"], "near")
+                self.assertIn("R-020", case["metadata"]["standard_answer"])
+                self.assertEqual(self.client.get("/api/exercises/" + case["audit_id"]).json(), case)
+                cases.append(case)
+        self.assertEqual(len({case["metadata"]["seed"] for case in cases}), 3)
+        self.assertGreater(len({case["metadata"]["metric_sha256"] for case in cases}), 1)
 
     def test_download_missing_frozen_history_period_returns_conflict_not_inferred_data(self):
         audit_id = self.generate('R-022').json()['audit_id']
@@ -191,7 +220,8 @@ class ExerciseWebTests(unittest.TestCase):
         result=self.generate().json();audit_id=result["audit_id"]
         assignment=self.client.post("/api/assignments",json={"title":"生成账套实训","audit_id":audit_id,
                                                              "target_student_id":self.student["id"]})
-        self.assertEqual(assignment.status_code,200,assignment.text);assignment_id=assignment.json()["id"]
+        self.assertEqual(assignment.status_code,200,assignment.text)
+        assignment_id=self.allow_free_retake(assignment.json()["id"])
         self.login(self.student)
         view=self.client.get("/api/assignments/"+assignment_id)
         self.assertEqual(view.status_code,200)
@@ -205,6 +235,7 @@ class ExerciseWebTests(unittest.TestCase):
                                   json={"selected_rule_ids":result["metadata"]["standard_answer"]})
         self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json()["score"],100)
         wrong=self.client.post(f"/api/assignments/{assignment_id}/submit",json={"selected_rule_ids":["R-001"]})
+        self.assertEqual(wrong.status_code,200,wrong.text)
         self.assertTrue(wrong.json()["missed"]);self.assertTrue(wrong.json()["false_positives"])
 
     def test_permissions_and_cross_institution_do_not_expose_answers(self):

@@ -24,6 +24,62 @@ SAMPLE = ROOT / "samples" / "样例企业-审计材料.xlsx"
 
 @material_key
 class RuleManagementTests(unittest.TestCase):
+    def test_graph_catalog_uses_graph_review_and_separates_legacy_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'graph-catalog.db')
+            user = store.create_user('catalogadmin', 'Catalog-pass-2026!', '管理员', 'platform_admin', 'org-a')
+            with patch.object(app_module, 'store', store), TestClient(app_module.app) as client:
+                self.assertEqual(client.get('/api/knowledge/rule-catalog').status_code, 401)
+                client.cookies.set(app_module.COOKIE_NAME, store.authenticate(user['username'], 'Catalog-pass-2026!')[1])
+                initial = client.get('/api/knowledge/rule-catalog')
+                self.assertEqual(initial.status_code, 200, initial.text)
+                converted = [row for row in initial.json() if row['source'] == 'converted']
+                self.assertEqual(len(converted), 24)
+                self.assertEqual(len({row['rule_code'] for row in converted}), 24)
+                first = next(row for row in converted if row['rule_code'] == 'R-001')
+                self.assertEqual(first['review_status'], 'candidate')
+                self.assertTrue(first['legacy']['enabled'])
+                with store.connect() as db:
+                    before = db.execute('SELECT count(*) FROM TaxRule').fetchone()[0]
+                    db.execute("INSERT INTO TaxRule(rule_id,rule_code,name,tax_type,rule_type,outcome_text) "
+                               "VALUES ('catalog-native','NATIVE','图谱原生规则','VAT','risk_screen','待核对')")
+                self.assertEqual(client.put('/api/rules/R-001/state', json={'enabled': False}).status_code, 200)
+                catalog = client.get('/api/knowledge/rule-catalog').json()
+                current = next(row for row in catalog if row['rule_code'] == 'R-001')
+                self.assertEqual(current['rule_id'], first['rule_id'])
+                self.assertEqual(current['review_status'], 'candidate')
+                self.assertFalse(current['legacy']['enabled'])
+                native = next(row for row in catalog if row['rule_id'] == 'catalog-native')
+                self.assertEqual((native['source'], native['legacy']), ('graph', None))
+                with store.connect() as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM TaxRule').fetchone()[0], before + 1)
+
+    def test_saved_parameter_version_gets_its_own_candidate_graph_edition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'catalog-versions.db')
+            user = store.create_user('versionadmin', 'Catalog-pass-2026!', '管理员', 'platform_admin', 'org-a')
+            with patch.object(app_module, 'store', store), TestClient(app_module.app) as client:
+                client.cookies.set(app_module.COOKIE_NAME, store.authenticate(user['username'], 'Catalog-pass-2026!')[1])
+                old = next(row for row in client.get('/api/knowledge/rule-catalog').json() if row['rule_code'] == 'R-001')
+                # Review fixture: exercise version isolation, without approving real policies.
+                with store.connect() as db:
+                    db.execute("UPDATE TaxRule SET review_status='approved' WHERE rule_id=?", (old['rule_id'],))
+                self.assertEqual(next(row for row in client.get('/api/knowledge/rule-catalog').json()
+                                      if row['rule_code'] == 'R-001')['review_status'], 'approved')
+                draft = {'expected_version': old['version'], 'new_version': '2.1',
+                         'logic': old['legacy']['logic'], 'threshold_basis': '测试参数版本'}
+                saved = client.put('/api/rules/R-001/parameters', json=draft)
+                self.assertEqual(saved.status_code, 200, saved.text)
+                catalog = client.get('/api/knowledge/rule-catalog').json()
+                new = [row for row in catalog if row['rule_code'] == 'R-001']
+                self.assertEqual(len(new), 1)
+                self.assertEqual((new[0]['version'], new[0]['review_status']), ('2.1', 'candidate'))
+                self.assertNotEqual(new[0]['rule_id'], old['rule_id'])
+                self.assertEqual(new[0]['legacy']['logic'], draft['logic'])
+                with store.connect() as db:
+                    self.assertEqual(db.execute('SELECT review_status FROM TaxRule WHERE rule_id=?',
+                                                (old['rule_id'],)).fetchone()[0], 'approved')
+
     def test_publish_log_failure_rolls_back_new_version_and_previous_end(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / 'atomic-rules.db')

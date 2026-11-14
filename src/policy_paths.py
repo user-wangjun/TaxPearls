@@ -107,6 +107,42 @@ def check_text_location(location, data, content, *, documents=None):
             raise ValueError('条款原文字符定位不一致，路径迁移已停止。')
 
 
+def check_clause_source(clause, root=None, *, files=None):
+    """Recheck retained attachments, text hashes and exact clause coordinates.
+
+    Legacy page/line labels have no machine-readable files; they retain their
+    existing human-review boundary. Structured provenance may never degrade to
+    that legacy mode when a field is damaged or omitted.
+    """
+    value = clause.get('source_location')
+    try:
+        location = json.loads(value)
+    except (ValueError, TypeError):
+        if isinstance(value, str) and value.lstrip().startswith(('{', '[')):
+            raise ValueError('条款来源定位结构无效。') from None
+        return
+    if not isinstance(location, dict):
+        raise ValueError('条款来源定位结构无效。')
+    if (location.get('provenance_kind') not in {'catalog_annotation', 'manifest_annotation', 'retained_catalog_snapshot'}
+            and not {'start_char', 'end_char_exclusive'} <= location.keys()):
+        raise ValueError('条款结构化来源缺少可校验的原文定位。')
+    files = {} if files is None else files
+    for kind in ('raw', 'text'):
+        field = 'retained_' + kind + '_path'
+        try:
+            path = resolve_path(location[field], root)
+            key = ('clause_source', str(path), location[kind + '_sha256'])
+            if key not in files:
+                data = path.read_bytes()
+                if hashlib.sha256(data).hexdigest() != location[kind + '_sha256']:
+                    raise ValueError('条款原件或提取文本哈希不一致。')
+                files[key] = data
+            if kind == 'text':
+                check_text_location(location, files[key], clause['content'])
+        except (OSError, KeyError, TypeError) as exc:
+            raise ValueError('条款原件、提取文本或定位字段缺失。') from exc
+
+
 def relativize_paths(db):
     """Validate every retained hash before atomically changing only physical paths.
 

@@ -66,7 +66,10 @@ def restore(payload):
 
 
 def material_signature(processing):
-    return digest([r for r in processing.get('records',[]) if r.get('material_type')!='business_metric'])
+    # Cross-task display labels can change when an identical source is uploaded
+    # elsewhere. They are not a change to the linked underlying material.
+    return digest([{key:value for key,value in r.items() if key!='dedup'}
+                   for r in processing.get('records',[]) if r.get('material_type')!='business_metric'])
 
 
 def resolve(definition, processing, task):
@@ -108,7 +111,8 @@ def resolve(definition, processing, task):
                 return {**unknown,'reason':'绑定资料仍有待核实事项：'+issue['message']}
         for row in selected:
             if (row.get('tenant_id')!=task['tenant_id'] or row.get('company_id')!=task['company_id']
-                    or row.get('task_id')!=task['id'] or row.get('duplicate_of') or not row.get('in_scope')
+                    or row.get('task_id')!=task['id'] or row.get('duplicate_of') or row.get('dedup_conflict')
+                    or row.get('dedup_superseded') or not row.get('in_scope')
                     or row.get('unit')!=definition.get('unit')):
                 return {**unknown,'reason':'指标来源归属、重复、检查区间或单位未通过核对。'}
             if row['material_type']!='invoice_detail' and (row.get('period_start')!=task['start_date'] or row.get('period_end')!=task['end_date']):

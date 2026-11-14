@@ -510,7 +510,8 @@ def redeem(store, body, browser):
         if not body.display_name.strip():
             raise ValueError("请填写姓名。")
         user, token = store.register_with_code(
-            address, body.code, body.invite_code, body.password, browser_session=browser, display_name=body.display_name
+            address, body.code, body.invite_code, body.password, browser_session=browser,
+            email_proof=body.email_proof, display_name=body.display_name
         )
         return user, token
     if not body.existing:
@@ -545,7 +546,10 @@ def redeem(store, body, browser):
         else:
             if person:
                 raise ValueError("该邮箱已注册，请选择已有账号登录。")
-            proof, error = email_auth.verify_code(db, address, "register", body.code, browser)
+            if body.email_proof:
+                proof = email_auth.registration_proof(db, address, body.email_proof, browser)
+            else:
+                proof, error = email_auth.verify_code(db, address, "register", body.code, browser)
             if not error:
                 from webapp.storage import _normalize_invite_code
 
@@ -901,6 +905,7 @@ class JoinBody(BaseModel):
     email: str = Field(max_length=254)
     password: str = Field(min_length=1, max_length=128)
     code: str = Field(default="", max_length=16)
+    email_proof: str = Field(default="", max_length=128)
     display_name: str = Field(default="", max_length=100)
     student_no: str = Field(default="", max_length=80)
     existing: StrictBool = False
@@ -995,7 +1000,8 @@ def register(app, store_provider, user_for_session):
 
     @app.put("/api/universities/{college}/capacity")
     def capacity(
-        college: str, body: CapacityBody, session: str | None = Cookie(default=None, alias="taxpearls_session")
+        college: str, body: CapacityBody, request: Request,
+        session: str | None = Cookie(default=None, alias="taxpearls_session")
     ):
         who = user_for_session(session)
         with store_provider().connect() as db:
@@ -1029,6 +1035,13 @@ def register(app, store_provider, user_for_session):
                     old["student_quota"] if old["configured"] else None,
                 ),
             )
+            organization = db.execute('SELECT org_id FROM university_organizations WHERE college=?', (college,)).fetchone()
+            org_id = organization[0] if organization else college
+            members.log_quota_change(
+                db, who, org_id, 'set_university_capacity', org_id,
+                {'teacher_quota': old['teacher_quota'], 'student_quota': old['student_quota']},
+                {'teacher_quota': body.teacher_quota, 'student_quota': body.student_quota},
+                old['revision'], body.revision + 1, members.request_ip(request), college=college)
             return school_state(db, college)
 
     @app.get("/api/join/{code}")

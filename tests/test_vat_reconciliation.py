@@ -12,6 +12,51 @@ from src.kg_retrieval import outbound
 from webapp import knowledge_evidence as service
 
 
+class FrozenDeclarationTests(unittest.TestCase):
+    def payload(self):
+        from src.rule_bindings import material_signature
+        task = {'id':'task', 'tenant_id':'org', 'company_id':'company', 'tax_no':TAX,
+                'start_date':'2026-01-01', 'end_date':'2026-12-31', 'applicable_forms':[]}
+        row = {'id':'audit-metric:sales', 'material_type':'business_metric', 'metric_name':'增值税.销售额',
+               'value':'100000', 'unit':'元', 'audit_id':'authorized-audit', 'source_file_id':'audit:authorized-audit',
+               'source_position':'增值税申报!B2', 'field_sources':{'value':{'position':'增值税申报!B2'}},
+               'tenant_id':'org', 'company_id':'company', 'task_id':'task',
+               'period_start':task['start_date'], 'period_end':task['end_date'], 'metric_period':'2026年度'}
+        payload = {'task':task, 'documents':[], 'processing':{'records':[row], 'issues':[], 'status':'ready_for_analysis'}}
+        task['audit_metric_records'] = [deepcopy(row)]
+        task['audit_metric_source_signature'] = material_signature(payload['processing'])
+        return payload
+
+    def values(self):
+        return {'mapping_record_id':'audit-metric:sales', 'form_revision':'年度核对汇总及月度申报底稿',
+                'taxpayer_category':'增值税一般纳税人', 'comparable':True, 'basis':'同一主体全年核对，不含税销售额。'}
+
+    def test_authorized_same_period_declaration_source_can_be_explicitly_selected(self):
+        payload = self.payload()
+        payload['check_reviews'] = {vat.RULE:vat.make_review(payload, self.values(), 'reviewer', 'stamp')}
+        definitions = {
+            vat.INVOICE:{'name':'销项发票不含税金额','unit':'元','source_schema':'Invoice','source_field':'amount_excluding_tax',
+                         'aggregation':'sum','period_basis':'issue_date','source_filter_json':'{}'},
+            vat.DECLARATION:{'name':'申报销售额','unit':'元','source_schema':'VATDeclaration','source_field':'declared_value',
+                             'aggregation':'direct','period_basis':'tax_period','source_filter_json':'{}'}}
+        _, facts, _ = vat.resolve(definitions, payload)
+        self.assertEqual(facts[vat.DECLARATION]['state'], 'known')
+        self.assertEqual(facts[vat.DECLARATION]['value'], '100000')
+        self.assertEqual(facts[vat.DECLARATION]['source_record_ids'], ['audit-metric:sales'])
+        payload['task']['audit_metric_records'][0]['value'] = '999'
+        self.assertFalse(vat.review(payload))
+
+    def test_foreign_stale_or_unfrozen_metric_is_not_a_declaration_source(self):
+        for change in ('foreign','stale','unfrozen','wrong_metric'):
+            payload = self.payload(); row = payload['processing']['records'][0]
+            if change == 'foreign': row['company_id'] = 'other-company'
+            elif change == 'stale': payload['processing']['records'].append({'id':'new', 'material_type':'account_balance'})
+            elif change == 'unfrozen': payload['task'].pop('audit_metric_records')
+            else: row['metric_name'] = '营业收入'
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                vat.make_review(payload, self.values(), 'reviewer', 'stamp')
+
+
 def invoices(rows):
     workbook = load_workbook(BytesIO(book("invoice_detail")))
     sheet = workbook.active
@@ -73,11 +118,34 @@ class VATReconciliationTests(unittest.TestCase):
         self.login("kg-other")
         self.assertEqual(self.client.get(url+"/1?format=html").status_code,404)
 
+    def test_current_upload_review_saves_vat_mapping_with_materials_atomically(self):
+        task = self.upload(self.task(), invoices([('UI-VAT', '1', '200.0123', '蓝字', '正常')]))
+        url = '/api/enterprise/input-tasks/' + task['id']
+        row = next(r for r in task['processing']['records'] if r['material_type'] == 'vat_declaration' and r['item_key'] == '1')
+        values = {'mapping_record_id': row['id'], 'form_revision': 'DEMO-2026-A',
+                  'taxpayer_category': '合成一般纳税人', 'comparable': True, 'basis': '合成同期不含税口径已核对。'}
+        failed = self.client.post(url + '/prepare', json={'expected_revision': task['revision'],
+                    'applicable_forms': ['不得部分保存'], 'vat_review': {**values, 'mapping_record_id': 'foreign'}})
+        self.assertEqual(failed.status_code, 422, failed.text)
+        unchanged = self.client.get(url).json()
+        self.assertEqual(unchanged['revision'], task['revision'])
+        self.assertEqual(unchanged['task']['applicable_forms'], task['task']['applicable_forms'])
+        response = self.client.post(url + '/prepare', json={'expected_revision': task['revision'],
+                    'applicable_forms': [], 'vat_review': values})
+        self.assertEqual(response.status_code, 200, response.text)
+        reviewed = response.json()
+        self.assertTrue(reviewed['vat_review_current'])
+        result = self.run_check(reviewed)
+        self.assertEqual(result['bundle']['fact_assessment']['status'], 'FACT_CONFIRMED')
+        self.assertEqual(result['bundle']['fact_assessment']['amount'], '100.0000')
+        self.assertEqual(result['bundle']['risk_assessment']['status'], 'NEEDS_REVIEW')
+        conflict = self.client.post(url + '/prepare', json={'expected_revision': task['revision'], 'vat_review': values})
+        self.assertEqual(conflict.status_code, 409)
+
     def test_multiline_red_void_duplicate_and_unknown_status(self):
-        task=self.task()
         workbook=load_workbook(BytesIO(book("vat_declaration")))
         workbook.active['C6']='1300';content=BytesIO();workbook.save(content);workbook.close()
-        # Separate task avoids overlapping declaration versions.
+        # This case tests net amounts; cross-task declaration conflicts have their own coverage.
         created=self.client.post('/api/enterprise/input-tasks',json={'company_name':'纯合成测试净额','tax_no':TAX,'start_date':'2026-01-01','end_date':'2026-01-31','applicable_forms':[]}).json()
         task=self.upload(created,content.getvalue(),'主表.xlsx','vat_declaration')
         task=self.upload(task,invoices([('I5','L1','1000','蓝字','正常'),('I5','L2','500','蓝字','正常'),('I6','L1','-200','红字','正常'),('I7','L1','999','蓝字','作废'),('I5','L2','500','蓝字','正常')]))

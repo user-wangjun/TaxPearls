@@ -8,7 +8,17 @@ function element(tag = "div", className = "", text = "") {
     setAttribute() {}, removeAttribute() {}, reset() {}, close() {}, focus() {},
     reportValidity() { return !!this.value; },
     addEventListener(name, fn) { this.events[name] = fn; },
-    querySelectorAll() { return []; },
+    querySelectorAll(selector) {
+      const nested = descendants(this).slice(1);
+      if (selector === "input" || selector === "input:checked") return nested.filter(item => item.tag === "input" && (selector === "input" || item.checked));
+      if (selector.startsWith(".")) {
+        const [className, child] = selector.slice(1).split(" ");
+        const matches = nested.filter(item => item.classes.has(className));
+        return child ? matches.flatMap(item => item.querySelectorAll(child)) : matches;
+      }
+      return [];
+    },
+    querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
     get textContent() { return text + this.children.map(item => item.textContent).join(""); },
     set textContent(value) { text = value; this.children = []; }};
   node.classList = {add(...values) { values.forEach(value => node.classes.add(value)); },
@@ -81,6 +91,35 @@ function harness() {
   assert.match(h.brief().textContent, /查询中/);
   h.pending.shift().resolve(fresh); await opening;
   assert.match(h.brief().textContent, /11.71/);
+
+  const fields = h.$("aiKeyCards").querySelector(".probe-usage-choices");
+  const boxes = fields.querySelectorAll("input");
+  const detection = h.$("aiKeyCards").querySelector(".probe-only-detection input");
+  assert.equal(detection.checked, true);
+  assert.ok(boxes.every(box => !box.disabled), "detection-only keys must still allow selecting business uses");
+  boxes[0].checked = true; fields.events.change();
+  assert.equal(detection.checked, false, "selecting a use must turn off detection-only");
+  boxes[1].checked = true; fields.events.change();
+  const saveUses = descendants(h.$("aiKeyCards")).find(node => node.tag === "button" && node.textContent === "保存用途");
+  const savingUses = saveUses.events.click();
+  assert.equal(h.pending[0].options.method, "PUT");
+  assert.deepEqual(JSON.parse(h.pending[0].options.body).usages, ["extraction", "knowledge"]);
+  h.pending.shift().reject(new Error("synthetic save failure")); await savingUses;
+  assert.equal(saveUses.disabled, false, "failed saves must allow retry");
+  boxes[0].checked = false; fields.events.change();
+  assert.equal(detection.checked, false, "remaining uses must keep detection-only off");
+  boxes[1].checked = false; fields.events.change();
+  assert.equal(detection.checked, true, "clearing the last use restores detection-only");
+  boxes[2].checked = true; fields.events.change();
+  detection.checked = true; detection.events.change();
+  assert.ok(boxes.every(box => !box.checked && !box.disabled), "detection-only clears uses without disabling them");
+  const savingDetection = saveUses.events.click();
+  assert.deepEqual(JSON.parse(h.pending[0].options.body).usages, []);
+  h.pending.shift().reject(new Error("synthetic save failure")); await savingDetection;
+  boxes[3].checked = true; fields.events.change();
+  descendants(h.$("aiKeyCards")).find(node => node.tag === "button" && node.textContent === "取消").events.click();
+  assert.equal(h.$("aiKeyCards").querySelector(".probe-only-detection input").checked, true, "cancel restores saved uses");
+  console.log("AI key usages: direct multi-select, detection-only, payloads, retry and cancel passed.");
 
   const refreshing = h.$("btnRefreshAIKeys").events.click();
   h.pending.shift().resolve(h.catalog); await tick();

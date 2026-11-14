@@ -2,6 +2,11 @@
 import gzip
 import hashlib
 import json
+import logging
+import sqlite3
+from functools import lru_cache
+from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path, PureWindowsPath
 
 from src.policy_paths import database_directory, resolve_path, source_identity, check_text_location
@@ -9,6 +14,126 @@ from webapp import policy_graph as pg
 
 FORMAT = 'taxpearls-public-policy-v1'
 MAX_BYTES = 64 * 1024 * 1024
+
+
+@lru_cache(maxsize=1)
+def _citation_delivery(package_path, manifest_bytes):
+    # Cache is keyed by the actual manifest bytes, so a package update is visible.
+    # Projection uses only the hash-verified snapshot. Original files are fully
+    # verified by load_package during bootstrap/import, outside graph requests.
+    return _load_snapshot(Path(package_path), manifest_bytes).get('citation_resolutions', [])
+
+
+def citation_resolutions():
+    package = Path(__file__).resolve().parents[1] / 'data/public-policy/snapshot.json.gz'
+    return _citation_delivery(str(package), package.with_name('manifest.json').read_bytes())
+
+
+def citation_view(clause, policy, *, resolutions=None):
+    """Correct reviewed references for use, keeping the source transcription intact."""
+    original = clause['content']
+    location = clause.get('source_location') or {}
+    if isinstance(location, str):
+        try:
+            location = json.loads(location)
+        except json.JSONDecodeError:
+            return {'text': original}
+    if not isinstance(location, dict):
+        return {'text': original}
+    if not location.get('text_sha256'):
+        return {'text': original}
+    if resolutions is None:
+        resolutions = citation_resolutions()
+    changes = []
+    for row in resolutions:
+        if (row['source_url'] != policy['source_url']
+                or row['source_text_sha256'] != location['text_sha256']):
+            continue
+        start = row['start_char'] - location.get('start_char', 0)
+        end = row['end_char_exclusive'] - location.get('start_char', 0)
+        if start < 0 or end > len(original):
+            continue
+        if original[start:end] != row['quote']:
+            raise ValueError('已核对引用与条款原文位置不符，停止生成引用。')
+        corrected = row['quote'].replace(row['document_no_quoted'], row['canonical_document_no'])
+        if row.get('canonical_title'):
+            corrected = corrected.replace('《' + row['title'] + '》', '《' + row['canonical_title'] + '》', 1)
+        if corrected == row['quote']:
+            continue
+        changes.append({'start': start, 'end': end, 'original_quote': row['quote'], 'corrected_quote': corrected,
+                        'document_no': row['canonical_document_no'], 'target_policy_ids': row['matched_policy_ids']})
+    text = original
+    previous = len(original)
+    for change in sorted(changes, key=lambda item: item['start'], reverse=True):
+        if change['end'] > previous:
+            raise ValueError('已核对引用位置重叠，停止生成引用。')
+        text = text[:change['start']] + change['corrected_quote'] + text[change['end']:]
+        previous = change['start']
+    return ({'text': text, 'original_text': original, 'citation_corrections': changes}
+            if changes else {'text': original})
+
+
+def bootstrap(store, rules_dir, *, repository=None):
+    """Install bundled public knowledge before serving requests, once per content version.
+
+    School accounts are not needed. Existing teaching publications and source
+    reviews remain local; a changed bundle never publishes a new teaching version.
+    """
+    from src.rule_conversion import effective_rules
+    from webapp.knowledge_sync import teaching
+
+    repository = Path(repository or Path(__file__).resolve().parents[1])
+    package = repository / 'data/public-policy/snapshot.json.gz'
+    manifest = json.loads(package.with_name('manifest.json').read_text(encoding='utf-8'))
+    if digest(package.read_bytes()) != manifest['compressed_sha256']:
+        raise ValueError('公共图谱数据包哈希不一致，自动初始化已停止。')
+    package_hash = digest(pg.canonical(manifest).encode())
+    # Startup runs before workers and requests. The lock also protects repeated
+    # startup attempts in this process; SQLite rechecks the marker after BEGIN.
+    with store._lock:
+        rules = effective_rules(store, rules_dir)
+        rules_hash = digest(pg.canonical([asdict(r) for r in sorted(rules, key=lambda r: r.id)]).encode())
+
+        def installed(db):
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='public_knowledge_installation'").fetchone():
+                return False
+            return bool(db.execute('SELECT 1 FROM public_knowledge_installation WHERE package_hash=? AND rules_hash=?',
+                                   (package_hash, rules_hash)).fetchone())
+
+        with store.connect() as db:
+            if installed(db):
+                return {'status': 'current', 'content_sha256': manifest['content_sha256']}
+        payload = load_package(package, repository)
+        with store.connect() as db:
+            # Backup via a read connection before acquiring a write transaction.
+            backup = store.path.with_name(store.path.name + '.before-public-' +
+                                          datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ') + '.sqlite')
+            target = sqlite3.connect(backup)
+            try:
+                db.backup(target)
+                if target.execute('PRAGMA integrity_check').fetchone()[0] != 'ok':
+                    raise ValueError('公共图谱自动导入前备份完整性检查失败。')
+            finally:
+                target.close()
+            db.execute('BEGIN IMMEDIATE')
+            if installed(db):
+                return {'status': 'current', 'content_sha256': manifest['content_sha256']}
+            imported = import_package(db, payload, repository)
+            pg.sync_rules(db, rules)
+            education = teaching(db, rules)
+            db.execute('''CREATE TABLE IF NOT EXISTS public_knowledge_installation (
+                package_hash TEXT NOT NULL, rules_hash TEXT NOT NULL,
+                content_sha256 TEXT NOT NULL, installed_at TEXT NOT NULL,
+                PRIMARY KEY(package_hash, rules_hash))''')
+            # This marker describes the current projection, not every historical
+            # installation; returning to an older ruleset must rebuild it too.
+            db.execute('DELETE FROM public_knowledge_installation')
+            db.execute('INSERT INTO public_knowledge_installation VALUES (?,?,?,?)',
+                       (package_hash, rules_hash, manifest['content_sha256'], datetime.now(timezone.utc).isoformat()))
+        logging.getLogger(__name__).info('公共政策图谱自动初始化完成：%s；教学知识点 %s',
+                                        manifest['content_sha256'], education['knowledge_points'])
+        return {'status': 'installed', 'content_sha256': manifest['content_sha256'],
+                'imported': imported, 'teaching': education, 'backup': str(backup)}
 
 
 def digest(data):
@@ -22,9 +147,10 @@ def relative(value):
     return value
 
 
-def load_package(package, repository):
-    package, repository = Path(package).resolve(), Path(repository).resolve()
-    manifest = json.loads(package.with_name('manifest.json').read_text(encoding='utf-8'))
+def _load_snapshot(package, manifest_bytes=None):
+    package = Path(package).resolve()
+    manifest = json.loads(manifest_bytes if manifest_bytes is not None
+                          else package.with_name('manifest.json').read_bytes())
     compressed = package.read_bytes()
     if package.name != manifest['snapshot'] or digest(compressed) != manifest['compressed_sha256']:
         raise ValueError('公共图谱数据包哈希不一致。')
@@ -49,6 +175,14 @@ def load_package(package, repository):
         name = relative(item['path'])
         if not name.startswith('policy-originals/'):
             raise ValueError('原文目标须在 policy-originals 目录内。')
+        relative(item['repository_path'])
+    return payload
+
+
+def load_package(package, repository):
+    payload = _load_snapshot(package)
+    repository = Path(repository).resolve()
+    for item in payload['originals']:
         data = resolve_path(relative(item['repository_path']), repository).read_bytes()
         if digest(data) != item['sha256']:
             raise ValueError('仓库原文哈希不一致。')

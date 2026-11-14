@@ -41,7 +41,25 @@ def source_signature(payload):
     # hashes; unrelated account uploads do not invalidate invoice/return review.
     documents = [d for d in payload.get("documents", []) if d["material_type"] in {"invoice_detail", "vat_declaration"}]
     return digest({"documents": documents, "period": [payload["task"][k] for k in ("start_date", "end_date")],
-                   "forms": payload["task"].get("applicable_forms")})
+                   "forms": payload["task"].get("applicable_forms"),
+                   "audit_metrics": payload['task'].get('audit_metric_records'),
+                   "audit_source_signature": payload['task'].get('audit_metric_source_signature')})
+
+
+def frozen_declaration(payload, row):
+    """Only a server-authorized frozen declaration metric can bridge periods."""
+    from src import rule_bindings
+    if (not row or row.get('material_type') != 'business_metric' or not row.get('audit_id')
+            or row.get('metric_name') != '增值税.销售额' or not row.get('field_sources', {}).get('value')):
+        return False
+    task = payload['task']
+    frozen = next((r for r in task.get('audit_metric_records', []) if r['id'] == row['id']), None)
+    if (not frozen or any(row.get(k) != v for k, v in frozen.items())
+            or task.get('audit_metric_source_signature') != rule_bindings.material_signature(payload['processing'])):
+        return False
+    fact = rule_bindings.resolve({'unit':'元', 'source_filter_json':json.dumps({'name':'增值税.销售额'})},
+                                 payload['processing'], task)
+    return fact['state'] == 'known' and fact['source_record_ids'] == [row['id']]
 
 
 def review(payload):
@@ -57,8 +75,9 @@ def make_review(payload, values, actor, stamp):
         if not isinstance(values.get(field), str) or not 1 <= len(values[field].strip()) <= 500:
             raise ValueError("请填写已核实的表单版本、纳税人类型和口径依据；未知时保留待核对。")
     rows = payload["processing"].get("records", [])
-    row = next((r for r in rows if r["id"] == values.get("mapping_record_id") and r["material_type"] == "vat_declaration"), None)
-    if not row or not row.get("field_sources", {}).get("declared_value"):
+    row = next((r for r in rows if r["id"] == values.get("mapping_record_id")), None)
+    native = row and row.get('material_type') == 'vat_declaration' and row.get('field_sources', {}).get('declared_value')
+    if not native and not frozen_declaration(payload, row):
         raise ValueError("请选择本任务有原表定位的申报销售额记录。")
     proof = values.get("zero_proof_file_id") or ""
     if proof and not any(d["id"] == proof and d["material_type"] == "invoice_detail" and not d.get("records")
@@ -75,9 +94,14 @@ def resolve(definitions, payload):
     definitions[INVOICE]["source_filter_json"] = json.dumps({"direction": "output", "red_letter_status": BLUE + RED, "void_status": VALID})
     rows = payload["processing"].get("records", [])
     selected = next((r for r in rows if r["id"] == checked.get("mapping_record_id")), None)
-    if selected:
+    if frozen_declaration(payload, selected):
+        definitions[DECLARATION].update(source_schema='BusinessMetric', source_field='value', aggregation='direct',
+            source_filter_json=json.dumps({'name':'增值税.销售额'}))
+    elif selected and selected.get('material_type') == 'vat_declaration':
         heading = selected.get("column_scope") or selected.get("field_sources", {}).get("declared_value", {}).get("source_label")
         definitions[DECLARATION]["source_filter_json"] = json.dumps({k: selected.get(k) for k in ("form_type", "form_name", "item_key")} | {"column_scope": heading})
+    else:
+        checked = {}
     facts = metrics.collect(definitions, payload["processing"], payload["task"])
     if any(d["material_type"] == "invoice_detail" and d.get("issues") for d in payload.get("documents", [])):
         facts[INVOICE].update(state="unknown", value=None, reason="发票来源仍含解析或字段缺口，不能只汇总成功解析的部分。")

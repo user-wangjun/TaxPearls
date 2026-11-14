@@ -165,6 +165,19 @@ def annual_book(kind='income', *, basis='合併', currency='', unit='人民幣�
 
 
 class FinancialExports(unittest.TestCase):
+    def test_explicit_occurrence_columns_do_not_use_cumulative_columns(self):
+        wb = Workbook(); sheet = wb.active; sheet.title = '科目余额表'
+        sheet.append([f'编制单位：{COMPANY["name"]} 2026年1月 单位：元'])
+        sheet.append(['科目编码', '科目名称', '期初余额', '借方发生额', '贷方发生额', '借方累计', '贷方累计', '期末余额'])
+        sheet.append(['6001', '主营业务收入', 0, 0, 10, 0, 999, 10])
+        sheet.append(['6051', '其他业务收入', 0, 0, 0, 0, 0, 0])
+        output = BytesIO(); wb.save(output); wb.close()
+        doc = parse(output.getvalue())
+        self.assertEqual(doc['error'], '')
+        self.assertEqual(Decimal(doc['accounts'][0]['credit']), Decimal(10))
+        refs = doc['import_model']['accounts'][0]
+        self.assertEqual(refs['credit'], ['科目余额表!E3'])
+
     def good(self, raw):
         document = parse(raw)
         self.assertEqual(document['error'], '', document['error'])

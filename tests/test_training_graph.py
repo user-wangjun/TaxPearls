@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import auth_support
+
 import tempfile
 import unittest
 import uuid
@@ -62,6 +64,7 @@ class TrainingGraphTests(unittest.TestCase):
         res = self.client.post("/api/training/staff/auth/login", json={
             "username": "admin1", "password": "staff-pass"})
         self.assertEqual(res.status_code, 200, res.text)
+        auth_support.content_session(self.store, self.client)
 
     def _create(self, from_kp, to_kp, relation_type="prerequisite", basis="考纲第二章"):
         return self.client.post(f"/api/training/staff/knowledge-points/{from_kp}/relations", json={

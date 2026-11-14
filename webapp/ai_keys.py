@@ -14,7 +14,7 @@ STORE_PROVIDER = lambda: None
 _CONTEXT_LOCK = Lock()
 _CONTEXT_ATTEMPTED = set()
 USES = {'all': '通用（当前模型）', 'extraction': '材料提取兜底', 'knowledge': '知识问答',
-        'report': '风险解读与报告', 'tutor': '教学答疑', 'none': '仅检测'}
+        'report': '风险解读与报告', 'tutor': '教学答疑与备课出题', 'none': '仅检测'}
 PROTOCOLS = {'auto', 'deepseek', 'openrouter', 'credit_grants'}
 BUSINESS_USES = ('extraction', 'knowledge', 'report', 'tutor')
 

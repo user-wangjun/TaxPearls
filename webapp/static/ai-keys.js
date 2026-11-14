@@ -42,7 +42,7 @@ function createAIKeyProbes({api, el, $, user}) {
       (info.can_enable && info.can_disable === false ? " 必须开启思考，不能关闭。" : "");
   }
   const usages = [["extraction","材料提取兜底"],["knowledge","知识问答"],
-    ["report","风险解读与报告"],["tutor","教学答疑"]];
+    ["report","风险解读与报告"],["tutor","教学答疑与备课出题"]];
   function usageName(values) { return values.length ? values.map(value=>usages.find(item=>item[0]===value)?.[1] || value).join("、") : "仅检测"; }
   function usageChoices(container, values=[], name="") {
     container.replaceChildren();
@@ -55,8 +55,11 @@ function createAIKeyProbes({api, el, $, user}) {
     }
     const only = el("label", "probe-only-detection"), toggle = el("input"); toggle.type="checkbox"; toggle.checked=!values.length;
     only.append(toggle,el("span",null,"仅检测（不参与业务调用）"));
-    const update = () => { for (const box of fields.querySelectorAll("input")) box.disabled=toggle.checked; };
-    toggle.addEventListener("change", update); update();
+    // Business choices remain clickable even when this key is detection-only.
+    fields.addEventListener("change", () => { toggle.checked=!fields.querySelectorAll("input:checked").length; });
+    toggle.addEventListener("change", () => {
+      if (toggle.checked) for (const box of fields.querySelectorAll("input")) box.checked=false;
+    });
     container.append(fields,only);
     return () => toggle.checked ? [] : [...fields.querySelectorAll("input:checked")].map(box=>box.value);
   }

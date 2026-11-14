@@ -54,7 +54,8 @@ class EmailAuthApiTests(unittest.TestCase):
         self.assertIn('id="sceneCanvas"', page.text)
         self.assertIn('id="authForm"', page.text)
         self.assertNotIn('id="authCanvas"', page.text)
-        for path, media in [('/auth-glass.css', 'text/css'),
+        for path, media in [('/auth.js', 'text/javascript'),
+                            ('/auth-glass.css', 'text/css'),
                             ('/auth-glass.js', 'text/javascript'),
                             ('/auth-ocean.mjs', 'text/javascript'),
                             ('/auth-wordmark.png', 'image/png'),

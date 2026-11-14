@@ -283,7 +283,7 @@ class MemberInvitationTests(unittest.TestCase):
         self.assertEqual(members.overview(self.store,self.owner,'alpha')['quota']['used'],2)
 
     def test_registration_ui_send_guard_and_invitation_contract(self):
-        html=''.join((Path(__file__).parents[1]/'webapp/static'/name).read_text(encoding='utf-8') for name in ('index.html','console.js'))
+        html=''.join((Path(__file__).parents[1]/'webapp/static'/name).read_text(encoding='utf-8') for name in ('index.html','auth.js','console.js'))
         for marker in ['updateSignupSendButton','signupSendBusy=true','captchaAnswer").required = false',
                        '$("signupCode").value = inviteCode','name="referrer" content="no-referrer"',
                        'request!==memberRequest','clearMemberInvitations','memberSnapshot.invitations.policy.revision']:

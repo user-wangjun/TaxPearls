@@ -99,6 +99,102 @@ class PolicyPathTests(unittest.TestCase):
             migrate(self.path, apply=True)
         self.assertEqual(pg.get(self.db, 'Policy', 'P')['raw_file_path'], before)
 
+    def test_runtime_rechecks_clause_text_and_attachment_not_just_policy_file(self):
+        policy, clause = pg.get(self.db, 'Policy', 'P'), pg.get(self.db, 'Clause', 'C')
+        policy['validity_status'] = 'in_force'
+        clause['extraction_status'] = 'verified'
+        self.text.write_bytes(b'changed after review')
+        reasons = applicability.source_check(policy, clause, {'data_scope': 'synthetic'}, {}, source_root=self.home)
+        self.assertTrue(any('条款' in r and '哈希' in r for r in reasons), reasons)
+
+    def test_runtime_rejects_changed_clause_content_even_when_files_match(self):
+        policy, clause = pg.get(self.db, 'Policy', 'P'), pg.get(self.db, 'Clause', 'C')
+        policy['validity_status'] = 'in_force'
+        clause.update(extraction_status='verified', content='文本与来源位置不一致')
+        reasons = applicability.source_check(policy, clause, {'data_scope': 'synthetic'}, {}, source_root=self.home)
+        self.assertTrue(any('条款' in r and '定位' in r for r in reasons), reasons)
+
+    def test_structured_source_cannot_drop_coordinates_to_bypass_content_check(self):
+        policy, clause = pg.get(self.db, 'Policy', 'P'), pg.get(self.db, 'Clause', 'C')
+        policy['validity_status'] = 'in_force'
+        location = {k: v for k, v in self.location.items() if k not in {'start_char', 'end_char_exclusive'}}
+        clause.update(extraction_status='verified', content='changed', source_location=json.dumps(location))
+        reasons = applicability.source_check(policy, clause, {'data_scope': 'synthetic'}, {}, source_root=self.home)
+        self.assertTrue(any('定位' in r for r in reasons), reasons)
+
+    def test_source_review_rejects_corrupt_extracted_text_atomically(self):
+        self.text.write_bytes(b'changed before review')
+        with self.assertRaisesRegex(ValueError, '条款'):
+            pg.verify_source(self.db, 'P', issuer='测试机关', validity_status='in_force',
+                             effective_from='2026-01-01', effective_to=None, clause_ids=['C'])
+        self.assertEqual(pg.get(self.db, 'Policy', 'P')['validity_status'], 'unverified')
+
+    def test_multitax_and_explicit_excluded_region_are_used_by_vat_retrieval(self):
+        policy, clause = pg.get(self.db, 'Policy', 'P'), pg.get(self.db, 'Clause', 'C')
+        policy.update(validity_status='in_force', effective_from='2026-01-01', effective_to='2027-12-31',
+                      tax_type='MIXED', tax_types_json='["EIT","VAT"]', region_code='CN-GD',
+                      scope_json='{"included_regions":["CN-GD"],"excluded_regions":["CN-GD-SZ"]}')
+        clause['extraction_status'] = 'verified'
+        task = {'data_scope': 'synthetic', 'tax_type': 'VAT', 'region_code': 'CN-GD-GZ',
+                'period_start': '2026-01-01', 'period_end': '2026-01-31'}
+        result = applicability.check(clause, policy, task, [], source_root=self.home)
+        self.assertEqual(result['status'], 'applicable', result)
+        task['region_code'] = 'CN-GD-SZ'
+        self.assertEqual(applicability.check(clause, policy, task, [], source_root=self.home)['status'], 'excluded')
+        task['region_code'] = 'CN-GD'
+        self.assertEqual(applicability.check(clause, policy, task, [], source_root=self.home)['status'], 'needs_review')
+
+    def test_frontend_numeric_region_matches_retained_guangdong_alias(self):
+        self.assertIs(applicability.region_matches('CN-GD', 'CN-44'), True)
+        self.assertIs(applicability.region_matches('CN-GD', 'CN-44-GZ'), True)
+        self.assertIs(applicability.region_matches('CN-GD', 'CN-33'), False)
+        policy, clause = pg.get(self.db, 'Policy', 'P'), pg.get(self.db, 'Clause', 'C')
+        policy.update(region_code='CN-GD', validity_status='in_force', effective_from='2026-01-01',
+                      effective_to='2026-12-31', scope_json='{"excluded_regions":["CN-GD-SZ"]}')
+        clause['extraction_status'] = 'verified'
+        task = {'data_scope': 'synthetic', 'tax_type': 'VAT', 'region_code': 'CN-44',
+                'period_start': '2026-03-01', 'period_end': '2026-03-31'}
+        self.assertEqual(applicability.check(clause, policy, task, [], source_root=self.home)['status'], 'needs_review')
+        task['region_code'] = 'CN-44-SZ'
+        self.assertEqual(applicability.check(clause, policy, task, [], source_root=self.home)['status'], 'excluded')
+
+    def test_unresolved_source_gap_cannot_become_verified_policy_evidence(self):
+        policy, clause = pg.get(self.db, 'Policy', 'P'), pg.get(self.db, 'Clause', 'C')
+        policy.update(validity_status='in_force', effective_from='2026-01-01', effective_to='2027-12-31',
+                      source_metadata_json=json.dumps({'content_gaps': ['附表未读全']}))
+        clause['extraction_status'] = 'verified'
+        task = {'data_scope': 'synthetic', 'tax_type': 'VAT', 'region_code': 'CN-GD',
+                'period_start': '2026-01-01', 'period_end': '2026-01-31'}
+        result = applicability.check(clause, policy, task, [], source_root=self.home)
+        self.assertEqual(result['status'], 'needs_review', result)
+
+    def test_reviewed_open_end_covers_only_the_evidenced_task_period(self):
+        evidence = {'source_url': 'https://example.test/review', 'quote': '合成复核依据，不是税法结论'}
+        pg.verify_source(self.db, 'P', issuer='测试机关', validity_status='in_force',
+                         effective_from='2026-01-01', effective_to=None, clause_ids=['C'],
+                         reviewer='synthetic-reviewer', end_kind='unfixed',
+                         coverage_start='2026-01-01', coverage_end='2026-09-30', evidence=evidence)
+        reviews = [dict(r) for r in self.db.execute('SELECT * FROM PolicyReview')]
+        policy, clause = pg.get(self.db, 'Policy', 'P'), pg.get(self.db, 'Clause', 'C')
+        task = {'data_scope': 'synthetic', 'tax_type': 'VAT', 'region_code': 'CN-GD',
+                'period_start': '2026-09-01', 'period_end': '2026-09-30'}
+        result = applicability.check(clause, policy, task, [], source_root=self.home, source_reviews=reviews)
+        self.assertEqual(result['status'], 'applicable', result)
+        self.assertIsNone(result['effective_to'])
+        self.assertTrue(result['coverage_review']['review_id'])
+        task['period_end'] = '2026-10-31'
+        self.assertEqual(applicability.check(clause, policy, task, [], source_root=self.home,
+                                             source_reviews=reviews)['status'], 'needs_review')
+        self.assertEqual(self.db.execute('SELECT reviewed_by FROM PolicyReview').fetchone()[0], 'synthetic-reviewer')
+
+    def test_open_end_review_without_evidence_cannot_change_source_state(self):
+        with self.assertRaises(ValueError):
+            pg.verify_source(self.db, 'P', issuer='测试机关', validity_status='in_force',
+                             effective_from='2026-01-01', effective_to=None, clause_ids=['C'],
+                             reviewer='reviewer', end_kind='unfixed',
+                             coverage_start='2026-01-01', coverage_end='2026-09-30', evidence={})
+        self.assertEqual(pg.get(self.db, 'Policy', 'P')['validity_status'], 'unverified')
+
     def test_relative_path_cannot_depend_on_cwd_or_escape_database_root(self):
         for value in ['../outside.txt', 'nested/../../outside.txt', r'..\outside.txt']:
             with self.subTest(value=value), self.assertRaises(ValueError):

@@ -64,7 +64,102 @@ def migrate(db):
             id INTEGER PRIMARY KEY CHECK(id=1), workers INTEGER NOT NULL,
             ai_concurrency INTEGER NOT NULL, per_org INTEGER NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS material_resource_limits (
+            resource TEXT PRIMARY KEY, total INTEGER NOT NULL, per_org INTEGER NOT NULL,
+            per_actor INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS material_resource_slots (
+            token TEXT PRIMARY KEY, resource TEXT NOT NULL, org_id TEXT NOT NULL,
+            actor_id TEXT NOT NULL, job_id TEXT, lease_until REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS material_resource_active ON material_resource_slots(resource,lease_until);
+        CREATE TABLE IF NOT EXISTS material_job_files (
+            job_id TEXT NOT NULL REFERENCES material_jobs(id), file_id TEXT NOT NULL,
+            fingerprint TEXT NOT NULL, state TEXT NOT NULL, result_cipher BLOB,
+            failure_code TEXT, started_at REAL, finished_at REAL, reused INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(job_id,file_id)
+        );
     ''')
+    columns = {row[1] for row in db.execute('PRAGMA table_info(material_jobs)')}
+    for name, definition in [('budget_id', 'TEXT'), ('ai_calls', 'INTEGER NOT NULL DEFAULT 0'), ('kind', "TEXT NOT NULL DEFAULT 'enterprise'")]:
+        if name not in columns:
+            db.execute(f'ALTER TABLE material_jobs ADD COLUMN {name} {definition}')
+
+
+def resource_defaults():
+    org = integer('TAXPEARLS_MATERIAL_ORG_FILE_CONCURRENCY', 2, 1, 4)
+    user = integer('TAXPEARLS_MATERIAL_USER_FILE_CONCURRENCY', 2, 1, 4)
+    return {'upload': (4, 2, 1), 'parse': (4, org, user), 'ocr': (4, org, user)}
+
+
+def configure_resources(db):
+    for resource, budget in resource_defaults().items():
+        db.execute('''INSERT INTO material_resource_limits VALUES (?,?,?,?)
+            ON CONFLICT(resource) DO UPDATE SET total=excluded.total,
+            per_org=excluded.per_org,per_actor=excluded.per_actor''', (resource, *budget))
+
+
+def reserve_resource(store, user, resource, *, job=None, duration=120):
+    """Database-wide admission, including across web/worker processes."""
+    defaults = resource_defaults()
+    token, now = secrets.token_hex(16), time.time()
+    with store.connect() as db:
+        # A full resource queue is a read-only wait. Do not repeatedly contend
+        # for SQLite's writer merely to discover there is still no free slot.
+        if job:
+            check_claim(db, job)
+        else:
+            current_actor(db, user, batches.ROLES)
+        saved = db.execute('SELECT total,per_org,per_actor FROM material_resource_limits WHERE resource=?', (resource,)).fetchone()
+        available = tuple(saved) if saved else defaults[resource]
+        counts = db.execute('SELECT COUNT(*),COALESCE(SUM(org_id=?),0),COALESCE(SUM(actor_id=?),0) '
+                            'FROM material_resource_slots WHERE resource=? AND lease_until>?',
+                            (user['org_id'],user['id'],resource,now)).fetchone()
+        if any(count >= maximum for count, maximum in zip(counts, available)):
+            return None
+        db.execute('BEGIN IMMEDIATE')
+        if job:
+            check_claim(db, job)
+        else:
+            current_actor(db, user, batches.ROLES)
+        db.execute('INSERT OR IGNORE INTO material_resource_limits VALUES (?,?,?,?)', (resource, *defaults[resource]))
+        budget = db.execute('SELECT * FROM material_resource_limits WHERE resource=?', (resource,)).fetchone()
+        db.execute('DELETE FROM material_resource_slots WHERE lease_until<?', (now,))
+        counts = db.execute('SELECT COUNT(*),COALESCE(SUM(org_id=?),0),COALESCE(SUM(actor_id=?),0) '
+                            'FROM material_resource_slots WHERE resource=?', (user['org_id'], user['id'], resource)).fetchone()
+        if any(count >= budget[key] for count, key in zip(counts, ('total', 'per_org', 'per_actor'))):
+            return None
+        db.execute('INSERT INTO material_resource_slots VALUES (?,?,?,?,?,?)',
+                   (token, resource, user['org_id'], user['id'], job['id'] if job else None, now + duration))
+    return token
+
+
+def release_resource(store, token):
+    with store.connect() as db:
+        db.execute('DELETE FROM material_resource_slots WHERE token=?', (token,))
+
+
+@contextmanager
+def resource_slot(store, job, resource, *, timeout=600):
+    deadline = time.monotonic() + timeout
+    while not (token := reserve_resource(store, actor(job), resource, job=job, duration=timeout + 60)):
+        if time.monotonic() >= deadline:
+            raise TimeoutError('material resource timeout')
+        time.sleep(.05)
+    try:
+        yield
+    finally:
+        release_resource(store, token)
+
+
+def check_claim(db, job):
+    row = db.execute('SELECT * FROM material_jobs WHERE id=?', (job['id'],)).fetchone()
+    if not row or row['state'] != 'running' or row['lease_token'] != job['lease_token'] or row['lease_until'] <= time.time():
+        raise AccessDenied('任务领取已过期。', 409)
+    batch = batches._authorize(db, actor(job), job['batch_id'])
+    if batch['revision'] != job['input_revision']:
+        raise AccessDenied('材料已变化，请重新读取。', 409)
+    return batch
 
 
 def limits(db, config, *, configure=False):
@@ -239,7 +334,17 @@ def submit_pdf(store, user, batch_id, revision, request, rules):
 
 
 def listing(db, batch_id):
-    return [public(row) for row in db.execute('SELECT * FROM material_jobs WHERE batch_id=? ORDER BY rowid DESC LIMIT 100', (batch_id,))]
+    result = []
+    for row in db.execute('SELECT * FROM material_jobs WHERE batch_id=? ORDER BY rowid DESC LIMIT 100', (batch_id,)):
+        item = public(row)
+        item['files'] = [dict(f) for f in db.execute('SELECT file_id,state,failure_code,started_at,finished_at,reused '
+                                                   'FROM material_job_files WHERE job_id=? ORDER BY rowid', (row['id'],))]
+        if row['state'] in {'superseded', 'failed'}:
+            for file in item['files']:
+                if file['state'] in {'queued', 'running'}:
+                    file['state'] = row['state']
+        result.append(item)
+    return result
 
 
 def status(store, user, batch_id):
@@ -309,6 +414,7 @@ def claim(store, config):
         row = db.execute('''SELECT j.* FROM material_jobs j WHERE j.state='queued' AND j.available_at<=?
             AND NOT EXISTS (SELECT 1 FROM material_jobs r WHERE r.batch_id=j.batch_id AND r.state='running')
             AND (SELECT COUNT(*) FROM material_jobs r WHERE r.org_id=j.org_id AND r.state='running')<?
+            AND (j.kind<>'core' OR NOT EXISTS (SELECT 1 FROM material_jobs r WHERE r.actor_id=j.actor_id AND r.kind='core' AND r.state='running'))
             ORDER BY j.available_at,j.rowid LIMIT 1''', (now,budget['per_org'])).fetchone()
         if not row:
             return None
@@ -336,6 +442,7 @@ def heartbeat(store, job, config):
                              (time.time()+config.lease,job['id'],job['lease_token'],time.time()))
         if updated.rowcount:
             db.execute('UPDATE material_ai_slots SET lease_until=MAX(lease_until,?) WHERE job_id=?', (time.time()+config.lease,job['id']))
+            db.execute('UPDATE material_resource_slots SET lease_until=MAX(lease_until,?) WHERE job_id=?', (time.time()+config.lease,job['id']))
 
 
 @contextmanager
@@ -492,6 +599,7 @@ class Worker:
         with self.get_store().connect() as db:
             db.execute('BEGIN IMMEDIATE')
             limits(db,config,configure=True)
+            configure_resources(db)
         self.stop_event.clear()
         for number in range(config.workers):
             thread = threading.Thread(target=self.loop,args=(config,),name=f'material-{number}',daemon=True)
@@ -534,6 +642,12 @@ class Worker:
         context = operations.ACTIVE.set(None)
         signature = {}
         try:
+            signature = json.loads(batches._open(job['input_cipher'], batches._context(
+                job['org_id'], job['batch_id'], 'job_input', job['id'])))
+            if signature.get('kind') == 'core':
+                from webapp import core_material_jobs
+                core_material_jobs.run(store, job, signature, config)
+                return True
             signature, previous, documents, uploads = inputs(store,job)
             result = self.process(job,signature,previous,documents,uploads)
             failures = [d.get('extraction',{}) for d in result['documents'] if d.get('extraction',{}).get('failure_code') in {'timeout','network','http','configuration'}]
