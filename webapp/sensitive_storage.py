@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 PREFIX = 'tp-field-v1:'
 REGISTRY = {
+    'risk_reviews': (('review_key',), ('review_note',)),
     'feishu_binding_requests': (('id',), ('identity_json',)),
     'member_invitations': (('id',), ('code_secret',)),
     'training_invitation_links': (('id',), ('code_secret',)),

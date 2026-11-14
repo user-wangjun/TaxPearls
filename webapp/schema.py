@@ -31,6 +31,12 @@ def initialize(store) -> None:
                 summary_json TEXT NOT NULL, audited_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_audits_org ON audits(org_id, audited_at DESC);
+            CREATE TABLE IF NOT EXISTS risk_reviews (
+                review_key TEXT PRIMARY KEY, audit_id TEXT NOT NULL REFERENCES audits(id),
+                rule_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','reviewing','done')),
+                review_note TEXT NOT NULL, revision INTEGER NOT NULL,
+                updated_by TEXT NOT NULL REFERENCES users(id), updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS audit_report_versions (
                 audit_id TEXT NOT NULL REFERENCES audits(id), version INTEGER NOT NULL,
                 html TEXT NOT NULL, html_sha256 TEXT NOT NULL,

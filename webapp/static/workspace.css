@@ -590,7 +590,26 @@ body.workspace-ready #appFooter { background: transparent; color: var(--ink-2); 
 #dashboardPanel .dash-grid { margin-bottom: 20px; }
 #dashboardPanel .dash-grid > .sheet { margin-bottom: 0; }
 #dashboardPanel .risk-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-#dashboardPanel .risk-card-heading h2 { margin: 0; }
+#dashboardPanel .risk-card-heading h2 { margin: 0; font-size: clamp(20px, 1.8vw, 28px); line-height: 1.4; }
+#dashboardPanel .risk-alerts { flex-shrink: 0; max-height: 300px; overflow: auto; margin: 14px 0; border-top: 1px solid var(--line); }
+#dashboardPanel .risk-alert { padding: 12px 0; border-bottom: 1px solid var(--line); }
+#dashboardPanel .risk-alert > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; list-style: none; font-size: 14px; }
+#dashboardPanel .risk-alert > summary::-webkit-details-marker { display: none; }
+#dashboardPanel .risk-alert > summary strong { display: flex; align-items: baseline; gap: 8px; }
+#dashboardPanel .risk-alert > summary strong::before { content: ""; flex: 0 0 7px; width: 7px; height: 7px; border-radius: 50%; background: #df6267; }
+#dashboardPanel .risk-alert-update > summary strong::before { background: #e6a447; }
+#dashboardPanel .risk-alert > summary > span { flex-shrink: 0; color: var(--ink-2); font-size: 12px; }
+#dashboardPanel .risk-alert > summary > span::after { content: " ›"; }
+#dashboardPanel .risk-alert[open] > summary > span::after { content: " ⌄"; }
+#dashboardPanel .risk-alert > p, #dashboardPanel .risk-alert li { margin: 8px 0; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+#dashboardPanel .risk-alert ul { padding-left: 20px; }
+#dashboardPanel .risk-alert .btn, #dashboardPanel .risk-review-history { padding: 8px 12px; margin: 6px 8px 0 0; font-size: 13px; }
+#dashboardPanel .risk-review-list { margin-top: 12px; }
+#dashboardPanel .risk-review-item { border-top: 1px solid var(--line); padding: 12px 0; }
+#dashboardPanel .risk-review-item > strong { display: block; font-size: 14px; }
+#dashboardPanel .risk-review-item label { display: grid; gap: 5px; margin: 10px 0; font-size: 12px; }
+#dashboardPanel .risk-review-item :is(select, textarea) { width: 100%; box-sizing: border-box; padding: 8px; color: var(--ink); background: transparent; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+#dashboardPanel .risk-review-item textarea { resize: vertical; }
 #dashboardPanel .risk-card-heading .risk-breakdown { flex: 0 0 auto; min-width: 0; display: grid; gap: 4px; }
 #dashboardPanel .risk-card-heading .risk-legend-row { padding: 0; margin: 0; font-size: 12px; line-height: 18px; }
 #dashboardPanel .risk-distribution { margin: 6px 0 12px; }
@@ -605,8 +624,8 @@ body.workspace-ready #appFooter { background: transparent; color: var(--ink-2); 
 /* Equal chart cards; explanations expand within the risk card. */
 #dashboardPanel .dash-grid { align-items: stretch; }
 #dashboardPanel .dash-grid > .sheet {
-  height: 480px;
-  min-height: 0;
+  height: auto;
+  min-height: 480px;
   display: flex;
   flex-direction: column;
 }
@@ -674,8 +693,9 @@ html[data-theme=dark] #appMain .trend-area-start { stop-opacity: .22; }
 #dashboardPanel .risk-explanation-list {
   display: flex;
   flex-direction: column;
-  flex: 1 1 0;
-  min-height: 0;
+  flex: 1 1 auto;
+  min-height: 120px;
+  max-height: 200px;
   gap: 6px;
   overflow-y: auto;
   scrollbar-gutter: stable;
@@ -686,7 +706,7 @@ html[data-theme=dark] #appMain .trend-area-start { stop-opacity: .22; }
 #dashboardPanel .risk-explanation-list .risk-detail { border-top: 1px solid var(--line); padding: 8px 12px 10px; }
 #dashboardPanel .risk-explanation-list .risk-empty { margin: 4px 0; text-align: left; font-size: 13px; line-height: 1.6; }
 @media (max-width: 760px) {
-  #dashboardPanel .dash-grid > .risk-chart-panel { height: 480px; }
+  #dashboardPanel .dash-grid > .risk-chart-panel { height: auto; }
 }
 
 /* Personal settings use the shared silver cards and compact account controls. */

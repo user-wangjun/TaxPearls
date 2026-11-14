@@ -9,10 +9,39 @@ from decimal import Decimal, localcontext
 import hashlib
 import json
 
-from src import engine
+from src import engine, legal_periods, periods
 from src.models import Company, Dataset, Metric, Rule
 
 VERSION = 'yaml-screen-v2'
+
+
+def period_rules(base_rules, histories, period_value, enabled=None):
+    """Select the same complete-period edition for audits and update reminders."""
+    period = periods.parse_period(period_value, '审计所属期')
+    selected = []
+    for base in base_rules:
+        if enabled is not None and base.id not in enabled:
+            continue
+        versions = histories.get(base.id, [])
+        overlapping = [item for item in versions if item['effective_from']
+                       and item['effective_from'] <= period.end.isoformat()
+                       and (item['effective_to'] or '9999-12-31') >= period.start.isoformat()]
+        if overlapping:
+            item = overlapping[0]
+            if (len(overlapping) != 1 or item['effective_from'] > period.start.isoformat()
+                    or (item['effective_to'] or '9999-12-31') < period.end.isoformat()):
+                raise ValueError(f'规则 {base.id} 生效期跨越审计所属期；请拆分期间审计，不能混用版本。')
+        else:
+            undated = [item for item in versions if not item['effective_from']]
+            item = undated[-1] if undated else None
+        if item:
+            frozen = Rule(**item['rule']) if item.get('rule') else base
+            base = engine.validate_rule_update(replace(
+                frozen, version=item['version'], logic=deepcopy(item['logic']),
+                threshold_basis=item['threshold_basis'], effective_from=item['effective_from'],
+                effective_to=item['effective_to']))
+        selected.append(legal_periods.resolve(base, period_value, strict=False))
+    return selected
 
 
 def effective_rules(store, directory):

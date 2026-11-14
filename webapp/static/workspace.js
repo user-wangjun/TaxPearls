@@ -212,7 +212,7 @@ function renderDashboard(){
     } else v.textContent=amount(m);
     c.append(v);kpis.append(c);
   });box.append(kpis);
-  const grid=el("div","dash-grid"),trend=section("经营数据趋势"),risk=section("风险分布");
+  const grid=el("div","dash-grid"),trend=section("经营数据趋势"),risk=section("风险预警及分布");
   trend.append(el("p","muted","按业务所属期间展示 · 每期采用最新审计数据"));
   renderTrend(trend,rows);
   renderRiskDistribution(risk,r);grid.append(trend,risk);box.append(grid);
@@ -309,9 +309,86 @@ function renderRiskDistribution(box,record){
   chart.append(svg);layout.append(chart);box.append(layout);
   details.setAttribute("tabindex","0");details.setAttribute("role","region");details.setAttribute("aria-label","风险分级解释");
   box.append(details);
+  renderRiskAlerts(box,record);
   if(total)box.append(action("查看风险证据",()=>openAudit(record.id)));
   const skipped=record.summary.skipped||0;
   details.append(el("p","source-note","占比按已命中事项数量计算。"+(skipped?"另有 "+skipped+" 项检查未执行，需补齐材料后复核。":"")));
+}
+function renderRiskAlerts(box,record){
+  const alerts=record.alerts;
+  if(!alerts)return;
+  const hits=record.risks.filter(f=>f.status==="hit"),updates=alerts.rule_updates||[];
+  function appendReviewHistory(){
+    if(hits.length){
+      const reopen=action("查看核查记录",()=>{
+        const region=el("div","risk-alerts"),history=el("details","risk-alert risk-alert-pending"),heading=el("summary");
+        heading.append(el("strong",null,"本期风险疑点已完成核查"));history.append(heading);history.open=true;
+        renderRiskReviewList(history,record,hits);region.append(history);reopen.replaceWith(region);
+      });
+      reopen.classList.add("risk-review-history");box.append(reopen);
+    }
+  }
+  if(!alerts.pending_count&&!updates.length){appendReviewHistory();return;}
+  const region=el("div","risk-alerts");region.setAttribute("aria-label","风险提醒");
+  const scope=record.company_name+" · "+record.period;
+  if(alerts.pending_count){
+    const item=el("details","risk-alert risk-alert-pending"),heading=el("summary");
+    item.setAttribute("name","dashboard-risk-alerts");
+    heading.append(el("strong",null,alerts.pending_count+" 项风险疑点待核查"),el("span",null,"去核查"));
+    item.append(heading,el("p","muted",scope));
+    renderRiskReviewList(item,record,hits);region.append(item);
+  }
+  if(updates.length){
+    const item=el("details","risk-alert risk-alert-update"),heading=el("summary");
+    item.setAttribute("name","dashboard-risk-alerts");
+    heading.append(el("strong",null,"相关规则已更新，建议重新检测"),el("span",null,"查看详情"));
+    item.append(heading,el("p","muted",scope));
+    const list=el("ul");
+    for(const update of updates)list.append(el("li",null,update.name+"："+update.reason+
+      (update.after?(update.before?"（v"+update.before+" → v"+update.after+"）":"（v"+update.after+"）"):"")));
+    item.append(list,el("p","muted","确认材料和检测范围后再重新检测；当前提醒不代表发现了新风险。"),
+      action("查看原检测",()=>openAudit(record.id)),action("准备重新检测",startClientUpload));region.append(item);
+  }
+  box.append(region);
+  if(!alerts.pending_count)appendReviewHistory();
+}
+function renderRiskReviewList(container,record,hits){
+  const list=el("div","risk-review-list");
+  for(const finding of hits){
+    const review=finding.review||{status:"pending",note:"",revision:0},form=el("form","risk-review-item");
+    form.append(el("strong",null,finding.name));
+    const statusLabel=el("label",null,"核查状态"),select=el("select");
+    for(const [value,label] of [["pending","待核查"],["reviewing","核查中"],["done","已处理"]])option(select,value,label);
+    select.value=review.status;statusLabel.append(select);
+    const noteLabel=el("label",null,"核查结论或处理说明"),note=el("textarea");
+    note.value=review.note;note.maxLength=2000;note.rows=2;note.placeholder="填写核查结果、差异说明或处理情况";noteLabel.append(note);
+    const message=el("p","muted");message.setAttribute("role","status");
+    const save=el("button","btn re","保存核查");save.type="submit";
+    const evidence=action("查看证据",()=>openAudit(record.id));evidence.type="button";
+    form.append(statusLabel,noteLabel,save,evidence,message);
+    form.addEventListener("submit",async event=>{
+      event.preventDefault();
+      if(select.value==="done"&&!note.value.trim()){message.textContent="请填写核查结论或处理说明。";note.focus();return;}
+      const userId=currentUser?.id;
+      save.disabled=true;message.textContent="正在保存……";
+      try{
+        const result=await api("/api/audits/"+encodeURIComponent(record.id)+"/risks/"+encodeURIComponent(finding.id)+"/review",{
+          method:"PUT",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({status:select.value,note:note.value,revision:finding.review?.revision||0})});
+        if(currentUser?.id!==userId)return;
+        finding.review=result;
+        record.alerts.pending_count=hits.filter(f=>f.review?.status!=="done").length;
+        // Keep the editor open and preserve other unsaved notes. The heading
+        // reflects the saved count immediately; the next render hides cleared alerts.
+        const heading=container.querySelector("summary strong");
+        if(heading)heading.textContent=record.alerts.pending_count?record.alerts.pending_count+" 项风险疑点待核查":"本期风险疑点已完成核查";
+        message.textContent="已保存";
+      }catch(error){if(currentUser?.id===userId)message.textContent=error.message;}
+      finally{save.disabled=false;}
+    });
+    list.append(form);
+  }
+  container.append(list);
 }
 function svgNode(tag,attrs,text){const n=document.createElementNS("http://www.w3.org/2000/svg",tag);for(const [k,v]of Object.entries(attrs))n.setAttribute(k,v);if(text!==undefined)n.textContent=text;return n;}
 // Only connect comparable, explicitly recognized period granularities.
