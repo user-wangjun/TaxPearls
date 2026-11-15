@@ -2071,7 +2071,7 @@ def delete_org_logo(session: str | None = Cookie(default=None, alias=COOKIE_NAME
 @app.get("/api/knowledge/rule-catalog")
 def knowledge_rule_catalog(session: str | None = Cookie(default=None, alias=COOKIE_NAME)):
     """Current graph editions, with legacy controls explicitly scoped to compatibility."""
-    _user(session)
+    _allow(_user(session), "platform_admin")
     from src.rule_conversion import compile_rule
     loaded = _effective_rules()
     overrides, enabled = store.rule_overrides(), store.enabled_rule_ids()
@@ -2159,7 +2159,7 @@ def rule_trial(
     session: str | None = Cookie(default=None, alias=COOKIE_NAME),
 ) -> dict[str, Any]:
     user = _user(session)
-    _allow(user, "org_admin", "accountant", "teacher")
+    _allow(user, "teacher")
     entry = _audit_or_404(body.audit_id, user)
     current = _rule_by_id(rule_id)
     candidate = _candidate_rule(current, body)
