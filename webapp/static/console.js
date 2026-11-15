@@ -783,8 +783,9 @@ function enterWorkspace(user) {
   $("createUserRow").style.display = user.role === "org_admin" ? "flex" : "none";
   $("userAdmin").style.display = ["platform_admin","org_admin"].includes(user.role) ? "block" : "none";
   $("clientAdmin").style.display = user.role === "org_admin" ? "block" : "none";
-  const ruleAccess = ["platform_admin","org_admin","teacher","accountant"].includes(user.role) && !isCampusUser();
+  const ruleAccess = user.role === "platform_admin" && !isCampusUser();
   $("ruleAdmin").hidden = !ruleAccess;
+  $("ruleAdmin").open = false;
   $("ruleAdminLink").hidden = !ruleAccess;
   ruleCatalogRequest++; ruleEditorRequest++; ruleHistoryRequest++;
   graphRuleCatalog=[]; editingRule=null; $("ruleList").replaceChildren(); $("ruleEditor").hidden=true;
@@ -1542,9 +1543,9 @@ async function loadOrgSettings(){showOrgSettings(await api("/api/org/settings"))
 
 function nextRuleVersion(version){const parts=version.split(".").map(Number);if(parts.some(n=>!Number.isInteger(n)))return version+".1";parts[parts.length-1]+=1;return parts.join(".");}
 async function loadGraphRules(){
-  if($("ruleAdmin").hidden||!$("ruleAdmin").open)return;
+  if(currentUser?.role!=="platform_admin"||$("ruleAdmin").hidden||!$("ruleAdmin").open)return;
   const request=++ruleCatalogRequest,owner=currentUser?.id;
-  const current=()=>request===ruleCatalogRequest&&currentUser?.id===owner&&$("knowledgePanel").classList.contains("active")&&$("ruleAdmin").open;
+  const current=()=>request===ruleCatalogRequest&&currentUser?.id===owner&&currentUser?.role==="platform_admin"&&$("knowledgePanel").classList.contains("active")&&$("ruleAdmin").open;
   graphRuleCatalog=[];$("ruleList").replaceChildren();$("ruleCatalogStatus").textContent="正在读取图谱规则…";
   try{
     const rows=await api("/api/knowledge/rule-catalog");if(!current())return;
@@ -1559,6 +1560,7 @@ async function loadGraphRules(){
 }
 function renderGraphRules(){
   const query=$("ruleCatalogSearch").value.trim().toLowerCase(),box=$("ruleList");box.replaceChildren();
+  if(currentUser?.role!=="platform_admin")return;
   const rows=graphRuleCatalog.filter(r=>[r.rule_code,r.name,r.version,r.rule_id].join(" ").toLowerCase().includes(query));
   $("ruleCatalogStatus").textContent=`共 ${graphRuleCatalog.length} 个图谱规则版本，匹配 ${rows.length} 个`+(rows.length>80?"；显示前 80 个，请搜索缩小范围。":"。");
   for(const row of rows.slice(0,80)){
@@ -1600,7 +1602,7 @@ async function viewGraphRule(row){
   $("knowledgeSearch").value=row.rule_id;graphSelected=node.id;filterGraph(true);focusGraph();graphTab(false);
   $("knowledgeDetail").scrollIntoView({behavior:"smooth",block:"nearest"});
 }
-$("btnOpenGraphRules").addEventListener("click",()=>{switchPanel("knowledgePanel");$("ruleAdmin").open=true;$("ruleAdmin").scrollIntoView({behavior:"smooth",block:"start"});});
+$("btnOpenGraphRules").addEventListener("click",()=>{if(currentUser?.role!=="platform_admin")return;switchPanel("knowledgePanel");$("ruleAdmin").open=true;$("ruleAdmin").scrollIntoView({behavior:"smooth",block:"start"});});
 $("btnReloadRules").addEventListener("click",loadGraphRules);
 $("ruleCatalogSearch").addEventListener("input",renderGraphRules);
 $("ruleAdmin").addEventListener("toggle",()=>{if($("ruleAdmin").open)loadGraphRules();else ruleCatalogRequest++;});
@@ -1627,6 +1629,7 @@ function renderRuleParamFields(){
 }
 
 function openRuleEditor(rule){
+  if(currentUser?.role!=="platform_admin")return;
   ruleEditorRequest++;
   editingRule=rule;ruleDraftLogic=JSON.parse(JSON.stringify(rule.logic));$("ruleEditor").hidden=false;
   $("ruleEditorTitle").textContent=rule.id+" "+rule.name;$("ruleEditorMeta").textContent=rule.category+" · "+({high:"高",medium:"中",low:"低"}[rule.severity]||rule.severity)+"风险";
@@ -1660,7 +1663,7 @@ function ruleEditorControls(){
   $("ruleEditor").querySelectorAll("input:not([readonly]),select,textarea,button").forEach(n=>{n.disabled=ruleBusy;});
 }
 async function submitRuleDraft(publish){
-  if(ruleBusy||!editingRule||!$("knowledgePanel").classList.contains("active"))return;
+  if(currentUser?.role!=="platform_admin"||ruleBusy||!editingRule||!$("knowledgePanel").classList.contains("active"))return;
   const request=ruleEditorRequest,owner=currentUser.id,id=editingRule.id;
   try{
     const body=ruleDraftBody(),audit=$("ruleTrialAudit").value;

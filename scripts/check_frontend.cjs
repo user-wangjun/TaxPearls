@@ -719,6 +719,25 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
     const failed=ctx.loadGraphRules();calls.shift().reject(new Error('catalog unavailable'));await failed;
     assert.ok(ctx.$('ruleCatalogStatus').textContent.includes('catalog unavailable'));
     assert.equal(ctx.$('ruleList').children.length,0,'Failed refresh must not leave stale enabled controls');
+    for(const role of ['org_admin','accountant','teacher','student']){
+      ctx.currentUser={id:'business',role};
+      ctx.$('ruleAdmin').hidden=false;ctx.$('ruleAdmin').open=true;
+      await ctx.loadGraphRules();ctx.renderGraphRules();
+      ctx.$('btnOpenGraphRules').handlers.click();
+      assert.equal(calls.length,0,'Non-platform roles cannot fetch maintenance data or activate its entry');
+      assert.equal(ctx.$('ruleList').children.length,0);
+      const guard={currentUser:ctx.currentUser,$(){throw Error('Unauthorized editor touched the DOM');}};
+      vm.createContext(guard);
+      vm.runInContext(source.slice(source.indexOf('function openRuleEditor('),source.indexOf('async function loadRuleVersionHistory(')),guard);
+      guard.openRuleEditor({});
+    }
+    const visibility=source.slice(source.indexOf('  const ruleAccess ='),source.indexOf('  ruleCatalogRequest++;',source.indexOf('  const ruleAccess =')));
+    for(const role of ['platform_admin','org_admin','accountant','teacher','student']){
+      const guard={user:{role},isCampusUser:()=>false,$:ctx.$};vm.createContext(guard);vm.runInContext(visibility,guard);
+      assert.equal(ctx.$('ruleAdmin').hidden,role!=='platform_admin');
+      assert.equal(ctx.$('ruleAdminLink').hidden,role!=='platform_admin');
+      assert.equal(ctx.$('ruleAdmin').open,false);
+    }
     const markup=fs.readFileSync('webapp/static/index.html','utf8');
     assert.ok(markup.indexOf('id="ruleAdmin"')>markup.indexOf('id="knowledgePanel"'));
     assert.ok(markup.indexOf('id="ruleAdmin"')<markup.indexOf('id="uploadPanel"'));
@@ -955,6 +974,11 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   assert.equal(ruleErrors.length,0);
   const save=ruleCtx.submitRuleDraft(true);ruleCalls.shift().resolve({id:"R-002",version:"2.1"});await save;
   assert.equal(shown.length,1);assert.ok(ruleCtx.$("ruleEditorStatus").textContent.includes("已保存"));
+  for(const role of ['org_admin','accountant','teacher','student']){
+    ruleCtx.currentUser={id:'business',role};
+    await ruleCtx.submitRuleDraft(true);await ruleCtx.submitRuleDraft(false);
+    assert.equal(ruleCalls.length,0,'Business roles cannot submit a parameter draft');
+  }
   const uploadNodes=new Map(),uploadCalls=[],reviews=[],uploadErrors=[];
   const uploadCtx={currentUser:{id:'u1'},dz:{style:{}},enterpriseMaterials:{enabled:()=>false},
     $:id=>{if(!uploadNodes.has(id))uploadNodes.set(id,{...node(),style:{},value:'local'});return uploadNodes.get(id);},

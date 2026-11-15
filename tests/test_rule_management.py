@@ -24,6 +24,31 @@ SAMPLE = ROOT / "samples" / "样例企业-审计材料.xlsx"
 
 @material_key
 class RuleManagementTests(unittest.TestCase):
+    def test_business_roles_read_rules_without_maintenance_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = Store(Path(directory) / 'rule-permissions.db')
+            base = next(rule for rule in engine.load_rules(ROOT / 'rules') if rule.id == 'R-001')
+            draft = {'expected_version': base.version, 'new_version': '2.1',
+                     'logic': base.logic, 'threshold_basis': '权限回归测试'}
+            with patch.object(app_module, 'store', store), TestClient(app_module.app) as client:
+                for role in ('org_admin', 'accountant', 'teacher', 'student'):
+                    with self.subTest(role=role):
+                        user = store.create_user('permission-' + role, 'Permission-pass-2026!', role, role, 'org-a')
+                        token = store.authenticate(user['username'], 'Permission-pass-2026!')[1]
+                        client.cookies.set(app_module.COOKIE_NAME, token)
+                        self.assertEqual(client.get('/api/rules').status_code, 200)
+                        self.assertEqual(client.get('/api/knowledge/graph').status_code, 200)
+                        self.assertEqual(client.get('/api/knowledge/rule-catalog').status_code, 403)
+                        self.assertEqual(client.get('/api/rules/R-001/versions').status_code, 403)
+                        self.assertEqual(client.put('/api/rules/R-001/parameters', json=draft).status_code, 403)
+                        self.assertEqual(client.put('/api/rules/R-001/state', json={'enabled': False}).status_code, 403)
+                        self.assertEqual(client.post('/api/knowledge/rules/unknown/approve').status_code, 403)
+                        self.assertEqual(client.post('/api/knowledge/candidates', json={'bundle': {}}).status_code, 403)
+                        if role in ('org_admin', 'accountant'):
+                            self.assertEqual(client.post('/api/rules/R-001/trial',
+                                json={**draft, 'audit_id': 'inaccessible-audit'}).status_code, 403)
+                self.assertEqual(store.rule_overrides(), {})
+
     def test_graph_catalog_uses_graph_review_and_separates_legacy_state(self):
         with tempfile.TemporaryDirectory() as directory:
             store = Store(Path(directory) / 'graph-catalog.db')
@@ -355,10 +380,10 @@ class RuleManagementTests(unittest.TestCase):
 
                     client.post("/api/logout")
                     self._login(client, "accountanta", "accountanta-pass-2026")
-                    self.assertEqual(client.post("/api/rules/R-001/trial", json=draft).status_code, 404)
+                    self.assertEqual(client.post("/api/rules/R-001/trial", json=draft).status_code, 403)
                     accountant_audit = self._upload(client, assigned_client_id)
                     accountant_draft = {**draft, "audit_id": accountant_audit}
-                    self.assertEqual(client.post("/api/rules/R-001/trial", json=accountant_draft).status_code, 200)
+                    self.assertEqual(client.post("/api/rules/R-001/trial", json=accountant_draft).status_code, 403)
                     self.assertEqual(client.put("/api/rules/R-001/parameters", json=accountant_draft).status_code, 403)
 
                     client.post("/api/logout")
