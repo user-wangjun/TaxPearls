@@ -5,7 +5,6 @@ ownership, audit logs, rule switches and deterministic training/marking.
 Enterprise originals and sensitive evidence use authenticated encryption at rest.
 """
 from __future__ import annotations
-from src import periods
 from src.ai_transport import TransportError
 
 import base64
@@ -32,7 +31,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
 from webapp.uploads import multipart, single_file
 
-from src import engine, loader, render, training, sandbox_feedback, legal_periods
+from src import engine, loader, render, training, sandbox_feedback
 from src import settings as _environment_settings  # noqa: F401 - Load .env before Store and route initialization.
 from src.mailer import MailError, send_password_reset_email, send_registration_code_email, send_login_code_email
 from src.models import Dataset, Rule
@@ -624,33 +623,11 @@ def _audit_rules(dataset: Dataset, enabled: set[str] | None = None) -> list[Any]
     An interval crossing a version boundary needs a split-period audit; choosing
     a version by the end date would silently apply it to earlier transactions.
     """
-    period = periods.parse_period(dataset.company.period, "审计所属期")
-    histories = store.rule_versions()
-    selected = []
-    for base in engine.load_rules(RULES_DIR):
-        if enabled is not None and base.id not in enabled:
-            continue
-        versions = histories.get(base.id, [])
-        overlapping = [item for item in versions if item["effective_from"]
-                       and item["effective_from"] <= period.end.isoformat()
-                       and (item["effective_to"] or "9999-12-31") >= period.start.isoformat()]
-        if overlapping:
-            item = overlapping[0]
-            if len(overlapping) != 1 or item["effective_from"] > period.start.isoformat() or (item["effective_to"] or "9999-12-31") < period.end.isoformat():
-                raise HTTPException(422, f"规则 {base.id} 生效期跨越审计所属期；请拆分期间审计，不能混用版本。")
-        else:
-            undated = [item for item in versions if not item["effective_from"]]
-            item = undated[-1] if undated else None
-        if item:
-            frozen = Rule(**item["rule"]) if item.get("rule") else base
-            candidate = replace(frozen, version=item["version"], logic=deepcopy(item["logic"]),
-                                threshold_basis=item["threshold_basis"],
-                                effective_from=item["effective_from"], effective_to=item["effective_to"])
-            selected.append(engine.validate_rule_update(candidate))
-        else:
-            selected.append(base)
-    # Missing reviewed editions limit the affected rule, not the entire batch.
-    return [legal_periods.resolve(rule, dataset.company.period, strict=False) for rule in selected]
+    from src.rule_conversion import period_rules
+    try:
+        return period_rules(engine.load_rules(RULES_DIR), store.rule_versions(), dataset.company.period, enabled)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
 
 
 def _rule_by_id(rule_id: str) -> Any:
@@ -817,6 +794,11 @@ def workspace_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "workspace.js", media_type="text/javascript")
 
 
+@app.get("/vuelendar.bundle.js")
+def vuelendar_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "vuelendar.bundle.js", media_type="text/javascript")
+
+
 @app.get("/mistake-book.js")
 def mistake_book_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "mistake-book.js", media_type="text/javascript")
@@ -893,15 +875,30 @@ def workspace_styles() -> FileResponse:
 @app.get("/api/dashboard")
 def dashboard(session: str | None = Cookie(default=None, alias=COOKIE_NAME),
               company: str | None = Query(default=None, max_length=200),
-              page: int = Query(default=1, ge=1), page_size: int = Query(default=24, ge=1, le=100)):
+              page: int = Query(default=1, ge=1), page_size: int = Query(default=24, ge=1, le=100),
+              start_date: str | None = Query(default=None, max_length=10),
+              end_date: str | None = Query(default=None, max_length=10)):
     from webapp.dashboard import collect
     user = _user(session)
     _allow(user, "org_admin", "accountant", "teacher")
-    return collect(store, user, company, page, page_size)
+    start = end = None
+    if start_date is not None or end_date is not None:
+        try:
+            if not start_date or not end_date:
+                raise ValueError
+            start, end = date.fromisoformat(start_date), date.fromisoformat(end_date)
+            if start > end or start.isoformat() != start_date or end.isoformat() != end_date:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(422, "请提供有效的起止日期，起始日期不能晚于终止日期。") from None
+    return collect(store, user, company, page, page_size, start, end)
 
 
 from webapp.org_reports import register as register_org_reports
 register_org_reports(app, lambda: store, _user, _allow, COOKIE_NAME)
+
+from webapp.risk_alerts import register as register_risk_alerts
+register_risk_alerts(app, lambda: store, _user, COOKIE_NAME)
 
 from webapp.report_verification import register as register_report_verification
 register_report_verification(app, lambda: store, _user, _allow, _audit_or_404, COOKIE_NAME)

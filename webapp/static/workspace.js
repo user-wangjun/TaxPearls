@@ -154,7 +154,7 @@ function enhanceSelect(select){
   refresh();
 }
 enhanceSelect($("dashboardCompany"));
-enhanceSelect($("dashboardPeriod"));
+
 function action(label,fn) { const b=el("button","btn re",label);b.addEventListener("click",fn);return b; }
 async function openAudit(id) { try {renderResult(await api("/api/audits/"+id));} catch(e){showError(e.message);} }
 function startClientUpload(){
@@ -163,6 +163,41 @@ function startClientUpload(){
 }
 $("dashboardUpload").addEventListener("click",()=>isCampusUser()?switchPanel("examPanel"):startClientUpload());
 let dashboardRequest = 0;
+// Vuelendar is mounted only inside this filter; the existing range API is unchanged.
+function setupDashboardRange(){
+  const rangeTrigger=$("dashboardDateRange"),calendar=$("dashboardRangeCalendar");
+  let picker;
+  function updateRangeDisplay(){
+    const start=$("dashboardStart").value,end=$("dashboardEnd").value;
+    $("dashboardDateRangeText").textContent=start&&end?`${start} 至 ${end}`:"全部期间 · 选择起止日期";
+  }
+  function closeCalendar(focus=false){
+    picker?.close?.();
+    calendar.hidden=true;rangeTrigger.setAttribute("aria-expanded","false");
+    if(focus)rangeTrigger.focus?.();
+  }
+  function complete(start,end){
+    $("dashboardStart").value=start;$("dashboardEnd").value=end;
+    updateRangeDisplay();
+    $("dashboardCalendarHint").textContent=start?`已选 ${start} 至 ${end}，可继续调整`:"先选择开始日期，再选择结束日期";
+    void loadDashboard();
+  }
+  rangeTrigger.onclick=()=>{
+    if(!calendar.hidden){closeCalendar();return;}
+    const start=$("dashboardStart").value,end=$("dashboardEnd").value;
+    $("dashboardCalendarHint").textContent="先选择开始日期，再选择结束日期";
+    calendar.hidden=false;rangeTrigger.setAttribute("aria-expanded","true");
+    picker ||= TaxPearlsLendar.mount($("dashboardLendarMount"),{onComplete:complete,
+      onDraft:value=>{$("dashboardCalendarHint").textContent=`已选 ${value}，请选择结束日期`;}});
+    picker.open(start,end,rangeTrigger);
+  };
+  $("dashboardCalendarCancel").onclick=()=>closeCalendar(true);
+  $("dashboardCalendarClear").onclick=()=>{complete("","");picker?.open("","",rangeTrigger);};
+  calendar.addEventListener("keydown",event=>{if(event.key==="Escape"){event.preventDefault();closeCalendar(true);}});
+  document.addEventListener?.("pointerdown",event=>{if(!calendar.hidden&&!$("dashboardDateRangeField").contains(event.target))closeCalendar();});
+  updateRangeDisplay();
+}
+setupDashboardRange();
 async function loadDashboard(append = false) {
   if(isCampusUser())return loadCampusDashboard();
   const ticket = ++dashboardRequest, userId = currentUser.id;
@@ -171,67 +206,65 @@ async function loadDashboard(append = false) {
   try {
     const company = $("dashboardCompany").value;
     const page = append ? dashboardData.page + 1 : 1;
-    const data = await api("/api/dashboard?page=" + page + (company ? "&company=" + encodeURIComponent(company) : ""));
+    const query=new URLSearchParams({page});
+    if(company)query.set("company",company);
+    if($("dashboardStart").value&&$("dashboardEnd").value){query.set("start_date",$("dashboardStart").value);query.set("end_date",$("dashboardEnd").value);}
+    const data = await api("/api/dashboard?"+query);
     if (ticket !== dashboardRequest || currentUser?.id !== userId) return;
     dashboardData = {...data, records:append ? [...dashboardData.records, ...data.records] : data.records};
     const select=$("dashboardCompany");select.textContent="";
     for (const item of data.companies) option(select,item.key,item.name);
     select.value=data.company;
     if (!data.companies.length) option(select,"","暂无企业数据");
-    updatePeriods();
+    renderDashboard();
   } catch(e){if(ticket===dashboardRequest)body.replaceChildren(el("div","empty","数据加载失败："+e.message),action("重新加载",()=>loadDashboard()));}
 }
 
-function updatePeriods(){
-  const select=$("dashboardPeriod"),previous=select.value;select.textContent="";
-  const rows=dashboardData.records.filter(r=>companyKey(r)===$("dashboardCompany").value);
-  for(const r of rows)option(select,r.period,r.period);
-  if(rows.some(r=>r.period===previous))select.value=previous;
-  if(!rows.length)option(select,"","暂无期间");
-  renderDashboard();
-}
 $("dashboardCompany").addEventListener("change",()=>loadDashboard());
-$("dashboardPeriod").addEventListener("change",renderDashboard);
 function section(title){const s=el("div","sheet");s.append(el("h2",null,title));return s;}
 function renderDashboard(){
   const box=$("dashboardBody");box.textContent="";
   if(dashboardData.has_more) box.append(action("加载更早期间（已载入 "+dashboardData.records.length+" / "+dashboardData.total_periods+"）",()=>loadDashboard(true)));
   if(dashboardData.history_truncated) box.append(el("p","muted","最近审计显示最新 100 次；完整记录可在报告归档中检索。"));
   const rows=dashboardData.records.filter(r=>companyKey(r)===$("dashboardCompany").value);
-  const r=rows.find(r=>r.period===$("dashboardPeriod").value);
-  $("dashboardUpdated").textContent=r?"最近更新 "+r.audited_at:"";
-  if(!r){const client=dashboardData.clients.find(c=>c.taxpayer_id===$("dashboardCompany").value),s=section(client?"为该客户完成首次审计":"从第一份企业材料开始");s.classList.add("dashboard-empty");s.append(el("p","empty",client?"客户档案已建立。上传匹配该纳税人识别号的材料后，这里会展示经营指标、风险概况和历史记录。":"上传并完成审计后，这里会展示经营指标、风险概况和历史记录。"),action(client?"上传该客户材料":"上传材料",startClientUpload));box.append(s);return;}
+  const r=rows[0];
+  $("dashboardUpdated").textContent=r?"指标与风险："+r.period+" · 最近更新 "+r.audited_at:
+    $("dashboardStart").value?"所选区间暂无检测记录，可调整或清空日期。":"暂无检测记录，请上传材料并完成检测。";
   const kpis=el("div","kpi-grid");
   metricSpecs.forEach(([label,key],i)=>{
-    const m=metricOf(r,key),c=el("div","kpi");c.append(el("p","muted",label));
+    const m=r?metricOf(r,key):null,c=el("div","kpi");c.append(el("p","muted",label));
     const v=el("div","value");
     if(m){
       const num=el("span",null,"0");num.style.fontVariantNumeric="tabular-nums";
+      v.style.setProperty("--value-length",String(formatNumber(Number(m.value),2).length));
       v.append(num,el("span","unit","元"));
       countUpWhenVisible(v,num,Number(m.value),{decimals:2,delay:i*90});
-    } else v.textContent=amount(m);
+    } else v.textContent=r?amount(m):"暂无数据";
     c.append(v);kpis.append(c);
   });box.append(kpis);
-  const grid=el("div","dash-grid"),trend=section("经营数据趋势"),risk=section("风险分布");
+  const grid=el("div","dash-grid"),trend=section("经营数据趋势"),risk=section("风险预警及分布");
   trend.append(el("p","muted","按业务所属期间展示 · 每期采用最新审计数据"));
-  renderTrend(trend,rows);
+  if(r)renderTrend(trend,rows);
+  else trend.append(emptyChart("暂无经营统计数据","完成检测后展示经营数据趋势"));
   renderRiskDistribution(risk,r);grid.append(trend,risk);box.append(grid);
   const overview=section("审计概况"),stats=el("div","summary-grid");
   [["hit","风险命中"],["high","其中高风险"],["pass","检查通过"],["skipped","未执行"]].forEach(([key,label],i)=>{
-    const c=el("div"),strong=el("strong",null,"0");
+    const c=el("div"),strong=el("strong",null,r?"0":"—");
     strong.style.fontVariantNumeric="tabular-nums";
     c.append(strong,el("span","muted",label));stats.append(c);
-    countUpWhenVisible(strong,strong,r.summary[key]??0,{delay:i*70});
+    if(r)countUpWhenVisible(strong,strong,r.summary[key]??0,{delay:i*70});
   });overview.append(stats);
-  const executed=r.summary.hit+r.summary.pass;overview.append(el("p","muted","检查通过率："+(executed?(r.summary.pass/executed*100).toFixed(1)+"%":"暂无已执行检查")+" · 分母为已执行规则数，未执行项单独列示。"));box.append(overview);
+  const executed=r?r.summary.hit+r.summary.pass:0;overview.append(el("p","muted",r?"检查通过率："+(executed?(r.summary.pass/executed*100).toFixed(1)+"%":"暂无已执行检查")+" · 分母为已执行规则数，未执行项单独列示。":"暂无检测记录，暂不计算检查通过率。"));box.append(overview);
   const attention=section("需关注事项");
-  for(const f of r.risks.slice().sort((a,b)=>(a.status==="skipped")-(b.status==="skipped")).slice(0,5)){
+  for(const f of (r?.risks||[]).slice().sort((a,b)=>(a.status==="skipped")-(b.status==="skipped")).slice(0,5)){
     const item=el("div","data-item"),txt=el("div");txt.append(el("div",null,f.name),el("p","muted",f.status==="skipped"?f.reason:"风险等级："+({high:"高",medium:"中",low:"低"}[f.severity])));item.append(txt,action("查看证据",()=>openAudit(r.id)));attention.append(item);
   }
-  if(!r.risks.length)attention.append(el("p","empty","本次检查没有命中或未执行事项。"));box.append(attention);
-  const recent=section("最近审计"),history=dashboardData.history.filter(a=>companyKey(a)===companyKey(r));
-  for(const row of history.slice(0,6)){const item=el("div","data-item"),txt=el("div");txt.append(el("div",null,row.company_name+" · "+row.period),el("p","muted",row.audited_at+" · 命中 "+row.summary.hit+" 项"));item.append(txt,action("查看报告",()=>openAudit(row.id)));recent.append(item);}box.append(recent);
-  box.append(el("p","source-note","同一企业、同一期间仅取最新成功审计的数据；历史版本仍保留在历史档案中。"));
+  if(!r||!r.risks.length)attention.append(el("p","empty",r?"本次检查没有命中或未执行事项。":"暂无检测记录，待完成检测后展示需关注事项。"));box.append(attention);
+  const recent=section("最近审计"),history=dashboardData.history.filter(a=>companyKey(a)===$("dashboardCompany").value);
+  for(const row of history.slice(0,6)){const item=el("div","data-item"),txt=el("div");txt.append(el("div",null,row.company_name+" · "+row.period),el("p","muted",row.audited_at+" · 命中 "+row.summary.hit+" 项"));item.append(txt,action("查看报告",()=>openAudit(row.id)));recent.append(item);}
+  if(!history.length){recent.append(el("p","empty","当前企业及区间暂无检测记录。"));recent.append($("dashboardStart").value?action("清空日期查看全部",()=>$("dashboardCalendarClear").click()):action("上传材料并检测",startClientUpload));}
+  box.append(recent);
+  box.append(el("p","source-note","仅展示完整落在所选区间内的审计期间；指标与风险采用区间内最近一次审计，同一期间仅取最新版本。历史版本仍保留在历史档案中。"));
 }
 function renderRiskDistribution(box,record){
   const levels=[
@@ -239,6 +272,23 @@ function renderRiskDistribution(box,record){
     ["medium","中风险","#e6a447","建议逐项检查账表勾稽关系，补充差异说明。"],
     ["low","低风险","#5789e8","建议纳入日常复核，留存相关核对记录。"]
   ];
+  if(!record){
+    box.classList.add("risk-chart-panel");
+    const heading=el("div","risk-card-heading"),legend=el("div","risk-breakdown");
+    heading.append(box.querySelector("h2"));
+    for(const [,label,color] of levels){const row=el("div","risk-legend-row"),name=el("span","risk-label",label);name.style.setProperty("--risk-color",color);row.append(name);legend.append(row);}
+    heading.append(legend);box.prepend(heading);
+    const chart=el("div","risk-donut"),layout=el("div","risk-distribution");
+    const svg=svgNode("svg",{viewBox:"0 0 180 180",role:"img","aria-label":"暂无风险统计，当前没有检测记录"});
+    svg.append(svgNode("circle",{cx:90,cy:90,r:66,fill:"none","stroke-width":40,class:"risk-ring-track"}),
+      svgNode("text",{x:90,y:88,"text-anchor":"middle",class:"risk-total"},"—"),
+      svgNode("text",{x:90,y:112,"text-anchor":"middle",class:"risk-center-label"},"暂无统计"));
+    chart.append(svg);layout.append(chart);box.append(layout);
+    const details=el("div","risk-explanation-list");details.setAttribute("role","region");details.setAttribute("aria-label","暂无风险统计");
+    for(const [,label,color] of levels){const row=el("div","risk-explanations risk-empty-level"),name=el("p","risk-label",label+" · 暂无统计");name.style.setProperty("--risk-color",color);row.append(name);details.append(row);}
+    details.append(el("p","source-note","当前没有检测记录，暂不判断风险等级。"));box.append(details);
+    const evidence=action("暂无可查看的风险证据",()=>{});evidence.disabled=true;box.append(evidence);return;
+  }
   const hits=record.risks.filter(f=>f.status==="hit"),total=hits.length;
   const layout=el("div","risk-distribution"),chart=el("div","risk-donut");
   box.classList.add("risk-chart-panel");
@@ -309,9 +359,86 @@ function renderRiskDistribution(box,record){
   chart.append(svg);layout.append(chart);box.append(layout);
   details.setAttribute("tabindex","0");details.setAttribute("role","region");details.setAttribute("aria-label","风险分级解释");
   box.append(details);
+  renderRiskAlerts(details,record);
   if(total)box.append(action("查看风险证据",()=>openAudit(record.id)));
   const skipped=record.summary.skipped||0;
   details.append(el("p","source-note","占比按已命中事项数量计算。"+(skipped?"另有 "+skipped+" 项检查未执行，需补齐材料后复核。":"")));
+}
+function renderRiskAlerts(box,record){
+  const alerts=record.alerts;
+  if(!alerts)return;
+  const hits=record.risks.filter(f=>f.status==="hit"),updates=alerts.rule_updates||[];
+  function appendReviewHistory(){
+    if(hits.length){
+      const reopen=action("查看核查记录",()=>{
+        const region=el("div","risk-alerts"),history=el("details","risk-alert risk-alert-pending"),heading=el("summary");
+        heading.append(el("strong",null,"本期风险疑点已完成核查"));history.append(heading);history.open=true;
+        renderRiskReviewList(history,record,hits);region.append(history);reopen.replaceWith(region);
+      });
+      reopen.classList.add("risk-review-history");box.append(reopen);
+    }
+  }
+  if(!alerts.pending_count&&!updates.length){appendReviewHistory();return;}
+  const region=el("div","risk-alerts");region.setAttribute("aria-label","风险提醒");
+  const scope=record.company_name+" · "+record.period;
+  if(alerts.pending_count){
+    const item=el("details","risk-alert risk-alert-pending"),heading=el("summary");
+    item.setAttribute("name","dashboard-risk-alerts");
+    heading.append(el("strong",null,alerts.pending_count+" 项风险疑点待核查"),el("span",null,"去核查"));
+    item.append(heading,el("p","muted",scope));
+    renderRiskReviewList(item,record,hits);region.append(item);
+  }
+  if(updates.length){
+    const item=el("details","risk-alert risk-alert-update"),heading=el("summary");
+    item.setAttribute("name","dashboard-risk-alerts");
+    heading.append(el("strong",null,"相关规则已更新，建议重新检测"),el("span",null,"查看详情"));
+    item.append(heading,el("p","muted",scope));
+    const list=el("ul");
+    for(const update of updates)list.append(el("li",null,update.name+"："+update.reason+
+      (update.after?(update.before?"（v"+update.before+" → v"+update.after+"）":"（v"+update.after+"）"):"")));
+    item.append(list,el("p","muted","确认材料和检测范围后再重新检测；当前提醒不代表发现了新风险。"),
+      action("查看原检测",()=>openAudit(record.id)),action("准备重新检测",startClientUpload));region.append(item);
+  }
+  box.append(region);
+  if(!alerts.pending_count)appendReviewHistory();
+}
+function renderRiskReviewList(container,record,hits){
+  const list=el("div","risk-review-list");
+  for(const finding of hits){
+    const review=finding.review||{status:"pending",note:"",revision:0},form=el("form","risk-review-item");
+    form.append(el("strong",null,finding.name));
+    const statusLabel=el("label",null,"核查状态"),select=el("select");
+    for(const [value,label] of [["pending","待核查"],["reviewing","核查中"],["done","已处理"]])option(select,value,label);
+    select.value=review.status;statusLabel.append(select);
+    const noteLabel=el("label",null,"核查结论或处理说明"),note=el("textarea");
+    note.value=review.note;note.maxLength=2000;note.rows=2;note.placeholder="填写核查结果、差异说明或处理情况";noteLabel.append(note);
+    const message=el("p","muted");message.setAttribute("role","status");
+    const save=el("button","btn re","保存核查");save.type="submit";
+    const evidence=action("查看证据",()=>openAudit(record.id));evidence.type="button";
+    form.append(statusLabel,noteLabel,save,evidence,message);
+    form.addEventListener("submit",async event=>{
+      event.preventDefault();
+      if(select.value==="done"&&!note.value.trim()){message.textContent="请填写核查结论或处理说明。";note.focus();return;}
+      const userId=currentUser?.id;
+      save.disabled=true;message.textContent="正在保存……";
+      try{
+        const result=await api("/api/audits/"+encodeURIComponent(record.id)+"/risks/"+encodeURIComponent(finding.id)+"/review",{
+          method:"PUT",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({status:select.value,note:note.value,revision:finding.review?.revision||0})});
+        if(currentUser?.id!==userId)return;
+        finding.review=result;
+        record.alerts.pending_count=hits.filter(f=>f.review?.status!=="done").length;
+        // Keep the editor open and preserve other unsaved notes. The heading
+        // reflects the saved count immediately; the next render hides cleared alerts.
+        const heading=container.querySelector("summary strong");
+        if(heading)heading.textContent=record.alerts.pending_count?record.alerts.pending_count+" 项风险疑点待核查":"本期风险疑点已完成核查";
+        message.textContent="已保存";
+      }catch(error){if(currentUser?.id===userId)message.textContent=error.message;}
+      finally{save.disabled=false;}
+    });
+    list.append(form);
+  }
+  container.append(list);
 }
 function svgNode(tag,attrs,text){const n=document.createElementNS("http://www.w3.org/2000/svg",tag);for(const [k,v]of Object.entries(attrs))n.setAttribute(k,v);if(text!==undefined)n.textContent=text;return n;}
 // Only connect comparable, explicitly recognized period granularities.
@@ -340,7 +467,7 @@ function emptyChart(title,sub){
   return svg;
 }
 function renderTrend(box,rows){
-  const selected=periodInfo($("dashboardPeriod").value);
+  const selected=rows.length?periodInfo(rows[0].period):null;
   const data=selected?rows.filter(r=>periodInfo(r.period)?.group===selected.group).sort((a,b)=>periodInfo(a.period).order-periodInfo(b.period).order).slice(-8):[];
   if(data.length<2){box.append(emptyChart("暂无可比较的跨期数据","同一企业至少两个相同粒度的明确期间，才能连线比较"));return;}
   const svg=svgNode("svg",{viewBox:"0 0 620 240",class:"chart",role:"img","aria-label":"营业收入与营业成本趋势，单位元"});

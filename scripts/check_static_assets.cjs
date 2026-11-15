@@ -40,7 +40,7 @@ for (const match of html.matchAll(/<(?:script|link)[^>]+(?:src|href)="\/([^"]+?)
 // Include the explicit lazy module names; removing a script tag must not hide a missing route.
 for (const entry of ['auth.js', 'console.js', 'university-workspace.js']) {
   const source = fs.readFileSync(path.join(root, 'webapp', 'static', entry), 'utf8');
-  for (const match of source.matchAll(/["']\/?([\w-]+\.js)(?:\?[^"']*)?["']/g)) refs.add(match[1]);
+  for (const match of source.matchAll(/["']\/?([\w.-]+\.js)(?:\?[^"']*)?["']/g)) refs.add(match[1]);
 }
 
 const missingRoute = [];
@@ -60,6 +60,8 @@ if (missingFile.length) {
 
 if (!process.exitCode) {
   try { require('./build_auth_ocean.cjs').assertCurrent(); }
+  catch (error) { fail(error.message); }
+  try { require('./build_vuelendar.cjs').assertCurrent(); }
   catch (error) { fail(error.message); }
 }
 

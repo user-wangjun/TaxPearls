@@ -1404,3 +1404,85 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   ctx.prepareWhenIdle();assert.equal(timers.at(-1).delay,0,'Older browsers retain a task boundary');timers.at(-1).fn();assert.equal(mounts,2);
   console.log('Ocean scheduling: prompt first idle start, input quiet interval and workspace-entry cancellation passed.');
 }
+
+// Calculation display keeps significant digits and never invents a compound result.
+{
+  const source=readConsole(),ctx={};vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('function calculationParts('),source.indexOf('function findingCalculation(')),ctx);
+  const original='|账面.收入(124,800.000000) − 申报.收入(99,840.000000)| = 24,960.000000；阈值 > 100';
+  const parts=ctx.calculationParts(original);
+  assert.equal(parts.expression+' = '+parts.result+parts.note,original);
+  assert.equal(ctx.formatCalculationText(parts.result),'24,960.00');
+  assert.equal(ctx.formatCalculationText('0.000001 / -0.000000 / 123456789012345678.123400'),
+    '0.000001 / -0.00 / 123,456,789,012,345,678.1234');
+  assert.equal(ctx.formatCalculationText('0.123456 (12.345600%)；版本v2.0'),'0.123456 (12.3456%)；版本v2.0');
+  const compound='[A(10.000000) = 10.000000 → 命中]；且 [B(2.000000) = 2.000000 → 未命中]';
+  assert.equal(ctx.calculationParts(compound).expression,compound);assert.equal(ctx.calculationParts(compound).result,null);
+  const ratio=ctx.calculationParts('收入(1.000000) ÷ 成本(3.000000) = 0.333333；参考 [0.100000, 0.200000]');
+  assert.equal(ratio.result,'0.333333');assert.equal(ratio.note,'；参考 [0.100000, 0.200000]');
+  console.log('Calculation display: exact raw reconstruction, significant digits, large decimals, ratios and compound-condition fallback passed.');
+}
+
+// Baseline navigation uses frozen audits; late or denied reads cannot replace another view.
+(async()=>{
+  const source=readConsole();
+  const code=source.slice(source.indexOf('async function openRiskBaseline('),source.indexOf('$("riskBaseline").onchange'));
+  function setup(){
+    let resolve,reject;const nodes=new Map(),calls=[],errors=[];
+    const classes=()=>{const values=new Set(['active']);return{add(value){values.add(value);},contains(value){return values.has(value);}};};
+    const get=id=>{if(!nodes.has(id))nodes.set(id,{value:'old-filter',hidden:true,classList:classes()});return nodes.get(id);};
+    const target={dataset:{ruleId:'R-002'},classList:classes(),isConnected:true,
+      setAttribute(){},focus(){calls.push('focus');},scrollIntoView(){calls.push('scroll');}};
+    const original={audit_id:'current-case'},pending=new Promise((yes,no)=>{resolve=yes;reject=no;});
+    const ctx={currentUser:{id:'owner'},auditId:'current-case',lastResult:original,snapshotReturn:null,
+      currentRiskChanges:{status:'ready',baseline:{id:'baseline-case'}},riskBaselineOpenRequest:0,latestFindings:[],
+      $:get,document:{querySelectorAll:()=>[target]},requestAnimationFrame:fn=>fn(),
+      api(path){calls.push(path);return pending;},applyFilters(){calls.push('filters');},showError:message=>errors.push(message),
+      renderResult(result){calls.push('render');ctx.auditId=result.audit_id;ctx.latestFindings=result.findings;ctx.currentRiskChanges=null;ctx.snapshotReturn=null;}};
+    vm.createContext(ctx);vm.runInContext(code,ctx);
+    return{ctx,get,calls,errors,resolve,reject,original};
+  }
+  const baseline={audit_id:'baseline-case',findings:[{id:'R-002',status:'pass'}]};
+  const test=setup(),pending=test.ctx.openRiskBaseline('R-002');test.resolve(baseline);await pending;
+  assert.equal(test.calls[0],'/api/audits/baseline-case');
+  assert.equal(test.ctx.snapshotReturn,test.original);assert.equal(test.get('snapshotBack').hidden,false);
+  for(const id of ['filterStatus','filterSeverity','filterCategory','filterTax'])assert.equal(test.get(id).value,'');
+  assert.equal(test.get('passList').classList.contains('open'),true);assert.ok(test.calls.includes('focus'));assert.ok(test.calls.includes('scroll'));
+  for(const change of ['account','audit','comparison','panel']){
+    const stale=setup(),read=stale.ctx.openRiskBaseline('R-002');
+    if(change==='account')stale.ctx.currentUser={id:'another'};
+    if(change==='audit')stale.ctx.auditId='other-case';
+    if(change==='comparison')stale.ctx.currentRiskChanges={status:'ready',baseline:{id:'another-baseline'}};
+    if(change==='panel')stale.get('auditPanel').classList.contains=()=>false;
+    stale.resolve(baseline);await read;assert.ok(!stale.calls.includes('render'),change+' must ignore the old read');
+  }
+  const denied=setup(),read=denied.ctx.openRiskBaseline('R-002');denied.reject(new Error('无权访问该记录'));await read;
+  assert.equal(denied.ctx.auditId,'current-case');assert.equal(denied.errors.length,1);assert.ok(!denied.calls.includes('render'));
+  console.log('Risk baseline navigation: frozen record, finding focus, pass expansion, return entry, denied reads and stale view/account guards passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Vuelendar drafts remain local; only completed or cleared ranges refresh data.
+{
+  const source=fs.readFileSync("webapp/static/workspace.js","utf8");
+  const nodes=new Map();let requests=0,callbacks,mounts=0;const opens=[];
+  const node=()=>({textContent:"",value:"",hidden:true,listeners:{},setAttribute(name,value){this[name]=value;},
+    addEventListener(type,fn){this.listeners[type]=fn;},focus(){}});
+  const get=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
+  const context={$:get,document:{addEventListener(){}},loadDashboard(){requests++;},
+    TaxPearlsLendar:{mount(target,options){callbacks=options;mounts++;return{open(start,end){opens.push([start,end]);}};}}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf("function setupDashboardRange(){"),source.indexOf("async function loadDashboard(")),context);
+  get("dashboardDateRange").onclick();assert.equal(mounts,1);
+  callbacks.onDraft("2026-12-28");assert.equal(requests,0);assert.equal(get("dashboardStart").value,"");
+  callbacks.onComplete("2026-12-28","2027-01-04");assert.equal(requests,1);
+  assert.equal(get("dashboardStart").value,"2026-12-28");assert.equal(get("dashboardEnd").value,"2027-01-04");
+  assert.equal(get("dashboardRangeCalendar").hidden,false);
+  get("dashboardCalendarCancel").onclick();get("dashboardDateRange").onclick();assert.deepEqual(opens.at(-1),["2026-12-28","2027-01-04"]);
+  callbacks.onDraft("2027-01-20");get("dashboardCalendarCancel").onclick();
+  assert.equal(requests,1);assert.equal(get("dashboardStart").value,"2026-12-28");
+  get("dashboardDateRange").onclick();get("dashboardCalendarClear").onclick();
+  assert.equal(requests,2);assert.equal(mounts,1);assert.equal(get("dashboardStart").value,"");assert.equal(get("dashboardEnd").value,"");
+  assert.equal(get("dashboardRangeCalendar").hidden,false);
+  get("dashboardRangeCalendar").listeners.keydown({key:"Escape",preventDefault(){}});assert.equal(get("dashboardRangeCalendar").hidden,true);
+  console.log("Vuelendar integration: lazy mounting, local drafts, range persistence, cancellation and clearing passed.");
+}
