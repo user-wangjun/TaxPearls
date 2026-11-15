@@ -750,6 +750,7 @@ function enterWorkspace(user) {
   $("exerciseGenerationResult").textContent=""; $("exerciseGenerationResult").hidden=true;
   const campusIdentity=universityWorkspace.resolveIdentity(user);
   currentUser=campusIdentity?{...user,workspace:"university",role:campusIdentity.role==="admin"?"teacher":user.role}:user;
+  $("logCategory").value="";$("logCategory").onchange=null;$("logCategoryStatus").textContent="";$("logList").replaceChildren();
   window.tpTrainingTasks?.setUser(currentUser);
   window.tpSubmissionUI?.reset();
   $("tp-case-panel")?.remove();
@@ -1874,44 +1875,74 @@ $("memberOrg").addEventListener("change",()=>loadMembers());
 $("btnRefreshMembers").addEventListener("click",()=>loadMembers(true));
 
 function renderAdminLogs(logs,current){
-  const root=$("logList");root.replaceChildren();
+  const root=$("logList"),select=$("logCategory"),status=$("logCategoryStatus");
+  const categories={account:"账号与机构",materials:"企业材料",audit:"审计与报告",knowledge:"规则与知识库",retrieval:"检索检测",ai:"AI 服务",notifications:"通知与渠道",teaching:"教学训练",other:"其他操作"};
+  const category=log=>{
+    const action=log.action||"",target=log.target_type||"";
+    if(target==="retrieval_check"||action.startsWith("retrieval_check_"))return "retrieval";
+    if(target.startsWith("ai_key")||action.startsWith("ai_"))return "ai";
+    if(/^(channel_|notification|feishu_binding)/.test(target)||/^(channel_|notification|feishu_binding)/.test(action))return "notifications";
+    if(target.startsWith("material_")||action.startsWith("material_"))return "materials";
+    if(["rule","knowledge","policy_corpus"].includes(target)||/^(trial_rule_|set_rule_|import_policy_|approve_policy_|verify_policy_|extract_policy_|import_candidate_)/.test(action))return "knowledge";
+    if(["audit","org_report"].includes(target))return "audit";
+    if(["assignment","submission","case_task","rubric","teaching_content","course","classroom","class","paper","task"].includes(target))return "teaching";
+    if(["session","user","org","client","invite","account_hash","email_hash","system"].includes(target)||/^(login|logout|password_|email_|invite_|member_|set_member_|set_university_)/.test(action))return "account";
+    return "other";
+  };
+  const rows=logs.map(log=>({log,category:category(log)})),counts={};
+  for(const row of rows)counts[row.category]=(counts[row.category]||0)+1;
+  const previous=select.value;select.replaceChildren();
+  for(const [value,label]of [["","全部分类"],...Object.entries(categories)]){
+    const option=el("option",null,`${label}（${value?counts[value]||0:rows.length}）`);option.value=value;select.append(option);
+  }
+  select.value=Object.hasOwn(categories,previous)?previous:"";
+  let revision=0;
   const localTime=value=>{const time=new Date(value);return Number.isNaN(time.getTime())?"时间未记录":new Intl.DateTimeFormat("zh-CN",{timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit",hourCycle:"h23"}).format(time);};
   const kinds={analysis:"资料分析快照",edit:"保存资料核对",confirmation:"确认检查结果",material_change:"材料变更"};
-  for(const log of logs.slice(0,80)){
-    const row=el("div","data-item"),content=el("div");
-    content.append(el("p","",`${localTime(log.created_at)}（北京时间） · ${log.action} · ${log.target_type} ${log.target_id}`));row.append(content);root.append(row);
-    if(["set_member_quota","set_university_capacity"].includes(log.action)){
-      let detail;try{detail=JSON.parse(log.detail);}catch{}
-      if(detail?.before&&detail?.after){
-        content.append(el("p","",`管理机构：${detail.organization_name||detail.organization_id} · 操作人：${detail.actor?.display_name||"未记录"}（${detail.actor?.username||detail.actor?.id||"未记录"}） · 来源 IP：${detail.source_ip||"未记录"}`));
-        const labels={seats:"机构总席位",teacher_quota:"教职工总额度",student_quota:"学生总额度"};
-        for(const [key,label]of Object.entries(labels))if(Object.hasOwn(detail.after,key))content.append(el("p","muted",`${label}：${detail.before[key]??"未配置"} → ${detail.after[key]}`));
-        content.append(el("p","muted",`配置版本：${detail.old_revision} → ${detail.new_revision} · 操作人 ID：${detail.actor?.id||"未记录"} · 机构 ID：${detail.organization_id}`));
-      }else content.append(el("p","muted","历史记录未保存完整前后额度及来源 IP。"));
-    }
-    if(currentUser?.role!=="org_admin"||log.target_type!=="material_batch")continue;
-    const trace=el("div");trace.hidden=true;
-    const button=el("button","btn re","查看材料追溯");button.type="button";
-    const valid=()=>current()&&currentUser?.role==="org_admin";
-    button.onclick=async()=>{
-      if(!valid())return;
-      if(!trace.hidden){trace.hidden=true;button.textContent="查看材料追溯";return;}
-      trace.hidden=false;trace.replaceChildren(el("p","muted","正在查询材料追溯…"));button.disabled=true;
-      try{
-        const result=await api("/api/enterprise/materials/"+encodeURIComponent(log.target_id)+"/trace");
+  const render=()=>{
+    if(!current())return;
+    const version=++revision,visible=rows.filter(row=>!select.value||row.category===select.value);
+    root.replaceChildren();root.scrollTop=0;
+    status.textContent=`已加载最近 ${rows.length} 条日志 · ${categories[select.value]||"全部分类"} ${visible.length} 条`;
+    if(!visible.length)root.append(el("p","muted",rows.length?"该分类暂无操作日志。":"暂无操作日志。"));
+    for(const {log,category:kind} of visible){
+      const row=el("div","data-item"),content=el("div");
+      content.append(el("span","role-chip",categories[kind]));
+      content.append(el("p","",`${localTime(log.created_at)}（北京时间） · ${log.action} · ${log.target_type} ${log.target_id}`));row.append(content);root.append(row);
+      if(["set_member_quota","set_university_capacity"].includes(log.action)){
+        let detail;try{detail=JSON.parse(log.detail);}catch{}
+        if(detail?.before&&detail?.after){
+          content.append(el("p","",`管理机构：${detail.organization_name||detail.organization_id} · 操作人：${detail.actor?.display_name||"未记录"}（${detail.actor?.username||detail.actor?.id||"未记录"}） · 来源 IP：${detail.source_ip||"未记录"}`));
+          const labels={seats:"机构总席位",teacher_quota:"教职工总额度",student_quota:"学生总额度"};
+          for(const [key,label]of Object.entries(labels))if(Object.hasOwn(detail.after,key))content.append(el("p","muted",`${label}：${detail.before[key]??"未配置"} → ${detail.after[key]}`));
+          content.append(el("p","muted",`配置版本：${detail.old_revision} → ${detail.new_revision} · 操作人 ID：${detail.actor?.id||"未记录"} · 机构 ID：${detail.organization_id}`));
+        }else content.append(el("p","muted","历史记录未保存完整前后额度及来源 IP。"));
+      }
+      if(currentUser?.role!=="org_admin"||log.target_type!=="material_batch")continue;
+      const trace=el("div");trace.hidden=true;
+      const button=el("button","btn re","查看材料追溯");button.type="button";
+      const valid=()=>current()&&version===revision&&currentUser?.role==="org_admin";
+      button.onclick=async()=>{
         if(!valid())return;
-        trace.replaceChildren(el("p","muted",`材料任务 ${result.id} · 当前版本 ${result.revision}`));
-        for(const version of [...(result.versions||[])].reverse()){
-          trace.append(el("p","",`第 ${version.revision} 版 · ${kinds[version.kind]||version.kind} · ${localTime(version.created_at)}（北京时间） · 操作人 ${version.created_by||"未记录"}`));
-        }
-        const events=el("details");events.append(el("summary","",`上传、核对与访问记录（${result.events?.length||0} 条）`));
-        for(const event of [...(result.events||[])].reverse())events.append(el("p","muted",`${localTime(event.created_at)}（北京时间） · ${event.action} · 操作人 ${event.actor_id||"系统"} · 版本 ${event.revision??"未记录"}`));
-        trace.append(events);button.textContent="收起材料追溯";
-      }catch(error){if(valid()){trace.replaceChildren(el("p","material-note","查询失败："+error.message));button.textContent="收起材料追溯";}}
-      finally{if(valid())button.disabled=false;}
-    };
-    content.append(button,trace);
-  }
+        if(!trace.hidden){trace.hidden=true;button.textContent="查看材料追溯";return;}
+        trace.hidden=false;trace.replaceChildren(el("p","muted","正在查询材料追溯…"));button.disabled=true;
+        try{
+          const result=await api("/api/enterprise/materials/"+encodeURIComponent(log.target_id)+"/trace");
+          if(!valid())return;
+          trace.replaceChildren(el("p","muted",`材料任务 ${result.id} · 当前版本 ${result.revision}`));
+          for(const version of [...(result.versions||[])].reverse()){
+            trace.append(el("p","",`第 ${version.revision} 版 · ${kinds[version.kind]||version.kind} · ${localTime(version.created_at)}（北京时间） · 操作人 ${version.created_by||"未记录"}`));
+          }
+          const events=el("details");events.append(el("summary","",`上传、核对与访问记录（${result.events?.length||0} 条）`));
+          for(const event of [...(result.events||[])].reverse())events.append(el("p","muted",`${localTime(event.created_at)}（北京时间） · ${event.action} · 操作人 ${event.actor_id||"系统"} · 版本 ${event.revision??"未记录"}`));
+          trace.append(events);button.textContent="收起材料追溯";
+        }catch(error){if(valid()){trace.replaceChildren(el("p","material-note","查询失败："+error.message));button.textContent="收起材料追溯";}}
+        finally{if(valid())button.disabled=false;}
+      };
+      content.append(button,trace);
+    }
+  };
+  select.onchange=render;render();
 }
 
 async function loadAdmin() {
