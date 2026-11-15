@@ -163,39 +163,36 @@ function startClientUpload(){
 }
 $("dashboardUpload").addEventListener("click",()=>isCampusUser()?switchPanel("examPanel"):startClientUpload());
 let dashboardRequest = 0;
-// Match the upload calendar: two clicks, cross-month navigation, reversed dates and clear.
+// Vuelendar is mounted only inside this filter; the existing range API is unchanged.
 function setupDashboardRange(){
-  const rangeTrigger=$("dashboardDateRange"),calendar=$("dashboardRangeCalendar"),calendarMonth=$("dashboardCalendarMonth");
-  let calendarYear=0,calendarMonthNumber=0,draftStart="";
-  const pad=n=>String(n).padStart(2,"0"),lastDay=(y,m)=>new Date(Date.UTC(y,m,0)).getUTCDate();
+  const rangeTrigger=$("dashboardDateRange"),calendar=$("dashboardRangeCalendar");
+  let picker;
   function updateRangeDisplay(){
     const start=$("dashboardStart").value,end=$("dashboardEnd").value;
-    $("dashboardDateRangeText").textContent=start||end?`${start||"待选择起始日"} 至 ${end||"待选择终止日"}`:"全部期间 · 选择起止日期";
+    $("dashboardDateRangeText").textContent=start&&end?`${start} 至 ${end}`:"全部期间 · 选择起止日期";
   }
-  function closeCalendar(focus=false){calendar.hidden=true;rangeTrigger.setAttribute("aria-expanded","false");draftStart="";if(focus)rangeTrigger.focus?.();}
-  function renderCalendar(){
-    const year=String(calendarYear).padStart(4,"0"),month=pad(calendarMonthNumber),days=$("dashboardCalendarDays");
-    calendarMonth.value=`${year}-${month}`;days.replaceChildren();
-    const savedStart=$("dashboardStart").value,savedEnd=$("dashboardEnd").value;
-    $("dashboardCalendarHint").textContent=draftStart?`已选 ${draftStart}，请选择终止日期`:savedStart&&savedEnd?`已选 ${savedStart} 至 ${savedEnd}，可重新选择`:"请选择起始日期，再选择终止日期";
-    const first=new Date(0);first.setUTCFullYear(calendarYear,calendarMonthNumber-1,1);
-    for(let i=0;i<(first.getUTCDay()+6)%7;i++){const blank=el("span");blank.setAttribute("aria-hidden","true");days.append(blank);}
-    const start=draftStart||$("dashboardStart").value,end=draftStart?"":$("dashboardEnd").value;
-    for(let d=1;d<=lastDay(calendarYear,calendarMonthNumber);d++){
-      const value=`${year}-${month}-${pad(d)}`,selected=value===start||value===end;
-      const day=el("button",selected?"selected":start&&end&&value>start&&value<end?"in-range":"",String(d));day.type="button";
-      day.setAttribute("data-date",value);day.setAttribute("aria-label",value);day.setAttribute("aria-pressed",String(selected));
-      day.onclick=()=>{if(!draftStart){draftStart=value;renderCalendar();days.querySelector?.(`button[data-date="${value}"]`)?.focus();return;}
-        const [from,to]=[draftStart,value].sort();$("dashboardStart").value=from;$("dashboardEnd").value=to;draftStart="";updateRangeDisplay();renderCalendar();days.querySelector?.(`button[data-date="${value}"]`)?.focus();void loadDashboard();};
-      days.append(day);}}
-  rangeTrigger.onclick=()=>{if(!calendar.hidden){closeCalendar();return;}
-    const start=$("dashboardStart").value,today=new Date();calendarYear=start?Number(start.slice(0,4)):today.getFullYear();calendarMonthNumber=start?Number(start.slice(5,7)):today.getMonth()+1;
-    draftStart="";renderCalendar();calendar.hidden=false;rangeTrigger.setAttribute("aria-expanded","true");calendarMonth.focus?.();};
-  calendarMonth.addEventListener("change",()=>{const [y,m]=calendarMonth.value.split("-").map(Number);if(y>=1&&y<=9999&&m>=1&&m<=12){calendarYear=y;calendarMonthNumber=m;renderCalendar();}});
-  function moveCalendar(offset){const next=(calendarYear-1)*12+calendarMonthNumber-1+offset;if(next<0||next>=9999*12)return;calendarYear=Math.floor(next/12)+1;calendarMonthNumber=next%12+1;renderCalendar();}
-  $("dashboardCalendarPrev").onclick=()=>moveCalendar(-1);$("dashboardCalendarNext").onclick=()=>moveCalendar(1);
+  function closeCalendar(focus=false){
+    picker?.close?.();
+    calendar.hidden=true;rangeTrigger.setAttribute("aria-expanded","false");
+    if(focus)rangeTrigger.focus?.();
+  }
+  function complete(start,end){
+    $("dashboardStart").value=start;$("dashboardEnd").value=end;
+    updateRangeDisplay();
+    $("dashboardCalendarHint").textContent=start?`已选 ${start} 至 ${end}，可继续调整`:"先选择开始日期，再选择结束日期";
+    void loadDashboard();
+  }
+  rangeTrigger.onclick=()=>{
+    if(!calendar.hidden){closeCalendar();return;}
+    const start=$("dashboardStart").value,end=$("dashboardEnd").value;
+    $("dashboardCalendarHint").textContent="先选择开始日期，再选择结束日期";
+    calendar.hidden=false;rangeTrigger.setAttribute("aria-expanded","true");
+    picker ||= TaxPearlsLendar.mount($("dashboardLendarMount"),{onComplete:complete,
+      onDraft:value=>{$("dashboardCalendarHint").textContent=`已选 ${value}，请选择结束日期`;}});
+    picker.open(start,end,rangeTrigger);
+  };
   $("dashboardCalendarCancel").onclick=()=>closeCalendar(true);
-  $("dashboardCalendarClear").onclick=()=>{$("dashboardStart").value=$("dashboardEnd").value="";updateRangeDisplay();closeCalendar(true);void loadDashboard();};
+  $("dashboardCalendarClear").onclick=()=>{complete("","");picker?.open("","",rangeTrigger);};
   calendar.addEventListener("keydown",event=>{if(event.key==="Escape"){event.preventDefault();closeCalendar(true);}});
   document.addEventListener?.("pointerdown",event=>{if(!calendar.hidden&&!$("dashboardDateRangeField").contains(event.target))closeCalendar();});
   updateRangeDisplay();
@@ -231,39 +228,42 @@ function renderDashboard(){
   if(dashboardData.history_truncated) box.append(el("p","muted","最近审计显示最新 100 次；完整记录可在报告归档中检索。"));
   const rows=dashboardData.records.filter(r=>companyKey(r)===$("dashboardCompany").value);
   const r=rows[0];
-  $("dashboardUpdated").textContent=r?"指标与风险："+r.period+" · 最近更新 "+r.audited_at:"";
-  if(!r&&$("dashboardStart").value){const s=section("所选区间暂无审计数据");s.classList.add("dashboard-empty");s.append(el("p","empty","请选择包含完整审计期间的日期区间，或清空日期查看全部期间。"));box.append(s);return;}
-  if(!r){const client=dashboardData.clients.find(c=>c.taxpayer_id===$("dashboardCompany").value),s=section(client?"为该客户完成首次审计":"从第一份企业材料开始");s.classList.add("dashboard-empty");s.append(el("p","empty",client?"客户档案已建立。上传匹配该纳税人识别号的材料后，这里会展示经营指标、风险概况和历史记录。":"上传并完成审计后，这里会展示经营指标、风险概况和历史记录。"),action(client?"上传该客户材料":"上传材料",startClientUpload));box.append(s);return;}
+  $("dashboardUpdated").textContent=r?"指标与风险："+r.period+" · 最近更新 "+r.audited_at:
+    $("dashboardStart").value?"所选区间暂无检测记录，可调整或清空日期。":"暂无检测记录，请上传材料并完成检测。";
   const kpis=el("div","kpi-grid");
   metricSpecs.forEach(([label,key],i)=>{
-    const m=metricOf(r,key),c=el("div","kpi");c.append(el("p","muted",label));
+    const m=r?metricOf(r,key):null,c=el("div","kpi");c.append(el("p","muted",label));
     const v=el("div","value");
     if(m){
       const num=el("span",null,"0");num.style.fontVariantNumeric="tabular-nums";
+      v.style.setProperty("--value-length",String(formatNumber(Number(m.value),2).length));
       v.append(num,el("span","unit","元"));
       countUpWhenVisible(v,num,Number(m.value),{decimals:2,delay:i*90});
-    } else v.textContent=amount(m);
+    } else v.textContent=r?amount(m):"暂无数据";
     c.append(v);kpis.append(c);
   });box.append(kpis);
   const grid=el("div","dash-grid"),trend=section("经营数据趋势"),risk=section("风险预警及分布");
   trend.append(el("p","muted","按业务所属期间展示 · 每期采用最新审计数据"));
-  renderTrend(trend,rows);
+  if(r)renderTrend(trend,rows);
+  else trend.append(emptyChart("暂无经营统计数据","完成检测后展示经营数据趋势"));
   renderRiskDistribution(risk,r);grid.append(trend,risk);box.append(grid);
   const overview=section("审计概况"),stats=el("div","summary-grid");
   [["hit","风险命中"],["high","其中高风险"],["pass","检查通过"],["skipped","未执行"]].forEach(([key,label],i)=>{
-    const c=el("div"),strong=el("strong",null,"0");
+    const c=el("div"),strong=el("strong",null,r?"0":"—");
     strong.style.fontVariantNumeric="tabular-nums";
     c.append(strong,el("span","muted",label));stats.append(c);
-    countUpWhenVisible(strong,strong,r.summary[key]??0,{delay:i*70});
+    if(r)countUpWhenVisible(strong,strong,r.summary[key]??0,{delay:i*70});
   });overview.append(stats);
-  const executed=r.summary.hit+r.summary.pass;overview.append(el("p","muted","检查通过率："+(executed?(r.summary.pass/executed*100).toFixed(1)+"%":"暂无已执行检查")+" · 分母为已执行规则数，未执行项单独列示。"));box.append(overview);
+  const executed=r?r.summary.hit+r.summary.pass:0;overview.append(el("p","muted",r?"检查通过率："+(executed?(r.summary.pass/executed*100).toFixed(1)+"%":"暂无已执行检查")+" · 分母为已执行规则数，未执行项单独列示。":"暂无检测记录，暂不计算检查通过率。"));box.append(overview);
   const attention=section("需关注事项");
-  for(const f of r.risks.slice().sort((a,b)=>(a.status==="skipped")-(b.status==="skipped")).slice(0,5)){
+  for(const f of (r?.risks||[]).slice().sort((a,b)=>(a.status==="skipped")-(b.status==="skipped")).slice(0,5)){
     const item=el("div","data-item"),txt=el("div");txt.append(el("div",null,f.name),el("p","muted",f.status==="skipped"?f.reason:"风险等级："+({high:"高",medium:"中",low:"低"}[f.severity])));item.append(txt,action("查看证据",()=>openAudit(r.id)));attention.append(item);
   }
-  if(!r.risks.length)attention.append(el("p","empty","本次检查没有命中或未执行事项。"));box.append(attention);
-  const recent=section("最近审计"),history=dashboardData.history.filter(a=>companyKey(a)===companyKey(r));
-  for(const row of history.slice(0,6)){const item=el("div","data-item"),txt=el("div");txt.append(el("div",null,row.company_name+" · "+row.period),el("p","muted",row.audited_at+" · 命中 "+row.summary.hit+" 项"));item.append(txt,action("查看报告",()=>openAudit(row.id)));recent.append(item);}box.append(recent);
+  if(!r||!r.risks.length)attention.append(el("p","empty",r?"本次检查没有命中或未执行事项。":"暂无检测记录，待完成检测后展示需关注事项。"));box.append(attention);
+  const recent=section("最近审计"),history=dashboardData.history.filter(a=>companyKey(a)===$("dashboardCompany").value);
+  for(const row of history.slice(0,6)){const item=el("div","data-item"),txt=el("div");txt.append(el("div",null,row.company_name+" · "+row.period),el("p","muted",row.audited_at+" · 命中 "+row.summary.hit+" 项"));item.append(txt,action("查看报告",()=>openAudit(row.id)));recent.append(item);}
+  if(!history.length){recent.append(el("p","empty","当前企业及区间暂无检测记录。"));recent.append($("dashboardStart").value?action("清空日期查看全部",()=>$("dashboardCalendarClear").click()):action("上传材料并检测",startClientUpload));}
+  box.append(recent);
   box.append(el("p","source-note","仅展示完整落在所选区间内的审计期间；指标与风险采用区间内最近一次审计，同一期间仅取最新版本。历史版本仍保留在历史档案中。"));
 }
 function renderRiskDistribution(box,record){
@@ -272,6 +272,23 @@ function renderRiskDistribution(box,record){
     ["medium","中风险","#e6a447","建议逐项检查账表勾稽关系，补充差异说明。"],
     ["low","低风险","#5789e8","建议纳入日常复核，留存相关核对记录。"]
   ];
+  if(!record){
+    box.classList.add("risk-chart-panel");
+    const heading=el("div","risk-card-heading"),legend=el("div","risk-breakdown");
+    heading.append(box.querySelector("h2"));
+    for(const [,label,color] of levels){const row=el("div","risk-legend-row"),name=el("span","risk-label",label);name.style.setProperty("--risk-color",color);row.append(name);legend.append(row);}
+    heading.append(legend);box.prepend(heading);
+    const chart=el("div","risk-donut"),layout=el("div","risk-distribution");
+    const svg=svgNode("svg",{viewBox:"0 0 180 180",role:"img","aria-label":"暂无风险统计，当前没有检测记录"});
+    svg.append(svgNode("circle",{cx:90,cy:90,r:66,fill:"none","stroke-width":40,class:"risk-ring-track"}),
+      svgNode("text",{x:90,y:88,"text-anchor":"middle",class:"risk-total"},"—"),
+      svgNode("text",{x:90,y:112,"text-anchor":"middle",class:"risk-center-label"},"暂无统计"));
+    chart.append(svg);layout.append(chart);box.append(layout);
+    const details=el("div","risk-explanation-list");details.setAttribute("role","region");details.setAttribute("aria-label","暂无风险统计");
+    for(const [,label,color] of levels){const row=el("div","risk-explanations risk-empty-level"),name=el("p","risk-label",label+" · 暂无统计");name.style.setProperty("--risk-color",color);row.append(name);details.append(row);}
+    details.append(el("p","source-note","当前没有检测记录，暂不判断风险等级。"));box.append(details);
+    const evidence=action("暂无可查看的风险证据",()=>{});evidence.disabled=true;box.append(evidence);return;
+  }
   const hits=record.risks.filter(f=>f.status==="hit"),total=hits.length;
   const layout=el("div","risk-distribution"),chart=el("div","risk-donut");
   box.classList.add("risk-chart-panel");
@@ -342,7 +359,7 @@ function renderRiskDistribution(box,record){
   chart.append(svg);layout.append(chart);box.append(layout);
   details.setAttribute("tabindex","0");details.setAttribute("role","region");details.setAttribute("aria-label","风险分级解释");
   box.append(details);
-  renderRiskAlerts(box,record);
+  renderRiskAlerts(details,record);
   if(total)box.append(action("查看风险证据",()=>openAudit(record.id)));
   const skipped=record.summary.skipped||0;
   details.append(el("p","source-note","占比按已命中事项数量计算。"+(skipped?"另有 "+skipped+" 项检查未执行，需补齐材料后复核。":"")));

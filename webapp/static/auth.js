@@ -114,8 +114,9 @@ async function enterApp(user) {
     if (!workspaceScripts) {
       workspaceScripts = Promise.all([
         loadClientScript("/university-workspace.js?v=20261029-student-kp-pages-2"),
-        loadClientScript("/console.js?v=20261101-2bb7d3def471")
-      ]).then(() => loadClientScript("/workspace.js?v=risk-dashboard-20261115-merged"))
+        loadClientScript("/console.js?v=calculation-detail-20261115-7"),
+        loadClientScript("/vuelendar.bundle.js?v=20261115-3")
+      ]).then(() => loadClientScript("/workspace.js?v=dashboard-empty-20261115-5"))
         .catch(error => { workspaceScripts = null; throw error; });
     }
     await workspaceScripts;

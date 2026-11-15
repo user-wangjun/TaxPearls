@@ -794,6 +794,11 @@ def workspace_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "workspace.js", media_type="text/javascript")
 
 
+@app.get("/vuelendar.bundle.js")
+def vuelendar_script() -> FileResponse:
+    return FileResponse(STATIC_DIR / "vuelendar.bundle.js", media_type="text/javascript")
+
+
 @app.get("/mistake-book.js")
 def mistake_book_script() -> FileResponse:
     return FileResponse(STATIC_DIR / "mistake-book.js", media_type="text/javascript")

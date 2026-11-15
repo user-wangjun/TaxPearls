@@ -64,9 +64,15 @@ function canOpenWorkspacePanel(id) {
 }
 function initialWorkspacePanel() {
   const requested = new URLSearchParams(location.hash.slice(1)).get("panel");
-  return canOpenWorkspacePanel(requested) ? requested : defaultWorkspacePanel();
+  if (canOpenWorkspacePanel(requested)) return requested;
+  try {
+    const saved = globalThis.sessionStorage?.getItem("taxpearls.panel:" + currentUser.id);
+    if (canOpenWorkspacePanel(saved)) return saved;
+  } catch (_) {}
+  return defaultWorkspacePanel();
 }
 function rememberWorkspacePanel(id) {
+  try { globalThis.sessionStorage?.setItem("taxpearls.panel:" + currentUser.id, id); } catch (_) {}
   const hash = "#panel=" + encodeURIComponent(id);
   if (location.hash === hash) return;
   try { history.replaceState(history.state, "", location.pathname + location.search + hash); } catch (_) {}
@@ -82,7 +88,7 @@ function prepareWorkspacePanel(id) {
   if (preparedPanels.has(id)) return Promise.resolve();
   if (panelPreparations.has(id)) return panelPreparations.get(id);
   const preparation = (async () => {
-    const load = name => loadClientScript("/" + name + "?v=" + (name==="core-inputs.js"?"20261101-9d061af268bb":"20261029-teaching-names-12"));
+    const load = name => loadClientScript("/" + name + "?v=" + (name==="core-inputs.js"?"lendar-shared-20261115-3":"20261029-teaching-names-12"));
     if (["uploadPanel", "auditPanel", "historyPanel", "trainingPanel", "knowledgePanel"].includes(id)) {
       await Promise.all([load("core-inputs.js"), load("enterprise.js")]);
       if (!enterpriseMaterials) {
@@ -489,6 +495,43 @@ function applyFilters() {
 for (const id of ["filterStatus","filterSeverity","filterCategory","filterTax"]) $(id).addEventListener("change",applyFilters);
 
 /* 一张规则卡：head（可点击展开/收起）+ body（证据链） */
+function calculationParts(value) {
+  // This is presentation of a frozen record, never another calculation.
+  if(value.includes("；且 ")||value.includes(" → "))return {expression:value,result:null,note:""};
+  const suffix=value.search(/；(?:阈值|参考) /);
+  const body=suffix<0?value:value.slice(0,suffix),note=suffix<0?"":value.slice(suffix);
+  const result=body.match(/ = ([-+]?[\d,]+(?:\.\d+)?(?: \([-+]?[\d,]+(?:\.\d+)?%\))?)$/);
+  return result?{expression:body.slice(0,result.index),result:result[1],note}:{expression:value,result:null,note:""};
+}
+function formatCalculationText(value) {
+  // String-only formatting retains all significant digits, including sub-cent
+  // values and integers beyond JavaScript's safe-number range.
+  return value.replace(/(?<![\p{L}\p{N}_])[-+]?(?:\d{1,3}(?:,\d{3})+|\d+)\.\d+/gu,token=>{
+    const [,sign,whole,fraction]=token.match(/^([+-]?)([\d,]+)\.(\d+)$/);
+    const grouped=whole.replaceAll(",","").replace(/\B(?=(\d{3})+(?!\d))/g,",");
+    return sign+grouped+"."+fraction.replace(/0+$/,"").padEnd(2,"0");
+  });
+}
+function findingCalculation(f) {
+  const parts=calculationParts(f.calculation),panel=el("div","finding-calculation"),expression=el("div","finding-calculation-expression");
+  expression.append(el("p","finding-calculation-label","计算表达式"));
+  const formula=el("div","finding-formula");
+  for(const part of formatCalculationText(parts.expression).split(/(\s[+−×÷]\s)/u)){
+    if(/^\s[+−×÷]\s$/u.test(part)){formula.append(el("wbr"),el("span","finding-formula-operator",part));}
+    else formula.append(el("span",null,part));
+  }
+  expression.append(formula);panel.append(expression);
+  if(parts.result!==null){
+    const result=el("div","finding-calculation-result");
+    result.append(el("p","finding-calculation-label","计算结果"),el("div","finding-calculation-value",formatCalculationText(parts.result)));
+    if(["hit","pass"].includes(f.status))result.append(el("p","finding-calculation-status",f.status==="hit"?"触发核对条件，待核查":"未触发本项核对条件"));
+    panel.append(result);
+  }
+  if(parts.note.startsWith("；参考 "))panel.append(el("p","finding-calculation-note",formatCalculationText(parts.note.slice(1))));
+  const raw=el("details","finding-calculation-original"),record=el("pre",null,f.calculation);
+  raw.append(el("summary",null,"查看原始计算记录"),record);panel.append(raw);
+  return panel;
+}
 function renderCards(container, findings) {
   container.textContent = "";
   for (const f of findings) container.appendChild(findingCard(f));
@@ -496,6 +539,7 @@ function renderCards(container, findings) {
 
 function findingCard(f) {
   const card = el("div", "card");
+  card.setAttribute("data-rule-id", f.id);
 
   const head = el("div", "card-head");
   const sev = f.status === "hit" ? f.severity : (f.status === "skipped" ? "skip" : "pass");
@@ -564,11 +608,15 @@ function findingCard(f) {
   /* 计算过程 + 阈值 */
   if (f.calculation) {
     body.appendChild(el("div", "ev-title", "计算过程"));
-    body.appendChild(el("div", "calc-box num", f.calculation));
+    body.appendChild(findingCalculation(f));
   }
   if (f.threshold_desc) {
     body.appendChild(el("div", "ev-title", "判定阈值"));
-    body.appendChild(el("div", "kv", f.threshold_desc + (f.threshold_basis ? "（" + f.threshold_basis + "）" : "")));
+    const threshold=el("div","finding-threshold");
+    threshold.append(el("div","finding-threshold-condition",formatCalculationText(f.threshold_desc)
+      .replace("（absolute）","（绝对差额）").replace("（above）","（正向差额）").replace("（below）","（反向差额）")));
+    if(f.threshold_basis)threshold.append(el("p","finding-threshold-basis",f.threshold_basis));
+    body.appendChild(threshold);
   }
 
   /* 法条依据 */
@@ -960,6 +1008,7 @@ $("noticeSave").onclick = () => noticeAction(() => api("/api/notifications/prefe
 
 let currentRiskChanges = null;
 let riskChangesRequest = 0;
+let riskBaselineOpenRequest = 0;
 async function loadRiskChanges(id, baseline = "") {
   const request = ++riskChangesRequest;
   currentRiskChanges = null;
@@ -989,24 +1038,50 @@ function renderRiskChanges() {
     const filter = $("riskChangeFilter").value;
     if (filter === "attention" && ["clear", "persistent", "incomparable"].includes(item.change)) continue;
     if (!["attention", "all"].includes(filter) && item.change !== filter) continue;
-    const card = el("div", "sheet");
+    const card = el("div", "sheet risk-change-card");
     card.append(el("h3", null, item.label + " · " + item.rule_id + " " + item.name),
       el("p", "muted", `基期 ${item.before_status} / v${item.before_version || "无"} → 本期 ${item.after_status} / v${item.after_version || "无"}`), el("p", null, item.reason));
     if (item.before_distance !== null && item.after_distance !== null) card.append(el("p", null, "偏离值 " + item.before_distance + " → " + item.after_distance));
+    const open = el("button", "btn re", "查看基期案例");open.type="button";
+    open.onclick=event=>{event.stopPropagation();return openRiskBaseline(item.rule_id);};
+    card.onclick=event=>{if(event.target.closest("button,a,input,select,textarea")||window.getSelection()?.toString())return;void openRiskBaseline(item.rule_id);};
+    card.append(open);
     box.append(card);
   }
   if (!box.childElementCount) box.append(el("p", "muted", "所选类型无变化；可切换全部规则或无法比较查看完整状态。"));
 }
+async function openRiskBaseline(ruleId="") {
+  const comparison=currentRiskChanges;
+  if(comparison?.status!=="ready"||!comparison.baseline?.id)return;
+  const owner=currentUser?.id,source=auditId,request=++riskBaselineOpenRequest;
+  const origin=snapshotReturn||lastResult;
+  const valid=()=>currentUser?.id===owner&&auditId===source&&currentRiskChanges===comparison&&
+    request===riskBaselineOpenRequest&&$("auditPanel").classList.contains("active");
+  try {
+    const result=await api("/api/audits/"+encodeURIComponent(comparison.baseline.id));
+    if(!valid())return;
+    renderResult(result);
+    snapshotReturn=origin;$("snapshotBack").hidden=false;
+    if(!ruleId)return;
+    // A filter retained from the current period must not hide the old finding.
+    for(const id of ["filterStatus","filterSeverity","filterCategory","filterTax"])$(id).value="";
+    applyFilters();
+    const target=Array.from(document.querySelectorAll("#hitList .card, #skipList .card, #passList .card"))
+      .find(card=>card.dataset.ruleId===ruleId);
+    if(!target)return;
+    if(latestFindings.find(f=>f.id===ruleId)?.status==="pass"){
+      $("passFold").classList.add("open");$("passList").classList.add("open");
+    }
+    target.classList.add("open");target.setAttribute("tabindex","-1");
+    requestAnimationFrame(()=>{
+      if(currentUser?.id!==owner||auditId!==result.audit_id||!target.isConnected)return;
+      target.focus({preventScroll:true});target.scrollIntoView({behavior:"instant",block:"center"});
+    });
+  } catch(error) {if(valid())showError(error.message);}
+}
 $("riskBaseline").onchange = () => loadRiskChanges(auditId, $("riskBaseline").value);
 $("riskChangeFilter").onchange = renderRiskChanges;
-$("riskBaselineOpen").onclick = async () => {
-  try {
-    const origin = snapshotReturn || lastResult;
-    renderResult(await api("/api/audits/" + encodeURIComponent(currentRiskChanges.baseline.id)));
-    snapshotReturn = origin;
-    $("snapshotBack").hidden = false;
-  } catch(e) { showError(e.message); }
-};
+$("riskBaselineOpen").onclick = () => openRiskBaseline();
 $("snapshotBack").onclick = () => { if (snapshotReturn) renderResult(snapshotReturn); };
 
 let orgOverview = null, orgOverviewRequest = 0, orgSelectedClients = new Set();
