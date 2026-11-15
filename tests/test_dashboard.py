@@ -1,5 +1,5 @@
 from copy import deepcopy
-from contextlib import closing
+from contextlib import closing, contextmanager
 from dataclasses import asdict, replace
 from datetime import date
 from pathlib import Path
@@ -212,6 +212,49 @@ class RiskAlertTests(unittest.TestCase):
         self.assertEqual(original['records'][0]['alerts']['pending_count'], total - 1)
         self.assertEqual(selected['records'][0]['id'], 'later')
         self.assertEqual(selected['records'][0]['alerts']['pending_count'], total)
+
+    def test_page_reviews_use_one_query_and_keep_each_periods_state(self):
+        for month in range(1, 13):
+            data = deepcopy(self.data)
+            data.company.period = f'2026-{month:02}'
+            self.save(f'period-{month}', data)
+        risk_alerts.save_review(self.store, self.owner, 'period-1', self.hit.rule.id,
+                               self.body(note='一月已核查'))
+        risk_alerts.save_review(self.store, self.owner, 'period-12', self.hit.rule.id,
+                               self.body('reviewing', '十二月核查中'))
+        statements = []
+        connect = self.store.connect
+
+        @contextmanager
+        def traced():
+            with connect() as db:
+                db.set_trace_callback(statements.append)
+                yield db
+
+        counts = []
+        for page_size in (1, 12):
+            statements.clear()
+            with patch.object(self.store, 'connect', traced):
+                result = collect(self.store, self.owner, page_size=page_size)
+            selects = [query for query in statements if query.lstrip().upper().startswith('SELECT')]
+            counts.append(len(selects))
+            # Six dashboard reads, two rule-context reads and one batched review read.
+            self.assertLessEqual(len(selects), 9)
+            self.assertEqual(sum('FROM risk_reviews' in query for query in selects), 1)
+            self.assertEqual(len(result['records']), page_size)
+        self.assertEqual(counts[0], counts[1])
+        total = sum(item.status == 'hit' for item in self.findings)
+        for record in result['records']:
+            review = next(item['review'] for item in record['risks'] if item['id'] == self.hit.rule.id)
+            if record['id'] == 'period-1':
+                self.assertEqual((review['status'], review['note']), ('done', '一月已核查'))
+                self.assertEqual(record['alerts']['pending_count'], total - 1)
+            elif record['id'] == 'period-12':
+                self.assertEqual((review['status'], review['note']), ('reviewing', '十二月核查中'))
+                self.assertEqual(record['alerts']['pending_count'], total)
+            else:
+                self.assertEqual((review['status'], review['note']), ('pending', ''))
+                self.assertEqual(record['alerts']['pending_count'], total)
 
     def test_reviews_require_authorized_hit_and_completion_note(self):
         for actor in (self.other, self.outsider):

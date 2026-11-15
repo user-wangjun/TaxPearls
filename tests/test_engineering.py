@@ -171,7 +171,10 @@ class EngineeringTests(unittest.TestCase):
                 patch('webapp.dashboard.current_actor', side_effect=authorize_with_background):
             first = collect(self.store, self.owner, page_size=20)
         selects = [query for query in statements if query.lstrip().upper().startswith('SELECT')]
-        self.assertLessEqual(len(selects), 6)
+        # Six dashboard reads plus two page-wide rule-update context reads.
+        # Audits without hits must not query risk_reviews at all.
+        self.assertLessEqual(len(selects), 8)
+        self.assertFalse(any('FROM risk_reviews' in query for query in selects))
         self.assertEqual((len(first['records']), first['total_periods'], first['has_more']), (20,35,True))
         second = collect(self.store, self.owner, first['company'], page=2, page_size=20)
         self.assertEqual((len(second['records']),second['has_more']), (15,False))

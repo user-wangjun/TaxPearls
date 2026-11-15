@@ -70,10 +70,11 @@ def collect(store, actor, company=None, page=1, page_size=24, start_date=None, e
             'SELECT a.id,a.company_name,a.taxpayer_id,a.industry,a.period,a.audited_at,a.summary_json,a.client_id'
             + selected_base + ' ORDER BY a.audited_at DESC,a.rowid DESC LIMIT 101', selected_args)]
         records = []
+        decoded = [(row, json.loads(row['dataset_json']), json.loads(row['findings_json'])) for row in rows]
+        page_reviews = risk_alerts.reviews_for(db, decoded)
         context = risk_alerts.rule_context(db) if rows else None
-        for row in rows:
-            dataset, findings = json.loads(row['dataset_json']), json.loads(row['findings_json'])
-            reviews = risk_alerts.reviews_for(db, row, dataset, findings)
+        for row, dataset, findings in decoded:
+            reviews = page_reviews[row['id']]
             records.append({**{key:row[key] for key in ('id','company_name','taxpayer_id','industry','period','audited_at','client_id')},
                 'summary':json.loads(row['summary_json']),
                 'alerts': {'pending_count': sum(item['status'] != 'done' for item in reviews.values()),

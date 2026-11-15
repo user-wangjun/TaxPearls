@@ -31,17 +31,19 @@ def review_key(row, dataset, finding):
         'dataset': dataset, 'finding': frozen}).encode()).hexdigest()
 
 
-def reviews_for(db, row, dataset, findings):
-    keys = {item['rule']['id']: review_key(row, dataset, item)
-            for item in findings if item['status'] == 'hit'}
-    if not keys:
-        return {}
+def reviews_for(db, audits):
+    """Read all reviews for an already authorized page in one query."""
+    keys = {row['id']: {item['rule']['id']: review_key(row, dataset, item)
+                       for item in findings if item['status'] == 'hit'}
+            for row, dataset, findings in audits}
+    wanted = list(dict.fromkeys(key for findings in keys.values() for key in findings.values()))
     saved = {item['review_key']: dict(item) for item in db.execute(
-        'SELECT * FROM risk_reviews WHERE review_key IN (' + ','.join('?' for _ in keys) + ')', list(keys.values()))}
-    return {rule_id: {'status': saved[key]['status'], 'note': saved[key]['review_note'],
-                     'revision': saved[key]['revision'], 'updated_at': saved[key]['updated_at']}
-            if key in saved else {'status': 'pending', 'note': '', 'revision': 0, 'updated_at': None}
-            for rule_id, key in keys.items()}
+        'SELECT * FROM risk_reviews WHERE review_key IN (' + ','.join('?' for _ in wanted) + ')', wanted)} if wanted else {}
+    return {audit_id: {rule_id: {'status': saved[key]['status'], 'note': saved[key]['review_note'],
+                                'revision': saved[key]['revision'], 'updated_at': saved[key]['updated_at']}
+                       if key in saved else {'status': 'pending', 'note': '', 'revision': 0, 'updated_at': None}
+                       for rule_id, key in findings.items()}
+            for audit_id, findings in keys.items()}
 
 
 def rule_context(db):
