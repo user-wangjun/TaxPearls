@@ -27,6 +27,18 @@ async function menu(f) {
   await dispatch(f, message()); await f.drain();
   return JSON.parse(f.calls[0].data.content);
 }
+
+test('native shortcut labels route distinct actions through authenticated private messages',async()=>{
+  const commands=[];
+  const f=fixture({binding:{menu:async(...args)=>{commands.push(args);return {};}}});
+  for(const [label,command] of [['唤出菜单','menu'],['账户状态','status'],['使用帮助','help']]) {
+    await dispatch(f,message({message_id:'om_'+command,content:JSON.stringify({text:label})}));
+    await f.drain();
+    assert.deepEqual(commands.at(-1).slice(0,4),['ou_test','oc_test','om_'+command,command]);
+  }
+  await dispatch(f,message({chat_type:'group',content:JSON.stringify({text:'绑定状态'})}));
+  await f.drain();assert.equal(commands.length,3);
+});
 function click(value, patch = {}) {
   return event('card.action.trigger', { operator: { open_id: 'ou_test', tenant_key: 'tenant_test' }, context: { open_chat_id: 'oc_test', open_message_id: 'om_reply' }, action: { tag: 'button', value }, ...patch });
 }

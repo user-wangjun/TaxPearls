@@ -796,6 +796,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   const notificationCode = source.slice(source.indexOf("function noticeCurrent("), source.indexOf("let currentRiskChanges"));
   const nodes = new Map();
   const node = () => ({children:[], textContent:"", disabled:false, checked:false,
+    removeAttribute(name){delete this[name];},
     classList:{contains:()=>true}, replaceChildren(){this.children=[];},
     append(...items){this.children.push(...items);}, get childElementCount(){return this.children.length;}});
   const graphNodes=new Map(),graphCalls=[],graphDraws=[],graphTimers=[];
@@ -897,10 +898,13 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   vm.runInContext('graphData={nodes:[],edges:[]};graphFocused=true;graphVisible=new Set();',graphCtx);
   graphCtx.innerWidth=390;graphCtx.layoutGraph(); // empty focused mobile view must not dereference undefined
   const pending = [];
+  const noticeEvents={};let feishuBindings=[],scheduledFeishuRefresh,feishuRefreshDelay;
   const ctx = {currentUser:{id:"user-1",role:"accountant"},
     $:id=>{if(!nodes.has(id)) nodes.set(id,node());return nodes.get(id);}, el:node,
-    document:{querySelectorAll:()=>[]},
-    api:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject})),
+    document:{querySelectorAll:()=>[],addEventListener:(event,handler)=>noticeEvents[event]=handler},
+    window:{addEventListener:(event,handler)=>noticeEvents[event]=handler},
+    setTimeout:(fn,delay)=>{scheduledFeishuRefresh=fn;feishuRefreshDelay=delay;return 1;},clearTimeout:()=>{scheduledFeishuRefresh=null;},
+    api:url=>url==="/api/channels/feishu/bindings" ? Promise.resolve(feishuBindings) : url==="/api/channels/feishu/entry" ? Promise.resolve({url:"https://applink.feishu.cn/client/bot/open?appId=cli_test",binding_ready:false,message:"账号绑定暂不可用"}) : new Promise((resolve,reject)=>pending.push({url,resolve,reject})),
     renderResult(){}, switchPanel(){}};
   vm.createContext(ctx);
   vm.runInContext('let noticeRequest=0,noticeBusy=false,noticeReady=false,noticeHasEmail=false;'+notificationCode,ctx);
@@ -917,6 +921,71 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   assert.ok(ctx.$("noticeStatus").textContent.includes("current failure"));
   assert.equal(ctx.$("noticeSave").disabled,true);
   const recover = ctx.loadNotifications();resolveLoad(pending.splice(0));await recover;
+  assert.equal(ctx.$("noticeFeishuOpen").href,"https://applink.feishu.cn/client/bot/open?appId=cli_test");
+  assert.equal(ctx.$("noticeFeishuOpen").hidden,false,"Direct bot entry stays available when binding is disabled");
+  ctx.$("noticeFeishuQr").onload();assert.equal(ctx.$("noticeFeishuQrBox").hidden,false);
+  ctx.$("noticeFeishuQr").onerror();assert.equal(ctx.$("noticeFeishuQrBox").hidden,true);
+  assert.equal(ctx.$("noticeFeishuOpen").hidden,false,"QR failure preserves the direct link");
+  const noticeApi=ctx.api;
+  ctx.api=url=>url==="/api/channels/feishu/entry" ? Promise.reject(new Error("助手未配置")) : noticeApi(url);
+  const withoutFeishu=ctx.loadNotifications();resolveLoad(pending.splice(0));await withoutFeishu;
+  assert.equal(ctx.$("noticeSave").disabled,false,"Missing Feishu configuration must not disable email preferences");
+  assert.equal(ctx.$("noticeFeishuOpen").hidden,true);
+  assert.ok(ctx.$("noticeFeishuStatus").textContent.includes("助手未配置"));
+  let finishFeishu;
+  ctx.api=url=>url==="/api/channels/feishu/bindings" ? Promise.resolve([]) : new Promise(resolve=>{finishFeishu=resolve;});
+  const staleFeishu=ctx.loadNoticeFeishu(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  vm.runInContext('noticeRequest++;',ctx);
+  finishFeishu({url:"https://applink.feishu.cn/client/bot/open?appId=cli_old",binding_ready:true});await staleFeishu;
+  assert.equal(ctx.$("noticeFeishuOpen").hidden,true,"Old panel requests must not restore a stale link");
+  ctx.api=noticeApi;
+  await ctx.loadNoticeFeishu(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  ctx.$("noticeFeishuQr").onload();
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,false);
+  assert.equal(typeof scheduledFeishuRefresh,"function","Unbound accounts keep checking while the panel is visible");
+  feishuBindings=[{channel:"feishu",id:"verified-binding"}];
+  // Confirmation can finish after focus has already returned, without another browser event.
+  scheduledFeishuRefresh();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"已绑定飞书账户");
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true,"Successful linking must hide the existing QR");
+  assert.equal(typeof scheduledFeishuRefresh,"function","Bound accounts detect unlinking from Feishu");
+  assert.equal(feishuRefreshDelay,10000,"Bound accounts check less frequently");
+  ctx.$("noticeFeishuQr").onload();
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true,"A late QR load must not reveal the code after binding");
+  assert.ok(ctx.$("noticeFeishuIntro").textContent.includes("已与飞书连接"));
+  assert.ok(!ctx.$("noticeFeishuStatus").textContent.includes("发起绑定"));
+  noticeEvents.focus();scheduledFeishuRefresh();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"已绑定飞书账户","Returning from Feishu must read the actual account binding");
+  assert.equal(ctx.$("noticeFeishuOpen").textContent,"打开飞书助手 →");
+  const bindingReads=[];
+  ctx.api=()=>new Promise(resolve=>bindingReads.push(resolve));
+  const oldBindingRead=ctx.loadNoticeFeishuBinding(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  const latestBindingRead=ctx.loadNoticeFeishuBinding(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  bindingReads[1]([{channel:"feishu"}]);await latestBindingRead;
+  bindingReads[0]([]);await oldBindingRead;
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"已绑定飞书账户","An older unbound read must not overwrite the completed binding");
+  ctx.api=noticeApi;
+  feishuBindings=[];
+  scheduledFeishuRefresh();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"尚未绑定 TaxPearls 账号");
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,false,"Unlinked accounts can scan again");
+  assert.equal(feishuRefreshDelay,3000,"Unbound accounts resume faster confirmation checks");
+  ctx.document.hidden=true;
+  ctx.api=()=>assert.fail("Hidden panels must not poll for binding state");
+  scheduledFeishuRefresh();
+  ctx.document.hidden=false;
+  ctx.api=()=>Promise.reject(new Error("读取失败"));
+  await ctx.loadNoticeFeishuBinding(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  assert.ok(ctx.$("noticeFeishuBindingStatus").textContent.includes("读取失败"),"Read errors must not claim the account is unbound");
+  let completeBindingRead;
+  ctx.api=url=>url==="/api/channels/feishu/bindings" ? new Promise(resolve=>{completeBindingRead=resolve;}) : noticeApi(url);
+  await ctx.loadNoticeFeishu(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  ctx.$("noticeFeishuQr").onload();
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true,"Do not flash a QR before the initial binding read resolves");
+  completeBindingRead([{channel:"feishu"}]);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true);
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"已绑定飞书账户");
+  ctx.api=noticeApi;
   let finish, writes=0;
   const write = ctx.noticeAction(()=>{writes++;return new Promise(resolve=>{finish=resolve;});});
   await ctx.noticeAction(()=>{writes++;});

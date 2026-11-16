@@ -41,6 +41,7 @@ def migrate(db):
     )''')
     db.execute('CREATE INDEX IF NOT EXISTS idx_feishu_binding_subject ON feishu_binding_requests(scope_key,subject_hash)')
     db.execute('CREATE TABLE IF NOT EXISTS feishu_bridge_nonces (nonce TEXT PRIMARY KEY, expires_at REAL NOT NULL)')
+    db.execute('CREATE TABLE IF NOT EXISTS feishu_task_creations (operation_key TEXT PRIMARY KEY, task_id TEXT NOT NULL, created_at TEXT NOT NULL)')
 
 
 @dataclass(frozen=True)
@@ -73,6 +74,14 @@ def settings():
     except ValueError:
         raise HTTPException(503, '飞书绑定服务配置不完整，请检查应用、租户、独立桥接密钥和公网地址。') from None
     return Settings(app_id, tenant, bytes.fromhex(key), base)
+
+
+def bot_url():
+    # Opening the bot is public and does not grant a binding or a login session.
+    app_id = os.getenv('TAXPEARLS_FEISHU_APP_ID', '').strip()
+    if not re.fullmatch(r'cli_[A-Za-z0-9]+', app_id):
+        raise HTTPException(503, '尚未配置飞书助手入口，暂时无法提供二维码或打开链接，请联系管理员。')
+    return 'https://applink.feishu.cn/client/bot/open?appId=' + app_id
 
 
 def _secret(config, purpose, identity):
@@ -253,6 +262,10 @@ class BridgeBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     app_id: str = Field(max_length=256)
     operation: str = Field(max_length=20)
+    binding_tag: str = Field(default='', max_length=64)
+    operation_id: str = Field(default='', max_length=32)
+    view: str = Field(default='', max_length=20)
+    page: int = Field(default=0, ge=0, le=9, strict=True)
     subject: str = Field(default='', max_length=256)
     chat: str = Field(default='', max_length=256)
     event_id: str = Field(default='', max_length=256)
@@ -283,21 +296,24 @@ def register(app, store_provider, cookie_name):
 
     @app.get('/api/channels/feishu/entry')
     def entry():
-        config = settings()
-        return {'url': 'https://applink.feishu.cn/client/bot/open?appId=' + config.app_id}
+        url = bot_url()
+        try:
+            settings()
+        except HTTPException:
+            return {'url': url, 'binding_ready': False,
+                    'message': '账号绑定暂不可用，可先扫码或点击链接打开飞书助手。'}
+        return {'url': url, 'binding_ready': True, 'message': '请用飞书扫码或点击链接打开助手。'}
 
     @app.get('/api/channels/feishu/qr.svg')
     def qr():
         import qrcode
         import qrcode.image.svg
-        config = settings()
-        image = qrcode.make('https://applink.feishu.cn/client/bot/open?appId=' + config.app_id,
-                            image_factory=qrcode.image.svg.SvgPathFillImage)
+        image = qrcode.make(bot_url(), image_factory=qrcode.image.svg.SvgPathFillImage)
         return Response(image.to_string(), media_type='image/svg+xml')
 
     @app.get('/api/channels/feishu/bindings')
     def listing(session: str | None = Cookie(default=None, alias=cookie_name)):
-        settings()
+        # Reading one's existing links remains possible while new binding is disabled.
         return [row for row in bindings.list_bindings(store_provider(), session) if row['channel'] == 'feishu']
 
     @app.delete('/api/channels/feishu/bindings/{binding_id}')
@@ -373,8 +389,28 @@ def register(app, store_provider, cookie_name):
             raise HTTPException(403, '应用不匹配。')
         if body.operation == 'issue':
             result = issue(store, config, body.subject, body.chat, body.event_id)
+        elif body.operation == 'lookup':
+            if not re.fullmatch(r'ou_[A-Za-z0-9]+', body.subject):
+                raise HTTPException(422, '飞书会话身份无效。')
+            actor = bindings.actor_for_subject(store, config.scope, body.subject)
+            result = {'state': 'bound' if actor else 'unbound'}
         elif body.operation == 'pending':
             result = {'items': pending_confirmations(store, config)}
+        elif body.operation == 'binding_unlink':
+            if not re.fullmatch(r'ou_[A-Za-z0-9]+', body.subject) or not re.fullmatch(r'[0-9a-f]{64}', body.binding_tag):
+                raise HTTPException(422, '解除绑定请求无效，请重新读取账户状态。')
+            from webapp import feishu_tasks
+            with store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                row = db.execute("SELECT id FROM channel_bindings WHERE channel='feishu' AND scope_key=? AND subject_key=?",
+                                 (config.scope.key, bindings._digest(body.subject))).fetchone()
+                if row:
+                    user, _ = feishu_tasks.actor(db, config, body.subject, body.binding_tag)
+                    bindings.unlink_for_actor(db, user, row['id'])
+            result = {'state': 'unbound'}
+        elif body.operation in {'task_menu', 'task_list', 'task_create'}:
+            from webapp import feishu_tasks
+            result = feishu_tasks.execute(store, config, body)
         elif body.operation in {'confirm', 'cancel'}:
             result = finish(store, config, body.id, body.subject, body.chat, body.confirmation, cancel=body.operation == 'cancel')
         else:

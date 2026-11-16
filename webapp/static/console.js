@@ -88,7 +88,7 @@ function prepareWorkspacePanel(id) {
   if (preparedPanels.has(id)) return Promise.resolve();
   if (panelPreparations.has(id)) return panelPreparations.get(id);
   const preparation = (async () => {
-    const load = name => loadClientScript("/" + name + "?v=" + (name==="core-inputs.js"?"lendar-shared-20261115-3":"20261029-teaching-names-12"));
+    const load = name => loadClientScript("/" + name + "?v=" + (name==="core-inputs.js"?"feishu-account-20261116-1":"20261029-teaching-names-12"));
     if (["uploadPanel", "auditPanel", "historyPanel", "trainingPanel", "knowledgePanel"].includes(id)) {
       await Promise.all([load("core-inputs.js"), load("enterprise.js")]);
       if (!enterpriseMaterials) {
@@ -915,6 +915,88 @@ $("settingsOrgOpen").onclick = () => switchPanel("orgReportPanel");
 function noticeCurrent(request, owner) {
   return request === noticeRequest && currentUser?.id === owner && $("notificationPanel").classList.contains("active");
 }
+let noticeFeishuBindingRequest = 0;
+let noticeFeishuState;
+let noticeFeishuRefreshTimer;
+function renderNoticeFeishu(request, owner) {
+  const state = noticeFeishuState;
+  if (!noticeCurrent(request, owner) || state?.request !== request || state.owner !== owner) return;
+  $("noticeFeishuQrBox").hidden = state.bound !== false || !state.qrReady;
+  $("noticeFeishuOpen").textContent = state.bound ? "打开飞书助手 →" : "在飞书中继续 →";
+  $("noticeFeishuIntro").textContent = state.bound
+    ? "你的 TaxPearls 账号已与飞书连接，可直接打开助手。"
+    : "扫码或点击按钮打开飞书助手，还需在网站与原飞书私聊中分别确认。完成后此处会自动更新。";
+  $("noticeFeishuStatus").textContent = state.bound ? "绑定已完成，无需再次扫码。" : state.entryMessage;
+}
+async function loadNoticeFeishuBinding(request, owner) {
+  if (!noticeCurrent(request, owner)) return;
+  clearTimeout(noticeFeishuRefreshTimer);
+  const read = ++noticeFeishuBindingRequest;
+  const status = $("noticeFeishuBindingStatus");
+  if (noticeFeishuState?.bound == null) status.textContent = "正在核对账号绑定状态……";
+  try {
+    const rows = await api("/api/channels/feishu/bindings", {cache:"no-store"});
+    if (read !== noticeFeishuBindingRequest || !noticeCurrent(request, owner)) return;
+    const bound = rows.some(row => row.channel === "feishu");
+    status.textContent = bound ? "已绑定飞书账户" : "尚未绑定 TaxPearls 账号";
+    if (noticeFeishuState?.request === request && noticeFeishuState.owner === owner) {
+      noticeFeishuState.bound = bound;
+      renderNoticeFeishu(request, owner);
+    }
+  } catch (error) {
+    if (read === noticeFeishuBindingRequest && noticeCurrent(request, owner)) status.textContent = "绑定状态读取失败，请刷新重试：" + error.message;
+  } finally {
+    // Binding or unlinking may finish in Feishu while this panel stays visible.
+    if (read === noticeFeishuBindingRequest && noticeCurrent(request, owner) && !document.hidden) {
+      noticeFeishuRefreshTimer = setTimeout(() => {
+        if (noticeCurrent(request, owner) && !document.hidden) void loadNoticeFeishuBinding(request, owner);
+      }, noticeFeishuState?.bound === true ? 10000 : 3000);
+    }
+  }
+}
+function refreshNoticeFeishuBinding() {
+  clearTimeout(noticeFeishuRefreshTimer);
+  if (!currentUser || document.hidden || !$("notificationPanel").classList.contains("active")) return;
+  const request = noticeRequest, owner = currentUser.id;
+  noticeFeishuRefreshTimer = setTimeout(() => {
+    if (noticeCurrent(request, owner)) void loadNoticeFeishuBinding(request, owner);
+  }, 150);
+}
+document.addEventListener("visibilitychange", refreshNoticeFeishuBinding);
+window.addEventListener("focus", refreshNoticeFeishuBinding);
+window.addEventListener("pageshow", refreshNoticeFeishuBinding);
+async function loadNoticeFeishu(request, owner) {
+  noticeFeishuState = {request, owner, bound:null, qrReady:false, entryMessage:"正在读取飞书助手入口……"};
+  const open = $("noticeFeishuOpen"), qr = $("noticeFeishuQr"), box = $("noticeFeishuQrBox"), status = $("noticeFeishuStatus");
+  open.hidden = true; box.hidden = true; open.removeAttribute("href");
+  qr.onload = null; qr.onerror = null; qr.removeAttribute("src");
+  status.textContent = "正在读取飞书助手入口……";
+  renderNoticeFeishu(request, owner);
+  void loadNoticeFeishuBinding(request, owner);
+  try {
+    const entry = await api("/api/channels/feishu/entry");
+    if (!noticeCurrent(request, owner)) return;
+    open.href = entry.url; open.hidden = false;
+    noticeFeishuState.entryMessage = entry.binding_ready ? "请在飞书助手中发送“绑定”，完成两端确认。" : "绑定服务暂不可用，暂时无法发起新绑定。";
+    renderNoticeFeishu(request, owner);
+    qr.onload = () => {
+      if (!noticeCurrent(request, owner)) return;
+      noticeFeishuState.qrReady = true; renderNoticeFeishu(request, owner);
+    };
+    qr.onerror = () => {
+      if (!noticeCurrent(request, owner)) return;
+      noticeFeishuState.qrReady = false;
+      noticeFeishuState.entryMessage = "二维码加载失败，请点击上方链接直接打开飞书助手。";
+      renderNoticeFeishu(request, owner);
+    };
+    qr.src = "/api/channels/feishu/qr.svg";
+  } catch (error) {
+    if (noticeCurrent(request, owner)) {
+      noticeFeishuState.entryMessage = "飞书入口暂不可用：" + error.message;
+      renderNoticeFeishu(request, owner);
+    }
+  }
+}
 function noticeControls(loading = false) {
   const disabled = loading || noticeBusy || !noticeReady;
   for (const id of ["noticeCompleted", "noticeHigh", "noticeSave"]) $(id).disabled = disabled;
@@ -950,6 +1032,7 @@ async function noticeAction(action, message = "", openAudit = false) {
 async function loadNotifications() {
   if (!currentUser || noticeBusy || !$("notificationPanel").classList.contains("active")) return false;
   const request = ++noticeRequest, owner = currentUser.id, admin = currentUser.role === "org_admin";
+  void loadNoticeFeishu(request, owner);
   noticeReady = false;
   noticeControls(true);
   $("noticeList").replaceChildren(); $("noticeRecipients").replaceChildren(); $("noticeRecipientBox").hidden = true;
