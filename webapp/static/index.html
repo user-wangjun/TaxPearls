@@ -468,7 +468,7 @@
 
 </style>
 <link rel="stylesheet" href="/university.css?v=student-mobile-integration-20261026-19">
-<link rel="stylesheet" href="/workspace.css?v=feishu-account-20261116-1">
+<link rel="stylesheet" href="/workspace.css?v=feishu-account-20261116-2">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261027-ocean-start-1">
@@ -1086,7 +1086,7 @@
       </div>
       <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称</label><input id="clientName"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号</label><input id="clientTaxpayerId"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
       <div class="sheet" id="ruleAdminLink" hidden><h2>规则维护已整合到知识图谱</h2><p class="muted">在知识图谱统一查看规则依据、计算条件、版本和审核状态。</p><button id="btnOpenGraphRules" type="button">前往图谱规则维护</button></div>
-      <div class="sheet" id="logAdmin"><h2>操作日志</h2><div class="data-list" id="logList"></div></div>
+      <div class="sheet" id="logAdmin"><h2>操作日志</h2><div class="row"><div class="field"><label for="logCategory">日志分类</label><select id="logCategory"><option value="">全部分类</option></select></div><p id="logCategoryStatus" class="muted" role="status" aria-live="polite"></p></div><div class="data-list" id="logList"></div></div>
     </section>
 
   </div>
@@ -1099,7 +1099,7 @@
   </div>
 </footer>
 
-<script defer src="/auth.js?v=feishu-account-20261116-1"></script>
+<script defer src="/auth.js?v=feishu-account-20261116-2"></script>
 <script defer src="/auth-glass.js?v=20261027-ocean-start-10"></script>
 <div id="toastStack" aria-live="polite"></div>
 </body>

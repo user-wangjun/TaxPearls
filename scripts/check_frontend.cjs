@@ -719,6 +719,25 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
     const failed=ctx.loadGraphRules();calls.shift().reject(new Error('catalog unavailable'));await failed;
     assert.ok(ctx.$('ruleCatalogStatus').textContent.includes('catalog unavailable'));
     assert.equal(ctx.$('ruleList').children.length,0,'Failed refresh must not leave stale enabled controls');
+    for(const role of ['org_admin','accountant','teacher','student']){
+      ctx.currentUser={id:'business',role};
+      ctx.$('ruleAdmin').hidden=false;ctx.$('ruleAdmin').open=true;
+      await ctx.loadGraphRules();ctx.renderGraphRules();
+      ctx.$('btnOpenGraphRules').handlers.click();
+      assert.equal(calls.length,0,'Non-platform roles cannot fetch maintenance data or activate its entry');
+      assert.equal(ctx.$('ruleList').children.length,0);
+      const guard={currentUser:ctx.currentUser,$(){throw Error('Unauthorized editor touched the DOM');}};
+      vm.createContext(guard);
+      vm.runInContext(source.slice(source.indexOf('function openRuleEditor('),source.indexOf('async function loadRuleVersionHistory(')),guard);
+      guard.openRuleEditor({});
+    }
+    const visibility=source.slice(source.indexOf('  const ruleAccess ='),source.indexOf('  ruleCatalogRequest++;',source.indexOf('  const ruleAccess =')));
+    for(const role of ['platform_admin','org_admin','accountant','teacher','student']){
+      const guard={user:{role},isCampusUser:()=>false,$:ctx.$};vm.createContext(guard);vm.runInContext(visibility,guard);
+      assert.equal(ctx.$('ruleAdmin').hidden,role!=='platform_admin');
+      assert.equal(ctx.$('ruleAdminLink').hidden,role!=='platform_admin');
+      assert.equal(ctx.$('ruleAdmin').open,false);
+    }
     const markup=fs.readFileSync('webapp/static/index.html','utf8');
     assert.ok(markup.indexOf('id="ruleAdmin"')>markup.indexOf('id="knowledgePanel"'));
     assert.ok(markup.indexOf('id="ruleAdmin"')<markup.indexOf('id="uploadPanel"'));
@@ -1024,6 +1043,11 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   assert.equal(ruleErrors.length,0);
   const save=ruleCtx.submitRuleDraft(true);ruleCalls.shift().resolve({id:"R-002",version:"2.1"});await save;
   assert.equal(shown.length,1);assert.ok(ruleCtx.$("ruleEditorStatus").textContent.includes("已保存"));
+  for(const role of ['org_admin','accountant','teacher','student']){
+    ruleCtx.currentUser={id:'business',role};
+    await ruleCtx.submitRuleDraft(true);await ruleCtx.submitRuleDraft(false);
+    assert.equal(ruleCalls.length,0,'Business roles cannot submit a parameter draft');
+  }
   const uploadNodes=new Map(),uploadCalls=[],reviews=[],uploadErrors=[];
   const uploadCtx={currentUser:{id:'u1'},dz:{style:{}},enterpriseMaterials:{enabled:()=>false},
     $:id=>{if(!uploadNodes.has(id))uploadNodes.set(id,{...node(),style:{},value:'local'});return uploadNodes.get(id);},
@@ -1101,8 +1125,9 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
 (async()=>{
   const source=readConsole(),start=source.indexOf("function renderAdminLogs("),end=source.indexOf("\nasync function loadAdmin()",start);
   const node=(tag,cls="",text="")=>({tag,className:cls,textContent:text,children:[],hidden:false,disabled:false,append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
-  const root=node("div"),calls=[];let pending=null,fail=false,current=true;
-  const ctx={$:()=>root,el:node,currentUser:{id:"admin",role:"org_admin"},Intl,Date,
+  const root=node("div"),select=node("select"),status=node("p"),calls=[];select.value="";
+  const ctxNodes={logList:root,logCategory:select,logCategoryStatus:status};let pending=null,fail=false,current=true;
+  const ctx={$:id=>ctxNodes[id],el:node,currentUser:{id:"admin",role:"org_admin"},Intl,Date,
     api:async url=>{calls.push(url);if(pending)return await pending;if(fail)throw Error("权限已变化");return {id:"task/id",revision:2,versions:[{revision:2,kind:"edit",created_at:"2026-10-17T13:43:30+00:00",created_by:"admin"}],events:[{action:"view",created_at:"2026-10-17T13:43:30+00:00",actor_id:"admin",revision:2}]};}};
   vm.createContext(ctx);vm.runInContext(source.slice(start,end),ctx);
   const rows=[{target_type:"material_batch",target_id:"task/id",action:"material_edit",created_at:"2026-10-17T13:43:30+00:00"}];
@@ -1125,6 +1150,29 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   assert.match(quotaText,/来源 IP：2001:db8::21/);assert.match(quotaText,/教职工总额度：5 → 6/);
   assert.match(quotaText,/学生总额度：1 → 3/);assert.match(quotaText,/配置版本：1 → 2/);
   assert.match(quotaText,/历史记录未保存完整前后额度及来源 IP/);
+  // Categories cover the loaded history, including records beyond the old 80-row display limit.
+  current=true;pending=null;ctx.currentUser.role="org_admin";
+  const categorized=[...Array.from({length:85},(_,i)=>({action:"login",target_type:"session",target_id:String(i)})),
+    rows[0],{action:"export_report",target_type:"audit"},{action:"trial_rule_parameters",target_type:"audit"},
+    {action:"retrieval_check_requested",target_type:"retrieval_check"},{action:"ai_key_probe",target_type:"ai_key_chat"},
+    {action:"create_assignment",target_type:"assignment"},{action:"update_preferences",target_type:"notification_preferences"},
+    {action:"new_future_action",target_type:"unknown"}];
+  ctx.renderAdminLogs(categorized,()=>current);
+  assert.equal(root.children.length,93);assert.match(status.textContent,/全部分类 93 条/);
+  assert.equal(select.children.find(n=>n.value==="materials").textContent,"企业材料（1）");
+  for(const [value,action]of [["materials","material_edit"],["audit","export_report"],["knowledge","trial_rule_parameters"],
+    ["retrieval","retrieval_check_requested"],["ai","ai_key_probe"],["teaching","create_assignment"],["notifications","update_preferences"],["other","new_future_action"]]){
+    select.value=value;select.onchange();assert.equal(root.children.length,1);assert.ok(all(root).some(n=>n.textContent.includes(action)));
+  }
+  select.value="account";select.onchange();assert.equal(root.children.length,85);
+  select.value="materials";select.onchange();
+  let resolveFiltered;pending=new Promise(done=>{resolveFiltered=done;});const filteredTrace=button().onclick();
+  select.value="account";select.onchange();resolveFiltered({id:"filtered-private-task",revision:1,versions:[],events:[]});await filteredTrace;
+  assert.ok(!all(root).some(n=>n.textContent.includes("filtered-private-task")));
+  ctx.renderAdminLogs(categorized,()=>current);assert.equal(select.value,"account","refresh retains the selected category");
+  ctx.renderAdminLogs([],()=>current);assert.match(status.textContent,/已加载最近 0 条/);assert.equal(root.children[0].textContent,"暂无操作日志。");
+  select.value="materials";ctx.renderAdminLogs([categorized[0]],()=>current);assert.equal(root.children[0].textContent,"该分类暂无操作日志。");
+  current=false;select.value="";select.onchange();assert.equal(root.children[0].textContent,"该分类暂无操作日志。","inactive panels ignore filter events");
   console.log("Admin material trace: on-demand query, close/reopen authorization, failure and stale-session guards passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
