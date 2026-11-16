@@ -268,7 +268,7 @@ async def answer_events(settings, payload, manifest, *, max_tokens, prompt=PROMP
                 validator(fields, allowed)
                 if not gate:
                     gate = True
-                    yield {'type': 'gate', 'status': fields['status']}
+                    yield {'type': 'gate', 'status': fields['status'], 'citation_ids': list(fields['citations'])}
                     if fields['status'] in {'answerable', 'insufficient'}:
                         yield {'type': 'summary', 'text': fields['summary']}
                 if fields['status'] == 'answerable':

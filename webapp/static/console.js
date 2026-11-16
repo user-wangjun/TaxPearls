@@ -82,7 +82,8 @@ function prepareWorkspacePanel(id) {
   if (preparedPanels.has(id)) return Promise.resolve();
   if (panelPreparations.has(id)) return panelPreparations.get(id);
   const preparation = (async () => {
-    const load = name => loadClientScript("/" + name + "?v=" + (name==="core-inputs.js"?"20261101-9d061af268bb":"20261029-teaching-names-12"));
+    const versions={"core-inputs.js":"20261101-9d061af268bb","graph.js":"20261116-condition-review-1"};
+    const load = name => loadClientScript("/" + name + "?v=" + (versions[name]||"20261029-teaching-names-12"));
     if (["uploadPanel", "auditPanel", "historyPanel", "trainingPanel", "knowledgePanel"].includes(id)) {
       await Promise.all([load("core-inputs.js"), load("enterprise.js")]);
       if (!enterpriseMaterials) {

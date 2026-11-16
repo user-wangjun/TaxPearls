@@ -279,13 +279,66 @@ function ragSourceCard(source){
   if(/^https?:\/\//i.test(source.source_url||"")){const link=el("a",null,"查看来源网页 ↗");link.href=source.source_url;link.target="_blank";link.rel="noopener noreferrer";details.append(link);}
   return details;
 }
+function ragRetrievalProcess(manifest){
+  const details=el("details","ai-reference-scope ai-retrieval-process");details.open=true;
+  details.append(el("summary",null,"问题理解与检索过程"));
+  if(manifest.question_received_at)details.append(el("p","muted","提问时间（北京时间）："+manifest.question_received_at.replace("T"," ").replace(/\+08:00$/,"")));
+  const plan=manifest.query_planning,scope=manifest.scope||{};
+  const periodText=p=>p.start===p.end?p.start:p.start+" 至 "+p.end;
+  if(scope.date_source==="user_filter")details.append(el("p","muted","使用你指定的参考日期："+manifest.reference_date));
+  else if(plan?.periods?.length){
+    details.append(el("p","muted","识别时间（起止日期均包含）："));
+    for(const range of plan.periods)details.append(el("p","muted",range.expression+" → "+periodText(range)));
+  }else if(scope.periods?.length){
+    details.append(el("p","muted","检索时间范围（起止日期均包含）："));
+    for(const range of scope.periods)details.append(el("p","muted",periodText(range)));
+  }else if(manifest.reference_date)details.append(el("p","muted","检索参考日期："+manifest.reference_date));
+  else details.append(el("p","muted","未指定业务期间，将结合原文版本说明。"));
+  if(plan?.status==="fallback")details.append(el("p","muted","本次问题整理未通过，已使用原始问题检索；请核对上方时间范围。"));
+  if(plan?.facts?.length){
+    details.append(el("p","muted","问题要点（原话摘录）："));
+    for(const fact of plan.facts)details.append(el("p","muted",fact));
+  }
+  if(plan?.queries?.length){
+    details.append(el("p","muted","辅助检索问题："));
+    for(const query of plan.queries)details.append(el("p","muted",query));
+  }
+  details.append(el("p","muted","已读取 "+manifest.node_ids.length+" 条原文，回答将结合下列来源："));
+  return details;
+}
+function ragConditionReview(review){
+  const details=el("details","ai-reference-scope ai-condition-review");
+  const label={passed:"已核对",revised:"已修订",clarify:"需补充事实",unavailable:"未完成"}[review.status]||"未完成";
+  details.append(el("summary",null,"条件核对 · "+label));
+  for(const check of review.checks||[]){
+    details.append(el("p","ai-text",check.note),el("p","muted",check.source_id+" · "+check.quote));
+    if(check.known_facts?.length)details.append(el("p","muted","已知事实："+check.known_facts.join("；")));
+    if(check.missing_facts?.length)details.append(el("p","muted","待补充："+check.missing_facts.join("；")));
+  }
+  for(const issue of review.issues||[])details.append(el("p","muted",issue));
+  return details;
+}
+function ragSourceChecks(event){
+  const details=el("details","ai-reference-scope ai-source-checks");
+  details.append(el("summary",null,"原文限制与例外 · "+event.source_checks.length+" 项待核对"),
+    el("p","muted","以下来自检索候选原文，尚未判断是否适用于本题；正文引用与候选核对项分别列示。"));
+  const sources=new Map((event.source_check_sources||[]).map(n=>[n.id,n]));
+  for(const check of event.source_checks){
+    const source=sources.get(check.source_id);
+    details.append(el("p","muted",check.source_id+" · "+(source?.label||"原文核对项")),el("p","ai-text",check.text));
+    if(/^https?:\/\//i.test(source?.source_url||"")){
+      const link=el("a",null,"查看该项来源 ↗");link.href=source.source_url;link.target="_blank";link.rel="noopener noreferrer";details.append(link);
+    }
+  }
+  return details;
+}
 $("graphQuestionForm").addEventListener("submit",async e=>{
   e.preventDefault();if(graphBusy||(!graphRagMode()&&!graphSelected))return;
   const draft=$("graphQuestion").value,question=draft.trim();if(!question)return;
   const node=graphSelected,audit=graphData.audit_id,taxpayer=graphData.taxpayer_id,version=graphRequest,owner=currentUser?.id;
   const publicMode=!audit&&!taxpayer,rag=graphRagMode(),controller=new AbortController(),key=nodeQuestionKey;
   nodeQuestionController=controller;
-  const box=$("graphMessages"),turn=el("div","ai-answer"),state=el("p","muted",rag?"正在检索公共原文…":"正在读取节点及关联依据…"),text=el("p","ai-text","");
+  const box=$("graphMessages"),turn=el("div","ai-answer"),state=el("p","muted",rag?"正在整理问题并检索公共原文…":"正在读取节点及关联依据…"),text=el("p","ai-text","");
   turn.append(el("p","ai-question",question),state,text);box.append(turn);box.scrollTop=box.scrollHeight;
   graphBusy=true;$("graphSend").disabled=true;$("graphStop").hidden=false;
   $("graphQuestion").value="";
@@ -299,10 +352,10 @@ $("graphQuestionForm").addEventListener("submit",async e=>{
         if(event.type==="context"){
           state.textContent=event.message;
           turn.querySelectorAll(".ai-reference-scope").forEach(item=>item.remove());
-          const details=el("details","ai-reference-scope");details.append(el("summary",null,"本次参考范围"));
+          const details=rag?ragRetrievalProcess(event.manifest):el("details","ai-reference-scope");
+          if(!rag)details.append(el("summary",null,"本次参考范围"));
           for(const id of event.manifest.node_ids){const n=event.manifest.sources?.find(n=>n.id===id)||graphData.nodes.find(n=>n.id===id);details.append(el("p","muted",n?.label||id));}
           if(event.manifest.message)details.append(el("p","muted",event.manifest.message));
-          if(rag&&event.manifest.reference_date)details.append(el("p","muted","检索参考日期："+event.manifest.reference_date));
           if(event.manifest.coverage?.omitted_candidates)details.append(el("p","muted","本次发送部分相关原文，尚未穷尽全部候选。"));
           if(event.manifest.capacity_source==="conservative_fallback")details.append(el("p","muted","模型未提供容量，使用保守容量限制。"));
           turn.insertBefore(details,text);
@@ -314,6 +367,8 @@ $("graphQuestionForm").addEventListener("submit",async e=>{
           text.textContent=event.answer;state.textContent=event.status==="answerable"?(rag?"已完成 · 请结合引用原文核实":"已完成 · 引用节点已核对，原文状态请见来源"):event.status==="out_of_scope"&&rag?"超出税务知识范围":nodeGateLabels[event.status];
           if(event.citations.length)turn.append(el("p","muted",rag?"原文依据 · 展开查看":"参考节点 · 点击查看"));
           for(const cited of event.citations){if(rag)turn.append(ragSourceCard(cited));else turn.append(action(cited.label,()=>{selectGraphNode(cited.id);focusGraph();renderNode();}));}
+          if(rag&&event.condition_review)turn.append(ragConditionReview(event.condition_review));
+          if(rag&&event.source_checks?.length)turn.append(ragSourceChecks(event));
           if(event.status==="answerable"||(rag&&["clarify","insufficient"].includes(event.status)))nodeQuestionHistory=[...nodeQuestionHistory,question.slice(0,500)].slice(-3);
         }
       });

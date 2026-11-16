@@ -1,0 +1,101 @@
+{
+  "version": 4,
+  "description": "Four condition-logic regression cases: two known failures and two new counterexamples. Not blind evaluation; frozen V3 unchanged.",
+  "reference_sources": {
+    "VAT_LAW_2026": {
+      "title": "中华人民共和国增值税法",
+      "effective_from": "2026-01-01",
+      "url": "https://shanghai.chinatax.gov.cn/zcfw/zcfgk/zzs/202412/t474694.html"
+    },
+    "VAT_RULES_2026": {
+      "title": "中华人民共和国增值税法实施条例",
+      "effective_from": "2026-01-01",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c100010/c5246349/content.html"
+    },
+    "VAT_TEMP_2017": {
+      "title": "中华人民共和国增值税暂行条例（2017年修订，2025年末前适用，另须核对当时配套政策）",
+      "effective_until": "2025-12-31",
+      "url": "https://www.mof.gov.cn/zhengwuxinxi/zhengcefabu/201712/t20171204_2764533.htm"
+    }
+  },
+  "cases": [
+    {
+      "id": "VAT-H011",
+      "cohort": "concepts",
+      "category": "学历与非学历",
+      "question": "2026年一个提供短期非学历培训的机构，能只因招牌写着学校，就把收费直接放入学历教育免税项目吗？请找免税项目与学校定义。",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_LAW_2026#第二十四条",
+          "VAT_RULES_2026#第三十条"
+        ],
+        "key_points": [
+          "核对学历教育项目及法定学校范围"
+        ]
+      }
+    },
+    {
+      "id": "VAT-H028",
+      "cohort": "time",
+      "category": "ISO日期",
+      "question": "2025-12-31与2026-01-01各发生一笔应税销售，都是先收款后开票。请找两日各自的纳税义务发生时间规则以及新法施行边界。",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_TEMP_2017#第十九条",
+          "VAT_LAW_2026#第二十八条",
+          "VAT_LAW_2026#第三十八条"
+        ],
+        "key_points": [
+          "两日分别检索收款时点及施行边界"
+        ],
+        "scope": {
+          "date_source": "question_period",
+          "periods": [
+            {
+              "start": "2025-12-31",
+              "end": "2025-12-31"
+            },
+            {
+              "start": "2026-01-01",
+              "end": "2026-01-01"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "VAT-C001",
+      "cohort": "conditions",
+      "category": "并列学校定义",
+      "question": "2026年，一家依法设立并提供学历教育的普通学校，不属于技工学校、高级技工学校或技师学院。仅就增值税实施条例中的学校定义，它是否属于学校范围？是否必须同时属于技工院校才能提供免税的学历教育服务？",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_RULES_2026#第三十条",
+          "VAT_LAW_2026#第二十四条"
+        ],
+        "key_points": [
+          "依法设立并提供学历教育的机构和列名技工院校为并列范围，不需要同时属于两类；免税项目是学校提供的学历教育服务"
+        ]
+      }
+    },
+    {
+      "id": "VAT-C002",
+      "cohort": "time",
+      "category": "合同索款日期先于收款",
+      "question": "我司在2026-02-20完成一项应税服务，书面合同明确付款日期为2026-03-01，2026-03-10实际收款，2026-03-12开票。能否因为先收款后开票就把纳税义务日期定为2026-03-10？请同时核对合同付款日期的规则，并说明是否应取服务完成日。",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_LAW_2026#第二十八条",
+          "VAT_RULES_2026#第三十九条"
+        ],
+        "key_points": [
+          "纳税义务发生时间为2026-03-01，不能仅因先收款后开票而取03-10；有明确合同付款日期，不适用无合同或未约定付款日期时以交易完成日兜底的规则"
+        ]
+      }
+    }
+  ]
+}
