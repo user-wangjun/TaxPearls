@@ -192,6 +192,56 @@ def forms(value):
     return list(dict.fromkeys(v.strip() for v in value))
 
 
+def create_task(db, store, user, value, *, task_id=None):
+    """Create through the same business validation inside the caller transaction."""
+    if set(value) - {
+        "company_name",
+        "tax_no",
+        "start_date",
+        "end_date",
+        "range_kind",
+        "client_id",
+        "applicable_forms",
+    }:
+        raise InputError("任务包含未知字段。")
+    fields = scope_values(value)
+    applicable = forms(value.get("applicable_forms"))
+    batches._key()
+    current_actor(db, user, batches.ROLES)
+    company = company_for(db, store, user, fields, value.get("client_id"),
+                          create=not core_materials.scope_errors(fields))
+    client_id = company["id"] if company else None
+    task_id = task_id or secrets.token_hex(16)
+    task = {
+        "id": task_id,
+        "company_id": client_id,
+        "tenant_id": user["org_id"],
+        **fields,
+        "scope_confirmed": not core_materials.scope_errors(fields),
+        "scope_origins": {key: {"kind": "manual"} for key, val in fields.items()
+                          if val and key != "range_kind"},
+        "scope_history": [],
+        "scope_revision": 0,
+        "applicable_forms": applicable,
+    }
+    payload = {
+        "core_task": True,
+        "task": task,
+        "documents": [],
+        "source_options": {},
+        "processing": core_materials.prepare(task, []),
+    }
+    db.execute(
+        "INSERT INTO material_batches VALUES (?,?,?,?,0,?)",
+        (task_id, user["org_id"], user["id"], client_id, members.now()),
+    )
+    db.execute("INSERT INTO core_input_tasks VALUES (?)", (task_id,))
+    batch = batches._authorize(db, user, task_id)
+    batches._append(db, batch, user, "analysis", payload)
+    batches._event(db, batch, user, "create_task", {"company_id": client_id})
+    return task_id
+
+
 def register(app, get_store, get_user, allow, static_dir):
     def actor(session):
         user = get_user(session)
@@ -278,57 +328,11 @@ def register(app, get_store, get_user, allow, static_dir):
 
     @app.post("/api/enterprise/input-tasks")
     async def create(request: Request, session: str | None = Cookie(default=None, alias="taxpearls_session")):
-        user = actor(session)
-        value = await body(request)
-        if set(value) - {
-            "company_name",
-            "tax_no",
-            "start_date",
-            "end_date",
-            "range_kind",
-            "client_id",
-            "applicable_forms",
-        }:
-            raise HTTPException(422, "任务包含未知字段。")
+        user, value, store = actor(session), await body(request), get_store()
         try:
-            fields = scope_values(value)
-            applicable = forms(value.get("applicable_forms"))
-            store = get_store()
-            batches._key()
             with store.connect() as db:
                 db.execute("BEGIN IMMEDIATE")
-                current_actor(db, user, batches.ROLES)
-                company = company_for(db, store, user, fields, value.get("client_id"),
-                                      create=not core_materials.scope_errors(fields))
-                client_id = company["id"] if company else None
-                task_id = secrets.token_hex(16)
-                task = {
-                    "id": task_id,
-                    "company_id": client_id,
-                    "tenant_id": user["org_id"],
-                    **fields,
-                    "scope_confirmed": not core_materials.scope_errors(fields),
-                    "scope_origins": {key: {"kind": "manual"} for key, val in fields.items()
-                                      if val and key != "range_kind"},
-                    "scope_history": [],
-                    "scope_revision": 0,
-                    "applicable_forms": applicable,
-                }
-                payload = {
-                    "core_task": True,
-                    "task": task,
-                    "documents": [],
-                    "source_options": {},
-                    "processing": core_materials.prepare(task, []),
-                }
-                db.execute(
-                    "INSERT INTO material_batches VALUES (?,?,?,?,0,?)",
-                    (task_id, user["org_id"], user["id"], client_id, members.now()),
-                )
-                db.execute("INSERT INTO core_input_tasks VALUES (?)", (task_id,))
-                batch = batches._authorize(db, user, task_id)
-                batches._append(db, batch, user, "analysis", payload)
-                batches._event(db, batch, user, "create_task", {"company_id": client_id})
+                task_id = create_task(db, store, user, value)
             return read(user, task_id)
         except (ValueError, InputError, batches.MaterialStorageError) as exc:
             raise HTTPException(422, str(exc)) from None

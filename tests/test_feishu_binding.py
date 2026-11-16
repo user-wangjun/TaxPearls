@@ -101,9 +101,120 @@ class FeishuBindingTests(unittest.TestCase):
         result = self.client.post('/api/channels/feishu/status', json={'ticket': ticket})
         self.assertEqual(result.json()['state'], 'completed')
 
+    def test_shortcut_lookup_is_scoped_and_does_not_create_binding_requests(self):
+        self.assertEqual(self.bridge('lookup', subject='ou_alice').json(), {'state': 'unbound'})
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM feishu_binding_requests').fetchone()[0], 0)
+        self.complete()
+        self.assertEqual(self.bridge('lookup', subject='ou_alice').json(), {'state': 'bound'})
+        self.assertEqual(self.bridge('lookup', subject='ou_other').json(), {'state': 'unbound'})
+        self.assertEqual(self.bridge('lookup', subject='bad').status_code, 422)
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_TENANT_KEY': 'other-tenant'}):
+            self.assertEqual(self.bridge('lookup', subject='ou_alice').json(), {'state': 'unbound'})
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM feishu_binding_requests').fetchone()[0], 1)
+
+    def test_bot_unlink_preserves_tasks_and_old_card_cannot_unlink_a_new_binding(self):
+        with patch.dict(os.environ, {'TAXPEARLS_MATERIAL_KEY': base64.b64encode(b'c' * 32).decode()}):
+            self.complete()
+            tag = self.bridge('task_menu', subject='ou_alice').json()['binding_tag']
+            task = self.bridge('task_create', subject='ou_alice', binding_tag=tag, operation_id='9' * 32)
+            self.assertEqual(task.status_code, 200, task.text)
+            task_id = task.json()['id']
+            self.assertEqual(self.bridge('binding_unlink', subject='ou_alice').status_code, 422)
+            self.assertEqual(self.bridge('binding_unlink', subject='ou_alice', binding_tag='0' * 64).status_code, 403)
+            self.assertEqual(self.bridge('lookup', subject='ou_alice').json()['state'], 'bound')
+            result = self.bridge('binding_unlink', subject='ou_alice', binding_tag=tag)
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(result.json(), {'state': 'unbound'})
+            self.assertEqual(self.client.get('/api/channels/feishu/bindings').json(), [])
+            self.assertEqual(self.client.get('/api/enterprise/input-tasks/' + task_id).status_code, 200)
+            self.assertEqual(self.bridge('task_list', subject='ou_alice', binding_tag=tag, view='ongoing').status_code, 403)
+            self.assertEqual(self.bridge('binding_unlink', subject='ou_alice', binding_tag=tag).json(), {'state': 'unbound'})
+            future = time.time() + 20
+            with patch('webapp.feishu_binding.time.time', return_value=future):
+                ticket = self.issue(event_id='evt_rebind')
+                self.assertEqual(self.claim(ticket).status_code, 200)
+                self.assertEqual(self.finish(self.prompt()).status_code, 200)
+                self.assertEqual(self.bridge('binding_unlink', subject='ou_alice', binding_tag=tag).status_code, 403)
+                self.assertEqual(self.bridge('lookup', subject='ou_alice').json()['state'], 'bound')
+
+    def test_real_task_creation_query_progress_and_account_scope(self):
+        from webapp import material_batches as batches, members
+        with patch.dict(os.environ, {'TAXPEARLS_MATERIAL_KEY': base64.b64encode(b'c' * 32).decode()}):
+            self.complete()
+            tag = self.bridge('task_menu', subject='ou_alice').json()['binding_tag']
+            values = {'subject': 'ou_alice', 'binding_tag': tag, 'operation_id': '1' * 32}
+            created = self.bridge('task_create', **values)
+            self.assertEqual(created.status_code, 200, created.text)
+            task_id = created.json()['id']
+            self.assertRegex(created.json()['display_name'], r'^新建任务 · \d{4}-\d{2}-\d{2} \d{2}:\d{2}$')
+            self.assertNotIn(task_id[:8], created.json()['display_name'])
+            self.assertEqual(self.bridge('task_create', **values).json()['id'], task_id)
+            self.assertIn('input_task=' + task_id, created.json()['url'])
+            self.assertEqual(self.client.get('/api/enterprise/input-tasks/' + task_id).status_code, 200)
+            self.client.cookies.set(module.COOKIE_NAME, self.other_session)
+            other = self.client.post('/api/enterprise/input-tasks', json={})
+            self.assertEqual(other.status_code, 200, other.text)
+            self.client.cookies.set(module.COOKIE_NAME, self.session)
+            with self.store.connect() as db:
+                db.execute('''INSERT INTO material_jobs(id,org_id,batch_id,input_revision,actor_id,actor_role,state,available_at,created_at,input_cipher)
+                    VALUES ('task_job','enterprise-a',?,1,?,'accountant','running',0,?,?)''', (task_id,self.user['id'],members.now(),b'synthetic'))
+                for index, state in enumerate(('done', 'failed', 'queued')):
+                    db.execute('INSERT INTO material_job_files(job_id,file_id,fingerprint,state) VALUES (?,?,?,?)',
+                               ('task_job', str(index), 'synthetic', state))
+            query = {'subject': 'ou_alice', 'binding_tag': tag, 'view': 'ongoing'}
+            response = self.bridge('task_list', **query)
+            self.assertEqual(response.status_code, 200, response.text)
+            result = response.json()
+            self.assertEqual([item['id'] for item in result['items']], [task_id])
+            self.assertEqual(result['items'][0]['progress'], {'state':'running','done':1,'failed':1,'total':3})
+            self.assertNotIn('company_name', response.text)
+            self.assertNotIn('tax_no', response.text)
+            payload = batches.listing(self.store,self.user,workflow='core',include_latest=True)[0]['payload']
+            payload['task'].update(company_name='示例企业', start_date='2026-01-01', end_date='2026-01-31', tax_no='PRIVATE-TAX-NUMBER')
+            payload['completion'] = {'report_version':1,'completed_at':members.now()}
+            with self.store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                batch = batches._authorize(db,self.user,task_id)
+                batches._append(db,batch,self.user,'edit',payload)
+            self.assertEqual(self.bridge('task_list', **query).json()['items'], [])
+            query['view'] = 'completed'
+            archived = self.bridge('task_list', **query)
+            self.assertEqual(archived.json()['items'][0]['status'], 'archived')
+            self.assertEqual(archived.json()['items'][0]['display_name'], '示例企业 · 2026-01-01 至 2026-01-31')
+            self.assertNotIn('PRIVATE-TAX-NUMBER', archived.text)
+            with self.store.connect() as db:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM core_input_tasks').fetchone()[0], 2)
+
+    def test_task_cards_reject_revoked_bindings_and_deleted_task_replays(self):
+        from webapp import core_inputs
+        with patch.dict(os.environ, {'TAXPEARLS_MATERIAL_KEY': base64.b64encode(b'c' * 32).decode()}):
+            with self.store.connect() as db:
+                db.execute("UPDATE users SET role='org_admin' WHERE id=?", (self.user['id'],))
+            self.user['role'] = 'org_admin'
+            self.complete()
+            tag = self.bridge('task_menu',subject='ou_alice').json()['binding_tag']
+            values = {'subject':'ou_alice','binding_tag':tag,'operation_id':'2'*32}
+            created = self.bridge('task_create',**values)
+            self.assertEqual(created.status_code,200,created.text)
+            task_id = created.json()['id']
+            core_inputs.delete_task(self.store,self.user,task_id,1)
+            self.assertEqual(self.bridge('task_create',**values).status_code,410)
+            with self.store.connect() as db:
+                db.execute("UPDATE channel_bindings SET revision=? WHERE user_id=?", ('new-generation',self.user['id']))
+            self.assertEqual(self.bridge('task_create',**values).status_code,403)
+            self.assertEqual(self.bridge('task_list',subject='ou_alice',binding_tag=tag,view='ongoing').status_code,403)
+            self.assertEqual(self.bridge('task_create',subject='ou_alice',operation_id='3'*32).status_code,422)
+            self.assertEqual(self.bridge('task_menu',subject='ou_other').status_code,403)
+            with self.store.connect() as db:
+                db.execute('UPDATE users SET active=0 WHERE id=?', (self.user['id'],))
+            self.assertEqual(self.bridge('task_menu',subject='ou_alice').status_code,403)
+
     def test_entry_qr_uses_only_fixed_app_url_and_no_secret_or_identity(self):
         response = self.client.get('/api/channels/feishu/entry')
         self.assertEqual(response.json()['url'], 'https://applink.feishu.cn/client/bot/open?appId=cli_test')
+        self.assertTrue(response.json()['binding_ready'])
         qr = self.client.get('/api/channels/feishu/qr.svg')
         self.assertEqual(qr.status_code, 200)
         self.assertIn('<svg', qr.text)
@@ -223,16 +334,53 @@ class FeishuBindingTests(unittest.TestCase):
         ticket = self.issue()
         self.assertEqual(self.client.post('/api/channels/feishu/claim', json={'ticket': ticket, 'web_proof': 'a' * 64}, headers={'Origin': 'https://evil.test'}).status_code, 403)
         with patch.dict(os.environ, {'TAXPEARLS_PUBLIC_BASE_URL': 'https://evil.test/path'}):
-            self.assertEqual(self.client.get('/api/channels/feishu/entry').status_code, 503)
+            self.assertFalse(self.client.get('/api/channels/feishu/entry').json()['binding_ready'])
+            self.assertEqual(self.client.get('/api/channels/feishu/qr.svg').status_code, 200)
+            self.assertEqual(self.client.post('/api/channels/feishu/status', json={'ticket': ticket}).status_code, 503)
 
     def test_feature_disabled_and_static_page_security(self):
         with patch.dict(os.environ, {'TAXPEARLS_FEISHU_BINDING_ENABLED': '0'}):
-            self.assertEqual(self.client.get('/api/channels/feishu/entry').status_code, 503)
+            response = self.client.get('/api/channels/feishu/entry')
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.json()['binding_ready'])
+            self.assertEqual(self.client.get('/api/channels/feishu/qr.svg').status_code, 200)
+            self.assertEqual(self.client.get('/api/channels/feishu/bindings').json(), [])
         response = self.client.get('/connect/feishu')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.headers['referrer-policy'], 'no-referrer')
         self.assertIn("frame-ancestors 'none'", response.headers['content-security-policy'])
         self.assertEqual(self.client.get('/feishu-connect.js').status_code, 200)
+
+    def test_missing_or_invalid_bot_id_cannot_produce_an_entry_or_qr(self):
+        for app_id in ('', 'not-an-app', 'cli_x&appId=another'):
+            with self.subTest(app_id=app_id), patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_ID': app_id}):
+                for path in ('/api/channels/feishu/entry', '/api/channels/feishu/qr.svg'):
+                    response = self.client.get(path)
+                    self.assertEqual(response.status_code, 503)
+                    self.assertIn('尚未配置飞书助手入口', response.json()['detail'])
+
+    def test_bot_entry_needs_no_binding_credentials_or_login(self):
+        self.client.cookies.clear()
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_TENANT_KEY': '', 'TAXPEARLS_FEISHU_BRIDGE_KEY': ''}):
+            response = self.client.get('/api/channels/feishu/entry')
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.json()['binding_ready'])
+            self.assertEqual(self.client.get('/api/channels/feishu/qr.svg').status_code, 200)
+            self.assertEqual(self.client.get('/api/channels/feishu/bindings').status_code, 401)
+
+    def test_existing_binding_status_is_self_only_even_when_new_binding_is_disabled(self):
+        self.complete()
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_BINDING_ENABLED': '0',
+                                     'TAXPEARLS_FEISHU_BRIDGE_KEY': '', 'TAXPEARLS_FEISHU_APP_TENANT_KEY': ''}):
+            response = self.client.get('/api/channels/feishu/bindings')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(len(response.json()), 1)
+            self.assertEqual(response.json()[0]['channel'], 'feishu')
+            self.assertNotIn('ou_alice', response.text)
+            self.client.cookies.set(module.COOKIE_NAME, self.other_session)
+            self.assertEqual(self.client.get('/api/channels/feishu/bindings').json(), [])
+            self.client.cookies.clear()
+            self.assertEqual(self.client.get('/api/channels/feishu/bindings').status_code, 401)
 
 
 if __name__ == '__main__':

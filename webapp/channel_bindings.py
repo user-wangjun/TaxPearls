@@ -257,20 +257,25 @@ def set_notifications(store, session, binding_id, enabled):
         members.log(db,actor,'channel_subscription','channel_binding',binding_id,f'channel={row["channel"]};enabled={int(enabled)}')
 
 
+def unlink_for_actor(db, actor, binding_id):
+    """Remove an owner's binding inside an already-authorized transaction."""
+    current_actor(db, actor)
+    row = db.execute('SELECT * FROM channel_bindings WHERE id=? AND user_id=?',(binding_id,actor['id'])).fetchone()
+    if not row:
+        raise AccessDenied()
+    db.execute('DELETE FROM channel_bindings WHERE id=?',(binding_id,))
+    if row['channel'] == 'feishu':
+        db.execute("UPDATE feishu_binding_requests SET state='cancelled' WHERE user_id=? AND state='web_confirmed'", (actor['id'],))
+    db.execute("UPDATE channel_binding_flows SET status='cancelled',recipient_key=NULL WHERE user_id=? AND channel=?",
+               (actor['id'],row['channel']))
+    _suppress(db,actor['id'],row['channel'])
+    members.log(db,actor,'channel_binding_unlink','channel_binding',binding_id,'channel='+row['channel'])
+
+
 def unlink(store, session, binding_id):
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
-        actor = _session(db,session)
-        row = db.execute('SELECT * FROM channel_bindings WHERE id=? AND user_id=?',(binding_id,actor['id'])).fetchone()
-        if not row:
-            raise AccessDenied()
-        db.execute('DELETE FROM channel_bindings WHERE id=?',(binding_id,))
-        if row['channel'] == 'feishu':
-            db.execute("UPDATE feishu_binding_requests SET state='cancelled' WHERE user_id=? AND state='web_confirmed'", (actor['id'],))
-        db.execute("UPDATE channel_binding_flows SET status='cancelled',recipient_key=NULL WHERE user_id=? AND channel=?",
-                   (actor['id'],row['channel']))
-        _suppress(db,actor['id'],row['channel'])
-        members.log(db,actor,'channel_binding_unlink','channel_binding',binding_id,'channel='+row['channel'])
+        unlink_for_actor(db, _session(db, session), binding_id)
 
 
 def recipient(db, actor, scope):
