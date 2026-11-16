@@ -8,6 +8,7 @@ const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n
 (async()=>{
   const source=fs.readFileSync("webapp/static/graph.js","utf8");
   const code=source.slice(source.indexOf("async function readNodeStream("),source.indexOf("function ragSourceCard("))
+    +source.slice(source.indexOf("function ragRetrievalProcess("),source.indexOf('$("graphQuestionForm").addEventListener("submit"'))
     +source.slice(source.indexOf('$("graphQuestionForm").addEventListener("submit"'),source.indexOf("let graphResizeTimer;"));
   function setup(mode="rag"){
     const nodes=new Map();let submit,resolve,reject,stream;
@@ -26,13 +27,13 @@ const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n
     vm.createContext(ctx);vm.runInContext(code,ctx);
     const raw="  增值税进项税额抵扣有哪些规定？  ";get("graphQuestion").value=raw;
     return {ctx,get,raw,calls,submit:()=>submit({preventDefault(){}}),reject,
-      async context(){
+      async context(manifest={node_ids:[]}){
         resolve({ok:true,headers:new Headers({"content-type":"text/event-stream"}),body:new ReadableStream({start(controller){stream=controller;}})});
-        stream.enqueue(new TextEncoder().encode('data: '+JSON.stringify({type:"context",message:"已检索并读取 13 条公共原文。",manifest:{node_ids:[]}})+'\n\n'));
+        stream.enqueue(new TextEncoder().encode('data: '+JSON.stringify({type:"context",message:"已检索并读取 13 条公共原文。",manifest})+'\n\n'));
         await new Promise(setImmediate);
       },
-      complete(){if(mode==="enterprise")resolve({answer:"核对原文",citations:[]});else{
-        stream.enqueue(new TextEncoder().encode('data: '+JSON.stringify({type:"done",answer:"核对原文",status:"answerable",citations:[]})+'\n\n'));stream.close();
+      complete(extra={}){if(mode==="enterprise")resolve({answer:"核对原文",citations:[]});else{
+        stream.enqueue(new TextEncoder().encode('data: '+JSON.stringify({type:"done",answer:"核对原文",status:"answerable",citations:[],...extra})+'\n\n'));stream.close();
       }},fail(){stream.error(new Error("连接中断"));}};
   }
   for(const mode of ["rag","node","enterprise"]){
@@ -64,6 +65,21 @@ const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n
     assert.equal(test.get("graphQuestion").value,failure==="new-draft"?"下一条问题":failure==="stale"?"":test.raw,
       failure+": restore failed submissions only in the original, empty composer");
   }
+  {
+    const test=setup(),pending=test.submit();
+    const manifest={node_ids:[],question_received_at:"2026-11-15T10:00:00+08:00",
+      scope:{periods:[{start:"2025-12-01",end:"2025-12-31"}]},
+      query_planning:{status:"used",queries:["外币结算销售额币种依据"],
+        periods:[{expression:"去年最后一个月",start:"2025-12-01",end:"2025-12-31"}]}};
+    await test.context(manifest);
+    const details=test.get("graphMessages").children[0].children.find(n=>n.className?.includes("ai-reference-scope"));
+    assert.equal(details.open,true);
+    const visible=details.children.map(n=>n.textContent).join("\n");
+    assert.match(visible,/2026-11-15 10:00:00/);
+    assert.match(visible,/去年最后一个月 → 2025-12-01 至 2025-12-31/);
+    assert.match(visible,/外币结算销售额币种依据/);
+    test.complete();await pending;
+  }
   for(const guard of ["empty","busy","missing-node"]){
     const test=setup(guard==="missing-node"?"node":"rag");
     if(guard==="empty")test.get("graphQuestion").value="  ";
@@ -71,6 +87,23 @@ const readConsole = () => fs.readFileSync("webapp/static/auth.js", "utf8") + "\n
     if(guard==="missing-node")test.ctx.graphSelected=null;
     const before=test.get("graphQuestion").value;await test.submit();
     assert.equal(test.calls.length,0);assert.equal(test.get("graphQuestion").value,before);
+  }
+  {
+    const test=setup(),pending=test.submit();await test.context();
+    const quote="限制对象不得享受该优惠；<script>untrusted</script>";
+    test.complete({source_checks:[{source_id:"S2",text:quote}],source_check_sources:[{id:"S2",label:"其他候选条款",source_url:"https://example.invalid/p"}]});
+    await pending;
+    const turn=test.get("graphMessages").children[0],checklist=turn.children.find(n=>n.className?.includes("ai-source-checks"));
+    assert.ok(checklist);assert.notEqual(checklist.open,true);
+    assert.ok(checklist.children.some(n=>n.textContent===quote));
+    assert.equal(turn.children.find(n=>n.className==="ai-text").textContent,"核对原文");
+    assert.ok(checklist.children.some(n=>n.tag==="a"&&n.href==="https://example.invalid/p"));
+    const review=test.ctx.ragConditionReview({status:"revised",checks:[{source_id:"S1",quote,
+      note:"两类资格为并列范围。",known_facts:["普通学历学校"],missing_facts:["机构设立依据"]}],issues:[]});
+    assert.notEqual(review.open,true);
+    assert.match(review.children[0].textContent,/条件核对 · 已修订/);
+    assert.ok(review.children.some(n=>n.textContent==="S1 · "+quote));
+    assert.ok(review.children.some(n=>n.textContent==="待补充：机构设立依据"));
   }
   console.log("Graph composer: immediate clearing, streamed context, draft preservation, failure recovery and submit guards passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});

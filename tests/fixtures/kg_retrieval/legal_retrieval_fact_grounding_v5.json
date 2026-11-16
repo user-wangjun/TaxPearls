@@ -1,0 +1,133 @@
+{
+  "version": 5,
+  "description": "Fact-attribution regression: original identity-assumption failure, three explicit/unknown identity variants, and two prior condition regressions. No edits to frozen V3 or V4. Known development tests, not blind.",
+  "reference_sources": {
+    "VAT_LAW_2026": {
+      "title": "中华人民共和国增值税法",
+      "effective_from": "2026-01-01",
+      "url": "https://shanghai.chinatax.gov.cn/zcfw/zcfgk/zzs/202412/t474694.html"
+    },
+    "VAT_RULES_2026": {
+      "title": "中华人民共和国增值税法实施条例",
+      "effective_from": "2026-01-01",
+      "url": "https://fgk.chinatax.gov.cn/zcfgk/c100010/c5246349/content.html"
+    },
+    "VAT_TEMP_2017": {
+      "title": "中华人民共和国增值税暂行条例（2017年修订，2025年末前适用，另须核对当时配套政策）",
+      "effective_until": "2025-12-31",
+      "url": "https://www.mof.gov.cn/zhengwuxinxi/zhengcefabu/201712/t20171204_2764533.htm"
+    }
+  },
+  "cases": [
+    {
+      "id": "VAT-H001",
+      "cohort": "concepts",
+      "category": "商标使用权",
+      "question": "2026年我们收钱让另一家公司用自己的商标，只授权使用，不把商标卖断。这在增值税里属于无形资产交易吗？请找有偿转让范围与无形资产定义。",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_LAW_2026#第三条",
+          "VAT_RULES_2026#第二条"
+        ],
+        "key_points": [
+          "有偿转让包括使用权；商标属于无形资产"
+        ]
+      }
+    },
+    {
+      "id": "VAT-H009",
+      "cohort": "concepts",
+      "category": "医美与医疗",
+      "question": "2026年一家有医疗机构执业资格的营利性美容医疗机构，能因为有执业资格就套用医疗服务免税项目吗？请同时找基本免税项目与排除条件。",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_LAW_2026#第二十四条",
+          "VAT_RULES_2026#第二十七条"
+        ],
+        "key_points": [
+          "医疗免税项目存在；定义明确排除营利性美容医疗机构"
+        ]
+      }
+    },
+    {
+      "id": "VAT-H028",
+      "cohort": "time",
+      "category": "ISO日期",
+      "question": "2025-12-31与2026-01-01各发生一笔应税销售，都是先收款后开票。请找两日各自的纳税义务发生时间规则以及新法施行边界。",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_TEMP_2017#第十九条",
+          "VAT_LAW_2026#第二十八条",
+          "VAT_LAW_2026#第三十八条"
+        ],
+        "key_points": [
+          "两日分别检索收款时点及施行边界"
+        ],
+        "scope": {
+          "date_source": "question_period",
+          "periods": [
+            {
+              "start": "2025-12-31",
+              "end": "2025-12-31"
+            },
+            {
+              "start": "2026-01-01",
+              "end": "2026-01-01"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "VAT-F001",
+      "cohort": "fact_grounding",
+      "category": "明确境内一般纳税人",
+      "question": "2026年，我们是依法在中国境内设立的公司，也是增值税一般纳税人。我们收钱授权另一家公司使用商标，不转让商标所有权。只解释增值税上的交易定性，请保留我给出的主体信息。",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_LAW_2026#第三条",
+          "VAT_RULES_2026#第二条"
+        ],
+        "key_points": [
+          "解释有偿转让无形资产使用权；保留已给出的境内公司、一般纳税人信息，不改成事实缺失"
+        ]
+      }
+    },
+    {
+      "id": "VAT-F002",
+      "cohort": "fact_grounding",
+      "category": "明确境外主体",
+      "question": "2026年，我们是境外公司，尚未提供商标的实际使用地。我们收钱授权另一家公司使用商标，不卖断所有权。请只解释有偿转让无形资产使用权这一概念，不要替我假定境内身份或境内消费。",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_LAW_2026#第三条",
+          "VAT_RULES_2026#第二条"
+        ],
+        "key_points": [
+          "解释一般交易定义，保留境外公司身份；不补造境内消费，不直接确定中国境内应税结论"
+        ]
+      }
+    },
+    {
+      "id": "VAT-F003",
+      "cohort": "fact_grounding",
+      "category": "身份明确未说明",
+      "question": "2026年我们收钱让另一家公司用自己的商标，不卖断。主体在境内还是境外、一般纳税人还是小规模纳税人，暂时都不说明。只问是否属于有偿转让无形资产使用权，不计算税额。",
+      "retrieval_kind": "positive",
+      "expected": {
+        "source_refs": [
+          "VAT_LAW_2026#第三条",
+          "VAT_RULES_2026#第二条"
+        ],
+        "key_points": [
+          "直接解释有偿转让无形资产使用权，不因身份未提供而拒答概念，也不补造具体身份"
+        ]
+      }
+    }
+  ]
+}

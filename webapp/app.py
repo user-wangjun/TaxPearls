@@ -17,7 +17,7 @@ import re
 import sqlite3
 import tempfile
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Annotated, Literal
@@ -970,6 +970,7 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
     from contextlib import aclosing
     from webapp import node_qa, public_rag
     from src.settings import AISettings
+    question_time = datetime.now(timezone(timedelta(hours=8)))
     reader = identity_reader or (lambda: _user(session))
     user = await run_in_threadpool(reader)
     # This application runs one process. No enterprise scope can enter this endpoint.
@@ -981,6 +982,7 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
     try:
         def prepare():
             from webapp.knowledge import public_graph
+            review_settings = None
             settings = ai_keys.apply(AISettings.from_env(), usage='knowledge')
             if settings.problem() and not rag:
                 raise HTTPException(503, 'AI 尚未连接，请检查模型配置。')
@@ -996,9 +998,35 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
             if budget < 1024:
                 raise HTTPException(413, '模型可用上下文不足，请调整模型或输出额度。')
             if rag:
+                from webapp import query_planning
+                # Validate explicit time filters before adding a paid planning
+                # call. No open database transaction spans the network request.
+                public_rag.reference_scope(body.question, body.region, body.as_of, reference_date=question_time.date())
+                with store.connect() as db:
+                    has_public = db.execute('SELECT 1 FROM Clause LIMIT 1').fetchone() is not None
+                plan = {'status':'skipped','effort':'none','elapsed_seconds':0.0,'request_attempted':False}
+                if has_public and not settings.problem():
+                    if reader()['id'] != user['id']:
+                        raise HTTPException(401, '登录身份已变化。')
+                    history = body.previous_questions if public_rag.follows_topic(body.question) else ()
+                    plan = query_planning.plan_query(settings, info, body.question, history, reference_time=question_time)
+                    if reader()['id'] != user['id']:
+                        raise HTTPException(401, '登录身份已变化。')
                 with store.connect() as db:
                     payload, manifest = public_rag.retrieve(db, body.question, body.previous_questions,
-                                                           region=body.region, as_of=body.as_of, budget=budget)
+                                                           region=body.region, as_of=body.as_of, budget=budget,
+                                                           query_plan=plan, question_time=question_time)
+                manifest['query_planning'] = {k:plan[k] for k in ('status','effort','elapsed_seconds','reason') if k in plan}
+                if plan['status']=='used':
+                    manifest['query_planning'].update(facts=plan.get('facts',[]), queries=plan.get('queries',[]),
+                                                       periods=plan.get('time_ranges',[]))
+                if plan.get('request_attempted'):
+                    settings = replace(settings, max_calls=max(1,settings.max_calls-1))
+                if settings.max_calls >= 2:
+                    review_settings = query_planning.planning_settings(settings, info, 'low')
+                    if review_settings is not None:
+                        review_settings = replace(review_settings, json_mode=True, max_tokens=8192,
+                                                  timeout=min(60, settings.timeout), max_calls=1)
                 if payload['nodes'] and settings.problem():
                     raise HTTPException(503, 'AI 尚未连接，请检查模型配置；检索已找到原文。')
             else:
@@ -1006,8 +1034,8 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
                                                         body.previous_questions, budget=budget)
             manifest['capacity_source'] = 'provider_models' if limits.get('context_window') else 'conservative_fallback'
             manifest['output_reserve'] = output
-            return settings, payload, manifest, output
-        settings, payload, manifest, output = await run_in_threadpool(prepare)
+            return settings, payload, manifest, output, review_settings
+        settings, payload, manifest, output, review_settings = await run_in_threadpool(prepare)
     except BaseException:
         _node_question_active.discard(user['id'])
         raise
@@ -1015,9 +1043,14 @@ async def public_node_answer(body, session, *, stream=True, identity_reader=None
     async def events():
         try:
             # Re-check authentication after context assembly and before the paid request.
-            await run_in_threadpool(reader)
+            async def guard():
+                current = await run_in_threadpool(reader)
+                if current['id'] != user['id']:
+                    raise HTTPException(401, '登录身份已变化。')
+            await guard()
             handler = public_rag.answer_events if rag else node_qa.answer_events
-            async with aclosing(handler(settings, payload, manifest, max_tokens=output)) as source:
+            kwargs = {'review_settings':review_settings,'review_guard':guard} if rag else {}
+            async with aclosing(handler(settings, payload, manifest, max_tokens=output, **kwargs)) as source:
                 async for event in source:
                     # Never release deltas after a session has been revoked.
                     current = await run_in_threadpool(reader)

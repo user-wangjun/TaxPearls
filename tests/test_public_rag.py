@@ -58,6 +58,26 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(manifest['retrieval_mode'], 'keyword_only')
         self.assertEqual(manifest['utf8_bytes'], len(node_qa.canonical(payload).encode()))
 
+    def test_planned_core_queries_lead_retrieval_without_losing_raw_facts_or_filters(self):
+        question='我方是境内一般纳税人，背景涉及2025年和2026年，请解释进项税额抵扣的凭证要求。'
+        queries=['进项税额抵扣凭证条件','费用的定义和范围']
+        payload,manifest=rag.retrieve(self.db,question,as_of='2026-02-15',
+            query_plan={'status':'used','queries':queries,'periods':[]})
+        self.assertEqual(rag.semantic.call_args.args[1],' '.join(queries))
+        self.assertIn(question,rag.semantic.call_args.kwargs['queries'])
+        self.assertEqual(payload['question'],question)
+        self.assertEqual(payload['as_of'],'2026-02-15')
+        self.assertEqual(manifest['scope']['date_source'],'user_filter')
+        self.assertIn('credit',[n['clause_id'] for n in payload['nodes']])
+
+    def test_failed_or_empty_plan_keeps_original_question_as_search_fallback(self):
+        question='解释退税申请资料'
+        for plan in [{'status':'fallback','queries':['不应使用的整理']}, {'status':'used','queries':[]}]:
+            with self.subTest(plan=plan):
+                payload,_=rag.retrieve(self.db,question,query_plan=plan)
+                self.assertEqual(rag.semantic.call_args.args[1],question)
+                self.assertEqual(payload['question'],question)
+
     def test_source_check_cost_is_budgeted_without_silently_dropping_checks(self):
         body='\n'.join('不可省略核对：第'+str(i)+'类主体不得享受该项优惠。' for i in range(30))
         self.db.execute("UPDATE Clause SET content=? WHERE clause_id='credit'",(body,))
@@ -117,6 +137,82 @@ class RetrievalTests(unittest.TestCase):
         self.db.execute("UPDATE Clause SET effective_from='2023-07-01' WHERE clause_id='new'")
         historical, _ = rag.retrieve(self.db, '2023年研发费用加计扣除')
         self.assertEqual({n['clause_id'] for n in historical['nodes']}, {'old', 'new'})
+
+    def test_separate_months_exclude_gap_only_versions_but_continuous_span_includes_them(self):
+        self.db.execute("INSERT INTO Clause(clause_id,policy_id,clause_label,sort_index,content,effective_from,"
+                        "effective_to,extraction_status) VALUES('gap','national','gap',0,"
+                        "'合成：研发费用加计扣除的中间版本。','2024-01-01','2024-12-31','parsed')")
+        separate, manifest = rag.retrieve(self.db, '2023年8月和2025年2月的研发费用加计扣除')
+        self.assertEqual(manifest['scope']['periods'], [
+            {'start': '2023-08-01', 'end': '2023-08-31'}, {'start': '2025-02-01', 'end': '2025-02-28'}])
+        self.assertNotIn('gap', [n['clause_id'] for n in separate['nodes']])
+        old = next(n for n in separate['nodes'] if n['clause_id']=='old')
+        self.assertEqual(old['applicable_periods'], [{'start': '2023-08-01', 'end': '2023-08-31'}])
+        continuous, manifest = rag.retrieve(self.db, '从2023年8月至2025年2月的研发费用加计扣除')
+        self.assertEqual(manifest['scope']['periods'], [{'start': '2023-08-01', 'end': '2025-02-28'}])
+        self.assertIn('gap', [n['clause_id'] for n in continuous['nodes']])
+
+    def test_month_precision_leap_year_and_iso_range_are_preserved(self):
+        for question in ['2024年2月至2025年3月', '2024-02到2025-03']:
+            _, as_of, scope = rag.reference_scope(question, '', None)
+            self.assertIsNone(as_of)
+            self.assertEqual(scope['periods'], [{'start': '2024-02-01', 'end': '2025-03-31'}])
+        self.assertEqual(rag.question_periods('2024年2月'), [{'start': '2024-02-01', 'end': '2024-02-29'}])
+
+    def test_numeric_date_separators_normalize_at_question_entry_without_rewriting_text(self):
+        for value in ('2025/12/31', '2025.12.31', '2025 / 12 / 31', '2025-12-31', '2025年12月31日'):
+            with self.subTest(value=value):
+                question = f'按{value}的业务日期找依据'
+                _, as_of, scope = rag.reference_scope(question, '', None)
+                self.assertEqual(as_of, '2025-12-31')
+                self.assertEqual(scope['date_source'], 'question')
+                self.assertIn(value, question)
+        self.assertEqual(rag.question_periods('2025/12/31与2026/01/01'),
+                         [{'start': '2025-12-31', 'end': '2025-12-31'},
+                          {'start': '2026-01-01', 'end': '2026-01-01'}])
+        self.assertEqual(rag.question_periods('2025/12至2026/02'),
+                         [{'start': '2025-12-01', 'end': '2026-02-28'}])
+        self.assertEqual(rag.question_periods('2024/02/29'), [{'start': '2024-02-29', 'end': '2024-02-29'}])
+        self.assertEqual(rag.question_periods('2025/02/30'), [])
+
+    def test_law_effective_year_does_not_become_an_extra_business_period(self):
+        periods = rag.question_periods('比较2025年12月和2026年2月的业务，能只引用2026年才生效的新法吗？')
+        self.assertEqual(periods, [{'start': '2025-12-01', 'end': '2025-12-31'},
+                                   {'start': '2026-02-01', 'end': '2026-02-28'}])
+        self.assertEqual(rag.question_periods('2026年生效的新法如何规定'),
+                         [{'start': '2026-01-01', 'end': '2026-12-31'}])
+
+    def test_relative_year_span_uses_local_year_and_bare_year_range_is_supported(self):
+        from datetime import datetime
+        with patch.object(rag, 'datetime') as clock:
+            clock.now.return_value = datetime(2026, 11, 15)
+            self.assertEqual(rag.question_periods('去年12月至今年2月'),
+                             [{'start': '2025-12-01', 'end': '2026-02-28'}])
+            self.assertEqual(rag.question_periods('前年和本年的处理'),
+                             [{'start': '2024-01-01', 'end': '2024-12-31'},
+                              {'start': '2026-01-01', 'end': '2026-12-31'}])
+        self.assertEqual(rag.question_periods('2025—2026的税务处理'),
+                         [{'start': '2025-01-01', 'end': '2026-12-31'}])
+
+    def test_explicit_filter_overrides_question_span_and_reversed_span_is_rejected(self):
+        payload, manifest = rag.retrieve(self.db, '2023年至2025年的研发费用加计扣除', as_of='2025-06-01')
+        self.assertEqual([n['clause_id'] for n in payload['nodes']], ['new'])
+        self.assertEqual(manifest['scope']['date_source'], 'user_filter')
+        self.assertNotIn('periods', manifest['scope'])
+        with self.assertRaises(HTTPException) as error:
+            rag.retrieve(self.db, '2025年至2023年的研发费用加计扣除')
+        self.assertEqual(error.exception.status_code, 422)
+
+    def test_version_boundaries_not_calendar_years_determine_candidate_groups(self):
+        self.db.execute("UPDATE Clause SET effective_from='2023-01-01',effective_to='2023-06-30' WHERE clause_id='old'")
+        self.db.execute("UPDATE Clause SET effective_from='2023-07-01' WHERE clause_id='new'")
+        policy = dict(self.db.execute("SELECT * FROM Policy WHERE policy_id='national'").fetchone())
+        eligible = {r['clause_id']: (dict(r), policy)
+                    for r in self.db.execute("SELECT * FROM Clause WHERE clause_id IN ('old','new')")}
+        groups = rag.period_candidates(eligible, [{'start': '2023-01-01', 'end': '2023-12-31'}])
+        self.assertEqual(groups, [frozenset({'old'}), frozenset({'new'})])
+        broad = rag.period_candidates(eligible, [{'start': '1000-01-01', 'end': '9000-12-31'}])
+        self.assertEqual(broad, groups)
 
     def test_province_in_question_narrows_public_text_scope(self):
         payload, manifest = rag.retrieve(self.db, '广东省契税相关规定')
@@ -201,6 +297,58 @@ class RetrievalTests(unittest.TestCase):
         self.assertEqual(len([n for n in payload['nodes'] if n['clause_id'] == 'credit']), 1)
         self.assertEqual(manifest['retrieval_mode'], 'hybrid')
 
+    def test_direct_question_evidence_precedes_expansions_under_tight_budget(self):
+        distractors = []
+        for index in range(5):
+            cid = f'expansion-{index}'
+            distractors.append((cid, .85))
+            self.db.execute('INSERT INTO Clause(clause_id,policy_id,clause_label,sort_index,content,extraction_status) '
+                            'VALUES (?,?,?,?,?,?)',
+                            (cid, 'national', cid, index, '合成扩展主题说明。' * 50, 'parsed'))
+        with patch.object(rag, 'subject_queries', return_value=['扩展主题']), \
+             patch.object(rag, 'semantic', return_value={
+                 'status': 'ready', 'hits': [('credit', .9)], 'facet_hits': distractors}):
+            payload, manifest = rag.retrieve(self.db, '解释这笔业务', budget=3000)
+        self.assertEqual(payload['nodes'][0]['clause_id'], 'credit')
+        self.assertEqual(next(n['content'] for n in payload['nodes'] if n['clause_id']=='credit'),
+                         self.db.execute("SELECT content FROM Clause WHERE clause_id='credit'").fetchone()[0])
+        self.assertLessEqual(manifest['utf8_bytes'], 3000)
+
+    def test_unspecified_region_prioritizes_general_text_over_local_guidance(self):
+        with patch.object(rag, 'semantic', return_value={
+                'status': 'ready', 'hits': [('gd-rate', .9), ('credit', .8)]}):
+            general, _ = rag.retrieve(self.db, '解释这笔业务')
+            local, _ = rag.retrieve(self.db, '解释这笔业务', region='CN-GD')
+        self.assertEqual(general['nodes'][0]['clause_id'], 'credit')
+        self.assertEqual(local['nodes'][0]['clause_id'], 'gd-rate')
+
+    def test_cross_period_comparison_does_not_force_named_new_law_first(self):
+        self.db.execute("UPDATE Policy SET title='中华人民共和国演示法' WHERE policy_id='national'")
+        self.db.execute("INSERT INTO Policy(policy_id,title,issuer,region_code,source_url,validity_status) "
+                        "VALUES('prior','合成旧办法','测试','CN','https://example.invalid/prior','unverified')")
+        self.db.execute("UPDATE Clause SET policy_id='prior' WHERE clause_id='old'")
+        with patch.object(rag, 'subject_queries', return_value=[]), \
+             patch.object(rag, 'semantic', return_value={
+                 'status': 'ready', 'hits': [('old', .9), ('new', .8)]}):
+            payload, manifest = rag.retrieve(self.db, '对比2023年和2025年，《演示法》与原规定可以混用吗？')
+        self.assertEqual(manifest['scope']['date_source'], 'question_period')
+        self.assertEqual(payload['nodes'][0]['clause_id'], 'old')
+        self.assertIn('new', [n['clause_id'] for n in payload['nodes']])
+
+    def test_complete_evidence_beyond_twelve_groups_is_kept_when_it_fits(self):
+        hits = []
+        for index in range(14):
+            cid = f'direct-{index:02}'
+            hits.append((cid, .9))
+            self.db.execute('INSERT INTO Clause(clause_id,policy_id,clause_label,sort_index,content,extraction_status) '
+                            'VALUES (?,?,?,?,?,?)',
+                            (cid, 'national', cid, index, f'合成条款{index}：适用条件及例外必须一并核对。', 'parsed'))
+        with patch.object(rag, 'subject_queries', return_value=[]), \
+             patch.object(rag, 'semantic', return_value={'status': 'ready', 'hits': hits}):
+            payload, manifest = rag.retrieve(self.db, '解释这笔业务', budget=48000)
+        self.assertEqual({n['clause_id'] for n in payload['nodes']}, {cid for cid, _ in hits})
+        self.assertLessEqual(manifest['utf8_bytes'], 48000)
+
     def test_short_followup_borrows_question_topic_but_new_topic_does_not(self):
         payload, _ = rag.retrieve(self.db, '能举例吗', ['进项税额抵扣有哪些规定？'])
         self.assertIn('credit', [n['clause_id'] for n in payload['nodes']])
@@ -223,6 +371,7 @@ class RetrievalTests(unittest.TestCase):
         payload, manifest = rag.retrieve(self.db, '2025年1月1日', ['2023年研发费用加计扣除'])
         self.assertEqual([n['clause_id'] for n in payload['nodes']], ['new'])
         self.assertNotIn('period_start', manifest['scope'])
+        self.assertNotIn('periods', manifest['scope'])
         payload, manifest = rag.retrieve(self.db, '研发费用加计扣除', ['广东省2023年契税规定'])
         self.assertEqual({n['clause_id'] for n in payload['nodes']}, {'old', 'new'})
         self.assertEqual(manifest['region'], '')
@@ -257,6 +406,42 @@ class RetrievalTests(unittest.TestCase):
         self.assertNotIn('后续目录内容',chronology['content'])
         self.assertEqual(chronology['content'],original[:chronology['evidence_spans'][0]['source_char_end']])
 
+    def test_optional_material_does_not_consume_required_repeal_evidence_budget(self):
+        hits, originals, repeals = [], set(), set()
+        for index in range(3):
+            prior, later = f'prior-{index}', f'later-{index}'
+            for pid, start, end in [(prior, '2024-01-01', '2025-12-31'), (later, '2026-01-01', None)]:
+                self.db.execute('INSERT INTO Policy(policy_id,title,issuer,region_code,source_url,'
+                                'validity_status,effective_from,effective_to) VALUES (?,?,?,?,?,?,?,?)',
+                                (pid, f'合成资料{pid}', '测试', 'CN', f'https://example.invalid/{pid}',
+                                 'unverified', start, end))
+            original, repeal = f'original-{index}', f'repeal-{index}'
+            originals.add(original)
+            repeals.add(repeal)
+            for cid, pid, body in [(original, prior, '合成历史条件及例外。'),
+                                   (repeal, later, '合成变更：自2026年1月1日起施行，旧办法同时废止。'+'合成施行说明。'*50)]:
+                self.db.execute('INSERT INTO Clause(clause_id,policy_id,clause_label,sort_index,content,'
+                                'extraction_status) VALUES (?,?,?,?,?,?)', (cid, pid, cid, 0, body, 'parsed'))
+            self.db.execute('INSERT INTO Relationship(relationship_id,from_type,from_id,relation_type,'
+                            'to_type,to_id,evidence_clause_id,effective_from,review_status) '
+                            'VALUES (?,?,?,?,?,?,?,?,?)',
+                            (f'change-{index}', 'Policy', later, 'REPEALS', 'Policy', prior,
+                             repeal, '2026-01-01', 'candidate'))
+            hits.append((original, .9))
+        for index in range(13):
+            cid = f'optional-{index}'
+            self.db.execute('INSERT INTO Clause(clause_id,policy_id,clause_label,sort_index,content,'
+                            'extraction_status) VALUES (?,?,?,?,?,?)',
+                            (cid, 'national', cid, index, '合成其他材料说明。'*20, 'parsed'))
+            hits.append((cid, .8))
+        with patch.object(rag, 'subject_queries', return_value=[]), \
+             patch.object(rag, 'semantic', return_value={'status': 'ready', 'hits': hits}):
+            payload, manifest = rag.retrieve(self.db, '结合当时情况说明', as_of='2025-06-01', budget=20000)
+        self.assertTrue(originals | repeals <= {n['clause_id'] for n in payload['nodes']})
+        self.assertTrue(all(n['temporal_role']=='later_change_reference'
+                            for n in payload['nodes'] if n['clause_id'] in repeals))
+        self.assertLessEqual(manifest['utf8_bytes'], 20000)
+
     def test_explicit_tax_topic_does_not_fill_budget_with_another_tax(self):
         self.db.execute("UPDATE Policy SET tax_type='EIT' WHERE policy_id='gd'")
         self.db.execute("UPDATE Clause SET content='增值税纳税登记和纳税申报（另一税种的合成干扰文本）' WHERE clause_id='gd-rate'")
@@ -276,8 +461,77 @@ class RetrievalTests(unittest.TestCase):
             payload,_=rag.retrieve(self.db,'养殖企业的一般纳税人登记依据',as_of='2025-01-01')
         self.assertIn('refund',[n['clause_id'] for n in payload['nodes']])
 
+    def test_employee_gifts_without_tax_or_law_name_find_welfare_evidence(self):
+        self.db.execute("UPDATE Clause SET content='购进并用于集体福利的货物，对应进项税额不得抵扣。' WHERE clause_id='credit'")
+        payload, _ = rag.retrieve(self.db, '公司买了零食送给同事，票上的税能扣掉吗？')
+        self.assertEqual(payload['nodes'][0]['clause_id'], 'credit')
+
+    def test_self_produced_employee_gifts_keep_both_tax_dimensions(self):
+        self.db.execute("UPDATE Clause SET content='购进并用于集体福利的货物，进项税额不得抵扣。' WHERE clause_id='credit'")
+        self.db.execute("UPDATE Clause SET content='将自产货物用于集体福利，视同应税交易。' WHERE clause_id='refund'")
+        payload, _ = rag.retrieve(self.db, '自己做的产品发给员工，和外面买来再发给员工，税务处理一样吗？')
+        self.assertTrue({'credit', 'refund'} <= {n['clause_id'] for n in payload['nodes']})
+
+    def test_deduction_question_prioritizes_deduction_over_invoice_authenticity(self):
+        self.db.execute("UPDATE Clause SET content='进项税额不得从销项税额中抵扣的情形，包括集体福利。' WHERE clause_id='credit'")
+        self.db.execute("UPDATE Clause SET content='发票应如实开具，不得虚开，与实际经营业务不符。' WHERE clause_id='refund'")
+        payload, _ = rag.retrieve(self.db, '拿到了专票就都能抵扣吗？')
+        self.assertEqual(payload['nodes'][0]['clause_id'], 'credit')
+
+    def test_named_law_ranks_a_direct_article_before_other_documents_quoting_it(self):
+        self.db.execute("UPDATE Policy SET title='中华人民共和国演示法' WHERE policy_id='national'")
+        self.db.execute("UPDATE Clause SET content='本法自2026年1月1日起施行。' WHERE clause_id='credit'")
+        self.db.execute("UPDATE Clause SET content='中华人民共和国演示法开始施行后，登记开始实施。' WHERE clause_id='gd-rate'")
+        payload, _ = rag.retrieve(self.db, '《演示法》什么时候开始施行？')
+        self.assertEqual(payload['nodes'][0]['clause_id'], 'credit')
+
+    def test_long_source_does_not_crowd_out_its_complete_relevant_article(self):
+        texts = ['进项税额抵扣，应核对凭证及例外。', '其他事项说明。' * 350]
+        checksum = hashlib.sha256(''.join(texts).encode()).hexdigest()
+        start = 0
+        for cid, text in zip(('credit', 'refund'), texts):
+            end = start + len(text)
+            self.db.execute('UPDATE Clause SET content=?,source_location=? WHERE clause_id=?',
+                            (text, json.dumps({'text_sha256': checksum, 'start_char': start,
+                                               'end_char_exclusive': end}), cid))
+            start = end
+        payload, manifest = rag.retrieve(self.db, '进项税额抵扣', budget=3500)
+        self.assertEqual(payload['nodes'][0]['content'], texts[0])
+        self.assertLessEqual(manifest['utf8_bytes'], 3500)
+
+    def test_unseparated_sales_include_single_transaction_distinction(self):
+        self.db.execute("UPDATE Clause SET content='两项以上应税交易涉及不同税率，未分别核算的从高适用。' WHERE clause_id='credit'")
+        self.db.execute("UPDATE Clause SET content='一项应税交易涉及不同税率，按照主要业务适用税率。' WHERE clause_id='refund'")
+        payload, _ = rag.retrieve(self.db, '分别销售两类商品，没有分别核算销售额，要从高吗？')
+        self.assertTrue({'credit', 'refund'} <= {n['clause_id'] for n in payload['nodes']})
+
 
 class SourceCheckTests(unittest.TestCase):
+    def test_casual_search_terms_preserve_distinct_topics(self):
+        subjects = rag.subject_queries('发工资后请客户吃饭，又拿到专票问进项抵扣；另用商品换设备，价税合计怎么计算？')
+        for concept in ('交际应酬', '工资薪金', '进项税额', '非货币', '价外税'):
+            self.assertTrue(any(concept in subject for subject in subjects), concept)
+        self.assertEqual(len(subjects), len(set(subjects)))
+
+    def test_barter_expansion_does_not_treat_unpaid_cash_sale_as_nonmonetary(self):
+        for question in ('拿商品换设备，没有现金入账', '拿设备抵货款', '以货抵债怎么计税'):
+            self.assertTrue(any('非货币' in subject for subject in rag.subject_queries(question)), question)
+        self.assertFalse(any('非货币' in subject for subject in rag.subject_queries('现金货款还没收到，销售额怎么算？')))
+
+    def test_ordinary_import_does_not_automatically_expand_into_research_exemption(self):
+        ordinary = rag.subject_queries('进口机器用于工厂生产，计税怎么算？')
+        self.assertTrue(any('组成计税价格' in subject for subject in ordinary))
+        self.assertFalse(any('免征' in subject for subject in ordinary))
+        research = rag.subject_queries('教学仪器进口免税和普通进口设备有什么区别？')
+        self.assertTrue(any('组成计税价格' in subject for subject in research))
+        self.assertTrue(any('教学' in subject and '免征' in subject for subject in research))
+
+    def test_separate_year_accounting_does_not_trigger_mixed_rate_expansion(self):
+        self.assertFalse(any('两项以上应税交易' in subject
+                             for subject in rag.subject_queries('分别核算2025年和2026年的销项减进项')))
+        self.assertTrue(any('两项以上应税交易' in subject
+                            for subject in rag.subject_queries('分别核算两种税率的销售额')))
+
     def test_inability_and_waiver_exceptions_remain_visible(self):
         text='第一条 无法取得某材料的，须提交替代证明。\n第二条 符合特殊条件的，无需办理该手续。'
         self.assertEqual(len(rag.source_checks([{'id':'S1','content':text}])),2)
@@ -318,7 +572,7 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
         nodes = [{'id': 'S1', 'label': '合成测试原文', 'content': '合成测试：存在例外。'}]
         return {'nodes': nodes, 'question': '解释'}, {'content_hash': 'test', 'node_ids': ['S1']}
 
-    async def test_omitted_source_exclusion_is_carried_into_final_answer_with_exact_source(self):
+    async def test_source_exclusions_are_preserved_for_expansion_without_extending_model_answer(self):
         payload,manifest=self.package()
         exclusion='第八条 被列为限制对象的主体，不得享受该项优惠。'
         payload['nodes'].append({'id':'S2','content':exclusion,'label':'合成排除条款','temporal_role':'in_scope'})
@@ -332,10 +586,12 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
         final=events[-1]
         self.assertEqual(final['type'],'done')
         self.assertNotIn(exclusion,final['model_answer'])
-        self.assertIn(exclusion,final['answer'])
-        self.assertIn('[S2]',final['answer'])
-        self.assertEqual([c['id'] for c in final['citations']],['S1','S2'])
-        self.assertTrue(final['source_check_coverage']['all_extracted_items_shown'])
+        self.assertEqual(final['answer'],final['model_answer'])
+        self.assertIn(exclusion,[c['text'] for c in final['source_checks']])
+        self.assertEqual([c['id'] for c in final['citations']],['S1'])
+        self.assertIn('S2',[n['id'] for n in final['source_check_sources']])
+        self.assertTrue(final['source_check_coverage']['all_extracted_items_available'])
+        self.assertEqual(final['source_check_coverage']['display'],'collapsed_reference_checklist')
         self.assertEqual(''.join(e['text'] for e in events if e['type']=='delta'),final['answer'])
         self.assertEqual(len(calls),1)
 
@@ -405,6 +661,29 @@ class HarnessTests(unittest.IsolatedAsyncioTestCase):
             with patch.object(node_qa, 'chat_stream', fake):
                 events = [e async for e in rag.answer_events(AISettings(), *self.package(), max_tokens=1024)]
             self.assertEqual(events[-1]['type'], 'error')
+
+    async def test_only_exact_response_format_metadata_is_accepted(self):
+        for extra,accepted in [({'type':'json_object'},True),({'type':'execute'},False),({'command':'read files'},False)]:
+            with self.subTest(extra=extra):
+                async def fake(*a,**kw):
+                    raw=json.dumps({'status':'answerable','citations':['S1'],'summary':'依据','answer':'有例外。[S1]',**extra})
+                    for char in raw:yield char
+                with patch.object(node_qa,'chat_stream',fake):
+                    events=[e async for e in rag.answer_events(AISettings(),*self.package(),max_tokens=1024)]
+                self.assertEqual(events[-1]['type'],'done' if accepted else 'error')
+                if accepted:self.assertNotIn('json_object',events[-1]['answer'])
+
+    async def test_unused_known_citations_are_pruned_but_missing_or_unknown_ids_still_fail(self):
+        for declared,answer,accepted in [(['S1','S2'],'说明[S1]',True),(['S1','S999'],'说明[S1]',False),
+                                        (['S2'],'说明[S1]',False),(['S1'],'说明[S999]',False)]:
+            with self.subTest(declared=declared,answer=answer):
+                payload,manifest=self.package();payload['nodes'].append({'id':'S2','label':'其他原文','content':'一般说明'})
+                async def fake(*a,**kw):
+                    yield json.dumps({'status':'answerable','citations':declared,'summary':'依据','answer':answer})
+                with patch.object(node_qa,'chat_stream',fake):
+                    events=[e async for e in rag.answer_events(AISettings(),payload,manifest,max_tokens=1024)]
+                self.assertEqual(events[-1]['type'],'done' if accepted else 'error')
+                if accepted:self.assertEqual([n['id'] for n in events[-1]['citations']],['S1'])
 
     async def test_known_bare_source_ids_are_linked_without_replaying_or_changing_claims(self):
         payload,manifest=self.package()
@@ -480,6 +759,65 @@ class GenerationPlanTests(unittest.TestCase):
 class EndpointTests(unittest.TestCase):
     setUp = test_node_qa.EndpointTests.setUp
 
+    def test_query_plan_is_used_before_retrieval_without_changing_question_or_answer_effort(self):
+        from webapp import query_planning
+        with module.store.connect() as db:
+            fixtures(db)
+        settings=AISettings(enabled=True,api_key='synthetic',reasoning_effort='max',reasoning_protocol='deepseek')
+        plan={'status':'used','effort':'none','elapsed_seconds':.1,'request_attempted':True,
+              'queries':['进项税额抵扣的条件和凭证'],'periods':[]}
+        seen=[]
+        async def fake(current,messages,**kwargs):
+            payload=json.loads(messages[-1]['content'])
+            seen.append((current,payload))
+            sid=payload['nodes'][0]['id']
+            yield json.dumps({'status':'answerable','citations':[sid],'summary':'','answer':'合成解释。['+sid+']'})
+        with patch('webapp.ai_keys.apply',return_value=settings), \
+             patch('webapp.ai_keys.capability',return_value={'context_window':128000}), \
+             patch.object(query_planning,'plan_query',return_value=plan) as planning, \
+             patch.object(rag,'semantic',return_value={'status':'not_ready','hits':[]}), \
+             patch.object(rag,'retrieve',wraps=rag.retrieve) as retrieve, \
+             patch.object(node_qa,'chat_stream',fake):
+            response=self.client.post('/api/knowledge/rag-ask',json={'question':'进项税额抵扣有哪些条件？'})
+        self.assertEqual(response.status_code,200)
+        planning.assert_called_once()
+        self.assertEqual(planning.call_args.kwargs['reference_time'],retrieve.call_args.kwargs['question_time'])
+        self.assertEqual(retrieve.call_args.kwargs['query_plan'],plan)
+        events=[json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
+        context=next(e for e in events if e['type']=='context')['manifest']
+        self.assertEqual(context['query_planning']['queries'],plan['queries'])
+        self.assertEqual(context['query_planning']['facts'],[])
+        self.assertEqual(context['query_planning']['periods'],[])
+        self.assertEqual(context['question_received_at'],planning.call_args.kwargs['reference_time'].isoformat(timespec='seconds'))
+        self.assertEqual(seen[0][1]['question'],'进项税额抵扣有哪些条件？')
+        self.assertNotIn('facts',seen[0][1])
+        self.assertEqual(seen[0][0].reasoning_effort,'max')
+
+    def test_empty_library_never_sends_question_to_planning_api(self):
+        from webapp import query_planning
+        with patch('webapp.ai_keys.apply',return_value=AISettings(enabled=True,api_key='synthetic')), \
+             patch.object(query_planning,'plan_query') as planning:
+            response=self.client.post('/api/knowledge/rag-ask',json={'question':'进项税额抵扣'})
+        self.assertEqual(response.status_code,200)
+        planning.assert_not_called()
+
+    def test_revoked_session_after_planning_stops_retrieval_and_generation(self):
+        from webapp import query_planning
+        with module.store.connect() as db:
+            fixtures(db)
+        def revoke(*args,**kwargs):
+            with module.store.connect() as db:
+                db.execute("UPDATE users SET active=0 WHERE username='node-admin'")
+            return {'status':'fallback','request_attempted':True}
+        with patch('webapp.ai_keys.apply',return_value=AISettings(enabled=True,api_key='synthetic')), \
+             patch.object(query_planning,'plan_query',side_effect=revoke), \
+             patch.object(rag,'retrieve') as retrieve,patch.object(node_qa,'chat_stream') as generate:
+            response=self.client.post('/api/knowledge/rag-ask',json={'question':'进项税额抵扣'})
+        self.assertEqual(response.status_code,401)
+        retrieve.assert_not_called()
+        generate.assert_not_called()
+        self.assertFalse(module._node_question_active)
+
     def test_endpoint_reserves_actual_combined_generation_budget(self):
         captured=[]
         async def fake(settings,messages,**kw):
@@ -500,8 +838,9 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(manifest['output_reserve'],32768)
         events=[json.loads(line[6:]) for line in response.text.splitlines() if line.startswith('data: ')]
         self.assertNotIn('不得享受',events[-1]['model_answer'])
-        self.assertIn('不得享受',events[-1]['answer'])
-        self.assertTrue(events[-1]['source_check_coverage']['all_extracted_items_shown'])
+        self.assertNotIn('不得享受',events[-1]['answer'])
+        self.assertIn('不得享受',events[-1]['source_checks'][0]['text'])
+        self.assertTrue(events[-1]['source_check_coverage']['all_extracted_items_available'])
 
     def test_rag_rejects_enterprise_and_client_evidence_and_validates_filters(self):
         for extra in [{'node_id': 'rule'}, {'audit_id': 'secret'}, {'task_id': 'secret'}, {'nodes': []},
