@@ -8,7 +8,7 @@
     else ticket = sessionStorage.getItem('tp.feishu.ticket') || '';
   } catch (_) {}
   if (location.hash) history.replaceState(null, '', location.pathname);
-  let timer, reading = false, generation = 0, entryReady = false, terminal = false, webProof = '';
+  let timer, reading = false, generation = 0, entryReady = false, bindingReady = false, terminal = false, webProof = '';
   const show = (id, value) => { el(id).hidden = !value; };
   const say = value => { el('status').textContent = value; };
   const clearTicket = () => { ticket = ''; try { sessionStorage.removeItem('tp.feishu.ticket'); } catch (_) {} };
@@ -50,10 +50,19 @@
     try {
       if (!entryReady) {
         const entry = await api('/api/channels/feishu/entry', undefined, 'GET');
+        if (current !== generation) return;
+        bindingReady = entry.binding_ready;
         el('bot-link').href = entry.url; el('qr').src = '/api/channels/feishu/qr.svg'; entryReady = true;
+        el('intro').textContent = bindingReady ? '用飞书扫一扫打开助手，再点击助手发来的“绑定账户”。' : '用飞书扫一扫或点击链接打开助手。';
+        say(entry.message);
       }
       if (current !== generation) return;
-      show('entry', !ticket);
+      show('entry', !ticket || !bindingReady);
+      if (!bindingReady) {
+        show('login', false); show('account', false); show('bindings', false); show('claim', false); show('waiting', false);
+        say('账号绑定暂不可用，可先扫码或点击链接打开飞书助手。');
+        return;
+      }
       if (!ticket) {
         const user = await api('/api/me', undefined, 'GET');
         if (current !== generation) return;
@@ -79,6 +88,7 @@
     } catch (error) {
       if (current !== generation) return;
       say(error.message);
+      if (!entryReady) el('intro').textContent = '当前无法加载飞书助手入口，请重新读取或联系管理员。';
       if (error.status === 401) { show('account', false); show('login', true); show('claim', false); show('waiting', false); }
       if (error.status === 404 || error.status === 409) { show('claim', false); show('waiting', false); terminal = true; }
     } finally { reading = false; }
@@ -112,6 +122,11 @@
     await api('/api/channels/feishu/cancel', {ticket}); await refresh();
   }));
   el('refresh').addEventListener('click', refresh);
+  el('entry-refresh').addEventListener('click', () => {
+    if (reading) return;
+    entryReady = false; terminal = false; show('entry', false);
+    refresh();
+  });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
   window.addEventListener('pagehide', () => { generation++; clearTimeout(timer); });
   refresh();

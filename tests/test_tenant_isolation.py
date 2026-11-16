@@ -370,7 +370,7 @@ class TenantIsolationTests(unittest.TestCase):
                     json={'format': 'html', 'sha256': '0' * 64}).status_code, expected)
             self.assertEqual(self.client.post('/api/rules/R-001/trial', json={
                 'audit_id': self.audit, 'expected_version': '2.0', 'new_version': '2.1',
-                'logic': {}, 'threshold_basis': 'synthetic test'}).status_code, expected)
+                'logic': {}, 'threshold_basis': 'synthetic test'}).status_code, 403)
 
     def test_platform_same_org_denied_entire_business_route_matrix_before_side_effects(self):
         # Same organization is intentional: tenant filtering alone was insufficient.

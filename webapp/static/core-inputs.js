@@ -24,6 +24,8 @@ async function readCoreCheckStream(response,onEvent) {
 }
 
 function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, policyUI=()=>null, openTaskPanel=()=>{}}) {
+  let linkedTask;
+  try { linkedTask = new URLSearchParams(globalThis.location?.search || "").get("input_task"); } catch (_) {}
   const base = "/api/enterprise/input-tasks";
   let current = null, busy = false, dirty = false, generation = 0, policyCatalog=null;
   let checkFoldScope=null,checkPage=0;const checkFolds=new Map(),CHECK_PAGE_SIZE=5;
@@ -177,38 +179,37 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
   $("coreRegion").addEventListener("change",()=>{regionEdited=true;$("coreRegion").setAttribute("aria-invalid","false");});
   const scopeIds={company_name:"coreCompanyName",tax_no:"coreTaxNo",start_date:"coreStart",end_date:"coreEnd"};
   const rangeKind=$("coreRangeKind"),rangeMonth=$("coreRangeMonth"),rangeYear=$("coreRangeYear"),rangeQuarter=$("coreRangeQuarter");
-  const rangeTrigger=$("coreDateRange"),calendar=$("coreRangeCalendar"),calendarMonth=$("coreCalendarMonth");
-  let calendarYear=0,calendarMonthNumber=0,draftStart="";
+  const rangeTrigger=$("coreDateRange"),calendar=$("coreRangeCalendar");
+  let rangePicker;
   if(!rangeKind.value)rangeKind.value="custom";
   const pad=n=>String(n).padStart(2,"0"),lastDay=(y,m)=>new Date(Date.UTC(y,m,0)).getUTCDate();
   function updateRangeDisplay(){
     const start=$("coreStart").value,end=$("coreEnd").value,custom=rangeKind.value==="custom";
     $("coreDateRangeText").textContent=start||end?`${start||"待选择起始日"} 至 ${end||"待选择终止日"}`:custom?"选择起始和终止日期":"选择上方期间后显示区间";
-    rangeTrigger.setAttribute("aria-readonly",String(!custom));}
-  function closeCalendar(focus=false){calendar.hidden=true;rangeTrigger.setAttribute("aria-expanded","false");draftStart="";if(focus)rangeTrigger.focus?.();}
-  function renderCalendar(){
-    const year=String(calendarYear).padStart(4,"0"),month=pad(calendarMonthNumber),days=$("coreCalendarDays");
-    calendarMonth.value=`${year}-${month}`;days.replaceChildren();
-    const savedStart=$("coreStart").value,savedEnd=$("coreEnd").value;
-    $("coreCalendarHint").textContent=draftStart?`已选 ${draftStart}，请选择终止日期`:savedStart&&savedEnd?`已选 ${savedStart} 至 ${savedEnd}，可重新选择`:"请选择起始日期，再选择终止日期";
-    const first=new Date(0);first.setUTCFullYear(calendarYear,calendarMonthNumber-1,1);
-    for(let i=0;i<(first.getUTCDay()+6)%7;i++){const blank=el("span");blank.setAttribute("aria-hidden","true");days.append(blank);}
-    const start=draftStart||$("coreStart").value,end=draftStart?"":$("coreEnd").value;
-    for(let d=1;d<=lastDay(calendarYear,calendarMonthNumber);d++){
-      const value=`${year}-${month}-${pad(d)}`,selected=value===start||value===end;
-      const day=el("button",selected?"selected":start&&end&&value>start&&value<end?"in-range":"",String(d));day.type="button";
-      day.setAttribute("data-date",value);day.setAttribute("aria-label",value);day.setAttribute("aria-pressed",String(selected));
-      day.onclick=()=>{if(!draftStart){draftStart=value;renderCalendar();days.querySelector?.(`button[data-date="${value}"]`)?.focus();return;}
-        const [from,to]=[draftStart,value].sort();$("coreStart").value=from;$("coreEnd").value=to;writePeriodInputs(from);scopeDirty=true;draftStart="";updateRangeDisplay();renderCalendar();days.querySelector?.(`button[data-date="${value}"]`)?.focus();displayErrors(attempted?validateScope():{});};
-      days.append(day);}}
-  rangeTrigger.onclick=()=>{if(rangeKind.value!=="custom")return;if(!calendar.hidden){closeCalendar();return;}
-    const start=$("coreStart").value,today=new Date();calendarYear=start?Number(start.slice(0,4)):today.getFullYear();calendarMonthNumber=start?Number(start.slice(5,7)):today.getMonth()+1;
-    draftStart="";renderCalendar();calendar.hidden=false;rangeTrigger.setAttribute("aria-expanded","true");calendarMonth.focus?.();};
-  calendarMonth.addEventListener("change",()=>{const [y,m]=calendarMonth.value.split("-").map(Number);if(y>=1&&y<=9999&&m>=1&&m<=12){calendarYear=y;calendarMonthNumber=m;renderCalendar();}});
-  function moveCalendar(offset){const next=(calendarYear-1)*12+calendarMonthNumber-1+offset;if(next<0||next>=9999*12)return;calendarYear=Math.floor(next/12)+1;calendarMonthNumber=next%12+1;renderCalendar();}
-  $("coreCalendarPrev").onclick=()=>moveCalendar(-1);$("coreCalendarNext").onclick=()=>moveCalendar(1);
+    rangeTrigger.setAttribute("aria-readonly",String(!custom));
+  }
+  function closeCalendar(focus=false){rangePicker?.close?.();calendar.hidden=true;rangeTrigger.setAttribute("aria-expanded","false");if(focus)rangeTrigger.focus?.();}
+  rangeTrigger.onclick=()=>{
+    if(rangeKind.value!=="custom")return;
+    if(!calendar.hidden){closeCalendar();return;}
+    calendar.hidden=false;rangeTrigger.setAttribute("aria-expanded","true");
+    $("coreCalendarHint").textContent="先选择开始日期，再选择结束日期";
+    rangePicker ||= TaxPearlsLendar.mount($("coreLendarMount"),{
+      onDraft:value=>{$("coreCalendarHint").textContent=`已选 ${value}，请选择结束日期`;},
+      onComplete:(start,end)=>{
+        $("coreStart").value=start;$("coreEnd").value=end;writePeriodInputs(start);scopeDirty=true;
+        updateRangeDisplay();$("coreCalendarHint").textContent=`已选 ${start} 至 ${end}，可继续调整`;
+        displayErrors(attempted?validateScope():{});
+      }
+    });
+    rangePicker.open($("coreStart").value,$("coreEnd").value,rangeTrigger);
+  };
   $("coreCalendarCancel").onclick=()=>closeCalendar(true);
-  $("coreCalendarClear").onclick=()=>{$("coreStart").value=$("coreEnd").value="";writePeriodInputs("");scopeDirty=true;updateRangeDisplay();closeCalendar(true);displayErrors(attempted?validateScope():{});};
+  $("coreCalendarClear").onclick=()=>{
+    $("coreStart").value=$("coreEnd").value="";writePeriodInputs("");scopeDirty=true;
+    updateRangeDisplay();$("coreCalendarHint").textContent="先选择开始日期，再选择结束日期";
+    rangePicker?.open("","",rangeTrigger);displayErrors(attempted?validateScope():{});
+  };
   calendar.addEventListener("keydown",event=>{if(event.key==="Escape"){event.preventDefault();closeCalendar(true);}});
   document.addEventListener?.("pointerdown",event=>{if(!calendar.hidden&&!$("coreDateRangeField").contains(event.target))closeCalendar();});
   function writePeriodInputs(start){
@@ -1056,7 +1057,7 @@ function createCoreInputs({api, el, $, user, showError, continueCheck=()=>{}, po
     if(p.notices.length){const notes=el("details");notes.append(el("summary","",`来源说明（${p.notices.length}）`));for(const n of p.notices)notes.append(el("p","muted",n.message+(n.source_position?" · "+n.source_position:"")));root.append(notes);}
   }
   async function history(){const owner=user()?.id,ticket=generation,rows=await api(base);if(owner!==user()?.id||ticket!==generation||!enabled())return;const root=$("coreTaskHistory");root.replaceChildren();for(const archived of [false,true]){const group=rows.filter(row=>(row.status==="archived")===archived);if(archived&&!group.length)continue;root.append(el("h3","",archived?"已完成并归档的任务":"继续资料处理任务"));for(const row of group)root.append(button(`${row.task.company_name||"待识别企业"} · ${row.task.start_date||"待确认"} 至 ${row.task.end_date||"待确认"} · ${archived?"已完成并归档":states[row.status]||row.status}`,()=>action(()=>api(base+"/"+row.id))));}}
-  async function refresh(){const active=enabled();if(formOwner!==user()?.id){reset();clearScope();formOwner=user()?.id;}$("coreInputs").hidden=!active;if(active){const owner=user()?.id,ticket=generation;if(policyUI()){const config=await api("/api/enterprise/materials/config");if(owner!==user()?.id||ticket!==generation)return;policyCatalog=config.policy_catalog;}const rows=await api("/api/clients");if(owner!==user()?.id||ticket!==generation||!enabled())return;clients=rows;const selected=$("coreClient").value;$("coreClient").replaceChildren();const empty=el("option","","新企业 / 从文件读取");empty.value="";$("coreClient").append(empty);for(const c of clients){const option=el("option","",`${c.name} · ${c.taxpayer_id}`);option.value=c.id;$("coreClient").append(option);}$("coreClient").value=selected;await history();if(!current){let saved;try{saved=globalThis.sessionStorage?.getItem(resumeKey());}catch{}if(saved)await openTask(saved);}}}
+  async function refresh(){const active=enabled();if(formOwner!==user()?.id){reset();clearScope();formOwner=user()?.id;}$("coreInputs").hidden=!active;if(active){const owner=user()?.id,ticket=generation;if(policyUI()){const config=await api("/api/enterprise/materials/config");if(owner!==user()?.id||ticket!==generation)return;policyCatalog=config.policy_catalog;}const rows=await api("/api/clients");if(owner!==user()?.id||ticket!==generation||!enabled())return;clients=rows;const selected=$("coreClient").value;$("coreClient").replaceChildren();const empty=el("option","","新企业 / 从文件读取");empty.value="";$("coreClient").append(empty);for(const c of clients){const option=el("option","",`${c.name} · ${c.taxpayer_id}`);option.value=c.id;$("coreClient").append(option);}$("coreClient").value=selected;await history();if(!current){if(linkedTask&&/^[0-9a-f]{32}$/.test(linkedTask)){const id=linkedTask;linkedTask=null;await openTask(id);return;}let saved;try{saved=globalThis.sessionStorage?.getItem(resumeKey());}catch{}if(saved)await openTask(saved);}}}
   async function openTask(id){return action(()=>api(base+"/"+encodeURIComponent(id)));}
   let archiveRequest=0;
   async function renderArchived(){

@@ -752,6 +752,25 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
     const failed=ctx.loadGraphRules();calls.shift().reject(new Error('catalog unavailable'));await failed;
     assert.ok(ctx.$('ruleCatalogStatus').textContent.includes('catalog unavailable'));
     assert.equal(ctx.$('ruleList').children.length,0,'Failed refresh must not leave stale enabled controls');
+    for(const role of ['org_admin','accountant','teacher','student']){
+      ctx.currentUser={id:'business',role};
+      ctx.$('ruleAdmin').hidden=false;ctx.$('ruleAdmin').open=true;
+      await ctx.loadGraphRules();ctx.renderGraphRules();
+      ctx.$('btnOpenGraphRules').handlers.click();
+      assert.equal(calls.length,0,'Non-platform roles cannot fetch maintenance data or activate its entry');
+      assert.equal(ctx.$('ruleList').children.length,0);
+      const guard={currentUser:ctx.currentUser,$(){throw Error('Unauthorized editor touched the DOM');}};
+      vm.createContext(guard);
+      vm.runInContext(source.slice(source.indexOf('function openRuleEditor('),source.indexOf('async function loadRuleVersionHistory(')),guard);
+      guard.openRuleEditor({});
+    }
+    const visibility=source.slice(source.indexOf('  const ruleAccess ='),source.indexOf('  ruleCatalogRequest++;',source.indexOf('  const ruleAccess =')));
+    for(const role of ['platform_admin','org_admin','accountant','teacher','student']){
+      const guard={user:{role},isCampusUser:()=>false,$:ctx.$};vm.createContext(guard);vm.runInContext(visibility,guard);
+      assert.equal(ctx.$('ruleAdmin').hidden,role!=='platform_admin');
+      assert.equal(ctx.$('ruleAdminLink').hidden,role!=='platform_admin');
+      assert.equal(ctx.$('ruleAdmin').open,false);
+    }
     const markup=fs.readFileSync('webapp/static/index.html','utf8');
     assert.ok(markup.indexOf('id="ruleAdmin"')>markup.indexOf('id="knowledgePanel"'));
     assert.ok(markup.indexOf('id="ruleAdmin"')<markup.indexOf('id="uploadPanel"'));
@@ -829,6 +848,7 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   const notificationCode = source.slice(source.indexOf("function noticeCurrent("), source.indexOf("let currentRiskChanges"));
   const nodes = new Map();
   const node = () => ({children:[], textContent:"", disabled:false, checked:false,
+    removeAttribute(name){delete this[name];},
     classList:{contains:()=>true}, replaceChildren(){this.children=[];},
     append(...items){this.children.push(...items);}, get childElementCount(){return this.children.length;}});
   const graphNodes=new Map(),graphCalls=[],graphDraws=[],graphTimers=[];
@@ -930,10 +950,13 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   vm.runInContext('graphData={nodes:[],edges:[]};graphFocused=true;graphVisible=new Set();',graphCtx);
   graphCtx.innerWidth=390;graphCtx.layoutGraph(); // empty focused mobile view must not dereference undefined
   const pending = [];
+  const noticeEvents={};let feishuBindings=[],scheduledFeishuRefresh,feishuRefreshDelay;
   const ctx = {currentUser:{id:"user-1",role:"accountant"},
     $:id=>{if(!nodes.has(id)) nodes.set(id,node());return nodes.get(id);}, el:node,
-    document:{querySelectorAll:()=>[]},
-    api:url=>new Promise((resolve,reject)=>pending.push({url,resolve,reject})),
+    document:{querySelectorAll:()=>[],addEventListener:(event,handler)=>noticeEvents[event]=handler},
+    window:{addEventListener:(event,handler)=>noticeEvents[event]=handler},
+    setTimeout:(fn,delay)=>{scheduledFeishuRefresh=fn;feishuRefreshDelay=delay;return 1;},clearTimeout:()=>{scheduledFeishuRefresh=null;},
+    api:url=>url==="/api/channels/feishu/bindings" ? Promise.resolve(feishuBindings) : url==="/api/channels/feishu/entry" ? Promise.resolve({url:"https://applink.feishu.cn/client/bot/open?appId=cli_test",binding_ready:false,message:"账号绑定暂不可用"}) : new Promise((resolve,reject)=>pending.push({url,resolve,reject})),
     renderResult(){}, switchPanel(){}};
   vm.createContext(ctx);
   vm.runInContext('let noticeRequest=0,noticeBusy=false,noticeReady=false,noticeHasEmail=false;'+notificationCode,ctx);
@@ -950,6 +973,71 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   assert.ok(ctx.$("noticeStatus").textContent.includes("current failure"));
   assert.equal(ctx.$("noticeSave").disabled,true);
   const recover = ctx.loadNotifications();resolveLoad(pending.splice(0));await recover;
+  assert.equal(ctx.$("noticeFeishuOpen").href,"https://applink.feishu.cn/client/bot/open?appId=cli_test");
+  assert.equal(ctx.$("noticeFeishuOpen").hidden,false,"Direct bot entry stays available when binding is disabled");
+  ctx.$("noticeFeishuQr").onload();assert.equal(ctx.$("noticeFeishuQrBox").hidden,false);
+  ctx.$("noticeFeishuQr").onerror();assert.equal(ctx.$("noticeFeishuQrBox").hidden,true);
+  assert.equal(ctx.$("noticeFeishuOpen").hidden,false,"QR failure preserves the direct link");
+  const noticeApi=ctx.api;
+  ctx.api=url=>url==="/api/channels/feishu/entry" ? Promise.reject(new Error("助手未配置")) : noticeApi(url);
+  const withoutFeishu=ctx.loadNotifications();resolveLoad(pending.splice(0));await withoutFeishu;
+  assert.equal(ctx.$("noticeSave").disabled,false,"Missing Feishu configuration must not disable email preferences");
+  assert.equal(ctx.$("noticeFeishuOpen").hidden,true);
+  assert.ok(ctx.$("noticeFeishuStatus").textContent.includes("助手未配置"));
+  let finishFeishu;
+  ctx.api=url=>url==="/api/channels/feishu/bindings" ? Promise.resolve([]) : new Promise(resolve=>{finishFeishu=resolve;});
+  const staleFeishu=ctx.loadNoticeFeishu(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  vm.runInContext('noticeRequest++;',ctx);
+  finishFeishu({url:"https://applink.feishu.cn/client/bot/open?appId=cli_old",binding_ready:true});await staleFeishu;
+  assert.equal(ctx.$("noticeFeishuOpen").hidden,true,"Old panel requests must not restore a stale link");
+  ctx.api=noticeApi;
+  await ctx.loadNoticeFeishu(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  ctx.$("noticeFeishuQr").onload();
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,false);
+  assert.equal(typeof scheduledFeishuRefresh,"function","Unbound accounts keep checking while the panel is visible");
+  feishuBindings=[{channel:"feishu",id:"verified-binding"}];
+  // Confirmation can finish after focus has already returned, without another browser event.
+  scheduledFeishuRefresh();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"已绑定飞书账户");
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true,"Successful linking must hide the existing QR");
+  assert.equal(typeof scheduledFeishuRefresh,"function","Bound accounts detect unlinking from Feishu");
+  assert.equal(feishuRefreshDelay,10000,"Bound accounts check less frequently");
+  ctx.$("noticeFeishuQr").onload();
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true,"A late QR load must not reveal the code after binding");
+  assert.ok(ctx.$("noticeFeishuIntro").textContent.includes("已与飞书连接"));
+  assert.ok(!ctx.$("noticeFeishuStatus").textContent.includes("发起绑定"));
+  noticeEvents.focus();scheduledFeishuRefresh();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"已绑定飞书账户","Returning from Feishu must read the actual account binding");
+  assert.equal(ctx.$("noticeFeishuOpen").textContent,"打开飞书助手 →");
+  const bindingReads=[];
+  ctx.api=()=>new Promise(resolve=>bindingReads.push(resolve));
+  const oldBindingRead=ctx.loadNoticeFeishuBinding(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  const latestBindingRead=ctx.loadNoticeFeishuBinding(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  bindingReads[1]([{channel:"feishu"}]);await latestBindingRead;
+  bindingReads[0]([]);await oldBindingRead;
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"已绑定飞书账户","An older unbound read must not overwrite the completed binding");
+  ctx.api=noticeApi;
+  feishuBindings=[];
+  scheduledFeishuRefresh();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"尚未绑定 TaxPearls 账号");
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,false,"Unlinked accounts can scan again");
+  assert.equal(feishuRefreshDelay,3000,"Unbound accounts resume faster confirmation checks");
+  ctx.document.hidden=true;
+  ctx.api=()=>assert.fail("Hidden panels must not poll for binding state");
+  scheduledFeishuRefresh();
+  ctx.document.hidden=false;
+  ctx.api=()=>Promise.reject(new Error("读取失败"));
+  await ctx.loadNoticeFeishuBinding(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  assert.ok(ctx.$("noticeFeishuBindingStatus").textContent.includes("读取失败"),"Read errors must not claim the account is unbound");
+  let completeBindingRead;
+  ctx.api=url=>url==="/api/channels/feishu/bindings" ? new Promise(resolve=>{completeBindingRead=resolve;}) : noticeApi(url);
+  await ctx.loadNoticeFeishu(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  ctx.$("noticeFeishuQr").onload();
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true,"Do not flash a QR before the initial binding read resolves");
+  completeBindingRead([{channel:"feishu"}]);await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true);
+  assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"已绑定飞书账户");
+  ctx.api=noticeApi;
   let finish, writes=0;
   const write = ctx.noticeAction(()=>{writes++;return new Promise(resolve=>{finish=resolve;});});
   await ctx.noticeAction(()=>{writes++;});
@@ -988,6 +1076,11 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   assert.equal(ruleErrors.length,0);
   const save=ruleCtx.submitRuleDraft(true);ruleCalls.shift().resolve({id:"R-002",version:"2.1"});await save;
   assert.equal(shown.length,1);assert.ok(ruleCtx.$("ruleEditorStatus").textContent.includes("已保存"));
+  for(const role of ['org_admin','accountant','teacher','student']){
+    ruleCtx.currentUser={id:'business',role};
+    await ruleCtx.submitRuleDraft(true);await ruleCtx.submitRuleDraft(false);
+    assert.equal(ruleCalls.length,0,'Business roles cannot submit a parameter draft');
+  }
   const uploadNodes=new Map(),uploadCalls=[],reviews=[],uploadErrors=[];
   const uploadCtx={currentUser:{id:'u1'},dz:{style:{}},enterpriseMaterials:{enabled:()=>false},
     $:id=>{if(!uploadNodes.has(id))uploadNodes.set(id,{...node(),style:{},value:'local'});return uploadNodes.get(id);},
@@ -1065,8 +1158,9 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
 (async()=>{
   const source=readConsole(),start=source.indexOf("function renderAdminLogs("),end=source.indexOf("\nasync function loadAdmin()",start);
   const node=(tag,cls="",text="")=>({tag,className:cls,textContent:text,children:[],hidden:false,disabled:false,append(...items){this.children.push(...items);},replaceChildren(...items){this.children=items;}});
-  const root=node("div"),calls=[];let pending=null,fail=false,current=true;
-  const ctx={$:()=>root,el:node,currentUser:{id:"admin",role:"org_admin"},Intl,Date,
+  const root=node("div"),select=node("select"),status=node("p"),calls=[];select.value="";
+  const ctxNodes={logList:root,logCategory:select,logCategoryStatus:status};let pending=null,fail=false,current=true;
+  const ctx={$:id=>ctxNodes[id],el:node,currentUser:{id:"admin",role:"org_admin"},Intl,Date,
     api:async url=>{calls.push(url);if(pending)return await pending;if(fail)throw Error("权限已变化");return {id:"task/id",revision:2,versions:[{revision:2,kind:"edit",created_at:"2026-10-17T13:43:30+00:00",created_by:"admin"}],events:[{action:"view",created_at:"2026-10-17T13:43:30+00:00",actor_id:"admin",revision:2}]};}};
   vm.createContext(ctx);vm.runInContext(source.slice(start,end),ctx);
   const rows=[{target_type:"material_batch",target_id:"task/id",action:"material_edit",created_at:"2026-10-17T13:43:30+00:00"}];
@@ -1089,6 +1183,29 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   assert.match(quotaText,/来源 IP：2001:db8::21/);assert.match(quotaText,/教职工总额度：5 → 6/);
   assert.match(quotaText,/学生总额度：1 → 3/);assert.match(quotaText,/配置版本：1 → 2/);
   assert.match(quotaText,/历史记录未保存完整前后额度及来源 IP/);
+  // Categories cover the loaded history, including records beyond the old 80-row display limit.
+  current=true;pending=null;ctx.currentUser.role="org_admin";
+  const categorized=[...Array.from({length:85},(_,i)=>({action:"login",target_type:"session",target_id:String(i)})),
+    rows[0],{action:"export_report",target_type:"audit"},{action:"trial_rule_parameters",target_type:"audit"},
+    {action:"retrieval_check_requested",target_type:"retrieval_check"},{action:"ai_key_probe",target_type:"ai_key_chat"},
+    {action:"create_assignment",target_type:"assignment"},{action:"update_preferences",target_type:"notification_preferences"},
+    {action:"new_future_action",target_type:"unknown"}];
+  ctx.renderAdminLogs(categorized,()=>current);
+  assert.equal(root.children.length,93);assert.match(status.textContent,/全部分类 93 条/);
+  assert.equal(select.children.find(n=>n.value==="materials").textContent,"企业材料（1）");
+  for(const [value,action]of [["materials","material_edit"],["audit","export_report"],["knowledge","trial_rule_parameters"],
+    ["retrieval","retrieval_check_requested"],["ai","ai_key_probe"],["teaching","create_assignment"],["notifications","update_preferences"],["other","new_future_action"]]){
+    select.value=value;select.onchange();assert.equal(root.children.length,1);assert.ok(all(root).some(n=>n.textContent.includes(action)));
+  }
+  select.value="account";select.onchange();assert.equal(root.children.length,85);
+  select.value="materials";select.onchange();
+  let resolveFiltered;pending=new Promise(done=>{resolveFiltered=done;});const filteredTrace=button().onclick();
+  select.value="account";select.onchange();resolveFiltered({id:"filtered-private-task",revision:1,versions:[],events:[]});await filteredTrace;
+  assert.ok(!all(root).some(n=>n.textContent.includes("filtered-private-task")));
+  ctx.renderAdminLogs(categorized,()=>current);assert.equal(select.value,"account","refresh retains the selected category");
+  ctx.renderAdminLogs([],()=>current);assert.match(status.textContent,/已加载最近 0 条/);assert.equal(root.children[0].textContent,"暂无操作日志。");
+  select.value="materials";ctx.renderAdminLogs([categorized[0]],()=>current);assert.equal(root.children[0].textContent,"该分类暂无操作日志。");
+  current=false;select.value="";select.onchange();assert.equal(root.children[0].textContent,"该分类暂无操作日志。","inactive panels ignore filter events");
   console.log("Admin material trace: on-demand query, close/reopen authorization, failure and stale-session guards passed.");
 })().catch(error=>{console.error(error);process.exitCode=1;});
 
@@ -1436,4 +1553,86 @@ assert.ok(indexMarkup.includes('id="coreInputs"'));
   eligible=true;ctx.lastInteraction=0;ctx.window.requestIdleCallback=undefined;
   ctx.prepareWhenIdle();assert.equal(timers.at(-1).delay,0,'Older browsers retain a task boundary');timers.at(-1).fn();assert.equal(mounts,2);
   console.log('Ocean scheduling: prompt first idle start, input quiet interval and workspace-entry cancellation passed.');
+}
+
+// Calculation display keeps significant digits and never invents a compound result.
+{
+  const source=readConsole(),ctx={};vm.createContext(ctx);
+  vm.runInContext(source.slice(source.indexOf('function calculationParts('),source.indexOf('function findingCalculation(')),ctx);
+  const original='|账面.收入(124,800.000000) − 申报.收入(99,840.000000)| = 24,960.000000；阈值 > 100';
+  const parts=ctx.calculationParts(original);
+  assert.equal(parts.expression+' = '+parts.result+parts.note,original);
+  assert.equal(ctx.formatCalculationText(parts.result),'24,960.00');
+  assert.equal(ctx.formatCalculationText('0.000001 / -0.000000 / 123456789012345678.123400'),
+    '0.000001 / -0.00 / 123,456,789,012,345,678.1234');
+  assert.equal(ctx.formatCalculationText('0.123456 (12.345600%)；版本v2.0'),'0.123456 (12.3456%)；版本v2.0');
+  const compound='[A(10.000000) = 10.000000 → 命中]；且 [B(2.000000) = 2.000000 → 未命中]';
+  assert.equal(ctx.calculationParts(compound).expression,compound);assert.equal(ctx.calculationParts(compound).result,null);
+  const ratio=ctx.calculationParts('收入(1.000000) ÷ 成本(3.000000) = 0.333333；参考 [0.100000, 0.200000]');
+  assert.equal(ratio.result,'0.333333');assert.equal(ratio.note,'；参考 [0.100000, 0.200000]');
+  console.log('Calculation display: exact raw reconstruction, significant digits, large decimals, ratios and compound-condition fallback passed.');
+}
+
+// Baseline navigation uses frozen audits; late or denied reads cannot replace another view.
+(async()=>{
+  const source=readConsole();
+  const code=source.slice(source.indexOf('async function openRiskBaseline('),source.indexOf('$("riskBaseline").onchange'));
+  function setup(){
+    let resolve,reject;const nodes=new Map(),calls=[],errors=[];
+    const classes=()=>{const values=new Set(['active']);return{add(value){values.add(value);},contains(value){return values.has(value);}};};
+    const get=id=>{if(!nodes.has(id))nodes.set(id,{value:'old-filter',hidden:true,classList:classes()});return nodes.get(id);};
+    const target={dataset:{ruleId:'R-002'},classList:classes(),isConnected:true,
+      setAttribute(){},focus(){calls.push('focus');},scrollIntoView(){calls.push('scroll');}};
+    const original={audit_id:'current-case'},pending=new Promise((yes,no)=>{resolve=yes;reject=no;});
+    const ctx={currentUser:{id:'owner'},auditId:'current-case',lastResult:original,snapshotReturn:null,
+      currentRiskChanges:{status:'ready',baseline:{id:'baseline-case'}},riskBaselineOpenRequest:0,latestFindings:[],
+      $:get,document:{querySelectorAll:()=>[target]},requestAnimationFrame:fn=>fn(),
+      api(path){calls.push(path);return pending;},applyFilters(){calls.push('filters');},showError:message=>errors.push(message),
+      renderResult(result){calls.push('render');ctx.auditId=result.audit_id;ctx.latestFindings=result.findings;ctx.currentRiskChanges=null;ctx.snapshotReturn=null;}};
+    vm.createContext(ctx);vm.runInContext(code,ctx);
+    return{ctx,get,calls,errors,resolve,reject,original};
+  }
+  const baseline={audit_id:'baseline-case',findings:[{id:'R-002',status:'pass'}]};
+  const test=setup(),pending=test.ctx.openRiskBaseline('R-002');test.resolve(baseline);await pending;
+  assert.equal(test.calls[0],'/api/audits/baseline-case');
+  assert.equal(test.ctx.snapshotReturn,test.original);assert.equal(test.get('snapshotBack').hidden,false);
+  for(const id of ['filterStatus','filterSeverity','filterCategory','filterTax'])assert.equal(test.get(id).value,'');
+  assert.equal(test.get('passList').classList.contains('open'),true);assert.ok(test.calls.includes('focus'));assert.ok(test.calls.includes('scroll'));
+  for(const change of ['account','audit','comparison','panel']){
+    const stale=setup(),read=stale.ctx.openRiskBaseline('R-002');
+    if(change==='account')stale.ctx.currentUser={id:'another'};
+    if(change==='audit')stale.ctx.auditId='other-case';
+    if(change==='comparison')stale.ctx.currentRiskChanges={status:'ready',baseline:{id:'another-baseline'}};
+    if(change==='panel')stale.get('auditPanel').classList.contains=()=>false;
+    stale.resolve(baseline);await read;assert.ok(!stale.calls.includes('render'),change+' must ignore the old read');
+  }
+  const denied=setup(),read=denied.ctx.openRiskBaseline('R-002');denied.reject(new Error('无权访问该记录'));await read;
+  assert.equal(denied.ctx.auditId,'current-case');assert.equal(denied.errors.length,1);assert.ok(!denied.calls.includes('render'));
+  console.log('Risk baseline navigation: frozen record, finding focus, pass expansion, return entry, denied reads and stale view/account guards passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});
+
+// Vuelendar drafts remain local; only completed or cleared ranges refresh data.
+{
+  const source=fs.readFileSync("webapp/static/workspace.js","utf8");
+  const nodes=new Map();let requests=0,callbacks,mounts=0;const opens=[];
+  const node=()=>({textContent:"",value:"",hidden:true,listeners:{},setAttribute(name,value){this[name]=value;},
+    addEventListener(type,fn){this.listeners[type]=fn;},focus(){}});
+  const get=id=>{if(!nodes.has(id))nodes.set(id,node());return nodes.get(id);};
+  const context={$:get,document:{addEventListener(){}},loadDashboard(){requests++;},
+    TaxPearlsLendar:{mount(target,options){callbacks=options;mounts++;return{open(start,end){opens.push([start,end]);}};}}};
+  vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf("function setupDashboardRange(){"),source.indexOf("async function loadDashboard(")),context);
+  get("dashboardDateRange").onclick();assert.equal(mounts,1);
+  callbacks.onDraft("2026-12-28");assert.equal(requests,0);assert.equal(get("dashboardStart").value,"");
+  callbacks.onComplete("2026-12-28","2027-01-04");assert.equal(requests,1);
+  assert.equal(get("dashboardStart").value,"2026-12-28");assert.equal(get("dashboardEnd").value,"2027-01-04");
+  assert.equal(get("dashboardRangeCalendar").hidden,false);
+  get("dashboardCalendarCancel").onclick();get("dashboardDateRange").onclick();assert.deepEqual(opens.at(-1),["2026-12-28","2027-01-04"]);
+  callbacks.onDraft("2027-01-20");get("dashboardCalendarCancel").onclick();
+  assert.equal(requests,1);assert.equal(get("dashboardStart").value,"2026-12-28");
+  get("dashboardDateRange").onclick();get("dashboardCalendarClear").onclick();
+  assert.equal(requests,2);assert.equal(mounts,1);assert.equal(get("dashboardStart").value,"");assert.equal(get("dashboardEnd").value,"");
+  assert.equal(get("dashboardRangeCalendar").hidden,false);
+  get("dashboardRangeCalendar").listeners.keydown({key:"Escape",preventDefault(){}});assert.equal(get("dashboardRangeCalendar").hidden,true);
+  console.log("Vuelendar integration: lazy mounting, local drafts, range persistence, cancellation and clearing passed.");
 }

@@ -85,7 +85,9 @@ function all(root){return [root,...root.children.flatMap(all)];}
     abort(){this.aborted=true;this.onabort?.();}
   }
   const pageEvents={};
-  const context={document:{createElement:tag=>new Node(tag)},Blob,setTimeout:(fn,ms)=>timeoutAI&&ms===300000?(queueMicrotask(fn),0):setTimeout(fn,ms),clearTimeout,AbortController,console,FormData,XMLHttpRequest:UploadRequest,addEventListener:(event,fn)=>pageEvents[event]=fn};vm.createContext(context);vm.runInContext(fs.readFileSync("webapp/static/core-inputs.js","utf8"),context);
+  let rangeCallbacks;
+  const rangeLibrary={mount(target,callbacks){rangeCallbacks=callbacks;return {open(){}};}};
+  const context={TaxPearlsLendar:rangeLibrary,document:{createElement:tag=>new Node(tag)},Blob,setTimeout:(fn,ms)=>timeoutAI&&ms===300000?(queueMicrotask(fn),0):setTimeout(fn,ms),clearTimeout,AbortController,console,FormData,XMLHttpRequest:UploadRequest,addEventListener:(event,fn)=>pageEvents[event]=fn};vm.createContext(context);vm.runInContext(fs.readFileSync("webapp/static/core-inputs.js","utf8"),context);
   const controller=context.createCoreInputs({api,el:(tag,cls,text)=>{const n=new Node(tag);n.className=cls||"";n.textContent=text||"";return n;},$,user:()=>actor,showError:msg=>errors.push(msg),continueCheck:id=>continued.push(id)});
   await controller.refresh();assert.equal($("coreClient").children.length,2);
   // A task loaded in this session has no in-memory check progress, even if it has saved results.
@@ -116,27 +118,25 @@ function all(root){return [root,...root.children.flatMap(all)];}
   $("coreRangeKind").value="custom";$("coreRangeKind").listeners.change();
   assert.equal($("coreStart").readOnly,false);assert.equal($("coreRangeYearField").hidden,true);
   assert.equal(typeof $("coreDateRange").onclick,"function","custom range opens one shared calendar");
-  const day=value=>all($("coreCalendarDays")).find(n=>n["data-date"]===value);
-  const viewMonth=value=>{$("coreCalendarMonth").value=value;$("coreCalendarMonth").listeners.change();};
   $("coreDateRange").onclick();assert.equal($("coreRangeCalendar").hidden,false);
-  viewMonth("2026-12");day("2026-12-28").onclick();
+  rangeCallbacks.onDraft("2026-12-28");
   assert.equal($("coreStart").value,""); // One click remains an uncommitted draft.
-  viewMonth("2027-01");day("2027-01-04").onclick();
+  rangeCallbacks.onComplete("2026-12-28","2027-01-04");
   assert.equal($("coreStart").value,"2026-12-28");assert.equal($("coreEnd").value,"2027-01-04");
-  assert.equal($("coreRangeCalendar").hidden,false,"completed range stays open until dismissed");assert.equal($("coreDateRange")["aria-expanded"],"true");assert.match($("coreDateRangeText").textContent,/2026-12-28.*2027-01-04/);
-  assert.equal(day("2027-01-04")["aria-pressed"],"true");
-  viewMonth("2026-12");day("2026-12-20").onclick();$("coreCalendarCancel").onclick();
+  assert.equal($("coreRangeCalendar").hidden,false,"completed range stays open until dismissed");
+  assert.equal($("coreDateRange")["aria-expanded"],"true");
+  assert.match($("coreDateRangeText").textContent,/2026-12-28.*2027-01-04/);
+  rangeCallbacks.onDraft("2026-12-20");$("coreCalendarCancel").onclick();
   assert.equal($("coreStart").value,"2026-12-28");assert.equal($("coreEnd").value,"2027-01-04");
-  $("coreDateRange").onclick();viewMonth("2027-01");day("2027-01-20").onclick();day("2027-01-15").onclick();
+  $("coreDateRange").onclick();rangeCallbacks.onComplete("2027-01-15","2027-01-20");
   assert.equal($("coreStart").value,"2027-01-15");assert.equal($("coreEnd").value,"2027-01-20");
-  $("coreCalendarPrev").onclick();assert.equal($("coreCalendarMonth").value,"2026-12");
-  $("coreCalendarNext").onclick();assert.equal($("coreCalendarMonth").value,"2027-01");
-  day("2027-01-15").onclick();day("2027-01-15").onclick();
+  rangeCallbacks.onComplete("2027-01-15","2027-01-15");
   assert.equal($("coreStart").value,"2027-01-15");assert.equal($("coreEnd").value,"2027-01-15");
   assert.equal($("coreRangeCalendar").hidden,false);
   $("coreRangeCalendar").listeners.keydown({key:"Escape",preventDefault(){}});assert.equal($("coreRangeCalendar").hidden,true);
   $("coreDateRange").onclick();$("coreCalendarClear").onclick();
   assert.equal($("coreStart").value,"");assert.equal($("coreEnd").value,"");
+  assert.equal($("coreRangeCalendar").hidden,false,"clear keeps the calendar available for another selection");
   for(const [id,value] of [["coreCompanyName","企业"],["coreTaxNo","91310000123456789A"],["coreStart","2026-01-01"],["coreEnd","2026-01-31"]])$(id).value=value;
   $("coreRegion").value="CN-44";$("coreRegion").listeners.change();
   await $("coreCreateTask").onclick();

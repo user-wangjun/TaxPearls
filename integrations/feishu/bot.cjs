@@ -64,7 +64,7 @@ function createProbe(config, client, { log = console.log, now = Date.now, capaci
     };
   }
 
-  function sendMenu(key, openId, chatId, automatic = false) {
+  function sendMenu(key, openId, chatId, automatic = false, command = 'menu') {
     for (const [key, entry] of seen) if (entry.until <= now() && !entry.inFlight) seen.delete(key);
     for (const [key, entry] of menus) if (entry.until <= now() && !entry.inFlight) menus.delete(key);
     const menuKey = JSON.stringify([chatId, openId]);
@@ -80,7 +80,7 @@ function createProbe(config, client, { log = console.log, now = Date.now, capaci
     menus.set(menuKey, menuEntry);
     // Acknowledge the WebSocket event immediately; HTTP latency must not block it.
     const delivery = Promise.resolve().then(async () => {
-      const content = binding ? await binding.menu(openId, chatId, key) : card(openId, chatId);
+      const content = binding ? await binding.menu(openId, chatId, key, command) : card(openId, chatId);
       const result = await client.im.message.create({
         params: { receive_id_type: 'chat_id' },
         data: {
@@ -109,7 +109,13 @@ function createProbe(config, client, { log = console.log, now = Date.now, capaci
       || message.message_type !== 'text' || !/^oc_[A-Za-z0-9]+$/.test(message.chat_id || '')
       || typeof message.message_id !== 'string' || !message.message_id || message.message_id.length > 256) return {};
     log('[feishu] message_received：已收到私聊文字消息。');
-    return sendMenu(message.message_id, openId, message.chat_id);
+    let command = 'menu';
+    try {
+      const text = JSON.parse(message.content).text?.trim();
+      if (text === '使用帮助') command = 'help';
+      if (text === '绑定状态' || text === '账户状态') command = 'status';
+    } catch { /* Other private text still opens the account entry. */ }
+    return sendMenu(message.message_id, openId, message.chat_id, false, command);
   }
 
   function onConversation(data, first = false) {
@@ -127,6 +133,7 @@ function createProbe(config, client, { log = console.log, now = Date.now, capaci
     const chatId = data?.context?.open_chat_id;
     if (!permitted(data, openId, data?.operator?.tenant_key || data?.tenant_key)) return rejected;
     if (binding && data?.action?.value?.binding_action) return binding.onAction(data);
+    if (binding && data?.action?.value?.task_payload) return binding.onTaskAction(data);
     try {
       const { payload, signature } = data.action.value;
       if (typeof payload !== 'string' || payload.length > 2048 || typeof signature !== 'string') return rejected;
@@ -183,7 +190,7 @@ async function main() {
   const stop = () => { clearInterval(timer); binding?.stop(); ws.close({ force: true }); };
   process.once('SIGINT', stop);
   process.once('SIGTERM', stop);
-  console.log('正在启动飞书联通测试。进入会话自动显示入口；支持私聊文字与本程序的卡片按钮。');
+  console.log(binding ? '正在启动飞书账户与任务服务。支持绑定、任务创建确认和真实任务查询。' : '正在启动飞书联通测试。支持私聊文字与测试卡片按钮。');
   try { await ws.start({ eventDispatcher: dispatcher }); }
   catch { stop(); process.exitCode = 1; console.error('飞书启动失败，请检查本地配置和网络。'); }
 }

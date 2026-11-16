@@ -468,7 +468,7 @@
 
 </style>
 <link rel="stylesheet" href="/university.css?v=student-mobile-integration-20261026-19">
-<link rel="stylesheet" href="/workspace.css?v=20261115-query-process-1">
+<link rel="stylesheet" href="/workspace.css?v=20261116-rag-flow-2">
 <link rel="preload" as="image" href="/auth-ocean-poster-desktop.webp?v=20261006-shape-1" media="(min-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="preload" as="image" href="/auth-ocean-poster-mobile.webp?v=20261006-shape-1" media="(max-aspect-ratio:3/4)" fetchpriority="high">
 <link rel="stylesheet" href="/auth-glass.css?v=20261027-ocean-start-1">
@@ -607,7 +607,17 @@
     </section>
     <section class="panel" id="dashboardPanel">
       <div class="page-head"><div><p class="eyebrow">BUSINESS OVERVIEW</p><h2>工作台</h2><p class="muted">从企业业务数据出发，了解经营表现与税务风险。</p></div><button class="btn pdf" id="dashboardUpload">上传材料 ↗</button></div>
-      <div class="sheet row" id="dashboardFilters"><div class="field"><label for="dashboardCompany">企业</label><select id="dashboardCompany"></select></div><div class="field"><label for="dashboardPeriod">所属期间</label><select id="dashboardPeriod"></select></div><p class="muted" id="dashboardUpdated"></p></div>
+      <div class="sheet row" id="dashboardFilters"><div class="field"><label for="dashboardCompany">企业</label><select id="dashboardCompany"></select></div><div class="field core-range-field" id="dashboardDateRangeField">
+              <label id="dashboardDateRangeLabel" for="dashboardDateRange">所属期间</label>
+              <button id="dashboardDateRange" class="core-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="dashboardRangeCalendar" aria-labelledby="dashboardDateRangeLabel dashboardDateRangeText"><span id="dashboardDateRangeText">全部期间 · 选择起止日期</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg></button>
+              <input id="dashboardStart" type="hidden"><input id="dashboardEnd" type="hidden">
+              <div id="dashboardRangeCalendar" class="core-range-calendar" popover="manual" role="dialog" aria-label="选择所属期间起止日期" hidden>
+                <div class="dashboard-calendar-heading"><strong>选择日期区间</strong><button id="dashboardCalendarCancel" type="button" aria-label="关闭日历">×</button></div>
+                <p id="dashboardCalendarHint" role="status">先选择开始日期，再选择结束日期</p>
+                <div id="dashboardLendarMount"></div>
+                <div class="dashboard-calendar-actions"><button id="dashboardCalendarClear" type="button">清空日期</button><span>自动筛选 · 可继续调整</span></div>
+              </div>
+            </div><p class="muted" id="dashboardUpdated"></p></div>
       <div id="dashboardBody" aria-live="polite"></div>
     </section>
     <section class="panel" id="orgReportPanel">
@@ -715,12 +725,11 @@
               <div class="core-identity-field-heading"><span id="coreDateRangeLabel">检查起止日期</span><div id="corePeriodCandidates" class="core-identity-candidates" hidden></div></div>
               <button id="coreDateRange" class="core-range-trigger" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="coreRangeCalendar" aria-labelledby="coreDateRangeLabel coreDateRangeText"><span id="coreDateRangeText">选择起始和终止日期</span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg></button>
               <input id="coreStart" type="hidden"><input id="coreEnd" type="hidden">
-              <div id="coreRangeCalendar" class="core-range-calendar" role="dialog" aria-label="选择检查起止日期" hidden>
-                <p id="coreCalendarHint" role="status">请选择起始日期</p>
-                <div class="core-calendar-toolbar"><button id="coreCalendarPrev" type="button" aria-label="上个月">‹</button><input id="coreCalendarMonth" type="month" min="0001-01" max="9999-12" aria-label="日历显示月份"><button id="coreCalendarNext" type="button" aria-label="下个月">›</button></div>
-                <div class="core-calendar-week" aria-hidden="true"><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span><span>日</span></div>
-                <div id="coreCalendarDays" class="core-calendar-days" role="group" aria-label="日期"></div>
-                <div class="core-calendar-actions"><button id="coreCalendarClear" type="button">清空</button><button id="coreCalendarCancel" type="button">取消</button></div>
+              <div id="coreRangeCalendar" class="core-range-calendar" popover="manual" role="dialog" aria-label="选择检查起止日期" hidden>
+                <div class="dashboard-calendar-heading"><strong>选择日期区间</strong><button id="coreCalendarCancel" type="button" aria-label="关闭日历">×</button></div>
+                <p id="coreCalendarHint" role="status">先选择开始日期，再选择结束日期</p>
+                <div id="coreLendarMount"></div>
+                <div class="dashboard-calendar-actions"><button id="coreCalendarClear" type="button">清空日期</button><span>选完后可继续调整</span></div>
               </div>
             </div>
           </div>
@@ -949,6 +958,20 @@
         <div class="row"><button class="btn pdf" id="noticeSave" type="button">保存订阅</button><button class="btn re" id="noticeRefresh" type="button">刷新通知</button></div>
         <p class="muted" id="noticeStatus" role="status"></p>
       </div>
+      <div class="sheet notice-feishu" aria-labelledby="noticeFeishuTitle">
+        <div>
+          <h2 id="noticeFeishuTitle">飞书账户</h2>
+          <p><strong id="noticeFeishuBindingStatus" role="status" aria-live="polite">正在核对账号绑定状态……</strong></p>
+          <p class="muted" id="noticeFeishuIntro">正在核对飞书连接……</p>
+          <p><a class="btn pdf" id="noticeFeishuOpen" target="_blank" rel="noopener noreferrer" hidden>在飞书中继续 →</a></p>
+          <p class="muted" id="noticeFeishuStatus" role="status" aria-live="polite">正在读取飞书助手入口……</p>
+          <p class="muted">飞书通知推送尚未开放，绑定账户不会自动开启通知。</p>
+        </div>
+        <figure id="noticeFeishuQrBox" hidden>
+          <img id="noticeFeishuQr" width="192" height="192" alt="用飞书扫一扫打开 TaxPearls 助手">
+          <figcaption class="muted">用飞书扫一扫</figcaption>
+        </figure>
+      </div>
       <div class="sheet" id="noticeRecipientBox" hidden><h2>指定接收人</h2><p class="muted">管理员可指定事件接收人，不能代替本人开启邮件。会计仅接收当前负责客户的通知。</p><div class="data-list" id="noticeRecipients"></div></div>
       <div class="sheet"><h2>最近 100 条通知</h2><p class="muted">“邮件已受理”仅表示服务商接收请求，不代表收件箱送达。失败/未知可在 23 小时内手动重试，累计最多 3 次尝试；超出后请人工核查。</p><div class="data-list" id="noticeList"></div></div>
     </section>
@@ -1063,7 +1086,7 @@
       </div>
       <div class="sheet" id="clientAdmin"><h2>客户（企业）档案</h2><p class="muted">新增或更新本机构客户，并指定负责会计。为避免审计记录成为孤立数据，本阶段不提供删除。</p><div class="row"><div class="field"><label for="clientName">企业名称</label><input id="clientName"></div><div class="field"><label for="clientTaxpayerId">纳税人识别号</label><input id="clientTaxpayerId"></div><div class="field"><label for="clientAccountant">负责会计</label><select id="clientAccountant"><option value="">暂不指派</option></select></div><button class="btn pdf" id="btnCreateClient">保存客户</button></div><div class="data-list" id="clientList"></div></div>
       <div class="sheet" id="ruleAdminLink" hidden><h2>规则维护已整合到知识图谱</h2><p class="muted">在知识图谱统一查看规则依据、计算条件、版本和审核状态。</p><button id="btnOpenGraphRules" type="button">前往图谱规则维护</button></div>
-      <div class="sheet" id="logAdmin"><h2>操作日志</h2><div class="data-list" id="logList"></div></div>
+      <div class="sheet" id="logAdmin"><h2>操作日志</h2><div class="row"><div class="field"><label for="logCategory">日志分类</label><select id="logCategory"><option value="">全部分类</option></select></div><p id="logCategoryStatus" class="muted" role="status" aria-live="polite"></p></div><div class="data-list" id="logList"></div></div>
     </section>
 
   </div>
@@ -1076,7 +1099,7 @@
   </div>
 </footer>
 
-<script defer src="/auth.js?v=20261116-condition-review-1"></script>
+<script defer src="/auth.js?v=20261116-rag-flow-2"></script>
 <script defer src="/auth-glass.js?v=20261027-ocean-start-10"></script>
 <div id="toastStack" aria-live="polite"></div>
 </body>
