@@ -73,9 +73,13 @@ npm.cmd test
 
 官方参考：[长连接](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/event-subscription-guide/long-connection-mode)、[卡片交互示例](https://open.feishu.cn/document/develop-a-card-interactive-bot/explanation-of-example-code)、[官方 Node SDK](https://github.com/larksuite/node-sdk)。
 
-## 可选：启用双向确认账号绑定
+## 可选：启用账号绑定
 
-此版本先支持 TaxPearls 企业管理员和会计。绑定后可通过受鉴权桥接创建和查询资料处理任务，不自动开启风险通知订阅。用户流程：网站扫码打开机器人 → 自动出现绑定链接卡片 → 登录 TaxPearls 并核对账号/机构 → 网站确认 → 原飞书私聊点击确认 → 网站显示绑定成功。
+此版本先支持 TaxPearls 企业管理员和会计。绑定后可通过受鉴权桥接创建和查询资料处理任务，不自动开启风险通知订阅。
+
+网页入口支持：点击「绑定飞书账户」→ 核对当前 TaxPearls 账号和机构 → 前往飞书授权 → 返回网站自动完成绑定 → 打开助手。此流程不需要再到私聊确认。网页绑定需要在网站服务端配置同一机器人的 App Secret，并在飞书开发者后台启用网页应用、开通「获取用户基本信息」（`contact:user.base:readonly`）权限，将 `https://taxpearls.wxtech.site/connect/feishu/callback` 加入安全设置的重定向 URL，发布配置；其他域名使用各自 `PUBLIC_BASE_URL` 加上同一路径。应用可用范围内的账号才能授权，外部及个人账号仍需实际确认应用是否支持授权。
+
+原私聊绑定入口继续可用：打开机器人 → 绑定链接卡片 → 登录 TaxPearls 并核对账号/机构 → 网站确认 → 原飞书私聊点击确认 → 网站显示绑定成功。
 
 ### 两端配置
 
@@ -86,12 +90,17 @@ npm.cmd test
 ```dotenv
 TAXPEARLS_FEISHU_BINDING_ENABLED=1
 TAXPEARLS_FEISHU_APP_ID=同一个机器人应用ID
+TAXPEARLS_FEISHU_APP_SECRET=同一个机器人应用Secret（网页授权绑定需要，仅保存在服务端）
 TAXPEARLS_FEISHU_APP_TENANT_KEY=自建应用所属租户key
 TAXPEARLS_FEISHU_BRIDGE_KEY=独立随机32字节密钥的64位十六进制
 TAXPEARLS_PUBLIC_BASE_URL=https://taxpearls.wxtech.site
 ```
 
 `APP_TENANT_KEY` 是应用所属租户，不能随外部扫码用户的租户变化。网站正常运行所需的 `TAXPEARLS_FIELD_KEY` 等配置仍须保留。
+
+网页授权使用标准 OAuth 授权码和 PKCE S256，state 与原网站登录会话、账号、机构、角色、应用绑定，10 分钟有效且回调只能消费一次；后端换取飞书身份后再次校验账号权限，复用现有绑定记录，不通过邮箱或昵称匹配账号。回调 GET 只返回页面，页面清除地址中的授权参数后向本站 POST 校验，以兼容网站现有 Strict SameSite Cookie。授权码和用户 token 不落库，App Secret 不下发浏览器。服务端、反向代理日志应避免记录回调 URL 查询参数。未配置 Secret 时保留原私聊绑定入口，不将打开机器人视为绑定成功。
+
+官方协议参考：[获取授权码](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code)、[获取用户凭据](https://open.feishu.cn/document/authentication-management/access-token/get-user-access-token)、[获取用户信息](https://open.feishu.cn/document/server-docs/authentication-management/login-state-management/get)。
 
 机器人本目录 `.env`：保留现有 App ID/Secret，增加：
 
