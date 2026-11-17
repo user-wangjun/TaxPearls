@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 from starlette.datastructures import UploadFile
 
+from tests.enterprise_support import PublicKnowledgeTestCase
 from tests.test_materials import accounts, workbook, zip_bytes, COMPANY
 from tests.test_related_graph import graph_workbook
 from src import related_graph, config
@@ -22,7 +23,7 @@ from webapp import app as module, material_batches
 from webapp.storage import Store
 
 
-class EnterpriseMaterialFixture(unittest.TestCase):
+class EnterpriseMaterialFixture(PublicKnowledgeTestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -33,7 +34,8 @@ class EnterpriseMaterialFixture(unittest.TestCase):
         # 并发确认/重检用例多线程同时写任务；哨兵连接让 WAL 的 -wal/-shm 不被
         # "最后一个连接关闭即删除"反复删建，否则 Windows 上偶发 SQLITE_READONLY
         # （生产由 lifespan 的 keepalive 覆盖；close 先于临时目录清理归还句柄）。
-        self.store = Store(Path(self.tmp.name) / 'enterprise.db', keepalive=True)
+        self.store = self.store_with_public_knowledge(
+            Path(self.tmp.name) / 'enterprise.db', module.RULES_DIR, keepalive=True)
         self.addCleanup(self.store.close)
         replacement = patch.object(module, 'store', self.store)
         replacement.start()
