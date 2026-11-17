@@ -11,14 +11,17 @@ import hashlib
 import base64
 import hmac
 import json
+import logging
 import os
 from pathlib import Path
 import re
 import secrets
+import socket
+import ssl
 import time
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request as URLRequest, build_opener, HTTPRedirectHandler
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from fastapi import Cookie, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -32,6 +35,7 @@ LIMIT = 4096
 INTERNAL_PATH = '/api/internal/feishu-binding'
 STATIC = Path(__file__).parent / 'static'
 INVALID = '绑定请求已失效或不可访问，请回到飞书重新发起。'
+logger = logging.getLogger(__name__)
 
 
 def migrate(db):
@@ -146,25 +150,79 @@ class _NoOAuthRedirect(HTTPRedirectHandler):
         return None
 
 
+def _oauth_failure(stage, kind, *, status=None, value=None):
+    # Never echo provider descriptions, bodies, URLs, tokens or exception strings.
+    value = value if isinstance(value, dict) else {}
+    code = str(value.get('code', ''))
+    code = code if re.fullmatch(r'[0-9]{1,10}', code) else ''
+    oauth_error = value.get('error')
+    oauth_error = oauth_error if isinstance(oauth_error, str) and oauth_error in {
+        'invalid_request', 'invalid_client', 'invalid_grant', 'unauthorized_client',
+        'unsupported_grant_type', 'invalid_scope', 'access_denied', 'server_error', 'temporarily_unavailable',
+    } else ''
+    reason = {
+        'timeout': '服务器连接飞书超时，请稍后重新发起授权。',
+        'tls': '服务器与飞书的 HTTPS 证书校验失败，请管理员检查系统证书和代理配置。',
+        'network': '服务器无法连接飞书，请管理员检查出站网络、DNS 和代理配置。',
+        'format': '飞书返回了无法解析的响应，请管理员检查网络代理及上游服务。',
+        'oversized': '飞书响应超过大小限制，请管理员检查上游服务。',
+    }.get(kind, '飞书拒绝了本次请求，请管理员根据错误码核对应用配置。')
+    if oauth_error in {'invalid_client', 'unauthorized_client'} or code in {'20130', '20140'}:
+        reason = '应用身份校验未通过，请核对网站后端的 App ID、App Secret 及飞书后台允许的认证方式。'
+    elif oauth_error == 'invalid_grant':
+        reason = '授权码校验未通过，可能已过期、已使用或与回调地址及 PKCE 校验信息不一致，请重新发起授权。'
+    elif oauth_error == 'invalid_scope':
+        reason = '授权权限未通过校验，请核对用户身份权限是否开通并发布。'
+    details = [f'HTTP {status}'] if status else []
+    if code:
+        details.append('飞书错误码 ' + code)
+    if oauth_error:
+        details.append(oauth_error)
+    label = '换取授权凭据' if stage == 'token' else '读取用户身份'
+    logger.warning('feishu_oauth_failure stage=%s kind=%s http_status=%s provider_code=%s oauth_error=%s',
+                   stage, kind, status or '-', code or '-', oauth_error or '-')
+    return HTTPException(502, '飞书' + label + '失败' + ('（' + '，'.join(details) + '）' if details else '') + '。' + reason)
+
+
 def _oauth_json(url, *, body=None, token=None):
     # Fixed provider URLs, no redirects/retries, credentials never reach browser or logs.
+    stage = 'token' if body is not None else 'user_info'
     headers = {'Accept': 'application/json'}
     if token:
         headers['Authorization'] = 'Bearer ' + token
     if body is not None:
         headers['Content-Type'] = 'application/json'
     request = URLRequest(url, data=json.dumps(body).encode() if body is not None else None, headers=headers)
+    status = None
     try:
-        with build_opener(_NoOAuthRedirect()).open(request, timeout=15) as response:
-            raw = response.read(65537)
-        if len(raw) > 65536:
-            raise ValueError()
+        try:
+            response = build_opener(_NoOAuthRedirect()).open(request, timeout=15)
+        except HTTPError as error:
+            # OAuth failures normally use HTTP 400; their JSON carries the useful code.
+            response = error
+        with response as stream:
+            status = stream.status
+            raw = stream.read(65537)
+    except (socket.timeout, TimeoutError):
+        raise _oauth_failure(stage, 'timeout') from None
+    except ssl.SSLError:
+        raise _oauth_failure(stage, 'tls') from None
+    except URLError as error:
+        kind = 'tls' if isinstance(error.reason, ssl.SSLError) else 'timeout' if isinstance(error.reason, (socket.timeout, TimeoutError)) else 'network'
+        raise _oauth_failure(stage, kind) from None
+    except (OSError, ValueError, HTTPProtocolError):
+        raise _oauth_failure(stage, 'network') from None
+    if len(raw) > 65536:
+        raise _oauth_failure(stage, 'oversized', status=status)
+    try:
         value = json.loads(raw)
-        if not isinstance(value, dict) or value.get('code', 0) != 0 or value.get('error'):
-            raise ValueError()
-        return value
-    except (URLError, OSError, ValueError, HTTPProtocolError):
-        raise HTTPException(502, '飞书授权校验失败，请重新发起；若持续失败，请管理员核对应用权限、凭据和回调配置。') from None
+    except (ValueError, UnicodeError):
+        raise _oauth_failure(stage, 'format', status=status) from None
+    if not isinstance(value, dict):
+        raise _oauth_failure(stage, 'format', status=status)
+    if not 200 <= status < 300 or value.get('code', 0) not in (0, '0') or value.get('error'):
+        raise _oauth_failure(stage, 'provider', status=status, value=value)
+    return value
 
 
 def _oauth_identity(config, code, state):
