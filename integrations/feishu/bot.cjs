@@ -68,16 +68,17 @@ function createProbe(config, client, { log = console.log, now = Date.now, capaci
     for (const [key, entry] of seen) if (entry.until <= now() && !entry.inFlight) seen.delete(key);
     for (const [key, entry] of menus) if (entry.until <= now() && !entry.inFlight) menus.delete(key);
     const menuKey = JSON.stringify([chatId, openId]);
+    const isMenu = !binding || command === 'menu';
     if (automatic && menus.has(menuKey)) return {};
     if (seen.has(key)) return {};
-    if (pending.size >= 100 || seen.size >= capacity || !menus.has(menuKey) && menus.size >= capacity) {
+    if (pending.size >= 100 || seen.size >= capacity || (isMenu && !menus.has(menuKey) && menus.size >= capacity)) {
       log('[feishu] busy：测试队列已满，请稍后重新发消息。');
       return {};
     }
     const entry = { until: now() + MAX_AGE, inFlight: true };
     seen.set(key, entry);
-    const menuEntry = { until: now() + MAX_AGE, inFlight: true };
-    menus.set(menuKey, menuEntry);
+    const menuEntry = isMenu ? { until: entry.until, inFlight: true } : null;
+    if (menuEntry) menus.set(menuKey, menuEntry);
     // Acknowledge the WebSocket event immediately; HTTP latency must not block it.
     const delivery = Promise.resolve().then(async () => {
       const content = binding ? await binding.menu(openId, chatId, key, command) : card(openId, chatId);
@@ -95,7 +96,11 @@ function createProbe(config, client, { log = console.log, now = Date.now, capaci
       seen.delete(key);
       if (menus.get(menuKey) === menuEntry) menus.delete(menuKey);
       log('[feishu] delivery_failed：卡片发送失败；请检查发送权限和网络后重新发消息。');
-    }).finally(() => { entry.inFlight = false; menuEntry.inFlight = false; pending.delete(delivery); });
+    }).finally(() => {
+      entry.inFlight = false;
+      if (menuEntry) menuEntry.inFlight = false;
+      pending.delete(delivery);
+    });
     pending.add(delivery);
     return {};
   }

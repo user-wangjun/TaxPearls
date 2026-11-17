@@ -61,6 +61,19 @@ test('entering a conversation sends the menu without a text message', async () =
   assert.match(card.elements[0].content, /请直接选择/);
   assert.equal((await dispatch(f, click(card.elements[1].actions[0].value))).toast.type, 'success');
 });
+test('account status and help do not suppress an automatic binding menu', async () => {
+  for (const label of ['账户状态', '使用帮助']) {
+    const f = fixture({ binding: { menu: async (_subject, _chat, _id, command) => ({ command }) } });
+    await dispatch(f, message({ content: JSON.stringify({ text: label }) }));
+    await f.drain();
+    await dispatch(f, entered());
+    await f.drain();
+    await dispatch(f, entered('visit_2'));
+    await f.drain();
+    assert.equal(f.calls.length, 2);
+    assert.equal(JSON.parse(f.calls[1].data.content).command, 'menu');
+  }
+});
 test('first creation and repeated enter events share the same automatic menu suppression', async () => {
   const f = fixture();
   await Promise.all([dispatch(f, firstConversation()), dispatch(f, entered()), dispatch(f, entered('visit_2'))]);
