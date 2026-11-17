@@ -226,6 +226,15 @@ with Path(".env").open("x", encoding="utf-8") as target:
 
 ### 3. 启动与首次使用
 
+需要本地语义检索时，在同一 Python 环境安装可选依赖并准备固定版本的微调模型：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements-knowledge.txt
+.\.venv\Scripts\python.exe scripts/prepare_kg_model.py
+```
+
+模型从本仓库 GitHub Release 下载，包含完整权重和校准配置；Git 拉取不含权重。已有其他模型时会保留原文件并提示另选目录。自定义目录、离线安装和原版模型对照见[本地检索安装说明](docs/知识图谱混合检索与材料包.md#依赖与复现)。
+
 ```powershell
 .\.venv\Scripts\python.exe -m webapp --port 8000
 ```

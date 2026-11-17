@@ -7,6 +7,7 @@ from pathlib import Path
 import sys
 import tempfile
 from urllib.request import urlopen
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -19,9 +20,88 @@ FILES = {
     "tokenizer.json": None,
     "config.json": None,
 }
+RELEASE = "retrieval-model-20261117-v1"
+ASSET = "taxpearls-bge-small-zh-v1.5-fp32-20261117-v1.zip"
+MODEL_URL = f"https://github.com/user-wangjun/TaxPearls/releases/download/{RELEASE}/{ASSET}"
+ARCHIVE_SHA256 = "be368f9ba0541f1c055dfbfc38a89c560ff34cfcd9384dc63bd6be46b9efa4ba"
+MANIFEST_SHA256 = "78d0ddf521869e06ca500eb5b7ffa6e55970c60b475ddff0389f0391a58204cd"
+LICENSE_SHA256 = "587a673933425dbc36ec61268d3b954051b2d3ef3c9b322ede357976055ffdd5"
+PACKAGE_FILES = frozenset({"manifest.json", "config.json", "tokenizer.json", "tokenizer_config.json",
+                           "UPSTREAM_README.md", "LICENSE", "onnx/model_quantized.onnx"})
+MAX_PACKAGE_BYTES = 128 * 1024 * 1024
 
 
-def prepare(destination):
+def checksum(path):
+    with Path(path).open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def verify_install(directory):
+    """Verify the pinned manifest, calibration and every model payload without loading ONNX."""
+    from src.kg_retrieval.semantic_search import score_calibration
+    directory = Path(directory)
+    if checksum(directory / "manifest.json") != MANIFEST_SHA256:
+        raise ValueError("模型 manifest 与固定版本不一致。")
+    manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+    if set(manifest["files"]) != PACKAGE_FILES - {"manifest.json", "LICENSE"}:
+        raise ValueError("模型文件清单与固定版本不一致。")
+    if score_calibration(manifest) == (1., 0.):
+        raise ValueError("微调模型缺少分数校准配置。")
+    for name, expected in {**manifest["files"], "LICENSE": LICENSE_SHA256}.items():
+        path = (directory / name).resolve()
+        if not path.is_relative_to(directory.resolve()) or checksum(path) != expected:
+            raise ValueError(f"模型文件校验失败：{name}")
+    return manifest
+
+
+def prepare(destination, archive=None):
+    """Install the released fine-tuned model, or verify an existing identical installation."""
+    destination = Path(destination).resolve()
+    if destination.exists():
+        try:
+            manifest = verify_install(destination)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise FileExistsError("目标目录已有其他或不完整的模型，不覆盖；请用 --destination 指定新目录，"
+                                  "并将 TAXPEARLS_KG_MODEL_DIR 设置为该目录。") from exc
+        print(f"verified {RELEASE}: {destination}", flush=True)
+        return manifest
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Staging beside the destination keeps installation on one filesystem.
+    with tempfile.TemporaryDirectory(dir=destination.parent, prefix=".taxpearls-model-") as temporary:
+        temporary = Path(temporary)
+        source = Path(archive) if archive is not None else temporary / ASSET
+        if archive is None:
+            print(f"downloading {MODEL_URL}", flush=True)
+            with urlopen(MODEL_URL, timeout=60) as response, source.open("xb") as stream:
+                size = 0
+                while chunk := response.read(1024 * 1024):
+                    size += len(chunk)
+                    if size > MAX_PACKAGE_BYTES:
+                        raise ValueError("模型下载超出预期大小。")
+                    stream.write(chunk)
+        if checksum(source) != ARCHIVE_SHA256:
+            raise ValueError("模型压缩包 SHA-256 不匹配，未安装。")
+        staged = temporary / "model"
+        staged.mkdir()
+        with zipfile.ZipFile(source) as package:
+            entries = package.infolist()
+            if (len(entries) != len(PACKAGE_FILES) or {item.filename for item in entries} != PACKAGE_FILES
+                    or sum(item.file_size for item in entries) > MAX_PACKAGE_BYTES):
+                raise ValueError("模型压缩包文件清单或大小不符合固定版本。")
+            # Only fixed names are written; never extract arbitrary archive paths.
+            for name in sorted(PACKAGE_FILES):
+                path = staged / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(package.read(name))
+        manifest = verify_install(staged)
+        if destination.exists():
+            raise FileExistsError("安装期间目标目录被创建，未覆盖。")
+        staged.rename(destination)
+    print(f"installed {RELEASE}: {destination}", flush=True)
+    return manifest
+
+
+def prepare_upstream(destination):
     destination = Path(destination).resolve()
     manifest = {"model_id": "BAAI/bge-small-zh-v1.5", "upstream_revision": UPSTREAM_REVISION,
                 "onnx_repository": REPO, "revision": REVISION, "license": "MIT", "pooling": "cls",
@@ -62,8 +142,16 @@ def main():
     from src.kg_retrieval.semantic_search import default_model_dir
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--destination", type=Path, default=default_model_dir())
+    parser.add_argument("--variant", choices=("taxpearls", "upstream"), default="taxpearls",
+                        help="taxpearls: 固定微调版本（默认）；upstream: 原版 BGE 对照模型")
+    parser.add_argument("--archive", type=Path, help="离线安装已下载的微调模型 ZIP，仍校验固定 SHA-256")
     args = parser.parse_args()
-    prepare(args.destination)
+    if args.variant == "upstream":
+        if args.archive is not None:
+            parser.error("--archive 仅用于 taxpearls 微调版本")
+        prepare_upstream(args.destination)
+    else:
+        prepare(args.destination, archive=args.archive)
     print(str(args.destination.resolve()))
 
 
