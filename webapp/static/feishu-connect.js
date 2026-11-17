@@ -72,14 +72,18 @@
       if (oauthResult && !callbackHandled) {
         callbackHandled = true;
         if (!oauthResult.state) throw new Error('飞书授权缺少校验信息，请重新发起绑定。');
-        say('正在验证飞书授权并建立绑定…');
+        say('正在验证飞书授权并建立绑定，请稍候；网络较慢时可能需要几分钟，请勿重复授权或刷新页面…');
         const result = await api('/api/channels/feishu/oauth/complete', oauthResult);
         if (current !== generation) return;
         if (result.state !== 'completed') {
           callbackMessage = '已取消飞书授权，尚未建立绑定。可点击下方按钮重新授权。';
         } else {
-          clearTicket(); show('success', true);
-          say('飞书绑定成功。');
+          clearTicket(); show('success', true); show('oauth', false);
+          el('success-bot').href = result.url;
+          el('intro').textContent = '你的飞书账户已与 TaxPearls 账号连接。';
+          say('飞书绑定成功，正在打开助手；如浏览器询问，请选择“打开飞书”。');
+          location.assign(result.url);
+          return;
         }
       }
       if (!ticket) {

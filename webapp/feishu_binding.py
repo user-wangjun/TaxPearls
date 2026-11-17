@@ -31,6 +31,7 @@ from webapp import channel_bindings as bindings, members
 from webapp.access import AccessDenied
 
 TTL = 600
+OAUTH_HTTP_TIMEOUT = 600
 LIMIT = 4096
 INTERNAL_PATH = '/api/internal/feishu-binding'
 STATIC = Path(__file__).parent / 'static'
@@ -196,7 +197,7 @@ def _oauth_json(url, *, body=None, token=None):
     status = None
     try:
         try:
-            response = build_opener(_NoOAuthRedirect()).open(request, timeout=15)
+            response = build_opener(_NoOAuthRedirect()).open(request, timeout=OAUTH_HTTP_TIMEOUT)
         except HTTPError as error:
             # OAuth failures normally use HTTP 400; their JSON carries the useful code.
             response = error

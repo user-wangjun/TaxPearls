@@ -7,9 +7,9 @@
 <section id="entry" hidden><div class="qr-frame"><img id="qr" width="240" height="240" alt="用飞书扫描，打开 TaxPearls 助手"></div><div class="entry-side"><p class="entry-link"><a id="bot-link" href="#">在飞书中打开助手</a></p><p class="muted">手机用飞书扫一扫；电脑可点击链接。打开会话不会自动绑定，绑定需网站与原飞书私聊两端确认。</p></div></section>
 <section id="login" hidden><h2>登录税海拾珠</h2><p class="muted">登录你要绑定的企业账号，继续连接飞书助手。</p><form id="login-form"><label>邮箱或用户名<input id="username" autocomplete="username" maxlength="254" required></label><label>密码<input id="password" type="password" autocomplete="current-password" required></label><button type="submit">登录</button></form></section>
 <section id="account" hidden><h2>当前 TaxPearls 账号</h2><dl><dt>账号</dt><dd id="account-name"></dd><dt>姓名</dt><dd id="account-display"></dd><dt>机构</dt><dd id="account-org"></dd></dl><button class="secondary" id="switch" type="button">切换账号</button></section>
-<section id="oauth" hidden><h2>授权连接飞书</h2><p>将飞书账户绑定到上方 TaxPearls 账号。完成飞书授权后自动返回此页，无需再到机器人私聊确认。</p><button id="oauth-start" type="button">确认账号并前往飞书授权</button></section>
+<section id="oauth" hidden><h2>授权连接飞书</h2><p>将飞书账户绑定到上方 TaxPearls 账号。授权后返回网站完成绑定，并自动打开飞书助手，无需再到机器人私聊确认。</p><button id="oauth-start" type="button">确认账号并前往飞书授权</button></section>
 <p class="retry-row"><a id="oauth-retry" href="/connect/feishu" hidden>重新发起飞书绑定</a></p>
-<section id="success" hidden><h2>飞书绑定成功</h2><p>现在可以打开助手创建或查看任务。</p><a id="success-bot" class="primary-link" href="#">打开飞书助手 →</a><p><a href="/">返回 TaxPearls</a></p></section>
+<section id="success" hidden><h2>飞书绑定成功</h2><p>如果飞书未自动打开，请点击下方按钮；浏览器询问时选择“打开飞书”。</p><a id="success-bot" class="primary-link" href="#">打开飞书助手 →</a><p><a href="/">返回 TaxPearls</a></p></section>
 <section id="claim" hidden><h2>确认绑定</h2><p>确认后，请回到原飞书私聊，再点击“确认绑定”。两边确认后才会生效。</p><button id="confirm" type="button">使用当前账号继续绑定</button></section>
 <section id="waiting" hidden><h2>等待飞书确认</h2><p>请回到原来的飞书私聊，核对账号提示后点击“确认绑定”。</p><button id="cancel" class="secondary" type="button">取消本次绑定</button><button id="refresh" class="secondary" type="button">刷新状态</button></section>
 <section id="bindings" hidden><h2>已连接的账户</h2><div id="binding-list"></div></section>
