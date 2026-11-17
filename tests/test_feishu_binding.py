@@ -4,6 +4,7 @@ from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import hmac
+import io
 import json
 import os
 from pathlib import Path
@@ -239,6 +240,7 @@ class FeishuBindingTests(unittest.TestCase):
         from urllib.error import URLError
         for value in (b'not-json', b'[]', b'{"error":"bad-secret"}', b'{"code":123,"msg":"bad-secret"}', b'x'*65537):
             with self.subTest(value=value[:40]), patch.object(linking, 'build_opener') as opener:
+                opener.return_value.open.return_value.__enter__.return_value.status = 200
                 opener.return_value.open.return_value.__enter__.return_value.read.return_value = value
                 with self.assertRaises(HTTPException) as error:
                     linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'client_secret':'bad-secret'})
@@ -246,6 +248,7 @@ class FeishuBindingTests(unittest.TestCase):
                 self.assertEqual(error.exception.status_code, 502)
         with patch.object(linking, 'build_opener') as opener:
             response = opener.return_value.open.return_value.__enter__.return_value
+            response.status = 200
             response.read.return_value = b'{"access_token":"token"}'
             self.assertEqual(linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'client_secret':'secret'}), {'access_token':'token'})
             self.assertIsInstance(opener.call_args.args[0], linking._NoOAuthRedirect)
@@ -256,6 +259,57 @@ class FeishuBindingTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as error:
                 linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token')
             self.assertNotIn('contains-sensitive-secret', error.exception.detail)
+
+    def test_oauth_http_error_retains_safe_code_stage_and_category_without_secrets(self):
+        from fastapi import HTTPException
+        from urllib.error import HTTPError
+        secret = 'do-not-log-client-secret-or-token'
+        payload = {'code':20130, 'error':'invalid_client', 'error_description':secret, 'access_token':secret}
+        failure = HTTPError('https://accounts.feishu.cn/oauth/v3/token?secret='+secret, 400, secret, {}, io.BytesIO(json.dumps(payload).encode()))
+        with patch.object(linking, 'build_opener') as opener, self.assertLogs(linking.logger, level='WARNING') as logs:
+            opener.return_value.open.side_effect = failure
+            with self.assertRaises(HTTPException) as result:
+                linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'client_secret':secret})
+        self.assertEqual(result.exception.status_code, 502)
+        self.assertIn('换取授权凭据', result.exception.detail)
+        self.assertIn('HTTP 400', result.exception.detail)
+        self.assertIn('20130', result.exception.detail)
+        self.assertIn('invalid_client', result.exception.detail)
+        self.assertIn('App Secret', result.exception.detail)
+        self.assertIn('stage=token', logs.output[0])
+        self.assertNotIn(secret, result.exception.detail + ''.join(logs.output))
+        self.assertTrue(failure.closed)
+
+    def test_oauth_user_info_and_network_failures_have_distinct_safe_diagnostics(self):
+        from fastapi import HTTPException
+        from urllib.error import URLError
+        import ssl
+        for source, expected in ((TimeoutError('private-value'), '超时'),
+                                 (URLError(ssl.SSLError('private-value')), '证书'),
+                                 (URLError('private-value'), '出站网络')):
+            with self.subTest(expected=expected), patch.object(linking, 'build_opener') as opener, self.assertLogs(linking.logger, level='WARNING') as logs:
+                opener.return_value.open.side_effect = source
+                with self.assertRaises(HTTPException) as result:
+                    linking._oauth_json('https://open.feishu.cn/open-apis/authen/v1/user_info', token='private-value')
+                self.assertIn('读取用户身份', result.exception.detail)
+                self.assertIn(expected, result.exception.detail)
+                self.assertNotIn('private-value', result.exception.detail + ''.join(logs.output))
+
+    def test_oauth_grant_errors_and_untrusted_provider_text_are_safely_reported(self):
+        from fastapi import HTTPException
+        for value in ({'code':20003, 'error':'invalid_grant', 'msg':'private-value'},
+                      {'code':'private-value','error':['private-value']},
+                      {'error':'private-value'}):
+            with self.subTest(value=value), patch.object(linking, 'build_opener') as opener, self.assertLogs(linking.logger, level='WARNING') as logs:
+                response = opener.return_value.open.return_value.__enter__.return_value
+                response.status = 400
+                response.read.return_value = json.dumps(value).encode()
+                with self.assertRaises(HTTPException) as result:
+                    linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'code':'private-value'})
+                self.assertNotIn('private-value', result.exception.detail + ''.join(logs.output))
+                if value.get('code') == 20003:
+                    self.assertIn('20003', result.exception.detail)
+                    self.assertIn('PKCE', result.exception.detail)
 
     def test_oauth_missing_user_identity_and_nonenterprise_roles_cannot_bind(self):
         with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}):

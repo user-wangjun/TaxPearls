@@ -102,6 +102,8 @@ TAXPEARLS_PUBLIC_BASE_URL=https://taxpearls.wxtech.site
 
 官方协议参考：[获取授权码](https://open.feishu.cn/document/authentication-management/access-token/obtain-oauth-code)、[获取用户凭据](https://open.feishu.cn/document/authentication-management/access-token/get-user-access-token)、[获取用户信息](https://open.feishu.cn/document/server-docs/authentication-management/login-state-management/get)。
 
+授权回到网站后失败时，页面会区分「换取授权凭据」与「读取用户身份」，显示飞书返回的 HTTP 状态及数字错误码。`invalid_client` / `20130` / `20140` 需核对网站后端的 App ID、App Secret 和应用允许的认证方式；`invalid_grant` 需重新授权，并核对授权码、回调地址与 PKCE 信息。网络超时、证书和 DNS/代理连接问题单独提示。服务器以 `feishu_oauth_failure` 记录相同的阶段及错误分类，不记录授权码、token、密钥或飞书原始错误描述。权限、回调和凭据的实际原因仍以本次线上返回为准。
+
 机器人本目录 `.env`：保留现有 App ID/Secret，增加：
 
 ```dotenv
