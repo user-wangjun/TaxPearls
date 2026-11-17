@@ -396,8 +396,9 @@ def semantic(db, query, eligible, *, periods=(), queries=()):
                             if row['content_hash'] != digest([clause['content'], clause.get('version', '1')]):
                                 continue
                             seen.add(row['clause_id'])
-                            if float(score) >= .60:
-                                current.append((row['clause_id'], float(score)))
+                            relevance = semantic_search.calibrated_score(model, score)
+                            if relevance >= .60:
+                                current.append((row['clause_id'], relevance))
                             if len(current) >= 20:
                                 break
                     groups.append(current)

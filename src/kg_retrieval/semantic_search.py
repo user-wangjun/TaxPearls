@@ -2,6 +2,7 @@
 from functools import lru_cache
 import hashlib
 import json
+import math
 import os
 import re
 from pathlib import Path
@@ -11,6 +12,31 @@ from .common import candidate, clause_record, digest
 from .passages import VERSION
 
 _LOCK = RLock()
+
+
+def score_calibration(manifest):
+    """Optional monotonic mapping to the reference model's relevance score space."""
+    calibration = manifest.get('score_calibration')
+    if calibration is None:
+        return 1.0, 0.0
+    if (not isinstance(calibration, dict) or type(calibration.get('version')) is not int
+            or calibration['version'] != 1):
+        raise ValueError('语义分数校准配置无效。')
+    scale, offset = calibration.get('scale'), calibration.get('offset')
+    if (type(scale) not in (int, float) or type(offset) not in (int, float)
+            or not math.isfinite(scale) or not math.isfinite(offset)
+            or not 0 < scale <= 2 or not -1 <= offset <= 1
+            or not calibration.get('weights_sha256')
+            or calibration['weights_sha256'] != manifest.get('files', {}).get('onnx/model_quantized.onnx')):
+        raise ValueError('语义分数校准与模型不匹配。')
+    return float(scale), float(offset)
+
+
+def calibrated_score(model, raw_score):
+    if not math.isfinite(float(raw_score)):
+        raise ValueError('语义分数不是有限数值。')
+    scale, offset = getattr(model, 'score_calibration', (1.0, 0.0))
+    return max(-1.0, min(1.0, float(raw_score) * scale + offset))
 
 
 def default_model_dir():
@@ -51,6 +77,7 @@ class LocalEncoder:
             if not file.is_relative_to(directory) or hashlib.sha256(file.read_bytes()).hexdigest() != checksum:
                 raise ValueError("本地模型完整性检查失败。")
         self.manifest = manifest
+        self.score_calibration = score_calibration(manifest)
         self.fingerprint = digest(manifest)
         self.tokenizer = Tokenizer.from_file(str(directory / "tokenizer.json"))
         self.tokenizer.no_truncation()
@@ -221,6 +248,8 @@ def search(db, query, *, limit=20, directory=None):
         take = min(index.ntotal, take * 2)
     hits, seen = [], {}
     for score, identifier in zip(scores[0], identifiers[0]):
+        raw_score = float(score)
+        score = calibrated_score(model, raw_score)
         row = mapping.get(int(identifier))
         if not row:
             continue
@@ -230,11 +259,15 @@ def search(db, query, *, limit=20, directory=None):
                 continue
             clause, policy = clause_record(db, cid)
             hit = candidate(clause, policy, "semantic", score=float(score),
-                            reason={"model_fingerprint": model.fingerprint, "chunk_index": row["chunk_index"], 'spans': []})
+                            reason={"model_fingerprint": model.fingerprint, "chunk_index": row["chunk_index"],
+                                    'raw_score': raw_score, 'spans': []})
             seen[cid] = (hit, hashlib.sha256(clause['content'].encode()).hexdigest())
             hits.append(hit)
         hit, checksum = seen[cid]
-        if float(score) >= max(.60, hit['score'] - .06) and row['source_char_start'] is not None:
+        # Provenance belongs to retrieved candidates even when they are later
+        # rejected by the relevance gate. Do not erase low-score source anchors.
+        if score >= hit['score'] - .06 and row['source_char_start'] is not None:
             hit['reason']['spans'].append({'source_char_start': row['source_char_start'],
-                'source_char_end': row['source_char_end'], 'original_text_sha256': checksum, 'score': float(score)})
+                'source_char_end': row['source_char_end'], 'original_text_sha256': checksum,
+                'score': float(score), 'raw_score': raw_score})
     return {"status": "ready", "hits": hits, "index_version": version, "model_fingerprint": model.fingerprint, **update}
