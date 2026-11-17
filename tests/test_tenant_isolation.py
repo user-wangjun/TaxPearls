@@ -18,7 +18,7 @@ from src.settings import AISettings
 from webapp import app as module
 from webapp.access import AccessDenied
 from webapp.storage import Store
-from tests.enterprise_support import audit as enterprise_audit, confirm, material_key
+from tests.enterprise_support import PublicKnowledgeTestCase, audit as enterprise_audit, confirm, material_key
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,7 +26,7 @@ SAMPLE = ROOT / 'samples' / '样例企业-审计材料.xlsx'
 
 
 @material_key
-class TenantIsolationTests(unittest.TestCase):
+class TenantIsolationTests(PublicKnowledgeTestCase):
     def setUp(self):
         self.env = patch.dict(os.environ, {'TAXPEARLS_AI_ENABLED': '0', 'TAXPEARLS_NOTIFICATION_EMAIL_ENABLED': '0'})
         self.env.start()
@@ -35,7 +35,8 @@ class TenantIsolationTests(unittest.TestCase):
         # TestClient starts a background notification worker, so this is a
         # long-lived service store, not a short-lived script connection.
         # Match production's WAL keepalive to avoid Windows SHM mapping races.
-        self.store = Store(Path(self.tmp.name) / 'tenant.db', keepalive=True)
+        self.store = self.store_with_public_knowledge(
+            Path(self.tmp.name) / 'tenant.db', module.RULES_DIR, keepalive=True)
         module.store = self.store
         self.password = 'Tenant-isolation-2026!'
         self.admin = self.person('alpha-admin', 'org_admin', 'alpha')

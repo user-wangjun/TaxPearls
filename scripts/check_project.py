@@ -13,6 +13,31 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Round the costliest modules' observed GitHub Actions runtimes to tens of
+# seconds. A test-count fallback keeps new modules in the partition.
+CI_MODULE_SECONDS = {
+    'test_ai_coach': 80,
+    'test_ai_probes': 100,
+    'test_classroom': 110,
+    'test_core_dedup': 90,
+    'test_core_inputs': 220,
+    'test_email_auth_api': 70,
+    'test_enterprise_materials': 330,
+    'test_enterprise_scope': 70,
+    'test_exercise_generator': 60,
+    'test_feishu_binding': 130,
+    'test_material_jobs': 110,
+    'test_member_invitations': 90,
+    'test_members': 90,
+    'test_mistake_book': 90,
+    'test_pdf_ranges': 110,
+    'test_report_archive': 60,
+    'test_tenant_isolation': 110,
+    'test_training_profiles': 110,
+    'test_training_stats': 70,
+    'test_training_tasks': 80,
+}
+
 
 def shard_suite(suite, index, total):
     """Balance whole modules so class/module fixtures never cross runners."""
@@ -28,10 +53,16 @@ def shard_suite(suite, index, total):
                 modules.setdefault(test.id().rsplit('.', 2)[0], []).append(test)
     collect(suite)
     buckets = [[] for _ in range(total)]
-    for name, tests in sorted(modules.items(), key=lambda item: (-len(item[1]), item[0])):
-        bucket = min(range(total), key=lambda number: (len(buckets[number]), number))
-        buckets[bucket].extend(tests)
-    return unittest.TestSuite(buckets[index])
+    costs = {name: max(len(tests), CI_MODULE_SECONDS.get(name, 0)) for name, tests in modules.items()}
+    loads = [0] * total
+    for name in sorted(modules, key=lambda name: (-costs[name], name)):
+        bucket = min(range(total), key=lambda number: (loads[number], number))
+        buckets[bucket].append(name)
+        loads[bucket] += costs[name]
+    # Preserve the execution order within each runner used by the count-based
+    # partition, including the unsharded local run.
+    names = sorted(buckets[index], key=lambda name: (-len(modules[name]), name))
+    return unittest.TestSuite(test for name in names for test in modules[name])
 
 
 class TimedResult(unittest.TextTestResult):

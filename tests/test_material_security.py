@@ -235,14 +235,7 @@ class MaterialSecurityTests(unittest.TestCase):
             self.assertEqual(doc, frozen)
 
 
-class MaterialSecurityAPITests(unittest.TestCase):
-    setUp = enterprise.EnterpriseMaterialTests.setUp
-    login = enterprise.EnterpriseMaterialTests.login
-    upload = enterprise.EnterpriseMaterialTests.upload
-    url = enterprise.EnterpriseMaterialTests.url
-    confirm = enterprise.EnterpriseMaterialTests.confirm
-    counts = enterprise.EnterpriseMaterialTests.counts
-
+class MaterialSecurityAPITests(enterprise.EnterpriseMaterialFixture):
     def malicious_workbook(self, *, comment=False):
         book = load_workbook(BytesIO(accounts()))
         if comment:
