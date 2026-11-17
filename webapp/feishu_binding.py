@@ -31,9 +31,10 @@ from webapp import channel_bindings as bindings, members
 from webapp.access import AccessDenied
 
 TTL = 600
-# The provider authorization code expires after 5 minutes, so waiting longer than
-# 30 seconds can only end in a failed exchange; fail fast instead of stalling the page.
-OAUTH_HTTP_TIMEOUT = 30
+# Slower provider responses are worth waiting for: the authorization code is dated
+# from user consent, so a late response can still succeed. 300s matches the code's
+# own 5-minute validity; waiting longer can no longer change the outcome.
+OAUTH_HTTP_TIMEOUT = 300
 LIMIT = 4096
 INTERNAL_PATH = '/api/internal/feishu-binding'
 STATIC = Path(__file__).parent / 'static'

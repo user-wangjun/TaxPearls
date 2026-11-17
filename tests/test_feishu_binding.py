@@ -252,7 +252,7 @@ class FeishuBindingTests(unittest.TestCase):
             response.read.return_value = b'{"access_token":"token"}'
             self.assertEqual(linking._oauth_json('https://open.feishu.cn/open-apis/authen/v2/oauth/token', body={'client_secret':'secret'}), {'access_token':'token'})
             self.assertIsInstance(opener.call_args.args[0], linking._NoOAuthRedirect)
-            self.assertEqual(opener.return_value.open.call_args.kwargs['timeout'], 30)
+            self.assertEqual(opener.return_value.open.call_args.kwargs['timeout'], 300)
             response.read.assert_called_once_with(65537)
         with patch.object(linking, 'build_opener') as opener:
             opener.return_value.open.side_effect = URLError('contains-sensitive-secret')
