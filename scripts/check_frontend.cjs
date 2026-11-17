@@ -950,13 +950,13 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   vm.runInContext('graphData={nodes:[],edges:[]};graphFocused=true;graphVisible=new Set();',graphCtx);
   graphCtx.innerWidth=390;graphCtx.layoutGraph(); // empty focused mobile view must not dereference undefined
   const pending = [];
-  const noticeEvents={};let feishuBindings=[],scheduledFeishuRefresh,feishuRefreshDelay;
+  const noticeEvents={};let feishuBindings=[],feishuBindingReady=false,scheduledFeishuRefresh,feishuRefreshDelay;
   const ctx = {currentUser:{id:"user-1",role:"accountant"},
     $:id=>{if(!nodes.has(id)) nodes.set(id,node());return nodes.get(id);}, el:node,
     document:{querySelectorAll:()=>[],addEventListener:(event,handler)=>noticeEvents[event]=handler},
     window:{addEventListener:(event,handler)=>noticeEvents[event]=handler},
     setTimeout:(fn,delay)=>{scheduledFeishuRefresh=fn;feishuRefreshDelay=delay;return 1;},clearTimeout:()=>{scheduledFeishuRefresh=null;},
-    api:url=>url==="/api/channels/feishu/bindings" ? Promise.resolve(feishuBindings) : url==="/api/channels/feishu/entry" ? Promise.resolve({url:"https://applink.feishu.cn/client/bot/open?appId=cli_test",binding_ready:false,message:"账号绑定暂不可用"}) : new Promise((resolve,reject)=>pending.push({url,resolve,reject})),
+    api:url=>url==="/api/channels/feishu/bindings" ? Promise.resolve(feishuBindings) : url==="/api/channels/feishu/entry" ? Promise.resolve({url:"https://applink.feishu.cn/client/bot/open?appId=cli_test",binding_ready:feishuBindingReady}) : new Promise((resolve,reject)=>pending.push({url,resolve,reject})),
     renderResult(){}, switchPanel(){}};
   vm.createContext(ctx);
   vm.runInContext('let noticeRequest=0,noticeBusy=false,noticeReady=false,noticeHasEmail=false;'+notificationCode,ctx);
@@ -991,7 +991,10 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   finishFeishu({url:"https://applink.feishu.cn/client/bot/open?appId=cli_old",binding_ready:true});await staleFeishu;
   assert.equal(ctx.$("noticeFeishuOpen").hidden,true,"Old panel requests must not restore a stale link");
   ctx.api=noticeApi;
+  feishuBindingReady=true;
   await ctx.loadNoticeFeishu(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  assert.equal(ctx.$("noticeFeishuOpen").textContent,"打开飞书助手 →");
+  assert.match(ctx.$("noticeFeishuStatus").textContent,/「唤出菜单」.*原私聊点击「确认绑定」/);
   ctx.$("noticeFeishuQr").onload();
   assert.equal(ctx.$("noticeFeishuQrBox").hidden,false);
   assert.equal(typeof scheduledFeishuRefresh,"function","Unbound accounts keep checking while the panel is visible");

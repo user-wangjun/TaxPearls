@@ -925,10 +925,10 @@ function renderNoticeFeishu(request, owner) {
   const state = noticeFeishuState;
   if (!noticeCurrent(request, owner) || state?.request !== request || state.owner !== owner) return;
   $("noticeFeishuQrBox").hidden = state.bound !== false || !state.qrReady;
-  $("noticeFeishuOpen").textContent = state.bound ? "打开飞书助手 →" : "在飞书中继续 →";
+  $("noticeFeishuOpen").textContent = "打开飞书助手 →";
   $("noticeFeishuIntro").textContent = state.bound
     ? "你的 TaxPearls 账号已与飞书连接，可直接打开助手。"
-    : "扫码或点击按钮打开飞书助手，还需在网站与原飞书私聊中分别确认。完成后此处会自动更新。";
+    : "扫码或点击按钮打开飞书助手。完成绑定后，此处会自动更新。";
   $("noticeFeishuStatus").textContent = state.bound ? "绑定已完成，无需再次扫码。" : state.entryMessage;
 }
 async function loadNoticeFeishuBinding(request, owner) {
@@ -980,7 +980,9 @@ async function loadNoticeFeishu(request, owner) {
     const entry = await api("/api/channels/feishu/entry");
     if (!noticeCurrent(request, owner)) return;
     open.href = entry.url; open.hidden = false;
-    noticeFeishuState.entryMessage = entry.binding_ready ? "请在飞书助手中发送“绑定”，完成两端确认。" : "绑定服务暂不可用，暂时无法发起新绑定。";
+    noticeFeishuState.entryMessage = entry.binding_ready
+      ? "在飞书点击助手发来的「绑定 TaxPearls 账户」。没收到卡片时，点击「唤出菜单」。在网页确认账号后，回到原私聊点击「确认绑定」。"
+      : "绑定服务暂不可用，暂时无法发起新绑定。";
     renderNoticeFeishu(request, owner);
     qr.onload = () => {
       if (!noticeCurrent(request, owner)) return;
