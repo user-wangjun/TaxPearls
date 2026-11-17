@@ -3,10 +3,53 @@ import hashlib
 from pathlib import Path
 import sqlite3
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from src.kg_retrieval import batching, bundle, evaluate, fixtures, outbound, semantic_search
+
+
+class ScoreCalibrationTests(unittest.TestCase):
+    def test_weak_retrieval_keeps_provenance_without_bypassing_relevance(self):
+        db = sqlite3.connect(':memory:')
+        db.row_factory = sqlite3.Row
+        self.addCleanup(db.close)
+        with tempfile.TemporaryDirectory() as folder:
+            fixtures.seed(db, Path(folder))
+        mapping = {0: {'clause_id': 'CL02', 'chunk_index': 0, 'source_char_start': 0, 'source_char_end': 8}}
+        model = SimpleNamespace(fingerprint='raw', encode=lambda *a, **kw: [[1.]])
+        # Plain nested lists keep the shard runnable where numpy is not installed.
+        index = SimpleNamespace(ntotal=1, search=lambda *a: ([[.30]], [[0]]))
+        with patch.object(semantic_search, 'available', return_value=(model, None)), \
+             patch.object(semantic_search, 'synchronize', return_value={}), \
+             patch.object(semantic_search, 'build_faiss', return_value=(index, mapping, 'test')):
+            hit = semantic_search.search(db, '无关主题')['hits'][0]
+        self.assertEqual(hit['reason']['spans'][0]['source_char_start'], 0)
+        self.assertEqual(hit['reason']['raw_score'], .30)
+        self.assertFalse(bundle._relevant({'matches': [hit]}, .30, 0))
+
+    def test_reference_gate_rejects_weak_hits_and_accepts_calibrated_hits(self):
+        model = SimpleNamespace(score_calibration=(.85, .13))
+        calibrated = semantic_search.calibrated_score(model, .57)
+        self.assertGreaterEqual(calibrated, .60)
+        self.assertTrue(bundle._relevant({'matches': [{'route': 'semantic', 'score': calibrated}]}, calibrated, 0))
+        weak = semantic_search.calibrated_score(model, .30)
+        self.assertFalse(bundle._relevant({'matches': [{'route': 'semantic', 'score': weak}]}, weak, 0))
+        self.assertEqual(semantic_search.score_calibration({}), (1., 0.))
+        self.assertEqual(semantic_search.calibrated_score(SimpleNamespace(), .57), .57)
+
+    def test_invalid_or_wrong_weight_calibration_is_rejected(self):
+        calibration = {'version': 1, 'scale': .85, 'offset': .13, 'weights_sha256': 'weights'}
+        manifest = {'files': {'onnx/model_quantized.onnx': 'weights'}, 'score_calibration': calibration}
+        self.assertEqual(semantic_search.score_calibration(manifest), (.85, .13))
+        for changes in ({'weights_sha256': 'other'}, {'scale': float('nan')}, {'offset': float('inf')},
+                        {'scale': -1}, {'scale': True}, {'offset': '0.13'}, {'version': True}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                semantic_search.score_calibration({**manifest, 'score_calibration': {**calibration, **changes}})
+        for score in (float('nan'), float('inf')):
+            with self.subTest(score=score), self.assertRaises(ValueError):
+                semantic_search.calibrated_score(SimpleNamespace(), score)
 
 
 def long_policy():

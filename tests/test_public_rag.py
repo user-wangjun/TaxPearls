@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -910,6 +911,28 @@ class EndpointTests(unittest.TestCase):
 
 
 class LocalSemanticTests(unittest.TestCase):
+    def test_public_gate_uses_calibrated_scores_and_still_rejects_weak_hits(self):
+        from src.kg_retrieval.common import digest
+        db = sqlite3.connect(':memory:')
+        db.row_factory = sqlite3.Row
+        self.addCleanup(db.close)
+        fixtures(db)
+        eligible = {cid: (dict(db.execute('SELECT * FROM Clause WHERE clause_id=?', (cid,)).fetchone()), {})
+                    for cid in ('credit', 'refund')}
+        mapping = {index: {'clause_id': cid, 'content_hash': digest([clause['content'], '1'])}
+                   for index, (cid, (clause, _)) in enumerate(eligible.items())}
+        model = SimpleNamespace(score_calibration=(.85, .13), fingerprint='calibrated', encode=lambda *a, **kw: [[1.]])
+        # Plain nested lists keep the shard runnable where numpy is not installed.
+        index = SimpleNamespace(ntotal=2, search=lambda *a: ([[.57, .30]], [[0, 1]]))
+        with patch.object(semantic_search, 'available', return_value=(model, None)), \
+             patch.object(semantic_search, 'synchronize'), \
+             patch.object(semantic_search, 'build_faiss', return_value=(index, mapping, 'test')), \
+             patch.object(rag, 'subject_queries', return_value=[]):
+            result = rag.semantic(db, '检索主题', eligible)
+        self.assertEqual(result['status'], 'ready')
+        self.assertEqual([cid for cid, _ in result['hits']], ['credit'])
+        self.assertAlmostEqual(result['hits'][0][1], .6145)
+
     def test_actual_encoder_and_durable_vectors_are_used(self):
         # Optional local runtime, no downloads or external service.
         model, reason = semantic_search.available()
