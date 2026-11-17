@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 from scripts import check_project
 
@@ -35,6 +36,15 @@ class CheckProjectTests(unittest.TestCase):
         for index, total in [(-1, 4), (4, 4), (0, 0)]:
             with self.subTest(index=index, total=total), self.assertRaises(ValueError):
                 check_project.shard_suite(self.samples(), index, total)
+
+    def test_shards_separate_small_modules_with_long_runtimes(self):
+        costs = {'tiny': 12, 'small': 10}
+        with patch.dict(check_project.CI_MODULE_SECONDS, costs):
+            groups = [list(check_project.shard_suite(self.samples(), i, 2)) for i in range(2)]
+        self.assertEqual(
+            [{test.id().split('.')[0] for test in group} for group in groups],
+            [{'tiny', 'medium'}, {'small', 'large'}],
+        )
 
     def test_hung_test_exits_with_stack_instead_of_waiting_for_job_limit(self):
         root = Path(__file__).resolve().parents[1]
