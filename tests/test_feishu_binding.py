@@ -130,7 +130,7 @@ class FeishuBindingTests(unittest.TestCase):
             self.assertEqual(result.status_code, 200, result.text)
             self.assertEqual(result.json()['state'], 'completed')
             request = provider.call_args_list[0].kwargs['body']
-            self.assertEqual(provider.call_args_list[0].args[0], 'https://accounts.feishu.cn/oauth/v3/token')
+            self.assertEqual(provider.call_args_list[0].args[0], 'https://open.feishu.cn/open-apis/authen/v2/oauth/token')
             self.assertEqual(request['client_secret'], 'server-only-secret')
             challenge = base64.urlsafe_b64encode(hashlib.sha256(request['code_verifier'].encode()).digest()).decode().rstrip('=')
             self.assertEqual(challenge, params['code_challenge'][0])
@@ -243,21 +243,21 @@ class FeishuBindingTests(unittest.TestCase):
                 opener.return_value.open.return_value.__enter__.return_value.status = 200
                 opener.return_value.open.return_value.__enter__.return_value.read.return_value = value
                 with self.assertRaises(HTTPException) as error:
-                    linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'client_secret':'bad-secret'})
+                    linking._oauth_json('https://open.feishu.cn/open-apis/authen/v2/oauth/token', body={'client_secret':'bad-secret'})
                 self.assertNotIn('bad-secret', error.exception.detail)
                 self.assertEqual(error.exception.status_code, 502)
         with patch.object(linking, 'build_opener') as opener:
             response = opener.return_value.open.return_value.__enter__.return_value
             response.status = 200
             response.read.return_value = b'{"access_token":"token"}'
-            self.assertEqual(linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'client_secret':'secret'}), {'access_token':'token'})
+            self.assertEqual(linking._oauth_json('https://open.feishu.cn/open-apis/authen/v2/oauth/token', body={'client_secret':'secret'}), {'access_token':'token'})
             self.assertIsInstance(opener.call_args.args[0], linking._NoOAuthRedirect)
-            self.assertEqual(opener.return_value.open.call_args.kwargs['timeout'], 600)
+            self.assertEqual(opener.return_value.open.call_args.kwargs['timeout'], 30)
             response.read.assert_called_once_with(65537)
         with patch.object(linking, 'build_opener') as opener:
             opener.return_value.open.side_effect = URLError('contains-sensitive-secret')
             with self.assertRaises(HTTPException) as error:
-                linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token')
+                linking._oauth_json('https://open.feishu.cn/open-apis/authen/v2/oauth/token')
             self.assertNotIn('contains-sensitive-secret', error.exception.detail)
 
     def test_oauth_http_error_retains_safe_code_stage_and_category_without_secrets(self):
@@ -265,11 +265,11 @@ class FeishuBindingTests(unittest.TestCase):
         from urllib.error import HTTPError
         secret = 'do-not-log-client-secret-or-token'
         payload = {'code':20130, 'error':'invalid_client', 'error_description':secret, 'access_token':secret}
-        failure = HTTPError('https://accounts.feishu.cn/oauth/v3/token?secret='+secret, 400, secret, {}, io.BytesIO(json.dumps(payload).encode()))
+        failure = HTTPError('https://open.feishu.cn/open-apis/authen/v2/oauth/token?secret='+secret, 400, secret, {}, io.BytesIO(json.dumps(payload).encode()))
         with patch.object(linking, 'build_opener') as opener, self.assertLogs(linking.logger, level='WARNING') as logs:
             opener.return_value.open.side_effect = failure
             with self.assertRaises(HTTPException) as result:
-                linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'client_secret':secret})
+                linking._oauth_json('https://open.feishu.cn/open-apis/authen/v2/oauth/token', body={'client_secret':secret})
         self.assertEqual(result.exception.status_code, 502)
         self.assertIn('换取授权凭据', result.exception.detail)
         self.assertIn('HTTP 400', result.exception.detail)
@@ -305,7 +305,7 @@ class FeishuBindingTests(unittest.TestCase):
                 response.status = 400
                 response.read.return_value = json.dumps(value).encode()
                 with self.assertRaises(HTTPException) as result:
-                    linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'code':'private-value'})
+                    linking._oauth_json('https://open.feishu.cn/open-apis/authen/v2/oauth/token', body={'code':'private-value'})
                 self.assertNotIn('private-value', result.exception.detail + ''.join(logs.output))
                 if value.get('code') == 20003:
                     self.assertIn('20003', result.exception.detail)
