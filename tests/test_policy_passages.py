@@ -12,7 +12,6 @@ from src.kg_retrieval import batching, bundle, evaluate, fixtures, outbound, sem
 
 class ScoreCalibrationTests(unittest.TestCase):
     def test_weak_retrieval_keeps_provenance_without_bypassing_relevance(self):
-        import numpy as np
         db = sqlite3.connect(':memory:')
         db.row_factory = sqlite3.Row
         self.addCleanup(db.close)
@@ -20,7 +19,8 @@ class ScoreCalibrationTests(unittest.TestCase):
             fixtures.seed(db, Path(folder))
         mapping = {0: {'clause_id': 'CL02', 'chunk_index': 0, 'source_char_start': 0, 'source_char_end': 8}}
         model = SimpleNamespace(fingerprint='raw', encode=lambda *a, **kw: [[1.]])
-        index = SimpleNamespace(ntotal=1, search=lambda *a: (np.array([[.30]]), np.array([[0]])))
+        # Plain nested lists keep the shard runnable where numpy is not installed.
+        index = SimpleNamespace(ntotal=1, search=lambda *a: ([[.30]], [[0]]))
         with patch.object(semantic_search, 'available', return_value=(model, None)), \
              patch.object(semantic_search, 'synchronize', return_value={}), \
              patch.object(semantic_search, 'build_faiss', return_value=(index, mapping, 'test')):

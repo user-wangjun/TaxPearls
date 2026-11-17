@@ -912,7 +912,6 @@ class EndpointTests(unittest.TestCase):
 
 class LocalSemanticTests(unittest.TestCase):
     def test_public_gate_uses_calibrated_scores_and_still_rejects_weak_hits(self):
-        import numpy as np
         from src.kg_retrieval.common import digest
         db = sqlite3.connect(':memory:')
         db.row_factory = sqlite3.Row
@@ -923,7 +922,8 @@ class LocalSemanticTests(unittest.TestCase):
         mapping = {index: {'clause_id': cid, 'content_hash': digest([clause['content'], '1'])}
                    for index, (cid, (clause, _)) in enumerate(eligible.items())}
         model = SimpleNamespace(score_calibration=(.85, .13), fingerprint='calibrated', encode=lambda *a, **kw: [[1.]])
-        index = SimpleNamespace(ntotal=2, search=lambda *a: (np.array([[.57, .30]]), np.array([[0, 1]])))
+        # Plain nested lists keep the shard runnable where numpy is not installed.
+        index = SimpleNamespace(ntotal=2, search=lambda *a: ([[.57, .30]], [[0, 1]]))
         with patch.object(semantic_search, 'available', return_value=(model, None)), \
              patch.object(semantic_search, 'synchronize'), \
              patch.object(semantic_search, 'build_faiss', return_value=(index, mapping, 'test')), \
