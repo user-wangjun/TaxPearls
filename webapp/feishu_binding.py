@@ -31,7 +31,10 @@ from webapp import channel_bindings as bindings, members
 from webapp.access import AccessDenied
 
 TTL = 600
-OAUTH_HTTP_TIMEOUT = 600
+# Slower provider responses are worth waiting for: the authorization code is dated
+# from user consent, so a late response can still succeed. 300s matches the code's
+# own 5-minute validity; waiting longer can no longer change the outcome.
+OAUTH_HTTP_TIMEOUT = 300
 LIMIT = 4096
 INTERNAL_PATH = '/api/internal/feishu-binding'
 STATIC = Path(__file__).parent / 'static'
@@ -227,7 +230,9 @@ def _oauth_json(url, *, body=None, token=None):
 
 
 def _oauth_identity(config, code, state):
-    value = _oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={
+    # The v3 token endpoint rejects valid PKCE exchanges with provider code 20049
+    # (larksuite/oapi-sdk-go#230); the v2 endpoint accepts the same request.
+    value = _oauth_json('https://open.feishu.cn/open-apis/authen/v2/oauth/token', body={
         'grant_type': 'authorization_code', 'client_id': config.app_id, 'client_secret': _oauth_secret(),
         'code': code, 'redirect_uri': config.public_base + '/connect/feishu/callback',
         'code_verifier': _oauth_verifier(config, state)})
