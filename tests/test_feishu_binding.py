@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 import time
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 
@@ -100,6 +101,194 @@ class FeishuBindingTests(unittest.TestCase):
         self.assertFalse(channel_bindings.list_bindings(self.store, self.session)[0]['notifications_enabled'])
         result = self.client.post('/api/channels/feishu/status', json={'ticket': ticket})
         self.assertEqual(result.json()['state'], 'completed')
+
+    def oauth_begin(self):
+        account = self.client.get('/api/channels/feishu/oauth/account')
+        self.assertEqual(account.status_code, 200, account.text)
+        result = self.client.post('/api/channels/feishu/oauth/begin', json={'account_proof': account.json()['account_proof']})
+        self.assertEqual(result.status_code, 200, result.text)
+        return parse_qs(urlsplit(result.json()['url']).query)
+
+    def oauth_complete(self, state, **values):
+        return self.client.post('/api/channels/feishu/oauth/complete', json={'state': state, 'code': 'provider-code', **values})
+
+    def test_oauth_binds_current_web_account_and_bot_recognizes_it(self):
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'server-only-secret'}):
+            entry = self.client.get('/api/channels/feishu/entry').json()
+            self.assertTrue(entry['oauth_ready'])
+            self.assertNotIn('server-only-secret', json.dumps(entry))
+            params = self.oauth_begin()
+            state = params['state'][0]
+            self.assertEqual(params['redirect_uri'], ['https://taxpearls.wxtech.site/connect/feishu/callback'])
+            self.assertEqual(params['code_challenge_method'], ['S256'])
+            self.assertEqual(params['client_id'], ['cli_test'])
+            self.assertEqual(self.bridge('lookup', subject='ou_authorized').json()['state'], 'unbound')
+            with patch.object(linking, '_oauth_json', side_effect=[{'access_token': 'provider-token'},
+                    {'code': 0, 'data': {'open_id': 'ou_authorized', 'tenant_key': 'external_tenant', 'email': 'bob@other.test'}}]) as provider:
+                result = self.oauth_complete(state)
+            self.assertEqual(result.status_code, 200, result.text)
+            self.assertEqual(result.json()['state'], 'completed')
+            request = provider.call_args_list[0].kwargs['body']
+            self.assertEqual(provider.call_args_list[0].args[0], 'https://accounts.feishu.cn/oauth/v3/token')
+            self.assertEqual(request['client_secret'], 'server-only-secret')
+            challenge = base64.urlsafe_b64encode(hashlib.sha256(request['code_verifier'].encode()).digest()).decode().rstrip('=')
+            self.assertEqual(challenge, params['code_challenge'][0])
+            self.assertEqual(provider.call_args_list[1].kwargs['token'], 'provider-token')
+            self.assertNotIn('provider-token', result.text)
+            self.assertEqual(channel_bindings.actor_for_subject(self.store, self.config.scope, 'ou_authorized')['id'], self.user['id'])
+            self.assertEqual(self.bridge('lookup', subject='ou_authorized').json()['state'], 'bound')
+            self.assertFalse(channel_bindings.list_bindings(self.store, self.session)[0]['notifications_enabled'])
+            with patch.object(linking, '_oauth_identity') as exchange:
+                self.assertEqual(self.oauth_complete(state).status_code, 409)
+                exchange.assert_not_called()
+            with closing(sqlite3.connect(self.store.path)) as db:
+                dump = '\n'.join(db.iterdump())
+            for secret in (state, 'provider-code', 'provider-token', 'server-only-secret', request['code_verifier'], self.session):
+                self.assertNotIn(secret, dump)
+
+    def test_oauth_account_switch_state_tampering_and_csrf_do_not_exchange_code(self):
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}), patch.object(linking, '_oauth_identity') as exchange:
+            account = self.client.get('/api/channels/feishu/oauth/account').json()
+            self.client.cookies.set(module.COOKIE_NAME, self.other_session)
+            self.assertEqual(self.client.post('/api/channels/feishu/oauth/begin', json={'account_proof':account['account_proof']}).status_code, 409)
+            self.client.cookies.set(module.COOKIE_NAME, self.session)
+            state = self.oauth_begin()['state'][0]
+            tampered = state[:-1] + ('0' if state[-1] != '0' else '1')
+            self.assertEqual(self.oauth_complete(tampered).status_code, 409)
+            response = self.client.post('/api/channels/feishu/oauth/complete', json={'state':state, 'code':'code'}, headers={'Origin':'https://evil.test'})
+            self.assertEqual(response.status_code, 403)
+            self.client.cookies.set(module.COOKIE_NAME, self.other_session)
+            self.assertEqual(self.oauth_complete(state).status_code, 409)
+            self.client.cookies.clear()
+            self.assertEqual(self.oauth_complete(state).status_code, 401)
+            exchange.assert_not_called()
+
+    def test_oauth_denial_is_terminal_and_new_authorization_is_possible(self):
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}), patch.object(linking, '_oauth_identity') as exchange:
+            state = self.oauth_begin()['state'][0]
+            self.assertEqual(self.oauth_complete(state, code='', error='access_denied').json()['state'], 'cancelled')
+            self.assertEqual(self.oauth_complete(state).status_code, 409)
+            self.assertEqual(channel_bindings.list_bindings(self.store, self.session), [])
+            exchange.assert_not_called()
+
+    def test_oauth_expiry_permission_and_config_changes_are_rechecked(self):
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}), patch.object(linking, '_oauth_identity') as exchange:
+            state = self.oauth_begin()['state'][0]
+            with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_TENANT_KEY':'different-owner'}):
+                self.assertEqual(self.oauth_complete(state).status_code, 409)
+            with self.store.connect() as db:
+                db.execute('UPDATE users SET active=0 WHERE id=?', (self.user['id'],))
+            self.assertEqual(self.oauth_complete(state).status_code, 401)
+            with self.store.connect() as db:
+                db.execute('UPDATE users SET active=1 WHERE id=?', (self.user['id'],))
+                db.execute('UPDATE channel_binding_flows SET expires_at=0 WHERE id=?', (state[:32],))
+            self.assertEqual(self.oauth_complete(state).status_code, 409)
+            exchange.assert_not_called()
+
+    def test_oauth_failure_does_not_bind_or_replay(self):
+        from fastapi import HTTPException
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}):
+            state = self.oauth_begin()['state'][0]
+            with patch.object(linking, '_oauth_identity', side_effect=HTTPException(502, '授权校验失败')) as exchange:
+                self.assertEqual(self.oauth_complete(state).status_code, 502)
+                self.assertEqual(self.oauth_complete(state).status_code, 409)
+                self.assertEqual(exchange.call_count, 1)
+            self.assertEqual(channel_bindings.list_bindings(self.store, self.session), [])
+
+    def test_oauth_rechecks_session_after_provider_exchange(self):
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}):
+            state = self.oauth_begin()['state'][0]
+            def revoke(*args):
+                with self.store.connect() as db:
+                    db.execute('DELETE FROM sessions WHERE token_hash=?', (channel_bindings._digest(self.session),))
+                return 'ou_authorized'
+            with patch.object(linking, '_oauth_identity', side_effect=revoke):
+                self.assertEqual(self.oauth_complete(state).status_code, 401)
+            self.assertEqual(self.bridge('lookup', subject='ou_authorized').json()['state'], 'unbound')
+
+    def test_oauth_parallel_callback_and_unlinked_callback_cannot_restore_binding(self):
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}):
+            state = self.oauth_begin()['state'][0]
+            def exchange(*args):
+                self.assertEqual(self.oauth_complete(state).status_code, 409)
+                return 'ou_authorized'
+            with patch.object(linking, '_oauth_identity', side_effect=exchange) as provider:
+                result = self.oauth_complete(state)
+                self.assertEqual(result.status_code, 200, result.text)
+                provider.assert_called_once()
+            binding_id = result.json()['binding']['id']
+            self.assertEqual(self.client.delete('/api/channels/feishu/bindings/'+binding_id, headers={'Content-Type':'application/json'}).status_code, 200)
+            with patch.object(linking, '_oauth_identity') as provider:
+                self.assertEqual(self.oauth_complete(state).status_code, 409)
+                provider.assert_not_called()
+            self.assertEqual(self.bridge('lookup', subject='ou_authorized').json()['state'], 'unbound')
+
+    def test_oauth_member_revocation_during_exchange_cancels_authorization(self):
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}):
+            state = self.oauth_begin()['state'][0]
+            def revoke(*args):
+                with self.store.connect() as db:
+                    channel_bindings.revoke_pending(db, self.user['id'])
+                return 'ou_authorized'
+            with patch.object(linking, '_oauth_identity', side_effect=revoke):
+                self.assertEqual(self.oauth_complete(state).status_code, 409)
+            self.assertEqual(self.bridge('lookup', subject='ou_authorized').json()['state'], 'unbound')
+
+    def test_oauth_provider_transport_is_bounded_and_errors_do_not_expose_secrets(self):
+        from fastapi import HTTPException
+        from urllib.error import URLError
+        for value in (b'not-json', b'[]', b'{"error":"bad-secret"}', b'{"code":123,"msg":"bad-secret"}', b'x'*65537):
+            with self.subTest(value=value[:40]), patch.object(linking, 'build_opener') as opener:
+                opener.return_value.open.return_value.__enter__.return_value.read.return_value = value
+                with self.assertRaises(HTTPException) as error:
+                    linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'client_secret':'bad-secret'})
+                self.assertNotIn('bad-secret', error.exception.detail)
+                self.assertEqual(error.exception.status_code, 502)
+        with patch.object(linking, 'build_opener') as opener:
+            response = opener.return_value.open.return_value.__enter__.return_value
+            response.read.return_value = b'{"access_token":"token"}'
+            self.assertEqual(linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={'client_secret':'secret'}), {'access_token':'token'})
+            self.assertIsInstance(opener.call_args.args[0], linking._NoOAuthRedirect)
+            self.assertEqual(opener.return_value.open.call_args.kwargs['timeout'], 15)
+            response.read.assert_called_once_with(65537)
+        with patch.object(linking, 'build_opener') as opener:
+            opener.return_value.open.side_effect = URLError('contains-sensitive-secret')
+            with self.assertRaises(HTTPException) as error:
+                linking._oauth_json('https://accounts.feishu.cn/oauth/v3/token')
+            self.assertNotIn('contains-sensitive-secret', error.exception.detail)
+
+    def test_oauth_missing_user_identity_and_nonenterprise_roles_cannot_bind(self):
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}):
+            state = self.oauth_begin()['state'][0]
+            with patch.object(linking, '_oauth_json', side_effect=[{'access_token':'token'}, {'data':{'email':'alice@example.test'}}]):
+                self.assertEqual(self.oauth_complete(state).status_code, 502)
+            with self.store.connect() as db:
+                db.execute("UPDATE users SET role='teacher' WHERE id=?", (self.user['id'],))
+            proof = self.client.get('/api/channels/feishu/oauth/account').json()['account_proof']
+            result = self.client.post('/api/channels/feishu/oauth/begin', json={'account_proof':proof})
+            self.assertEqual(result.status_code, 403)
+
+    def test_oauth_duplicate_subject_never_moves_existing_binding(self):
+        self.complete()
+        self.client.cookies.set(module.COOKIE_NAME, self.other_session)
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': 'secret'}):
+            state = self.oauth_begin()['state'][0]
+            with patch.object(linking, '_oauth_identity', return_value='ou_alice'):
+                self.assertEqual(self.oauth_complete(state).status_code, 409)
+        self.assertEqual(channel_bindings.actor_for_subject(self.store, self.config.scope, 'ou_alice')['id'], self.user['id'])
+
+    def test_oauth_requires_server_credentials_and_callback_has_no_get_side_effect(self):
+        with patch.dict(os.environ, {'TAXPEARLS_FEISHU_APP_SECRET': ''}):
+            self.assertFalse(self.client.get('/api/channels/feishu/entry').json()['oauth_ready'])
+            self.assertEqual(self.client.get('/api/channels/feishu/oauth/account').status_code, 503)
+            response = self.client.post('/api/channels/feishu/oauth/begin', json={'account_proof':'a'*64})
+            self.assertEqual(response.status_code, 503)
+        self.client.cookies.clear()
+        page = self.client.get('/connect/feishu/callback?code=synthetic&state=invalid')
+        self.assertEqual(page.status_code, 200)
+        self.assertEqual(page.headers['referrer-policy'], 'no-referrer')
+        self.assertIn("frame-ancestors 'none'", page.headers['content-security-policy'])
+        self.assertEqual(self.bridge('lookup', subject='ou_alice').json()['state'], 'unbound')
 
     def test_shortcut_lookup_is_scoped_and_does_not_create_binding_requests(self):
         self.assertEqual(self.bridge('lookup', subject='ou_alice').json(), {'state': 'unbound'})

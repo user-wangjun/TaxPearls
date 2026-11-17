@@ -924,11 +924,12 @@ let noticeFeishuRefreshTimer;
 function renderNoticeFeishu(request, owner) {
   const state = noticeFeishuState;
   if (!noticeCurrent(request, owner) || state?.request !== request || state.owner !== owner) return;
-  $("noticeFeishuQrBox").hidden = state.bound !== false || !state.qrReady;
-  $("noticeFeishuOpen").textContent = "打开飞书助手 →";
+  $("noticeFeishuQrBox").hidden = state.bound !== false || !state.qrReady || state.oauthReady === true;
+  $("noticeFeishuOpen").textContent = state.bound !== true && state.oauthReady ? "绑定飞书账户 →" : "打开飞书助手 →";
+  if (state.botUrl) $("noticeFeishuOpen").href = state.bound !== true && state.oauthReady ? state.bindingUrl : state.botUrl;
   $("noticeFeishuIntro").textContent = state.bound
     ? "你的 TaxPearls 账号已与飞书连接，可直接打开助手。"
-    : "扫码或点击按钮打开飞书助手。完成绑定后，此处会自动更新。";
+    : state.oauthReady ? "点击绑定，核对当前账号并完成飞书授权。授权后会自动建立绑定。" : "扫码或点击按钮打开飞书助手。完成绑定后，此处会自动更新。";
   $("noticeFeishuStatus").textContent = state.bound ? "绑定已完成，无需再次扫码。" : state.entryMessage;
 }
 async function loadNoticeFeishuBinding(request, owner) {
@@ -979,8 +980,11 @@ async function loadNoticeFeishu(request, owner) {
   try {
     const entry = await api("/api/channels/feishu/entry");
     if (!noticeCurrent(request, owner)) return;
+    noticeFeishuState.oauthReady = entry.oauth_ready;
+    noticeFeishuState.botUrl = entry.url;
+    noticeFeishuState.bindingUrl = entry.binding_url;
     open.href = entry.url; open.hidden = false;
-    noticeFeishuState.entryMessage = entry.binding_ready
+    noticeFeishuState.entryMessage = entry.oauth_ready ? "飞书授权完成后返回网站，即可打开助手使用，无需再到私聊确认绑定。" : entry.binding_ready
       ? "在飞书点击助手发来的「绑定 TaxPearls 账户」。没收到卡片时，点击「唤出菜单」。在网页确认账号后，回到原私聊点击「确认绑定」。"
       : "绑定服务暂不可用，暂时无法发起新绑定。";
     renderNoticeFeishu(request, owner);

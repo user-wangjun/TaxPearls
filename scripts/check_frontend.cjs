@@ -950,13 +950,13 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   vm.runInContext('graphData={nodes:[],edges:[]};graphFocused=true;graphVisible=new Set();',graphCtx);
   graphCtx.innerWidth=390;graphCtx.layoutGraph(); // empty focused mobile view must not dereference undefined
   const pending = [];
-  const noticeEvents={};let feishuBindings=[],feishuBindingReady=false,scheduledFeishuRefresh,feishuRefreshDelay;
+  const noticeEvents={};let feishuBindings=[],feishuBindingReady=false,feishuOAuthReady=false,scheduledFeishuRefresh,feishuRefreshDelay;
   const ctx = {currentUser:{id:"user-1",role:"accountant"},
     $:id=>{if(!nodes.has(id)) nodes.set(id,node());return nodes.get(id);}, el:node,
     document:{querySelectorAll:()=>[],addEventListener:(event,handler)=>noticeEvents[event]=handler},
     window:{addEventListener:(event,handler)=>noticeEvents[event]=handler},
     setTimeout:(fn,delay)=>{scheduledFeishuRefresh=fn;feishuRefreshDelay=delay;return 1;},clearTimeout:()=>{scheduledFeishuRefresh=null;},
-    api:url=>url==="/api/channels/feishu/bindings" ? Promise.resolve(feishuBindings) : url==="/api/channels/feishu/entry" ? Promise.resolve({url:"https://applink.feishu.cn/client/bot/open?appId=cli_test",binding_ready:feishuBindingReady}) : new Promise((resolve,reject)=>pending.push({url,resolve,reject})),
+    api:url=>url==="/api/channels/feishu/bindings" ? Promise.resolve(feishuBindings) : url==="/api/channels/feishu/entry" ? Promise.resolve({url:"https://applink.feishu.cn/client/bot/open?appId=cli_test",binding_ready:feishuBindingReady,oauth_ready:feishuOAuthReady,binding_url:"/connect/feishu"}) : new Promise((resolve,reject)=>pending.push({url,resolve,reject})),
     renderResult(){}, switchPanel(){}};
   vm.createContext(ctx);
   vm.runInContext('let noticeRequest=0,noticeBusy=false,noticeReady=false,noticeHasEmail=false;'+notificationCode,ctx);
@@ -997,11 +997,20 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   assert.match(ctx.$("noticeFeishuStatus").textContent,/「唤出菜单」.*原私聊点击「确认绑定」/);
   ctx.$("noticeFeishuQr").onload();
   assert.equal(ctx.$("noticeFeishuQrBox").hidden,false);
+  feishuOAuthReady=true;
+  await ctx.loadNoticeFeishu(vm.runInContext('noticeRequest',ctx),ctx.currentUser.id);
+  assert.equal(ctx.$("noticeFeishuOpen").textContent,"绑定飞书账户 →");
+  assert.equal(ctx.$("noticeFeishuOpen").href,"/connect/feishu");
+  assert.match(ctx.$("noticeFeishuStatus").textContent,/无需再到私聊确认/);
+  ctx.$("noticeFeishuQr").onload();
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true,"OAuth users must not scan a bot-only QR and mistake it for authorization");
   assert.equal(typeof scheduledFeishuRefresh,"function","Unbound accounts keep checking while the panel is visible");
   feishuBindings=[{channel:"feishu",id:"verified-binding"}];
   // Confirmation can finish after focus has already returned, without another browser event.
   scheduledFeishuRefresh();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"已绑定飞书账户");
+  assert.equal(ctx.$("noticeFeishuOpen").textContent,"打开飞书助手 →");
+  assert.equal(ctx.$("noticeFeishuOpen").href,"https://applink.feishu.cn/client/bot/open?appId=cli_test");
   assert.equal(ctx.$("noticeFeishuQrBox").hidden,true,"Successful linking must hide the existing QR");
   assert.equal(typeof scheduledFeishuRefresh,"function","Bound accounts detect unlinking from Feishu");
   assert.equal(feishuRefreshDelay,10000,"Bound accounts check less frequently");
@@ -1023,7 +1032,9 @@ const selection = graph.slice(graph.indexOf("async function loadKnowledge("), gr
   feishuBindings=[];
   scheduledFeishuRefresh();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(ctx.$("noticeFeishuBindingStatus").textContent,"尚未绑定 TaxPearls 账号");
-  assert.equal(ctx.$("noticeFeishuQrBox").hidden,false,"Unlinked accounts can scan again");
+  assert.equal(ctx.$("noticeFeishuQrBox").hidden,true,"Unlinked OAuth accounts return to the website binding entry");
+  assert.equal(ctx.$("noticeFeishuOpen").textContent,"绑定飞书账户 →");
+  assert.equal(ctx.$("noticeFeishuOpen").href,"/connect/feishu");
   assert.equal(feishuRefreshDelay,3000,"Unbound accounts resume faster confirmation checks");
   ctx.document.hidden=true;
   ctx.api=()=>assert.fail("Hidden panels must not poll for binding state");

@@ -1,12 +1,14 @@
-"""Two-party consent linking. Provider identities enter only through a signed adapter.
+"""Account linking through a signed bot adapter or server-verified Feishu OAuth.
 
 No browser route accepts an open_id. A URL ticket grants neither a session nor a
-binding; it needs an authenticated web claim AND the original private-chat action.
+binding; bot tickets need a web claim AND the original private-chat action.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from http.client import HTTPException as HTTPProtocolError
 import hashlib
+import base64
 import hmac
 import json
 import os
@@ -14,7 +16,9 @@ from pathlib import Path
 import re
 import secrets
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
+from urllib.request import Request as URLRequest, build_opener, HTTPRedirectHandler
+from urllib.error import URLError
 
 from fastapi import Cookie, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -86,6 +90,137 @@ def bot_url():
 
 def _secret(config, purpose, identity):
     return hmac.new(config.bridge_key, (purpose + ':' + identity).encode(), hashlib.sha256).hexdigest()
+
+
+def _oauth_secret():
+    secret = os.getenv('TAXPEARLS_FEISHU_APP_SECRET', '').strip()
+    if not secret:
+        raise HTTPException(503, '网页绑定尚未配置，请联系管理员配置飞书应用凭据和授权回调地址。')
+    return secret
+
+
+def _oauth_account_proof(config, actor, session):
+    return _secret(config, 'oauth-account', json.dumps(
+        [config.scope.key, actor['id'], actor['org_id'], actor['role'], bindings._digest(session)], separators=(',', ':')))
+
+
+def _oauth_verifier(config, state):
+    return _secret(config, 'oauth-pkce', state)
+
+
+def oauth_begin(store, config, session, account_proof):
+    _oauth_secret()
+    stamp, identity = time.time(), secrets.token_hex(16)
+    state = identity + '.' + secrets.token_hex(32)
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        actor = bindings._session(db, session)
+        if actor['role'] not in {'org_admin', 'accountant'}:
+            raise AccessDenied('本次飞书绑定先支持企业管理员和会计账号。', 403)
+        if not hmac.compare_digest(_oauth_account_proof(config, actor, session), account_proof):
+            raise AccessDenied('登录账号或会话已变化，请刷新页面核对账号后再确认。', 409)
+        if db.execute("SELECT 1 FROM channel_bindings WHERE user_id=? AND channel='feishu'", (actor['id'],)).fetchone():
+            raise AccessDenied('当前账号已绑定飞书，请先解绑。', 409)
+        db.execute('DELETE FROM channel_binding_flows WHERE expires_at<=?', (stamp,))
+        latest = db.execute("SELECT MAX(created_at) FROM channel_binding_flows WHERE user_id=? AND channel='feishu'", (actor['id'],)).fetchone()[0]
+        if latest is not None and stamp - latest < 5:
+            raise AccessDenied('请稍后再发起飞书授权。', 429)
+        if db.execute('SELECT COUNT(*) FROM channel_binding_flows').fetchone()[0] >= LIMIT:
+            raise AccessDenied('绑定服务繁忙，请稍后重试。', 503)
+        db.execute("UPDATE channel_binding_flows SET status='cancelled',recipient_key=NULL WHERE user_id=? AND channel='feishu' AND status IN ('pending','candidate')", (actor['id'],))
+        db.execute('''INSERT INTO channel_binding_flows
+            (id,code_hash,user_id,org_id,role,session_hash,channel,scope_key,created_at,expires_at,status)
+            VALUES (?,?,?,?,?,?,'feishu',?,?,?,'pending')''',
+            (identity, bindings._digest(state), actor['id'], actor['org_id'], actor['role'], bindings._digest(session), config.scope.key, stamp, stamp + TTL))
+        members.log(db, actor, 'feishu_oauth_begin', 'channel_binding', identity, 'channel=feishu')
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(_oauth_verifier(config, state).encode()).digest()).decode().rstrip('=')
+    return {'url': 'https://accounts.feishu.cn/open-apis/authen/v1/authorize?' + urlencode({
+        'client_id': config.app_id, 'response_type': 'code',
+        'redirect_uri': config.public_base + '/connect/feishu/callback', 'state': state,
+        'code_challenge': challenge, 'code_challenge_method': 'S256', 'prompt': 'consent',
+        'scope': 'contact:user.base:readonly'}), 'expires_in': TTL}
+
+
+class _NoOAuthRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def _oauth_json(url, *, body=None, token=None):
+    # Fixed provider URLs, no redirects/retries, credentials never reach browser or logs.
+    headers = {'Accept': 'application/json'}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    if body is not None:
+        headers['Content-Type'] = 'application/json'
+    request = URLRequest(url, data=json.dumps(body).encode() if body is not None else None, headers=headers)
+    try:
+        with build_opener(_NoOAuthRedirect()).open(request, timeout=15) as response:
+            raw = response.read(65537)
+        if len(raw) > 65536:
+            raise ValueError()
+        value = json.loads(raw)
+        if not isinstance(value, dict) or value.get('code', 0) != 0 or value.get('error'):
+            raise ValueError()
+        return value
+    except (URLError, OSError, ValueError, HTTPProtocolError):
+        raise HTTPException(502, '飞书授权校验失败，请重新发起；若持续失败，请管理员核对应用权限、凭据和回调配置。') from None
+
+
+def _oauth_identity(config, code, state):
+    value = _oauth_json('https://accounts.feishu.cn/oauth/v3/token', body={
+        'grant_type': 'authorization_code', 'client_id': config.app_id, 'client_secret': _oauth_secret(),
+        'code': code, 'redirect_uri': config.public_base + '/connect/feishu/callback',
+        'code_verifier': _oauth_verifier(config, state)})
+    token = value.get('access_token')
+    if not isinstance(token, str) or not token or len(token) > 8192:
+        raise HTTPException(502, '飞书未返回有效授权凭据，请重新发起绑定。')
+    value = _oauth_json('https://open.feishu.cn/open-apis/authen/v1/user_info', token=token)
+    data = value.get('data')
+    subject = data.get('open_id') if isinstance(data, dict) else None
+    if not isinstance(subject, str) or not re.fullmatch(r'ou_[A-Za-z0-9]+', subject):
+        raise HTTPException(502, '飞书未返回有效用户身份，请重新发起绑定。')
+    # The binding scope is the bot app's owner tenant, including shared external users.
+    # Provider email, nickname, user tenant and browser parameters never choose an account.
+    return subject
+
+
+def _oauth_row(db, config, session, state):
+    if not re.fullmatch(r'[0-9a-f]{32}\.[0-9a-f]{64}', state):
+        raise AccessDenied('飞书授权已失效，请重新发起绑定。', 409)
+    row = db.execute('SELECT * FROM channel_binding_flows WHERE id=?', (state[:32],)).fetchone()
+    actor = bindings._flow_actor(db, row, session)
+    if row['channel'] != 'feishu' or row['scope_key'] != config.scope.key or not hmac.compare_digest(row['code_hash'], bindings._digest(state)):
+        raise AccessDenied('飞书授权已失效，请重新发起绑定。', 409)
+    if actor['role'] not in {'org_admin', 'accountant'}:
+        raise AccessDenied('当前账号不支持飞书绑定。', 403)
+    return row, actor
+
+
+def oauth_complete(store, config, session, state, code, error):
+    _oauth_secret()
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row, actor = _oauth_row(db, config, session, state)
+        if row['status'] != 'pending':
+            raise AccessDenied('飞书授权已使用，请重新发起绑定。', 409)
+        # Consume before the network request. Simultaneous/replayed callbacks cannot exchange twice.
+        db.execute("UPDATE channel_binding_flows SET status=? WHERE id=?", ('cancelled' if error or not code else 'candidate', row['id']))
+    if error or not code:
+        return {'state': 'cancelled'}
+    try:
+        subject = _oauth_identity(config, code, state)
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row, actor = _oauth_row(db, config, session, state)
+            result = bindings.insert_verified(db, actor, config.scope, subject)
+            db.execute("UPDATE channel_binding_flows SET status='completed' WHERE id=?", (row['id'],))
+            db.execute("UPDATE feishu_binding_requests SET state='cancelled' WHERE user_id=? AND state='web_confirmed'", (actor['id'],))
+        return {'state': 'completed', 'binding': result, 'url': bot_url()}
+    except Exception:
+        with store.connect() as db:
+            db.execute("UPDATE channel_binding_flows SET status='cancelled' WHERE id=? AND status='candidate'", (state[:32],))
+        raise
 
 
 def _ticket(config, identity):
@@ -258,6 +393,18 @@ class ClaimBody(TicketBody):
     web_proof: str = Field(min_length=64, max_length=64, pattern=r'^[0-9a-f]{64}$', repr=False)
 
 
+class OAuthBeginBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    account_proof: str = Field(pattern=r'^[0-9a-f]{64}$', repr=False)
+
+
+class OAuthCompleteBody(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    state: str = Field(min_length=1, max_length=120, repr=False)
+    code: str = Field(default='', max_length=2048, repr=False)
+    error: str = Field(default='', max_length=256)
+
+
 class BridgeBody(BaseModel):
     model_config = ConfigDict(extra='forbid')
     app_id: str = Field(max_length=256)
@@ -283,6 +430,7 @@ def _same_origin(request):
 
 def register(app, store_provider, cookie_name):
     @app.get('/connect/feishu')
+    @app.get('/connect/feishu/callback')
     def page():
         return FileResponse(STATIC / 'feishu-connect.html', headers={
             'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer', 'X-Robots-Tag': 'noindex, nofollow',
@@ -300,9 +448,28 @@ def register(app, store_provider, cookie_name):
         try:
             settings()
         except HTTPException:
-            return {'url': url, 'binding_ready': False,
+            return {'url': url, 'binding_ready': False, 'oauth_ready': False,
                     'message': '账号绑定暂不可用，可先扫码或点击链接打开飞书助手。'}
-        return {'url': url, 'binding_ready': True, 'message': '请用飞书扫码或点击链接打开助手。'}
+        return {'url': url, 'binding_ready': True, 'oauth_ready': bool(os.getenv('TAXPEARLS_FEISHU_APP_SECRET', '').strip()),
+                'binding_url': '/connect/feishu', 'message': '可从网页授权绑定，或打开助手使用私聊绑定入口。'}
+
+    @app.get('/api/channels/feishu/oauth/account')
+    def oauth_account(session: str | None = Cookie(default=None, alias=cookie_name)):
+        config = settings()
+        _oauth_secret()
+        with store_provider().connect() as db:
+            actor = bindings._session(db, session)
+            return JSONResponse({'account': _account(db, actor), 'account_proof': _oauth_account_proof(config, actor, session)}, headers={'Cache-Control': 'no-store'})
+
+    @app.post('/api/channels/feishu/oauth/begin')
+    def begin_oauth(body: OAuthBeginBody, request: Request, session: str | None = Cookie(default=None, alias=cookie_name)):
+        _same_origin(request)
+        return JSONResponse(oauth_begin(store_provider(), settings(), session, body.account_proof), headers={'Cache-Control': 'no-store'})
+
+    @app.post('/api/channels/feishu/oauth/complete')
+    def complete_oauth(body: OAuthCompleteBody, request: Request, session: str | None = Cookie(default=None, alias=cookie_name)):
+        _same_origin(request)
+        return JSONResponse(oauth_complete(store_provider(), settings(), session, body.state, body.code, body.error), headers={'Cache-Control': 'no-store'})
 
     @app.get('/api/channels/feishu/qr.svg')
     def qr():
